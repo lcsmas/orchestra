@@ -1,7 +1,8 @@
 // Acceptance 3: `run end` kills the run's processes at once — synchronously in the CLI, no daemon running.
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { within, Rig, identityOf, isAlive } from './lib/rig.ts';
+import fs from 'node:fs';
+import { BIN, within, Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
 
 describe('run end', () => {
   let rig: Rig;
@@ -38,6 +39,19 @@ describe('run end', () => {
     assert.equal(rig.cli(['run', 'end', '--id', 'e1']).status, 0, 'ending a cleaned run is a no-op');
     assert.equal(rig.cli(['run', 'end', '--id', 'nope']).status, 3, 'an unknown run is refused');
     assert.equal(rig.cli(['run', 'end']).status, 2, '--id is required');
+  });
+
+  it('run end from INSIDE one of the run\'s own lanes fails loudly instead of reporting a clean run', async () => {
+    const coord = rig.coordinator();
+    assert.equal(rig.cli(['run', 'start', '--id', 'e3', '--owner', String(coord.pid)]).status, 0);
+    const lane = rig.lane('e3', 'end-self', BIN);
+    const reply = await waitFor('the lane\'s `run end` answer', () => (fs.existsSync(lane.pidfile) ? JSON.parse(fs.readFileSync(lane.pidfile, 'utf8')) : null));
+    assert.equal(reply.status, 1, reply.stderr);
+    assert.match(reply.stderr, /own process group/);
+    assert.notEqual(rig.run('e3')!.state, 'cleaned', 'a run whose lane could not be signalled must not read as cleaned');
+    assert.equal(rig.cli(['run', 'end', '--id', 'e3']).status, 0, 'from outside the lanes it works');
+    assert.equal(rig.run('e3')!.state, 'cleaned');
+    await within('lane wrapper exits', lane.exited);
   });
 
   it('exec into a cleaned or unknown run is refused', () => {

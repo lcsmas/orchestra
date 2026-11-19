@@ -32,6 +32,7 @@ export async function main(_argv: string[]): Promise<number> {
       } catch (e) {
         log(`tick failed: ${(e as Error).message}`);
       }
+      if (stopping) break;
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, tickMs());
         stop = () => {

@@ -187,8 +187,8 @@
   "edits": [
    {
     "file": "src/cleanup.ts",
-    "find": "  if (failures.length === 0) {",
-    "to": "  if (false) {"
+    "find": "      cur.state = 'cleaned';\n",
+    "to": ""
    }
   ]
  },
@@ -313,8 +313,8 @@
   "edits": [
    {
     "file": "src/cleanup.ts",
-    "find": "  if (await waitEmpty(run, termWaitMs(ctx.env))) return;\n",
-    "to": ""
+    "find": "    if (!(await waitEmpty(run, termWaitMs(ctx.env)))) {",
+    "to": "    if (true) {"
    }
   ]
  },
@@ -610,6 +610,40 @@
     "file": "src/verbs/run-start.ts",
     "find": "    if (!noAutostart()) ensureDaemon(dir);\n",
     "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M36_end_ignores_late_lane",
+  "why": "the run is marked cleaned although a lane registered during the cleanup",
+  "tests": [
+   "test/end-race.test.ts"
+  ],
+  "expect": [
+   "a lane registered mid-cleanup"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "      if (cur.lanes.some((l) => !known.has(laneKey(l)))) return JSON.parse(JSON.stringify(cur)); // a lane appeared meanwhile: not done\n",
+    "to": ""
+   }
+  ]
+ },
+ {
+  "id": "M37_blocked_members_ignored",
+  "why": "run end from inside a lane reports success with the lane alive",
+  "tests": [
+   "test/run-end.test.ts"
+  ],
+  "expect": [
+   "from INSIDE one of the run"
+  ],
+  "edits": [
+   {
+    "file": "src/cleanup.ts",
+    "find": "  refuseIfBlocked(run);\n}",
+    "to": "  void refuseIfBlocked;\n}"
    }
   ]
  }

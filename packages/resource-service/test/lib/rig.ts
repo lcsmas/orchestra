@@ -79,9 +79,9 @@ export class Rig {
   }
 
   /** `resctl exec --run <id> -- node lane.mjs <mode> <pidfile>` */
-  lane(runId: string, mode: string): Lane {
+  lane(runId: string, mode: string, ...extra: string[]): Lane {
     const pidfile = path.join(this.dir, `lane-${++this.n}.pid`);
-    const { exited, child } = this.spawnCli(['exec', '--run', runId, '--', process.execPath, LANE, mode, pidfile]);
+    const { exited, child } = this.spawnCli(['exec', '--run', runId, '--', process.execPath, LANE, mode, pidfile, ...extra]);
     return { wrapper: child, exited, pidfile, pid: () => waitFor(`lane pidfile ${pidfile}`, () => (fs.existsSync(pidfile) ? Number(fs.readFileSync(pidfile, 'utf8')) : 0)) };
   }
 

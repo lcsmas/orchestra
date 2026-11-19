@@ -39,16 +39,18 @@ export async function main(argv: string[]): Promise<number> {
     for (const sig of FORWARDED) process.on(sig, () => leader && signalGroupIfOurs(leader, sig));
     if (leader) {
       const lane = { pid: child.pid, pgid: child.pid, startTime: leader.startTime, cmd: [cmd, ...args], startedAt: Date.now() };
-      const ok = await withState((s) => {
-        const run = s.runs[values.run!];
-        if (!run || run.state === 'cleaned') return false;
-        run.lanes.push(lane);
-        return true;
-      }, dir);
-      if (!ok) {
-        signalGroupIfOurs(leader, 'SIGKILL');
-        throw refused(`run ${values.run} was cleaned while the lane started`);
+      let registered = false;
+      try {
+        registered = await withState((s) => {
+          const run = s.runs[values.run!];
+          if (!run || run.state === 'cleaned') return false;
+          run.lanes.push(lane);
+          return true;
+        }, dir);
+      } finally {
+        if (!registered) signalGroupIfOurs(leader, 'SIGKILL'); // never leave an unrecorded lane running (cleaned meanwhile, or the state was unreachable)
       }
+      if (!registered) throw refused(`run ${values.run} was cleaned while the lane started`);
     }
   }
 

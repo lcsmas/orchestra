@@ -1,4 +1,4 @@
-// EVERY environment read of the service goes through here (a test greps for stray `process.env` reads). Each reader takes the env so a test can pass its own.
+// The service's configuration lives here; each reader takes the env so a test can pass its own (exec/daemon pass `process.env` through to children).
 import os from 'node:os';
 import path from 'node:path';
 import { parseDuration, parseSize } from './units.ts';

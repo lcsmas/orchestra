@@ -20,33 +20,46 @@ export function collectRunProcesses(run: Run): Identity[] {
     if (pg !== undefined && m.startTime >= (born.get(pg) ?? Infinity)) byPid.set(m.pid, m);
   }
   for (const m of findByEnv(TOKEN_ENV, run.token)) byPid.set(m.pid, m);
-  return [...byPid.values()].filter(touchable);
+  return [...byPid.values()];
 }
+
+/** The members this process may signal (not init, not itself, not in its own process group). */
+const sendable = (run: Run): Identity[] => collectRunProcesses(run).filter(touchable);
 
 function signalRun(run: Run, sig: NodeJS.Signals): void {
   for (const lane of run.lanes) if (lane.pgid === lane.pid) signalGroupIfOurs({ pid: lane.pid, startTime: lane.startTime }, sig);
-  for (const m of collectRunProcesses(run)) signalIfSame(m, sig);
+  for (const m of sendable(run)) signalIfSame(m, sig);
 }
 
 async function waitEmpty(run: Run, ms: number): Promise<boolean> {
   const deadline = Date.now() + ms;
   for (;;) {
-    if (collectRunProcesses(run).length === 0) return true;
+    if (sendable(run).length === 0) return true;
     if (Date.now() >= deadline) return false;
     await sleep(25);
   }
 }
 
+/** Members of the run this process must NOT signal (its own group): cleanup cannot claim success while they live. */
+function refuseIfBlocked(run: Run): void {
+  const blocked = collectRunProcesses(run).filter((m) => !touchable(m));
+  if (blocked.length) throw new Error(`run ${run.id}: ${blocked.length} process(es) of the run share the caller's own process group (${blocked.map((p) => p.pid).join(',')}); end the run from outside its lanes`);
+}
+
 /** TERM, wait RESCTL_TERM_WAIT, then KILL until nothing of the run is left. */
 export async function killProcesses(run: Run, ctx: CleanupCtx = {}): Promise<void> {
-  if (collectRunProcesses(run).length === 0) return;
-  signalRun(run, 'SIGTERM');
-  if (await waitEmpty(run, termWaitMs(ctx.env))) return;
-  for (let round = 0; round < 20; round++) {
-    signalRun(run, 'SIGKILL');
-    if (await waitEmpty(run, 250)) return;
+  if (sendable(run).length > 0) {
+    signalRun(run, 'SIGTERM');
+    if (!(await waitEmpty(run, termWaitMs(ctx.env)))) {
+      let gone = false;
+      for (let round = 0; round < 20 && !gone; round++) {
+        signalRun(run, 'SIGKILL');
+        gone = await waitEmpty(run, 250);
+      }
+      if (!gone) throw new Error(`run ${run.id}: processes survived SIGKILL: ${sendable(run).map((p) => p.pid).join(',')}`);
+    }
   }
-  throw new Error(`run ${run.id}: processes survived SIGKILL: ${collectRunProcesses(run).map((p) => p.pid).join(',')}`);
+  refuseIfBlocked(run);
 }
 
 export const CLEANUP_STEPS: CleanupStep[] = [{ name: 'kill-processes', run: killProcesses }];
@@ -64,19 +77,30 @@ export async function cleanupRun(run: Run, ctx: CleanupCtx = {}): Promise<{ step
   return failures;
 }
 
-/** Clean a run and, only if every step succeeded, mark THAT instance (token) `cleaned`. Returns the failures. */
+const laneKey = (l: { pid: number; startTime: number }): string => `${l.pid}:${l.startTime}`;
+
+/**
+ * Clean a run and, only if every step succeeded, mark THAT instance (token) `cleaned`. A lane that registered while the steps ran (exec racing the
+ * cleanup) is cleaned in another round before the mark; once `cleaned`, exec refuses to register and kills its own lane. Returns the failures.
+ */
 export async function endRun(dir: string, run: Run, ctx: CleanupCtx = {}): Promise<{ step: string; error: string }[]> {
-  const failures = await cleanupRun(run, ctx);
-  if (failures.length === 0) {
-    await withState((s) => {
+  let snapshot = run;
+  for (let round = 0; round < 3; round++) {
+    const failures = await cleanupRun(snapshot, ctx);
+    if (failures.length) return failures;
+    const known = new Set(snapshot.lanes.map(laneKey));
+    const raced = await withState((s): Run | null => {
       const cur = s.runs[run.id];
-      if (cur && cur.token === run.token && cur.state !== 'cleaned') {
-        cur.state = 'cleaned';
-        cur.cleanedAt = Date.now();
-        cur.lanes = [];
-        delete cur.graceEndsAt;
-      }
+      if (!cur || cur.token !== run.token || cur.state === 'cleaned') return null;
+      if (cur.lanes.some((l) => !known.has(laneKey(l)))) return JSON.parse(JSON.stringify(cur)); // a lane appeared meanwhile: not done
+      cur.state = 'cleaned';
+      cur.cleanedAt = Date.now();
+      cur.lanes = [];
+      delete cur.graceEndsAt;
+      return null;
     }, dir);
+    if (!raced) return [];
+    snapshot = raced;
   }
-  return failures;
+  return [{ step: 'mark-cleaned', error: `run ${run.id}: new lanes kept appearing while it was being cleaned` }];
 }
