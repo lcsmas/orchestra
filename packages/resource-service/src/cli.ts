@@ -26,7 +26,8 @@ const USAGE = `usage: resctl <verb> [options]
   run end --id <id>                   clean the run now
   exec --run <id> -- <cmd> [args...]  start a lane of the run
   serve                               the reaper daemon (foreground)
-  admit | docker-env | status         not implemented yet
+  admit [--timeout <dur>]             wait until free memory and disk are above RESCTL_MIN_FREE_MEM / _DISK
+  docker-env | status                 not implemented yet
 exit codes: 0 ok · 1 failure · 2 usage · 3 refused · 64 not implemented
 `;
 

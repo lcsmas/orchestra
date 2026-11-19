@@ -12,7 +12,7 @@ describe('cli dispatch', () => {
     assert.deepEqual(Object.keys(VERBS).sort(), ['admit', 'docker-env', 'exec', 'run end', 'run start', 'serve', 'status']);
   });
 
-  for (const [verb, ticket] of [['admit', 'A3'], ['docker-env', 'A2'], ['status', 'A5']] as const) {
+  for (const [verb, ticket] of [['docker-env', 'A2'], ['status', 'A5']] as const) {
     it(`${verb} is a stub: "not implemented (${ticket})", exit 64`, () => {
       const r = rig.cli([verb, '--run', 'x']);
       assert.equal(r.status, 64);

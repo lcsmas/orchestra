@@ -1,0 +1,388 @@
+[
+ {
+  "id": "M01_decide_ignores_disk",
+  "why": "the decision never looks at disk",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "disk short, memory fine",
+   "both short",
+   "disk threshold above the free value",
+   "both thresholds above"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (!(r.diskFree >= t.minDisk)) short.push(",
+    "to": "if (false) short.push("
+   }
+  ]
+ },
+ {
+  "id": "M02_decide_ignores_memory",
+  "why": "the decision never looks at memory",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "memory short, disk fine",
+   "both short",
+   "memory threshold above the free value",
+   "both thresholds above"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (!(r.memFree >= t.minMem)) short.push(",
+    "to": "if (false) short.push("
+   }
+  ]
+ },
+ {
+  "id": "M03_memory_boundary",
+  "why": "free == threshold is refused for memory",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "EQUAL to its threshold"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "!(r.memFree >= t.minMem)",
+    "to": "!(r.memFree > t.minMem)"
+   }
+  ]
+ },
+ {
+  "id": "M04_disk_boundary",
+  "why": "free == threshold is refused for disk",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "EQUAL to its threshold"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "!(r.diskFree >= t.minDisk)",
+    "to": "!(r.diskFree > t.minDisk)"
+   }
+  ]
+ },
+ {
+  "id": "M05_returns_without_waiting",
+  "why": "admitted whatever the readings",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "with memory short it waits",
+   "with disk short it waits",
+   "timeout of 0 looks once",
+   "memory threshold above the free value",
+   "disk threshold above the free value"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (last.admit) return {",
+    "to": "if (true) return {"
+   }
+  ]
+ },
+ {
+  "id": "M06_thresholds_read_once",
+  "why": "a threshold lowered while waiting is never seen",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "returns when the threshold is lowered"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "  let lastKey = '';\n",
+    "to": "  let lastKey = '';\n  let first: Thresholds | undefined;\n"
+   },
+   {
+    "file": "src/admission.ts",
+    "find": "const thresholds = o.thresholds();",
+    "to": "const thresholds = (first ??= o.thresholds());"
+   }
+  ]
+ },
+ {
+  "id": "M07_timeout_ignored",
+  "why": "the loop waits forever whatever the timeout",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "timeout of 0 looks once"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (o.timeoutMs !== undefined && waitedMs >= o.timeoutMs)",
+    "to": "if (false)"
+   }
+  ]
+ },
+ {
+  "id": "M08_never_says_why",
+  "why": "it waits silently",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "says what for",
+   "memory threshold above the free value",
+   "disk threshold above the free value",
+   "both thresholds above"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "o.say(`waiting for",
+    "to": "void (`waiting for"
+   }
+  ]
+ },
+ {
+  "id": "M09_says_every_poll",
+  "why": "the reason is repeated at every poll",
+  "tests": [
+   "test/admission.test.ts",
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "repeats the reason every reportMs",
+   "memory threshold above the free value"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (key !== lastKey || o.now() - lastSaid >= o.reportMs) {",
+    "to": "if (true) {"
+   }
+  ]
+ },
+ {
+  "id": "M10_last_sleep_not_clipped",
+  "why": "a timeout is overshot by up to one poll",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "timeout of 0 looks once"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "Math.min(o.pollMs, Math.max(0, o.timeoutMs - waitedMs))",
+    "to": "o.pollMs"
+   }
+  ]
+ },
+ {
+  "id": "M11_reads_memfree",
+  "why": "MemFree instead of MemAvailable",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "parseMemAvailable reads MemAvailable"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "/^MemAvailable:\\s+(\\d+)",
+    "to": "/^MemFree:\\s+(\\d+)"
+   }
+  ]
+ },
+ {
+  "id": "M12_missing_meter_is_infinite",
+  "why": "an unreadable meter reads as plenty",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "throws when the meter is absent"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "if (!m) throw new Error('MemAvailable not found in /proc/meminfo');",
+    "to": "if (!m) return Infinity;"
+   }
+  ]
+ },
+ {
+  "id": "M13_conf_file_not_reread",
+  "why": "admit.conf is never read",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "memory threshold above the free value",
+   "unusable admit.conf"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "'admit.conf'), 'utf8')",
+    "to": "'admit.conf.off'), 'utf8')"
+   }
+  ]
+ },
+ {
+  "id": "M14_timeout_is_success",
+  "why": "a timed-out admit exits 0",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "disk threshold above the free value",
+   "both thresholds above",
+   "--timeout 0 looks once"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "if (!res.admitted) throw refused(",
+    "to": "if (false) throw refused("
+   }
+  ]
+ },
+ {
+  "id": "M15_timeout_flag_dropped",
+  "why": "--timeout is parsed then ignored",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "disk threshold above the free value",
+   "both thresholds above",
+   "--timeout 0 looks once"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "const timeoutMs = values.timeout === undefined ? undefined : durationOrUsage(values.timeout);",
+    "to": "const timeoutMs = undefined as number | undefined; void durationOrUsage;"
+   }
+  ]
+ },
+ {
+  "id": "M16_default_disk_is_home",
+  "why": "the default measured filesystem is the home dir, not the state dir",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "measures the filesystem of the state dir by default"
+  ],
+  "edits": [
+   {
+    "file": "src/env.ts",
+    "find": "env.RESCTL_DISK_PATH || stateDir(env)",
+    "to": "env.RESCTL_DISK_PATH || os.homedir()"
+   }
+  ]
+ },
+ {
+  "id": "M17_default_memory_threshold",
+  "why": "default memory threshold 1G instead of 6G",
+  "tests": [
+   "test/units.test.ts"
+  ],
+  "expect": [
+   "env readers: defaults and overrides"
+  ],
+  "edits": [
+   {
+    "file": "src/env.ts",
+    "find": "env.RESCTL_MIN_FREE_MEM || '6G'",
+    "to": "env.RESCTL_MIN_FREE_MEM || '1G'"
+   }
+  ]
+ },
+ {
+  "id": "M18_default_disk_threshold",
+  "why": "default disk threshold 1GiB instead of 10GiB",
+  "tests": [
+   "test/units.test.ts"
+  ],
+  "expect": [
+   "env readers: defaults and overrides"
+  ],
+  "edits": [
+   {
+    "file": "src/env.ts",
+    "find": "env.RESCTL_MIN_FREE_DISK || '10GiB'",
+    "to": "env.RESCTL_MIN_FREE_DISK || '1GiB'"
+   }
+  ]
+ },
+ {
+  "id": "M19_disk_free_is_bfree_blocks",
+  "why": "free disk = available blocks without the block size",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "units pinned"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "return Number(s.bavail) * Number(s.bsize);",
+    "to": "return Number(s.bavail);"
+   }
+  ]
+ },
+ {
+  "id": "M20_format_rounds_up",
+  "why": "6G-1 prints as 6G",
+  "tests": [
+   "test/admission.test.ts"
+  ],
+  "expect": [
+   "the waiting phrase names"
+  ],
+  "edits": [
+   {
+    "file": "src/admission.ts",
+    "find": "Math.floor((bytes / n) * 10) / 10",
+    "to": "Math.round((bytes / n) * 10) / 10"
+   }
+  ]
+ },
+ {
+  "id": "M21_conf_garbage_silent",
+  "why": "an unreadable admit.conf line is skipped without a word",
+  "tests": [
+   "test/admit.test.ts"
+  ],
+  "expect": [
+   "unusable admit.conf"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/admit.ts",
+    "find": "if (/RESCTL_MIN_FREE/.test(line) && !/^\\s*#/.test(line)) warn(",
+    "to": "if (false) warn("
+   }
+  ]
+ }
+]

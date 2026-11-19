@@ -22,5 +22,10 @@ export const noAutostart = (env: Env = process.env): boolean => env.RESCTL_NO_AU
 // Read by later tickets (A3 admit, A5 unit); defined here so every env read lives in one file.
 export const minFreeMem = (env: Env = process.env): number => parseSize(env.RESCTL_MIN_FREE_MEM || '6G');
 export const minFreeDisk = (env: Env = process.env): number => parseSize(env.RESCTL_MIN_FREE_DISK || '10GiB');
-export const diskPath = (env: Env = process.env): string => env.RESCTL_DISK_PATH || os.homedir();
+/** Where `admit` measures free disk: `$RESCTL_DISK_PATH`, else the state dir (A3: the filesystem the service's own state lives on). */
+export const diskPath = (env: Env = process.env): string => env.RESCTL_DISK_PATH || stateDir(env);
+export const diskPathIsExplicit = (env: Env = process.env): boolean => !!env.RESCTL_DISK_PATH;
+/** `admit` re-measures every poll (default 2 s) and repeats what it waits for every report interval (default 30 s). */
+export const admitPollMs = (env: Env = process.env): number => Math.max(50, duration(env, 'RESCTL_ADMIT_POLL', '2s'));
+export const admitReportMs = (env: Env = process.env): number => duration(env, 'RESCTL_ADMIT_REPORT', '30s');
 export const unitName = (env: Env = process.env): string => env.RESCTL_UNIT_NAME || 'resctl.service';
