@@ -162,6 +162,22 @@ WITHOUT touching worktree/branch/commits. Default: THIS workspace.
   --fresh   start a new conversation (default keeps the conversation)`,
   },
   {
+    name: 'handoff',
+    group: 'Workspaces',
+    summary: 'End THIS context and continue in a fresh one that opens with your written summary',
+    detail: `usage: orchestra handoff --summary-file <path> | --summary <text>
+
+Bounded agent lifetime (#466): a long context re-reads itself every turn. Write a summary with the
+sections STATE, NEXT STEPS, REFS (ledger / state file / branch), NOT VERIFIED — each non-empty — and
+hand off, then END YOUR TURN: at the turn end the host starts a fresh session in the SAME workspace,
+worktree, branch and run (nothing on disk is touched) whose first turn is your summary.
+Refused, nothing ended: a summary missing a section (handoff-summary-invalid), a workspace outside an
+open run (handoff-outside-run), a session the host cannot vouch for (handoff-unvouched).
+The host nudges once an agent past ORCHESTRA_HANDOFF_BOUND_TURNS turns; it never ends a context itself.
+  --summary-file <path>   the summary file (- for stdin)
+  --summary <text>        the summary inline`,
+  },
+  {
     name: 'reload-skills',
     group: 'Workspaces',
     summary: 'Make out-of-band skill/plugin installs visible to running sessions',

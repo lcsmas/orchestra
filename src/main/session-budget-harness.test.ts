@@ -462,3 +462,73 @@ test('F1/F6 end to end: with bwrap unusable the driver is VOID rc 3 by default; 
     assert.equal(keeperAfter, keeperBefore, 'the driver rebuilt the keeper bundle from a unit test');
   } finally { fs.rmSync(shim, { recursive: true, force: true }); }
 });
+
+// ── #466 handoff-cache rig: the SIMULATED prefix cache of the fake API + the rig's judge ──────────────────────────
+
+const hc = await import(S('handoff-cache-judge.mjs'));
+
+async function streamedUsage(url: string, body: object): Promise<{ read: number; create: number }> {
+  const res = await fetch(`${url}/v1/messages`, { method: 'POST', body: JSON.stringify({ model: 'm', max_tokens: 1, stream: true, tools: [{ name: 't' }], system: 'SYS'.repeat(400), ...body }) });
+  const text = await res.text();
+  const start = JSON.parse(/event: message_start\ndata: (.*)\n/.exec(text)![1]);
+  return { read: start.message.usage.cache_read_input_tokens, create: start.message.usage.cache_creation_input_tokens };
+}
+
+test('fake API cache model: a request reads the prefix it shares with an earlier one and creates the rest; off by default', async () => {
+  const mk = (n: number) => Array.from({ length: n }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'x'.repeat(400)}` }));
+  const on = await api.startFakeApi({ cacheModel: true });
+  try {
+    const a = await streamedUsage(on.url, { messages: mk(1) });
+    assert.equal(a.read, 0, 'the first request reads nothing');
+    assert.ok(a.create > 300, 'and creates its whole prefix');
+    const b = await streamedUsage(on.url, { messages: mk(3) }); // extends the first conversation
+    assert.ok(b.read >= a.create - 5 && b.read <= a.create + 5, `reads what the first wrote (${b.read} vs ${a.create})`);
+    assert.ok(b.create > 0 && b.create < a.create, 'creates only the new tail');
+    const c = await streamedUsage(on.url, { messages: [{ role: 'user', content: 'a different first message' }] }); // a FRESH context: only tools+system are shared
+    assert.ok(c.read > 100 && c.read < b.read, `a fresh context re-reads only the shared base (${c.read})`);
+    const recs = on.requests.filter((r: any) => r.type === 'model');
+    assert.equal(recs[1].usage.cache_read_input_tokens, b.read, 'the record carries what the reply reported');
+    assert.ok(recs[2].usagePrev.cache_read_input_tokens <= recs[2].usage.cache_read_input_tokens, 'any-earlier >= previous-only');
+  } finally { await on.stop(); }
+  const off = await api.startFakeApi();
+  try {
+    const u = await streamedUsage(off.url, { messages: mk(1) });
+    assert.deepEqual(u, { read: 0, create: 0 }, 'without the option the usage stays zero (the budget suite is unchanged)');
+  } finally { await off.stop(); }
+});
+
+test('fake API cache model: tool-less side calls carry no cache usage', async () => {
+  const f = await api.startFakeApi({ cacheModel: true });
+  try {
+    const u = await streamedUsage(f.url, { tools: undefined, messages: [{ role: 'user', content: 'title please' }] });
+    assert.deepEqual(u, { read: 0, create: 0 });
+  } finally { await f.stop(); }
+});
+
+test('handoff-cache judge: baseline quiet; handoff must nudge, hand off, open fresh AND drop; each clause has a must-FAIL arm', () => {
+  const rep = (over: object = {}) => ({
+    error: undefined, turns: 24, mainRequests: 32, controlWrongKey: 'handoff-unvouched', controlNoRun: 'handoff-outside-run',
+    nudges: 4, nudgeRequests: 4, handoffsDispatched: 4, dispatchResults: ['scheduled', 'scheduled', 'scheduled', 'scheduled'], handoffFiles: 4,
+    openingRequests: 4, freshContextAfterHandoff: true, cacheReadTokens: 600, cacheCreationTokens: 100, lastRequestTokens: 20,
+    prevOnly: { cacheReadTokens: 600, cacheCreationTokens: 100 }, ...over,
+  });
+  const base = rep({ mainRequests: 24, nudges: 0, nudgeRequests: 0, handoffsDispatched: 0, dispatchResults: [], handoffFiles: 0, openingRequests: 0, freshContextAfterHandoff: false, cacheReadTokens: 1400, lastRequestTokens: 110 });
+  const failed = (v: object) => Object.entries(v).filter(([, ok]) => !ok).map(([k]) => k);
+  assert.deepEqual(failed(hc.judgeHandoffCache('baseline', base, null)), []);
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep(), base)), []);
+  assert.deepEqual(failed(hc.judgeHandoffCache('baseline', rep(), null)), ['quiet'], 'a baseline that handed off is not a baseline');
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep({ cacheReadTokens: 1978, lastRequestTokens: 111, freshContextAfterHandoff: false }), base)), ['opened', 'drop'], 'the context was never ended');
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep({ cacheReadTokens: 1400 }), base)), ['drop'], 'an equal read total is not a drop');
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep({ nudges: 0, nudgeRequests: 0, handoffsDispatched: 0, dispatchResults: [], handoffFiles: 0, openingRequests: 0, freshContextAfterHandoff: false, cacheReadTokens: 1400, lastRequestTokens: 110 }), base)), ['nudged', 'handedOff', 'opened', 'drop']);
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep({ controlWrongKey: 'ACCEPTED' }), base)), ['controlsRefuse'], 'an instrument whose refusals do not fire is void');
+  assert.deepEqual(failed(hc.judgeHandoffCache('handoff', rep({ dispatchResults: ['scheduled', 'handoff-unvouched: …', 'scheduled', 'scheduled'] }), base)), ['handedOff']);
+  assert.equal(hc.weighted({ cacheReadTokens: 1000, cacheCreationTokens: 100 }), 225);
+});
+
+test('handoff-cache mutants: both anchors match the shipped source exactly once', () => {
+  for (const name of ['handoff-noop-clear', 'handoff-no-nudge']) {
+    const m = mutants.MUTANTS[name];
+    const src = fs.readFileSync(`${REPO}${m.file}`, 'utf8');
+    assert.equal([...src.matchAll(m.find)].length, 1, `${name} anchors exactly once in ${m.file}`);
+  }
+});
