@@ -53,7 +53,8 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   rebase and reset outside a scratch clone; a push of master/main to an implementer;
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
-  guarded). ¤orchestra fanout deliver|state¤ are NOT role-guarded yet: conduct. A BLOCKED is the answer, never to be routed around: report the branch ref to the
+  guarded). ¤orchestra fanout deliver¤ and ¤fanout state init|set¤ to every role but the
+  coordinator (¤state show¤ and ¤resume¤ stay open). A BLOCKED is the answer, never to be routed around: report the branch ref to the
   coordinator (ledger comment + one ping), or hand the change to the role that may make it.
 
 ## 0a. Two tiers when a human sits on the orchestrator: LEAD and OPS
@@ -527,15 +528,15 @@ The count, the head and the CI are code: write the round's counts to a verdict f
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
 ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
 --verified-head <sha>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
-ALWAYS pass ¤--review-verdict¤: without it nothing is counted and the merge is NOT review-gated
-(¤reviewGated:false¤). A refusal (exit 2, JSON ¤reason¤: ¤review-blocking¤, ¤head-moved¤,
+ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤); ¤--no-review-gate¤
+is the explicit ungated merge (¤reviewGated:false¤), never your default. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
 ¤ci-red¤, ¤no-checks¤, ¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a
 conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the verifier
 for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
 ¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
 ¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
 refusal: inspect and retry. Never merge around either with ¤gh¤ — merging is the coordinator's
-(conduct, see Roles). A MINOR never refuses: its disposition stays yours.
+(the role guard denies it, see Roles). A MINOR never refuses: its disposition stays yours.
 
 - **One or more BLOCKING/MAJOR → ONE fix round**: the implementer fixes them and
   re-nominates once, the verifier gates the delta (§0b). The round's correctness MINORs may
