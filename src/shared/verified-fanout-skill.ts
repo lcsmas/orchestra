@@ -116,6 +116,7 @@ Coordinator-side rules:
   refused — fix the spelling, never hand-edit the file. The ledger keeps spec decisions,
   reports and every destructive order, never a ticket's status/branch/PR/head.
 - **Edit a ledger table row with ¤scripts/ledger-set¤, never ad-hoc ¤str.replace¤**: ¤ledger-set [--add-row] REPO ISSUE SECTION KEY ROW¤ (refuses on absent/duplicate key or a body changed since its read).
+- **The ledger carries the ¤ledger¤ label** (open ledgers = live fleets; ¤fleet-status¤ lists by it); its header names ONE writer per section (LEAD: Decisions, OPS: the rest) and the escalation criteria.
 - **Gate the dependent branch of a stack LAST.**
 
 ## 0b. Budget: messages and gates
@@ -151,9 +152,7 @@ Gate rhythm:
 - **A review that exposes a coverage gap**: do NOT add cases at the layer you already test — drive the module that can reach the defect.
 - **Mutation runs: FULL set at the first nomination and at the final merge gate; intermediate rounds mutate only the clauses the delta changed.**
 
-**Done when:** the ledger holds the gate checklist, and every brief carries the two pull-first rules plus the report format.
-
-→ **Read ¤references/budget-and-gates.md¤ before the first gate** (the grounds for each cap, the coverage-gap rule).
+→ **Read ¤references/budget-and-gates.md¤ before the first gate** (the grounds for each cap).
 
 ## 0c. The fleet bus (every live run is all-ON)
 
@@ -184,12 +183,12 @@ after the upstream merges. An upstream changing the frozen interface posts one "
 role. The child never renames itself — you rename it when its scope grows (¤orchestra rename <ws-id> <name>¤);
 say in every brief "your name is set by your parent". A fleet nests under the coordinator; ¤--detached¤ is for one-offs.
 
-**Done when:** every brief greps positive for your literal workspace id and lists its file set, each shared file named as a serialized seam under §4.
+**Done when:** every brief names your literal workspace id and its file set, shared files marked as seams (§4).
 
 ## 2. Spawn the implementers
 
 One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per subtask (flags: ¤orchestra-spawn¤
-skill). **Done when:** each printed workspace id + branch is recorded in the ledger.
+skill); record each printed workspace id + branch in the ledger.
 
 ## 3. Spawn the verifier
 
@@ -206,8 +205,6 @@ One agent whose only job is verification. Its brief:
 - **Audit the rig before filing any defect**; probes come from the repo's fixture library, never hand-written payloads.
 
 **A second verifier seat when a 2nd candidate waits behind a gate** (own worktree, own rig dirs).
-
-**Done when:** the verifier echoes "ready" after its install.
 
 → **Read ¤references/verifier-and-review.md¤ when you write the verifier's or a reviewer's brief** (rig audit, fixtures, the account pin).
 
@@ -231,8 +228,6 @@ that touch correctness or a ticket promise — never NITs.**
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
 only): the implementer's pre-review + the verifier's delta gate suffice. Any production-code line → spawned
 review, follow-ups included. The coordinator NEVER reviews (it wrote the specs). What it does with the findings is the §4 merge rule.
-
-**Done when:** the reviewer's ledger comment lists findings or "none found, here is what I attacked".
 
 ## 4. Coordinate and gate
 
@@ -274,8 +269,6 @@ each remaining agent rebasing onto the new tip. Re-verify each **merged tip**, n
 
 **Composed features need a composed gate.** When one flow spans two branches each half's E2E can pass while the user path is broken: gate the *whole flow* on the merged tree.
 
-**Done when:** every branch has a PASS/FAIL in the ledger, every shared-seam merge a merged-tip re-gate, every two-branch flow one whole-flow drive.
-
 ## 5. Close-out sweep
 
 "Agent reported done" and "work **landed**" are two different events. At every milestone boundary and
@@ -295,7 +288,7 @@ calls, never one: the role guard denies a check (¤verify-landed¤, ¤gh pr chec
 ¤rev-list¤…) chained with a destructive act (delete, force-push, merge, ¤branch -D¤,
 ¤worktree remove¤) in ONE command — run the check, read it, THEN act in a second call (the LEAD, role-less, is unguarded: its discipline).
 
-**Gate a delete on BOTH checks, not on ¤verify-landed¤ alone.** ¤orchestra verify-landed¤ exits ¤0¤ landed /
+**Gate a delete on BOTH checks, not on ¤verify-landed¤ alone.** ¤orchestra verify-landed <ws> --into <integration>¤ (the default target is YOUR branch) exits ¤0¤ landed /
 ¤2¤ not-landed / ¤1¤ could-not-check — gate on ¤$? == 0¤ (an older installed build exits 0 on NOT LANDED: if unsure, gate on the textual verdict); after a REBASE it reads a false not-landed (land by
 ancestry of the current tip). Porcelain is never literally empty in Orchestra worktrees: filter the generated
 noise (¤.claude/skills/orchestra-*¤, ¤.claude/skills/verified-fanout¤), judge every other line; rescue an orphan
@@ -305,7 +298,9 @@ Then confirm each deliverable **file** exists on the integration branch, and re-
 rather than inheriting it from the agent's first report (¤orchestra fanout resume¤ re-derives it for every
 ticket of the state file). When your check contradicts a specific claim, run a second check with a different reference before speaking.
 
-**Done when:** both commands print nothing for every agent, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
+**A wave is closed only when the LEAD has itself gated and deleted the OPS workspace and ¤orchestra peers¤ greps ZERO wave workspaces (plus one grep for a workspace that must still exist); then close the ledger.**
+
+**Done when:** both commands print nothing, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
 
 → **Read ¤references/closeout-and-gates.md¤ before you delete a workspace whose ¤verify-landed¤ reads
 not-landed, and before you write a gate** (the three delete-gate traps with their measurements; falsifiable gates and visual claims).
@@ -317,8 +312,7 @@ One consolidated status: per subtask — branch, verifier verdict, what remains 
 ## Specify gates that can fail
 
 A verdict is worth the precision of the ask: name the property, the observation that would disprove it,
-and where to look — "verify this branch" yields "looks good". **Done when:** every gate in the checklist
-names the observation that would disprove it and prints something different on a broken build than on a green one.
+and where to look — "verify this branch" yields "looks good"; every gate must print something different on a broken build.
 (Examples, and the strictest gate for visual claims: ¤references/closeout-and-gates.md¤.)
 
 ## Deep references — pull on demand
@@ -330,7 +324,7 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 - **references/fleet-bus.md** — read when a message does not arrive, or before ¤ask¤ / ¤gate¤ / ¤token¤ (§0c in full).
 - **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
 - **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
-- **references/traps.md** — the confident-wrong-answer catalogue (723 lines, four rungs by evidence: stale artifacts, visual rigs, controls/empty results, multi-party close-out claims): read the rung matching your evidence.
+- **references/traps.md** — the confident-wrong-answer catalogue (723 lines, ONE heading): read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
 - **references/prose.md** — read before writing any durable artifact (PR body, ticket, ledger comment, doc): banned filler, numbers over adjectives.
 - **references/working-with-agents.md** — read before briefing a fleet and before writing or accepting any close-out.
 - **references/meta-rules.md** — read when adding rules to this skill ("does it resolve to someone being sharp that day?").

@@ -169,6 +169,10 @@ export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = 
   ['mutation runs: full at first nomination and final gate', /\*\*Mutation runs: FULL set at the first nomination and at the final merge/],
   ['serialize merges that touch a shared seam', /\*\*Serialize merges that touch a shared seam\.\*\*/],
   ['composed features need a composed gate', /\*\*Composed features need a composed gate\.\*\*/],
+  ['ledger lifecycle: the `ledger` label + ONE writer per section', /The ledger carries the `ledger` label[\s\S]*ONE writer per section/],
+  ['wave close: LEAD deletes the OPS itself, peers greps zero + a positive control, then close the ledger', /A wave is closed only when the LEAD has itself gated and deleted the OPS workspace[\s\S]*plus one grep for a workspace that must still exist\); then close the ledger/],
+  ['verify-landed names --into <integration> (default target is YOUR branch)', /`orchestra verify-landed <ws> --into <integration>` \(the default target is YOUR branch\)/],
+  ['traps.md pointer carries its four rung triggers + line ranges', /L23–117\) when[\s\S]*L118–394\) when[\s\S]*L395–559\) when[\s\S]*L560–723\) when/],
   ['close-out: reported done != landed', /"Agent reported done" and "work \*\*landed\*\*" are two different events/],
   ['delete only a FINISHED agent, re-take the sweep', /\*\*Deleting a workspace requires the agent to be FINISHED, not merely landed\.\*\*/],
   ['deliverable file exists on the integration branch', /Then confirm each deliverable \*\*file\*\* exists on the integration branch/],
@@ -292,8 +296,8 @@ function pointerProblems(skill: string, shipped: readonly string[], v2: readonly
   for (const f of v2) {
     const at = lines.map((l, i) => (l.includes(f) ? i : -1)).filter((i) => i >= 0);
     if (at.length === 0) probs.push(`${f}: no pointer to it in SKILL.md`);
-    // the trigger sits on the pointer line or the line before/after (a wrapped paragraph)
-    else if (!at.some((i) => /\bread\b[^\n]*?\b(when|before)\b/i.test(lines.slice(Math.max(0, i - 1), i + 2).join(' ')))) probs.push(`${f}: pointed at without a "read when/before" trigger`);
+    // the trigger sits ON a line that names the file (no neighbour window: a neighbour's "read before" must not vouch for it, #474 review M1)
+    else if (!at.some((i) => /\bread\b[^\n]*?\b(when|before)\b/i.test(lines[i]))) probs.push(`${f}: pointed at without a "read when/before" trigger`);
   }
   return probs;
 }
@@ -318,6 +322,12 @@ test('#474 pointers: every references/ / scripts/ pointer in SKILL.md and in the
   assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL.replaceAll('references/closeout-and-gates.md', 'references/traps.md'), SHIPPED_PATHS, v2).some((p) => /closeout-and-gates\.md: no pointer/.test(p)));
   const noTrigger = VERIFIED_FANOUT_SKILL.replace(/\b(when|before)\b/gi, 'if');
   assert.ok(pointerProblems(noTrigger, SHIPPED_PATHS, v2).some((p) => /without a "read when\/before" trigger/.test(p)));
+  // #474 review M1: a pointer line whose trigger was replaced is seen even though its NEIGHBOURS say "read before"
+  const trapsLine = VERIFIED_FANOUT_SKILL.split('\n').find((l) => l.includes('references/traps.md') && /^- /.test(l))!;
+  assert.ok(trapsLine && /\bread\b[^\n]*\b(when|before)\b/i.test(trapsLine), 'the traps pointer line carries its own trigger');
+  const noTrapsTrigger = VERIFIED_FANOUT_SKILL.replace(trapsLine, trapsLine.replace(/\bread\b/gi, 'use').replace(/\b(when|before)\b/gi, 'if'));
+  assert.notEqual(noTrapsTrigger, VERIFIED_FANOUT_SKILL);
+  assert.ok(pointerProblems(noTrapsTrigger, SHIPPED_PATHS, allRefs).some((p) => /traps\.md: pointed at without/.test(p)), 'must-FAIL: traps pointer without its own trigger');
   assert.ok(pointerProblems(VERIFIED_FANOUT_SKILL.replace('scripts/ledger-set', 'scripts/ledger-sett'), SHIPPED_PATHS, v2).some((p) => /ledger-sett/.test(p)));
 });
 
