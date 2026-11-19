@@ -81,7 +81,7 @@ test('orchestra-rename skill: NOT for an agent spawned by another agent — in i
   const description = /^description: (.*)$/m.exec(r)?.[1] ?? '';
   assert.ok(description.includes('NOT for an agent spawned by another agent'), description);
   assert.ok(r.includes('If another agent spawned you, your branch was named by that agent'));
-  assert.ok(r.includes('`ops-`, `impl-`, `verif-`, `review-` or `explo-`'));
+  assert.ok(r.includes('`ops-`, `impl-`, `verif-`, `review-`, `explo-` or `scribe-`'));
 });
 
 test('CLI help: the spawn usage line and the --name entry carry the flag and the convention', () => {
