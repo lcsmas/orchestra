@@ -59,7 +59,7 @@ export function toEre(src: string): string {
 const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/, "", l); if (l == h) h=""; next } print; c=$0; gsub(/<<</, "", c); gsub(/\(\([^)]*\)\)/, "", c); if (match(c, /<<-?[ \t]*\\*["']?[A-Za-z_][A-Za-z0-9_]*/)) { t=substr(c, RSTART, RLENGTH); sub(/<<-?[ \t]*\\*["']?/, "", t); h=t } }`;
 
 /** The guard's own wiring (sentinel, script, hook settings) is never written by the role it constrains (pre-review m4). */
-const PROTECT_RE = `([0-9]?>>?|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod)|sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
+const PROTECT_RE = `([0-9]?>>?|${B}(tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|${B}sed[[:space:]]+-[a-zA-Z]*i|[[:space:]]sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
 /** Cheap Bash write heuristics (pre-review m1): the edit tools are only one door; these close the obvious others for the read-only
  *  roles. Redirect/`tee` TARGETS are judged in bash (scratch allowed); `sed -i` and in-place git acts are denied outright. */
 const SED_I = `${B}sed[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*i[a-zA-Z]*|--in-place)([[:space:]=]|$)`;

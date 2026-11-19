@@ -150,10 +150,10 @@ Scripts and the Claude Code events they fire on:
   included) is denied writing the guard's own wiring (`.orchestra/role`, `role-guard.sh`,
   `.claude/settings*.json`) by edit tool or Bash. Table rules also see `bash -c|eval|ssh h "…"`, `timeout N`,
   absolute `git`/`gh`, `git -c k=v`, `gh -R o/r`, `gh api …/pulls/N/merge`, a quoted branch and `git push master`.
-  Heredoc BODIES are dropped before matching (a ticket comment quoting verbs passes). Redirect targets are read from a copy with arrows (`->`, `=>`), `[[ a > b ]]` and quoted strings blanked (a quoted TARGET is unquoted first, so `> "src/a.ts"` still trips); here-strings and `$((1<<n))` never open a heredoc; `~/…` targets match. Known limits: a symlink
+  Heredoc BODIES are dropped before matching (a ticket comment quoting verbs passes). Redirect targets are read from a copy with arrows (`->`, `=>`), `[[ a > b ]]` and quoted strings blanked (a quoted TARGET is unquoted first, so a redirect into a quoted repo path still trips); here-strings and `$((1<<n))` never open a heredoc; `~/…` targets match. Known limits: a symlink
   under scratch pointing into a worktree; `eval`/variable-built commands; a scratch `cd` anywhere in a command lifts the write heuristics for the WHOLE command. An install evicts the legacy `…orchestrator-guard.sh… || true` entry (#446).
   Tests: `src/shared/role-guard.test.ts` (the INSTALLED string through bash: exit 2 + message per denied
-  class, exit 0 per allowed class, the `|| true` must-FAIL arm, 6 script mutants that must redden the
+  class, exit 0 per allowed class, the `|| true` must-FAIL arm, the script mutants that must each redden the
   matrix; its worktree root is NOT under `/tmp` because `/tmp` is scratch), `src/main/role-guard-wiring.test.ts`;
   real CLI: `pnpm run test:role-guard-cli` (`scripts/role-guard/e2e-role-guard-cli.mjs`: real `claude -p`
   against the fake Anthropic API, scratch HOME/CLAUDE_CONFIG_DIR, 7 arms incl. an allowed control, a

@@ -142,6 +142,10 @@ for (const role of ['coordinator', 'verifier', 'reviewer', 'explorer', 'scribe']
   allow(role, 'sed -n (read only)', bash('sed -n 1,5p src/a.ts'));
   allow(role, 'sed into scratch after cd', bash('cd $TMPDIR/s && sed -i s/a/b/ f'));
   deny(role, 'rewriting .orchestra/role', bash('echo implementer > .orchestra/role'), /role guard's own wiring/);
+  for (const cmd of ['rm .orchestra/role', 'mv .orchestra/role /var/tmp/x', 'cp /var/tmp/r .orchestra/role', 'truncate -s 0 .orchestra/role', 'rm .claude/settings.local.json',
+    'chmod 000 .orchestra/role-guard.sh', 'tee .orchestra/role', 'sed -i s/a/b/ .claude/settings.local.json', 'ln -sf /dev/null .orchestra/role-guard.sh', 'ls && rm .orchestra/role', '(rm .orchestra/role)'])
+    deny(role, `protect: ${cmd} (verb at command start or after a separator)`, bash(cmd), /role guard's own wiring|sed -i edits|shell write/);
+  allow(role, 'reading the guard wiring', bash('cat .orchestra/role && ls .claude/settings.local.json'));
   deny(role, 'Edit of .orchestra/role', edit('Edit', `${wt}/.orchestra/role`), /role guard's own wiring/);
   deny(role, 'Edit of .claude/settings.local.json', edit('Write', `${wt}/.claude/settings.local.json`), /role guard's own wiring/);
 }
