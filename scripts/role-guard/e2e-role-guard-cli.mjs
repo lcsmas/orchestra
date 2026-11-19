@@ -91,9 +91,12 @@ await arm({ name: 'implementer-AskUserQuestion-denied', role: 'implementer', str
   expect: (c) => ({ ok: /AskUserQuestion is not available/.test(c.resultText), why: 'the question never reached a human; the deny text is the tool_result' }) });
 await arm({ name: 'coordinator-chain-denied', role: 'coordinator', toolUse: { name: 'Bash', input: { command: 'orchestra verify-landed impl-x && orchestra delete abc --yes', description: 'probe' } },
   expect: (c) => ({ ok: /chained with a destructive act/.test(c.resultText), why: 'check+destroy chain refused before `orchestra` ran' }) });
-// known-good control: an ALLOWED call under the same hook still runs.
-await arm({ name: 'verifier-allowed-Bash-runs', role: 'verifier', toolUse: (wt) => ({ name: 'Bash', input: { command: `echo ok > ${path.join(wt, 'ok.txt')}`, description: 'probe' } }),
-  expect: (c) => ({ ok: exists(c.wt, 'ok.txt') && !/BLOCKED/.test(c.resultText), why: 'allowed command ran, no BLOCKED' }) });
+// m1 follow-up: a Bash redirect into the worktree is refused for a read-only role (heuristic, but it must reach the CLI).
+await arm({ name: 'reviewer-redirect-write-denied', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo x > leaked.txt', description: 'probe' } },
+  expect: (c) => ({ ok: !exists(c.wt, 'leaked.txt') && /shell write to 'leaked\.txt'/.test(c.resultText), why: 'redirect target refused, file NOT created' }) });
+// known-good control: an ALLOWED call under the same hook still runs (its output comes back as the tool_result).
+await arm({ name: 'verifier-allowed-Bash-runs', role: 'verifier', toolUse: { name: 'Bash', input: { command: 'git log --oneline -1', description: 'probe' } },
+  expect: (c) => ({ ok: /\bbase\b/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'allowed command ran: git log printed the base commit, no BLOCKED' }) });
 // known-inert control: no sentinel ⇒ the same Write that was denied goes through.
 await arm({ name: 'no-sentinel-inert', role: null, toolUse: writeCode,
   expect: (c) => ({ ok: exists(c.wt, 'code.ts') && !/BLOCKED/.test(c.resultText), why: 'file created — the guard is inert without .orchestra/role' }) });

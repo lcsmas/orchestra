@@ -129,13 +129,57 @@ deny('implementer', 'command gh pr merge', bash('command gh pr merge 5'), /mergi
 deny('implementer', 'env-prefixed gh pr merge', bash('FOO=1 env gh pr merge 5'), /merging a PR/);
 deny('implementer', 'Edit climbing out with ..', edit('Edit', `${wt}/../rg-other/a.ts`), /climbs out/);
 
-function runMatrix(script: string, tag: string): string[] {
+// follow-up (review #468 m1–m4)
+for (const role of ['coordinator', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+  deny(role, 'sed -i on a repo file', bash('sed -i s/a/b/ src/a.ts'), /sed -i edits files in place/);
+  deny(role, 'redirect into the repo', bash('echo x > src/a.ts'), /shell write to 'src\/a\.ts'/);
+  deny(role, 'cat >> into the repo', bash('cat patch >> README.md'), /shell write/);
+  deny(role, 'tee into the repo', bash('git diff | tee src/a.ts'), /shell write/);
+  allow(role, 'redirect to /dev/null and 2>&1', bash('ls nope 2>/dev/null; ls 2>&1 | head'));
+  allow(role, 'redirect into $TMPDIR', bash('git diff > $TMPDIR/d.patch'));
+  allow(role, 'redirect into agent-tmp', bash(`git diff > ${home}/.orchestra/agent-tmp/ws-1/d.patch`));
+  allow(role, 'tee into /var/tmp', bash('git diff | tee /var/tmp/x/d.patch'));
+  allow(role, 'sed -n (read only)', bash('sed -n 1,5p src/a.ts'));
+  allow(role, 'sed into scratch after cd', bash('cd $TMPDIR/s && sed -i s/a/b/ f'));
+  deny(role, 'rewriting .orchestra/role', bash('echo implementer > .orchestra/role'), /role guard's own wiring/);
+  deny(role, 'Edit of .orchestra/role', edit('Edit', `${wt}/.orchestra/role`), /role guard's own wiring/);
+  deny(role, 'Edit of .claude/settings.local.json', edit('Write', `${wt}/.claude/settings.local.json`), /role guard's own wiring/);
+}
+for (const role of ['verifier', 'reviewer', 'explorer', 'scribe']) {
+  deny(role, 'git apply', bash('git apply p.patch'), /rewrites the working tree/);
+  deny(role, 'git checkout <ref> -- file', bash('git checkout origin/master -- f'), /rewrites the working tree/);
+  deny(role, 'git cherry-pick', bash('git cherry-pick abc'), /rewrites the working tree/);
+  deny(role, 'git clean -fdx', bash('git clean -fdx'), /rewrites the working tree/);
+  allow(role, 'git apply --check', bash('git apply --check p.patch'));
+  allow(role, 'git checkout --detach (the gate)', bash('git fetch -q origin && git checkout --detach FETCH_HEAD'));
+  allow(role, 'git apply in a scratch clone', bash('cd $TMPDIR/s && git apply p.patch'));
+}
+allow('coordinator', 'merge / cherry-pick are the coordinator\'s job', bash('git merge --no-edit impl-x && git cherry-pick abc'));
+deny('implementer', 'writing the role sentinel', bash('echo reviewer > .orchestra/role'), /role guard's own wiring/);
+allow('implementer', 'redirects into its own worktree stay free', bash('echo x > src/a.ts && sed -i s/a/b/ src/a.ts'));
+// m2: quoting and wrappers around the table rules
+for (const [name, cmd] of [
+  ['quoted branch', 'git push origin "master"'], ['bash -c wrapper', 'bash -c "cd x && git push origin master"'],
+  ['ssh wrapper', 'ssh h "git push origin master"'], ['timeout wrapper', 'timeout 30 git push origin master'],
+  ['absolute git', '/usr/bin/git push origin master'], ['git -c', 'git -c k=v push origin main'], ['eval', 'eval "git push origin main"'],
+  ['no remote', 'git push master'],
+] as const) deny('implementer', `push target branch: ${name}`, bash(cmd), /fleet-roles table/);
+deny('implementer', 'gh -R pr merge', bash('gh -R o/r pr merge 3'), /merging a PR/);
+deny('implementer', 'gh api .../merge', bash('gh api -X PUT repos/o/r/pulls/3/merge'), /merging a PR/);
+// m3: heredoc BODIES are text, not commands; a `..` inside a file NAME is not traversal
+allow('reviewer', 'ticket comment whose body lines start with table verbs', bash("gh issue comment 3 --body-file - <<'EOF'\ngit rebase onto master denied\ngit push origin master\nEOF"));
+allow('coordinator', 'comment body with check + merge lines', bash("gh issue comment 3 --body-file - <<'EOF'\norchestra verify-landed ok\nthen gh pr merge 12\nEOF"));
+deny('coordinator', 'a real chain AFTER a heredoc still trips', bash("cat <<'EOF' > $TMPDIR/x\nbody\nEOF\norchestra verify-landed a && orchestra delete b --yes"), /chained/);
+allow('reviewer', 'Write to a scratch file named a..b.txt', edit('Write', `${scratchDir}/a..b.txt`));
+
+function runMatrix(script: string, tag: string, firstOnly = false): string[] {
   const bad: string[] = [];
   for (const c of CASES) {
     const w = install(script, c.role === '(none)' ? null : c.role, `${tag}-${c.role}`);
     const r = run(w, c.payload);
     const ok = r.code === c.code && (c.code === 0 ? r.err === '' : /BLOCKED \(role: /.test(r.err) && !!c.msg && c.msg.test(r.err) && r.err.includes(`role: ${c.role}`));
     if (!ok) bad.push(`${c.role}: ${c.name} → rc=${r.code} ${r.err.slice(0, 120)}`);
+    if (!ok && firstOnly) break; // a mutant only has to redden ONE case
   }
   return bad;
 }
@@ -181,8 +225,8 @@ test('MUST-FAIL ARM: the same command with `|| true` appended lets the denied ca
 
 test('toEre: the table regex sources translate to ERE (boundary-anchored, exact branch name, merge != merge-base)', () => {
   const push = toEre('\\bgit\\s+push\\b[^\\n]*\\b(master|main)\\b');
-  assert.match(push, /^\(\^\|\[;&\|\(\{`\]/, 'starts at a command boundary');
-  assert.ok(push.includes('git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?push([[:space:]]|$)[^;&|]*([[:space:]:]|refs/heads/)(master|main)'), push);
+  assert.match(push, /^\(\^\|\[;&\|\(\{\]/, 'starts at a command boundary');
+  assert.ok(push.includes('git[[:space:]]+((-C|-c)[[:space:]]+[^[:space:]]+[[:space:]]+)*push([[:space:]]|$)(([^;&|]*[[:space:]:"\'\\\\]|[^;&|]*refs/heads/)?)(master|main)'), push);
   const grepE = (re: string, text: string) => spawnSync('grep', ['-qE', '--', re], { input: text }).status === 0;
   const nc = toEre('\\bgit\\s+(commit|push|merge|rebase|reset)\\b');
   assert.ok(grepE(nc, 'git merge x') && !grepE(nc, 'git merge-base a b') && !grepE(nc, 'echo "git merge x"') && grepE(nc, 'cd r && git reset --hard'));
@@ -196,7 +240,11 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['no sentinel / unknown role defaults to implementer', '*) exit 0 ;;\nesac', '*) role=coordinator; deny_tools=" AskUserQuestion "; edit_mode=none ;;\nesac'],
     ['chain rule needs only the destructive half', "&& chk '", "|| chk '"],
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
-    ['scratch exemption admits ..', '*..*) scratch=0 ;;', '*..*) scratch=1 ;;'],
+    ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
+    ['heredoc bodies are scanned as commands', '| awk "$awk_prog" |', '| cat |'],
+    ['redirect targets are never judged', 'for t in $targets; do', 'for t in ; do'],
+    ['sed -i is allowed', "if chk '(^|", "if false && chk '(^|"],
+    ['the guard wiring is editable', "*/.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)", "*/.orchestra/NEVER)"],
     ['the table\'s bashDeny rules are never evaluated', 'if ! { [ "$in_scratch" = 1 ] && [ "$i" -lt "$n_table" ]; } && chk', 'if false && chk'],
     ['scratch-clone exemption removed', 'then in_scratch=1; fi', 'then in_scratch=0; fi'],
     ['scratch-clone exemption admits a push', '&& ! chk \'', '&& ! chk \'NEVERMATCH'],
@@ -204,7 +252,7 @@ test('baseline matrix is clean; every mutant reddens it', () => {
   ];
   for (const [name, from, to] of mutants) {
     assert.ok(ROLE_GUARD_SCRIPT.includes(from), `mutant "${name}": anchor string not found in the live script`);
-    const bad = runMatrix(ROLE_GUARD_SCRIPT.replace(from, to), `m${name.length}`);
+    const bad = runMatrix(ROLE_GUARD_SCRIPT.replace(from, to), `m${name.length}`, true);
     assert.ok(bad.length > 0, `mutant "${name}" survived — the matrix cannot see it`);
   }
 });

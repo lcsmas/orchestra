@@ -18,23 +18,27 @@ export const HOOK_ROLE_GUARD_CMD =
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit'];
 
 // ERE building blocks. A command boundary precedes a verb so a quoted MENTION mid-sentence (a ticket comment) is not a call.
-// A boundary is a command start: `; & | ( { \`` / `$(` / then|do|else|elif / `-c "` (bash -c "gh pr merge"), then env assignments and wrappers.
-const B = '(^|[;&|({`]|\\$\\(|(^|[[:space:]])(then|do|else|elif)[[:space:]]|-c[[:space:]]+\\\\?["\'])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*((sudo|command|exec|time|nohup|env)[[:space:]]+)*';
-const G = '(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?';
-const PUSH = `${B}git[[:space:]]+${G}push([[:space:]]|$)`;
-const GH_MERGE = `${B}gh[[:space:]]+pr[[:space:]]+merge([[:space:]]|$)`;
+// A boundary is a command start: `; & | ( {` / `$(` / then|do|else|elif / `-c "` (bash -c "gh pr merge"), then env assignments and wrappers.
+const B = '(^|[;&|({]|\\$\\(|(^|[[:space:]])(then|do|else|elif)[[:space:]]|(-c|eval)[[:space:]]+\\\\?["\']|ssh[[:space:]]+[^[:space:]]+[[:space:]]+\\\\?["\'])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*((sudo|command|exec|time|nohup|env)[[:space:]]+|timeout[[:space:]]+(-[a-zA-Z-]+[[:space:]]+)*[0-9.]+[smhd]?[[:space:]]+)*';
+// Absolute-path binaries, `git -c k=v`, `gh -R owner/repo` (pre-review m2).
+const GIT = '(/[^[:space:]]*/)?git';
+const GH = '(/[^[:space:]]*/)?gh';
+const GHR = `${GH}[[:space:]]+((-R|--repo)[[:space:]]+[^[:space:]]+[[:space:]]+)?`;
+const G = '((-C|-c)[[:space:]]+[^[:space:]]+[[:space:]]+)*';
+const PUSH = `${B}${GIT}[[:space:]]+${G}push([[:space:]]|$)`;
+const GH_MERGE = `${B}${GHR}pr[[:space:]]+merge([[:space:]]|$)|${B}${GH}[[:space:]]+api[[:space:]][^;&|]*pulls/[0-9]+/merge`;
 const ORCH_DELETE = `${B}orchestra[[:space:]]+(delete|archive)([[:space:]]|$)`;
-const FORCE_PUSH = `${B}git[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
-const BRANCH_D = `${B}git[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
-const WT_REMOVE = `${B}git[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
+const FORCE_PUSH = `${B}${GIT}[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
+const BRANCH_D = `${B}${GIT}[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
+const WT_REMOVE = `${B}${GIT}[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
 const DESTRUCTIVE = [GH_MERGE, ORCH_DELETE, FORCE_PUSH, BRANCH_D, WT_REMOVE].join('|');
 const CHECK = [
   `${B}orchestra[[:space:]]+verify-landed`,
-  `${B}gh[[:space:]]+pr[[:space:]]+(checks|view|status)([[:space:]]|$)`,
-  `${B}gh[[:space:]]+run[[:space:]]+(view|watch|list)([[:space:]]|$)`,
-  `${B}git[[:space:]]+${G}(ls-remote|rev-list|cherry)([[:space:]]|$)`,
-  `${B}git[[:space:]]+${G}merge-base[[:space:]]+--is-ancestor`,
-  `${B}git[[:space:]]+${G}branch[[:space:]][^;&|]*--contains`,
+  `${B}${GHR}pr[[:space:]]+(checks|view|status)([[:space:]]|$)`,
+  `${B}${GHR}run[[:space:]]+(view|watch|list)([[:space:]]|$)`,
+  `${B}${GIT}[[:space:]]+${G}(ls-remote|rev-list|cherry)([[:space:]]|$)`,
+  `${B}${GIT}[[:space:]]+${G}merge-base[[:space:]]+--is-ancestor`,
+  `${B}${GIT}[[:space:]]+${G}branch[[:space:]][^;&|]*--contains`,
 ].join('|');
 
 /** Translate a fleet-roles `bashDeny` regex SOURCE (JS flavour) to ERE for grep -E: `\s`→[[:space:]], `[^\n]`→`[^;&|]` (the
@@ -42,27 +46,46 @@ const CHECK = [
 export function toEre(src: string): string {
   return src
     .replace(/\[\^\\n\]/g, '[^;&|]')
-    .replace(/\\b\(master\|main\)\\b/g, '([[:space:]:]|refs/heads/)(master|main)([[:space:]"\']|$)') // the branch NAME, not `impl-main-fix`
+    // the branch NAME (after a space, `:`, a quote or `refs/heads/`; also right after the verb: `git push master`), never `impl-main-fix`
+    .replace(/\[\^;&\|\]\*\\b\(master\|main\)\\b/g, '(([^;&|]*[[:space:]:"\'\\\\]|[^;&|]*refs/heads/)?)(master|main)([[:space:]"\'\\\;&|)]|$)')
     .replace(/^\\b/, B) // a verb at a command boundary, not a quoted mention
     .replace(/\\b/g, '([[:space:]]|$)') // a trailing `\b` (`merge\b`) must not match `merge-base`
-    .replace(/git\\s\+/g, `git[[:space:]]+${G}`)
+    .replace(/git\\s\+/g, `${GIT}[[:space:]]+${G}`)
     .replace(/\\s/g, '[[:space:]]');
 }
+
+/** awk program dropping HEREDOC BODIES from a newline-split command: a body line is text, not a command (pre-review m3). The payload
+ *  carries quotes as `\"`, hence the optional backslash before the delimiter's quote. */
+const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/, "", l); if (l == h) h=""; next } print; if (match($0, /<<-?[ \t]*\\*["']?[A-Za-z_][A-Za-z0-9_]*/)) { t=substr($0, RSTART, RLENGTH); sub(/<<-?[ \t]*\\*["']?/, "", t); h=t } }`;
+
+/** The guard's own wiring (sentinel, script, hook settings) is never written by the role it constrains (pre-review m4). */
+const PROTECT_RE = `([0-9]?>>?|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod)|sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
+/** Cheap Bash write heuristics (pre-review m1): the edit tools are only one door; these close the obvious others for the read-only
+ *  roles. Redirect/`tee` TARGETS are judged in bash (scratch allowed); `sed -i` and in-place git acts are denied outright. */
+const SED_I = `${B}sed[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*i[a-zA-Z]*|--in-place)([[:space:]=]|$)`;
+const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|restore|update-ref|checkout[[:space:]][^;&|]*[[:space:]]--([[:space:]]|$)|clean[[:space:]]+[^;&|]*-[a-zA-Z]*f|branch[[:space:]]+[^;&|]*(-f|--force))`;
 
 interface Rule { re: string; why: string }
 
 const NO_MERGE: Rule = { re: GH_MERGE, why: 'merging a PR belongs to the coordinator — report the branch ref instead (ledger comment + one ping)' };
+const NO_PROTECT: Rule = { re: PROTECT_RE, why: "the role guard's own wiring (.orchestra/role, role-guard.sh, .claude/settings*.json) is never written by a fleet role" };
 const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace belongs to the coordinator that owns it' };
 
 /** Rules this module adds on top of the role table's `bashDeny` (the table is the frozen #465 interface; the ticket's classes are ours). */
 function extraRules(role: FleetRole): Rule[] {
-  if (role === 'coordinator') return [];
-  return [NO_MERGE, NO_DELETE];
+  if (role === 'coordinator') return [NO_PROTECT];
+  return [NO_MERGE, NO_DELETE, NO_PROTECT];
 }
 
 const WHY_TABLE = 'a command the fleet-roles table denies this role (push of the target branch / commit-class git act)';
 
 const sq = (s: string): string => s.replace(/'/g, `'\\''`);
+
+/** `files` = redirect / tee / sed -i heuristics; `git` adds the in-place git acts; `none` = an implementer (edits its own worktree). */
+function writeGuard(role: FleetRole): 'none' | 'files' | 'git' {
+  if (role === 'implementer') return 'none';
+  return role === 'coordinator' ? 'files' : 'git'; // the coordinator integrates (merge/cherry-pick are its job): no git heuristics
+}
 
 function perRole(role: FleetRole): string {
   const spec = roleSpec(role);
@@ -70,7 +93,7 @@ function perRole(role: FleetRole): string {
   const rules: Rule[] = [...spec.tools.bashDeny.map((s) => ({ re: toEre(s), why: WHY_TABLE })), ...extraRules(role)];
   const lines = [
     `  ${role})`,
-    `    deny_tools=" ${denyTools} "; edit_mode=${spec.tools.edit}; n_table=${spec.tools.bashDeny.length}`,
+    `    deny_tools=" ${denyTools} "; edit_mode=${spec.tools.edit}; n_table=${spec.tools.bashDeny.length}; write_guard=${writeGuard(role)}`,
     ...rules.map((r) => `    rules_re+=('${sq(r.re)}'); rules_why+=('${sq(r.why)}')`),
     '    ;;',
   ];
@@ -86,7 +109,7 @@ export LC_ALL=C
 case "$0" in */*) here="\${0%/*}" ;; *) here=. ;; esac
 [ -f "$here/${ROLE_SENTINEL_FILE}" ] || exit 0
 role="$(head -c 32 "$here/${ROLE_SENTINEL_FILE}" 2>/dev/null | tr -d '[:space:]')"
-rules_re=(); rules_why=(); deny_tools=""; edit_mode=""; n_table=0
+rules_re=(); rules_why=(); deny_tools=""; edit_mode=""; n_table=0; write_guard=none
 case "$role" in
 ${roles.map(perRole).join('\n')}
   *) exit 0 ;;
@@ -109,9 +132,13 @@ esac
 case "$tool" in
   ${EDIT_TOOLS.join('|')})
     fp="$(printf '%s' "$input" | grep -oE '"(file_path|notebook_path)": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"[a-z_]+": *"(.*)"$/\\1/')"
+    case "$fp" in
+      */.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)
+        deny "'$fp' is the role guard's own wiring — a fleet role never edits it." ;;
+    esac
     scratch=0
     case "$fp" in
-      *..*) scratch=0 ;;
+      */../*|*/..) scratch=0 ;;
       "$HOME"/.orchestra/agent-tmp/*|"$HOME"/.orchestra-dev/agent-tmp/*|"\${ORCHESTRA_HOME:-/nonexistent}"/agent-tmp/*) scratch=1 ;;
       /tmp/*|/var/tmp/*|"\${TMPDIR:-/nonexistent}"/*) scratch=1 ;;
       "$HOME"/.claude*/projects/*/memory/*) scratch=1 ;;
@@ -143,7 +170,11 @@ esac
 
 # --- Bash: the role's denied commands, then the check-then-destroy chain --------------------------------------------------
 [ "$tool" = Bash ] || exit 0
-cmd="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g' | grep -oE '"command": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"command": *"//; s/"$//; s/\\\\[nrt]/ ; /g')"
+awk_prog="$(cat <<'AWK'
+${AWK_HEREDOC}
+AWK
+)"
+cmd="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g' | grep -oE '"command": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"command": *"//; s/"$//; s/\\\\[rt]/ /g' | sed 's/\\\\n/\\n/g' | awk "$awk_prog" | tr '\\n' ';')"
 [ -n "$cmd" ] || exit 0
 chk() { printf '%s' "$cmd" | grep -qE -- "$1"; }
 # A command that works INSIDE a scratch clone (cd/-C into scratch) may rebase/merge/reset/commit there — a verifier gates a combined
@@ -156,6 +187,18 @@ while [ "$i" -lt "\${#rules_re[@]}" ]; do
   if ! { [ "$in_scratch" = 1 ] && [ "$i" -lt "$n_table" ]; } && chk "\${rules_re[$i]}"; then deny "\${rules_why[$i]}"; fi
   i=$((i + 1))
 done
+if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
+  # Heuristic, not a sandbox: a redirect / tee target outside scratch, sed -i, in-place git acts. Write into $TMPDIR instead.
+  if chk '${sq(SED_I)}'; then deny "sed -i edits files in place — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). Copy the file there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
+  if [ "$write_guard" = git ] && chk '${sq(GIT_WRITE)}' && ! chk '${sq(`${GIT}[[:space:]]+${G}apply[[:space:]]+([^;&|]*[[:space:]])?--check`)}'; then deny "a git command that rewrites the working tree (apply/am/cherry-pick/revert/pull/restore/clean -f/checkout -- /branch -f/update-ref) — the $role role does not change the tree; do it in a scratch clone (cd into \$TMPDIR/…). (Heuristic: not every shell write is visible.)"; fi
+  targets="$(printf '%s' "$cmd" | grep -oE '[0-9]?>>?[[:space:]]*[^[:space:]&;|><()]+|(^|[;&|])[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^[:space:]&;|><()]+' | sed -E 's/^[;&|]?[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//; s/^[0-9]?>>?[[:space:]]*//; s/^\\\\?["'"'"']//; s/\\\\?["'"'"']$//')"
+  for t in $targets; do
+    case "$t" in
+      /dev/null|/dev/stderr|/dev/stdout|/dev/fd/*|/tmp/*|/var/tmp/*|\\$TMPDIR/*|\\$\\{TMPDIR\\}/*|~/.orchestra/agent-tmp/*|~/.orchestra-dev/agent-tmp/*|\\$HOME/.orchestra/agent-tmp/*|"$HOME"/.orchestra/agent-tmp/*|"$HOME"/.orchestra-dev/agent-tmp/*|"\${TMPDIR:-/nonexistent}"/*|"\${ORCHESTRA_HOME:-/nonexistent}"/agent-tmp/*) ;;
+      *) deny "a shell write to '$t' — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/); redirect there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)" ;;
+    esac
+  done
+fi
 if chk '${sq(CHECK)}' && chk '${sq(DESTRUCTIVE)}'; then
   deny "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command. Run the check as its own call, read the result, THEN act in a second call."
 fi

@@ -32,6 +32,13 @@ test('#446: no deny-guard command swallows exit 2 with `|| true`', () => {
   }
 });
 
+test('#446: an install evicts a legacy `|| true` orchestrator-guard entry from an existing settings.local.json', () => {
+  const w = codeOf('src/main/workspaces.ts');
+  const at = w.indexOf('let preToolList');
+  assert.ok(at > 0 && w.indexOf("cmd.includes('.orchestra/orchestrator-guard.sh')", at) > at, 'evicts by script + `|| true`');
+  assert.ok(w.indexOf('removeHookCommand(preToolList', at) < w.indexOf('upsertMatcherHookCommand(preToolList, ORCHESTRATOR_GUARD_MATCHER', at), 'before the upsert');
+});
+
 test('the sentinel is refreshed on a rename (3 sites) and on every real install (outside the hash gate) and at creation', () => {
   const w = codeOf('src/main/workspaces.ts');
   const inst = w.slice(w.indexOf('export async function installOrchestraHooks('));

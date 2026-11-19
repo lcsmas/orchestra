@@ -4957,7 +4957,9 @@ export async function installOrchestraHooks(
     // Per-tool granularity: PreToolUse surfaces which tool the agent is about
     // to run (Bash, Edit, …) and PostToolUse clears it. Status stays `running`
     // throughout — these only drive the ephemeral active-tool label.
-    const preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+    let preToolList = ((hooks.PreToolUse as unknown[]) ??= []);
+    // #446 legacy: the pre-#468 orchestrator-guard command ended `|| true` (swallowed the deny); upsert never evicts it, so drop it.
+    preToolList = removeHookCommand(preToolList, (cmd) => cmd.includes('.orchestra/orchestrator-guard.sh') && /\|\|\s*true/.test(cmd));
     upsertHookCommand(preToolList, HOOK_ACTIVITY_PRETOOL_CMD);
     // Orchestrator hard-guard: deny file edits that reach into another
     // workspace (the script self-silences on non-orchestrator workspaces).

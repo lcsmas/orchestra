@@ -142,6 +142,17 @@ Scripts and the Claude Code events they fire on:
   `orchestra delete|archive`) in ONE Bash command. Verbs are matched at a command boundary (`;&|({`,
   newline, `$(`, then/do/else, `bash -c "`, after `command|exec|env|sudo`) so a quoted mention in a ticket comment passes; a heredoc line that STARTS with a verb
   still trips it (split the call). GNU `grep -E` (`\b`). Fail-open on any parse miss.
+  **Follow-up (review #468 m1–m5):** for the non-implementer roles a HEURISTIC (not a sandbox — the deny text says
+  so) also refuses Bash writes: `sed -i`, a redirect / `tee` target outside scratch (`/dev/null`, `$TMPDIR`,
+  `/tmp`, agent-tmp pass), and — verifier/reviewer/explorer/scribe, not the coordinator — in-place git acts
+  (`apply` (not `--check`), `am`, `cherry-pick`, `revert`, `pull`, `restore`, `checkout <ref> -- f`,
+  `clean -f`, `branch -f`, `update-ref`); all lifted after a `cd`/`-C` into scratch. Every role (implementer
+  included) is denied writing the guard's own wiring (`.orchestra/role`, `role-guard.sh`,
+  `.claude/settings*.json`) by edit tool or Bash. Table rules also see `bash -c|eval|ssh h "…"`, `timeout N`,
+  absolute `git`/`gh`, `git -c k=v`, `gh -R o/r`, `gh api …/pulls/N/merge`, a quoted branch and `git push master`.
+  Heredoc BODIES are dropped before matching (a ticket comment quoting verbs passes). Known limits: a symlink
+  under scratch pointing into a worktree; `eval`/variable-built commands; `=>` inside a quoted string reads as a
+  redirect. An install evicts the legacy `…orchestrator-guard.sh… || true` entry (#446).
   Tests: `src/shared/role-guard.test.ts` (the INSTALLED string through bash: exit 2 + message per denied
   class, exit 0 per allowed class, the `|| true` must-FAIL arm, 6 script mutants that must redden the
   matrix; its worktree root is NOT under `/tmp` because `/tmp` is scratch), `src/main/role-guard-wiring.test.ts`;
