@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findByEnv, identityOf, isAlive, signalIfSame, sleep, type Identity } from '../../src/proc.ts';
+import { findByEnv, identityOf, isAlive, sleep, type Identity } from '../../src/proc.ts';
 import { readState, type Run } from '../../src/state.ts';
 
 export const BIN = fileURLToPath(new URL('../../bin/resctl.mjs', import.meta.url));
@@ -21,6 +21,16 @@ export async function waitFor<T>(what: string, fn: () => T | undefined | null | 
     if (v) return v;
     if (Date.now() >= deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for: ${what}`);
     await sleep(everyMs);
+  }
+}
+
+/** Await `p`, but fail (never hang) after `ms`: a mutant that makes a verb run forever must turn a test RED, not stall the suite. */
+export async function within<T>(what: string, p: Promise<T>, ms = 15_000): Promise<T> {
+  let t: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([p, new Promise<never>((_, rej) => (t = setTimeout(() => rej(new Error(`timed out after ${ms}ms: ${what}`)), ms)))]);
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -104,7 +114,8 @@ export class Rig {
       /* no state file: nothing to end */
     }
     const leaked = findByEnv('RESCTL_STATE_DIR', this.dir);
-    for (const id of leaked) signalIfSame(id, 'SIGKILL');
+    // marker-identified (this rig's own state dir), so a raw kill is safe — and it must also reach a process in the test runner's own group, which signalIfSame refuses
+    for (const id of leaked) if (isAlive(id)) process.kill(id.pid, 'SIGKILL');
     await waitFor('leaked processes to die', () => leaked.every((i) => !isAlive(i)), 5000).catch(() => undefined);
     fs.rmSync(this.dir, { recursive: true, force: true });
     return leaked.map((i) => i.pid);

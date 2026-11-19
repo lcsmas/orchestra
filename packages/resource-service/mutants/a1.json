@@ -595,5 +595,22 @@
     "to": "m: 6_000,"
    }
   ]
+ },
+ {
+  "id": "M35_no_autostart",
+  "why": "run start never starts the reaper",
+  "tests": [
+   "test/autostart.test.ts"
+  ],
+  "expect": [
+   "starts the daemon once"
+  ],
+  "edits": [
+   {
+    "file": "src/verbs/run-start.ts",
+    "find": "    if (!noAutostart()) ensureDaemon(dir);\n",
+    "to": ""
+   }
+  ]
  }
 ]

@@ -42,7 +42,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { resto
 process.on('exit', restoreAll);
 
 function runTests(testFiles) {
-  const r = spawnSync(process.execPath, ['--test', '--test-reporter=tap', ...testFiles], { cwd: ROOT, encoding: 'utf8', timeout: 300_000, env: { ...process.env, TMPDIR: process.env.TMPDIR ?? os.tmpdir() } });
+  const r = spawnSync(process.execPath, ['--test', '--test-timeout=90000', '--test-reporter=tap', ...testFiles], { cwd: ROOT, encoding: 'utf8', timeout: 300_000, env: { ...process.env, TMPDIR: process.env.TMPDIR ?? os.tmpdir() } });
   const out = `${r.stdout}\n${r.stderr}`;
   const num = (k) => Number((new RegExp(`^# ${k} (\\d+)`, 'm').exec(out) ?? [0, NaN])[1]);
   const failed = [...out.matchAll(/^\s*not ok \d+ - (.+?)(?: # .*)?$/gm)].map((x) => x[1]);
@@ -58,6 +58,19 @@ if (base.status !== 0 || base.fail !== 0 || base.skipped !== 0 || !(base.pass > 
   throw new Error('baseline suite is not green: refusing to mutate');
 }
 
+// A mutant that breaks cleanup must not leave processes behind: after each mutant, kill (by identity read now) whatever still carries a test rig's state-dir marker.
+const RIG_MARK = `RESCTL_STATE_DIR=${path.join(process.env.TMPDIR ?? os.tmpdir(), 'resctl-test-')}`;
+function reapLeaks() {
+  let n = 0;
+  for (const pid of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x)).map(Number)) {
+    if (pid === process.pid) continue;
+    let env;
+    try { env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0'); } catch { continue; }
+    if (!env.some((e) => e.startsWith(RIG_MARK))) continue;
+    try { process.kill(pid, 'SIGKILL'); n++; } catch { /* already gone */ }
+  }
+  return n;
+}
 const results = [];
 for (const m of selected) {
   const abs = [...new Set(m.edits.map((e) => path.join(ROOT, e.file)))];
@@ -88,8 +101,9 @@ for (const m of selected) {
     for (const [p, buf] of backups) if (!fs.readFileSync(p).equals(buf)) throw new Error(`RESTORE FAILED for ${p}`);
     backups.clear();
   }
-  results.push({ id: m.id, verdict });
-  console.log(`${verdict.padEnd(12)} ${m.id} (${((Date.now() - t0) / 1000).toFixed(1)}s) ${detail}`);
+  const leaked = reapLeaks();
+  results.push({ id: m.id, verdict, leaked });
+  console.log(`${verdict.padEnd(12)} ${m.id} (${((Date.now() - t0) / 1000).toFixed(1)}s)${leaked ? ` [reaped ${leaked} leaked process(es)]` : ''} ${detail}`);
 }
 const bad = results.filter((r) => r.verdict !== 'KILLED');
 console.log(`\n${results.length - bad.length}/${results.length} killed${bad.length ? `; NOT killed: ${bad.map((b) => `${b.id}=${b.verdict}`).join(', ')}` : ''}`);

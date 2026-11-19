@@ -30,6 +30,8 @@
     "build:keeper": "vite build --config vite.keeper.config.ts",
     "build:acces-mobile": "vite build --config vite.acces-mobile.config.ts",
     "disk-guard": "node scripts/disk-guard.cjs",
+    "test:resource-service": "pnpm --dir packages/resource-service run test",
+    "test:resource-service-mutants": "pnpm --dir packages/resource-service run test:mutants",
     "test:disk-guard": "node scripts/verify-disk-guard.mjs",
     "test:disk-guard-ui": "node scripts/refuse-real-runtime.mjs test:disk-guard-ui",
     "prebuild:bundles": "node scripts/disk-guard.cjs --preset build-bundles",

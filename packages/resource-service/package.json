@@ -7,7 +7,7 @@
   "bin": { "resctl": "bin/resctl.mjs" },
   "engines": { "node": ">=22.18" },
   "scripts": {
-    "test": "node --test 'test/**/*.test.ts'",
+    "test": "node --test --test-timeout=120000 'test/**/*.test.ts'",
     "typecheck": "tsc -p .",
     "test:mutants": "node scripts/mutants.mjs"
   }

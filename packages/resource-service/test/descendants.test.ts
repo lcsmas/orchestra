@@ -2,7 +2,7 @@
 // process (own session); the RESCTL_RUN_TOKEN marker sweep does. `env -i` children (no marker) are reached by the group.
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
+import { within, Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
 import { readStat } from '../src/proc.ts';
 
 describe('descendants of a lane', () => {
@@ -19,7 +19,7 @@ describe('descendants of a lane', () => {
     assert.equal(rig.cli(['run', 'start', '--id', 'd1', '--owner', String(coord.pid)]).status, 0);
     const lane = rig.lane('d1', 'escape'); // the lane command itself exits at once
     const pid = await lane.pid();
-    await lane.exited; // the exec wrapper has returned: only the escaped grandchild is left
+    await within('lane wrapper exits', lane.exited); // the exec wrapper has returned: only the escaped grandchild is left
     const id = identityOf(pid)!;
     assert.ok(isAlive(id), 'instrument check: the escaped process outlives its lane command');
     const st = readStat(pid)!;
@@ -56,7 +56,7 @@ describe('descendants of a lane', () => {
     assert.equal(rig.cli(['run', 'start', '--id', 'd6', '--owner', String(coord.pid)]).status, 0);
     const lane = rig.lane('d6', 'env-i-leave');
     const id = identityOf(await lane.pid())!;
-    await lane.exited; // the leader is gone, the child remains in its group
+    await within('lane wrapper exits', lane.exited); // the leader is gone, the child remains in its group
     assert.ok(isAlive(id), 'instrument check: the child outlived the leader');
     assert.equal(rig.run('d6')!.lanes.length, 1, 'a group that still has members stays recorded');
     assert.equal(rig.cli(['run', 'end', '--id', 'd6']).status, 0);
@@ -72,7 +72,7 @@ describe('descendants of a lane', () => {
     assert.equal(rig.cli(['run', 'end', '--id', 'd4']).status, 0);
     assert.ok(!isAlive(id));
     assert.ok(Date.now() - t0 >= 400, 'SIGKILL only after the TERM wait (400ms here)');
-    assert.equal((await lane.exited).code, 128 + 9);
+    assert.equal((await within('lane wrapper exits', lane.exited)).code, 128 + 9);
   });
 
   it('exec forwards the lane exit code and reports a missing command as 127', () => {

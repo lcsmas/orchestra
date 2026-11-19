@@ -1,7 +1,7 @@
 // Acceptance 3: `run end` kills the run's processes at once — synchronously in the CLI, no daemon running.
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { Rig, identityOf, isAlive } from './lib/rig.ts';
+import { within, Rig, identityOf, isAlive } from './lib/rig.ts';
 
 describe('run end', () => {
   let rig: Rig;
@@ -31,7 +31,7 @@ describe('run end', () => {
     assert.equal(rig.run('e1')!.state, 'cleaned');
     assert.deepEqual(rig.run('e1')!.lanes, []);
     assert.equal(rig.run('e2')!.state, 'alive');
-    assert.equal((await mine.exited).code, 128 + 15);
+    assert.equal((await within('lane wrapper exits', mine.exited)).code, 128 + 15);
   });
 
   it('is idempotent, and an unknown or cleaned run is told apart', () => {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, describe, it } from 'node:test';
-import { Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
+import { within, Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
 import { readHolder } from '../src/lockfile.ts';
 
 describe('daemon lock', () => {
@@ -20,7 +20,7 @@ describe('daemon lock', () => {
     const id = identityOf(holder.pid)!;
     write(id);
     const d = rig.startDaemon();
-    assert.equal((await d.exited).code, 3, d.stderr());
+    assert.equal((await within('serve exits', d.exited)).code, 3, d.stderr());
     assert.match(d.stderr(), /already running/);
     assert.deepEqual(readHolder(lockPath), id);
     await holder.kill();
@@ -39,10 +39,10 @@ describe('daemon lock', () => {
     });
     assert.deepEqual(mine, identityOf(d.child.pid!));
     const second = rig.startDaemon();
-    assert.equal((await second.exited).code, 3);
+    assert.equal((await within('second serve exits', second.exited)).code, 3);
     assert.ok(isAlive(mine), 'the first daemon must survive the refused second one');
     d.child.kill('SIGTERM');
-    assert.equal((await d.exited).code, 0);
+    assert.equal((await within('serve exits', d.exited)).code, 0);
     assert.equal(readHolder(lockPath), null, 'the lock file is removed on a clean stop');
   });
 
@@ -57,6 +57,6 @@ describe('daemon lock', () => {
     });
     assert.ok(isAlive(real), 'the innocent process whose pid the lock named must not be touched');
     d.child.kill('SIGTERM');
-    await d.exited;
+    await within('serve exits', d.exited);
   });
 });

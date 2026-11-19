@@ -2,7 +2,7 @@
 // Real daemon, real processes, short grace; every time is read from the state file's own graceEndsAt.
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
+import { within, Rig, identityOf, isAlive, waitFor } from './lib/rig.ts';
 import { readStat, sleep } from '../src/proc.ts';
 import { withState } from '../src/state.ts';
 
@@ -38,7 +38,7 @@ describe('grace period', () => {
     await waitFor('the lane to be killed', () => !isAlive(id), 15_000);
     assert.ok(Date.now() >= ends, 'the lane was killed before the grace ended');
     await waitFor('run g1 marked cleaned', () => rig.run('g1')?.state === 'cleaned');
-    const exit = await lane.exited;
+    const exit = await within('lane wrapper exits', lane.exited);
     assert.equal(exit.code, 128 + 15, 'the exec wrapper reports the lane killed by SIGTERM');
   });
 
