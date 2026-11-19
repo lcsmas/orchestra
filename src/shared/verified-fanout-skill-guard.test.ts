@@ -81,7 +81,7 @@ test('the guard-script claims of the skill text hold against master\'s role-guar
   assert.ok(m.some((c) => c[3] === 0) && m.some((c) => c[3] === 2) && m.length === 56, `${m.length} probes, both outcomes present`);
   assert.deepEqual(drift(ROLE_GUARD_SCRIPT), []);
   // the text still states what is probed
-  for (const re of [/gh pr merge` and workspace delete\/archive to every role but the coordinator/, /a check chained with a destructive act in ONE command/, /a push of master\/main to an implementer/, /inert/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  for (const re of [/gh pr merge` and workspace delete\/archive to every role but the coordinator/, /a check[\s\S]*chained with a destructive act[\s\S]*in ONE command/, /a push of master\/main to an implementer/, /inert/]) assert.match(VERIFIED_FANOUT_SKILL, re);
 });
 
 test('must-FAIL: a guard with the chain rule or every Bash rule removed (or an always-allow script) is seen', () => {

@@ -114,14 +114,65 @@ test('frontmatter: the name is verified-fanout and the description is v1\'s, ver
   assert.match(fm[2], /^Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge\./);
 });
 
-test('the rules that moved each carry their pointer, and the install/precedence note is there', () => {
-  const need: Array<[string, RegExp]> = [
-    ['merge rule → deliver', /orchestra fanout deliver[\s\S]*--review-verdict/], ['resume', /orchestra fanout resume/], ['state file', /orchestra fanout state set/],
-    ['handoff', /orchestra handoff --summary-file/], ['role guard', /role guard/], ['scribe role', /`scribe-`/], ['the verbatim merge-rule sentence', /A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\s+MINOR that touches correctness or a ticket promise goes to the candidate's ONE\s+follow-up branch, every other finding is `noted`\./],
-    ['never chain check + destructive act', /TWO calls, never one/], ['reversible default', /REVERSIBLE default/], ['frozen interface', /--frozen-interface/],
-    ['precedence: personal wins', /A personal-level copy shadows it/], ['VPS install note', /VPS install:/],
-  ];
-  for (const [what, re] of need) assert.match(VERIFIED_FANOUT_SKILL, re, what);
+/** #472: one pin per rule that a verb or guard enforces — the rule's ONE line must name its verb/guard (and the refusal to act on). `\s+` spans a wrapped line. */
+export const RULE_PINS: ReadonlyArray<readonly [id: string, enforcedBy: string, re: RegExp]> = [
+  ['role = name prefix', '#465 roleOfName / .orchestra/role', /The role is the `--name` prefix the spawner gave/],
+  ['model + effort per role, scribe', '#465 roleSpec, spawn --model/--effort', /`scribe-` pins the cheap model at low\s+effort/],
+  ['tool limits = a guard, BLOCKED is the answer', '#468 role-guard.sh exit 2', /PreToolUse role guard\*\* \(exit 2, `\[orchestra\] BLOCKED \(role: …\): <reason>`\)[\s\S]*never to be routed around/],
+  ['AskUserQuestion denied, probe included', '#468 role guard', /denies `AskUserQuestion` to every role, even as a probe/],
+  ['verifier edits scratch only, implementer its own worktree', '#468 edit scope', /the verifier edits scratch only, an implementer its own\s+worktree/],
+  ['commit-class git acts outside a scratch clone', '#468 role guard + #465 bashDeny', /push to the verifier, reviewer, explorer and scribe, and commit, merge,\s+rebase and reset\s+outside a scratch clone/],
+  ['gh pr merge / delete / archive: coordinator only', '#468 role guard', /`gh pr merge` and workspace delete\/archive to every role but the coordinator/],
+  ['never chain a check and a destructive act', '#468 role guard chain rule', /Check and act are TWO\s+calls, never one: the role guard denies a check/],
+  ['handoff', '#466 orchestra handoff', /`orchestra handoff --summary-file <path>`[\s\S]*`handoff-unvouched`/],
+  ['state file, unknown field refused', '#469 fanout state', /`orchestra fanout state init --run <id> --target <branch>`[\s\S]*unknown field is\s+refused/],
+  ['resume a dead ops', '#469 fanout resume', /first act `orchestra fanout resume`/],
+  ['dependent track vs frozen interface', '#469 fanout state set --depends-on', /--depends-on\s+<upstream> --frozen-interface <ref>` lets it go `--status started`; `nominated`, `gated`\s+or `merged` is REFUSED/],
+  ['merge on 0 BLOCKING/0 MAJOR, head-pinned, CI steps>0', '#467 fanout deliver', /`orchestra fanout deliver --branch <b>[\s\S]*`review-blocking`, `head-moved`[\s\S]*`zero-steps`/],
+  ['one PR per ticket', '#467 fanout deliver', /one PR per\s+ticket: it opens or reuses/],
+  ['combined suite after N merges', '#467 deliver combinedSuite', /`deliver` prints `combinedSuite`/],
+  ['final report = worker_done --cap', 'host capability (#160)', /ONLY on its `worker_done` \(#160\)/],
+  ['no common ancestry: status/ask only; message refused', '#436/#441 CLI', /`orchestra message` is refused for every target/],
+  ['reversible default instead of asking (judgement line)', 'none — ledger decision', /take the REVERSIBLE default, apply it and write it in your ledger\s+comment/],
+];
+
+/** The ids of the rules whose pin no longer matches `text` (empty = every enforced rule is still named). */
+export const droppedRules = (text: string): string[] => RULE_PINS.filter(([, , re]) => !re.test(text)).map(([id]) => id);
+
+/** `text` with every line the pin's match touches deleted (a rule dropped from the skill). */
+function withoutRule(text: string, re: RegExp): string {
+  const m = re.exec(text)!;
+  const from = text.lastIndexOf('\n', m.index) + 1;
+  const to = text.indexOf('\n', m.index + m[0].length);
+  return text.slice(0, from) + text.slice(to === -1 ? text.length : to + 1);
+}
+
+test('each rule a verb or guard enforces keeps ONE line naming it (#472); the prose duplicates are gone', () => {
+  assert.deepEqual(droppedRules(VERIFIED_FANOUT_SKILL), []);
+  // the v2 pointer paragraphs of #470 are gone: no "In code (v2)" block, no "(v2: …)" aside restating a guard
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /In code \(v2\)|\(v2:/);
+  // the v1 prose of the AskUserQuestion bullet, the wave-C probe story and the simulated-cache numbers were replaced, not kept beside the line
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /placeholder question|SIMULATED cache|Why the count comes first/);
+  // the judgement rules stay as prose
+  for (const re of [/A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\s+MINOR that touches correctness or a ticket promise goes to the candidate's ONE\s+follow-up branch, every other finding is `noted`\./, /A personal-level copy shadows it/, /VPS install:/, /Specify gates that can fail/, /TEAM LEAD'S SYNTHESIS/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+});
+
+test('must-FAIL: deleting the line of any one enforced rule reddens exactly that rule\'s pin', () => {
+  for (const [id, , re] of RULE_PINS) {
+    const cut = withoutRule(VERIFIED_FANOUT_SKILL, re);
+    assert.notEqual(cut, VERIFIED_FANOUT_SKILL, `${id}: mutant anchor matches`);
+    assert.ok(droppedRules(cut).includes(id), `${id}: dropping its line is seen`);
+  }
+  // a verb renamed in place (the line stays, its enforcer is gone) is seen too
+  assert.ok(droppedRules(VERIFIED_FANOUT_SKILL.replace('orchestra handoff --summary-file', 'orchestra hand-off --summary-file')).includes('handoff'));
+});
+
+/** #472: the trimmed text must not drift back to v1's prose + a second "In code" channel. v1's SKILL.md is 40,690 bytes; v2 carries new verbs, so the budget is 45,000 B (v1 + 10.6 %; #470's text was 48,213 B = +18.5 %). */
+const SIZE_BUDGET = 45_000;
+test('size budget: the rendered text stays within 45,000 B (v1 40,690 B), and a padded text breaks it', () => {
+  const bytes = (t: string) => Buffer.byteLength(t, 'utf8');
+  assert.ok(bytes(VERIFIED_FANOUT_SKILL) <= SIZE_BUDGET, `${bytes(VERIFIED_FANOUT_SKILL)} B > ${SIZE_BUDGET} B`);
+  assert.ok(bytes(VERIFIED_FANOUT_SKILL + 'x'.repeat(SIZE_BUDGET)) > SIZE_BUDGET);
 });
 
 // ---- the role-guard summary in the text is the role table ---------------------------------------------------------------------------
@@ -145,7 +196,7 @@ export function roleClaimDrift(spec: (r: FleetRole) => ReturnType<typeof roleSpe
 }
 
 test('the "Roles are typed" claims match roleSpec(); a drifted table is seen', () => {
-  assert.match(VERIFIED_FANOUT_SKILL, /Edit\/Write to the coordinator, reviewer, explorer and scribe/);
+  assert.match(VERIFIED_FANOUT_SKILL, /Edit\/Write to the coordinator,\s+reviewer, explorer and scribe/);
   assert.deepEqual(roleClaimDrift((r) => roleSpec(r)), []);
   // must-FAIL: the verifier gaining Write, the reviewer allowed to push, a strong role pinning a model, scribe on a strong model
   const mut = (f: (s: ReturnType<typeof roleSpec>) => void) => (r: FleetRole) => { const x = roleSpec(r); f(x); return x; };
