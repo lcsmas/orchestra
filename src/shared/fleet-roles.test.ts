@@ -65,8 +65,9 @@ test('spawn defaults: no flag → the role pin; explicit flag wins per field; ro
 async function mutant(edit: (s: string) => string): Promise<typeof import('./fleet-roles.ts')> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-roles-mut-'));
   const src = fs.readFileSync(SRC, 'utf8');
-  const out = edit(src);
-  assert.notEqual(out, src, 'the mutant string was found in the live source (not a no-op)');
+  const edited = edit(src);
+  const out = edited.replace(/from '\.\/([a-z-]+\.ts)'/g, (_m, f) => `from '${pathToFileURL(path.join(path.dirname(SRC), f)).href}'`); // the copy lives in a scratch dir: absolutise its imports
+  assert.notEqual(edited, src, 'the mutant string was found in the live source (not a no-op)');
   const f = path.join(dir, 'fleet-roles.ts');
   fs.writeFileSync(f, out);
   return import(pathToFileURL(f).href);

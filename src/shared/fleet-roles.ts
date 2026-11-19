@@ -1,3 +1,6 @@
+import { EFFORT_LEVELS } from './effort-defaults.ts';
+import { isValidModelArg } from './model-defaults.ts';
+
 // Fleet roles (#465, verified-fanout v2 lever 1) — the ONE table of the role → model / effort / tool-policy, keyed by the `--name`
 // prefix (#382). Pure: no Electron, no node:*. Interface FROZEN in ledger #471 §Interfaces item 1; #468 (role guard) builds on it.
 // Strong roles pin NO model (the Settings default applies); only `scribe` (mechanical steps) pins Haiku.
@@ -77,8 +80,6 @@ export function roleSpec(role: FleetRole, overrides?: RoleConfig): RoleSpec {
 export type RoleConfig = Partial<Record<FleetRole, { model?: string; effort?: string }>>;
 
 const ROLE_KEYS = ['model', 'effort'] as const;
-const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
-const MODEL_RE = /^[A-Za-z0-9._:/[\]-]{1,64}$/;
 
 /** STRICT parse of the override file's JSON text (or an already-parsed object): `{ "<role>": { "model"?, "effort"? } }`.
  *  An unknown role, an unknown key, a wrong type or an invalid model / effort THROWS with a named error. A model of `"default"` or
@@ -100,12 +101,12 @@ export function parseRoleConfig(raw: unknown): RoleConfig {
       if (!(ROLE_KEYS as readonly string[]).includes(k)) throw new Error(`fleet-roles config: unknown key "${k}" in role "${roleKey}" (known: ${ROLE_KEYS.join(', ')})`);
       if (k === 'model') {
         if (v === null || v === 'default') slot.model = undefined;
-        else if (typeof v === 'string' && MODEL_RE.test(v)) slot.model = v;
+        else if (typeof v === 'string' && isValidModelArg(v)) slot.model = v;
         else throw new Error(`fleet-roles config: role "${roleKey}": invalid model ${JSON.stringify(v)}`);
       } else if (k === 'effort') {
         if (v === null || v === 'default') slot.effort = undefined;
-        else if (typeof v === 'string' && LEVELS.includes(v)) slot.effort = v;
-        else throw new Error(`fleet-roles config: role "${roleKey}": invalid effort ${JSON.stringify(v)} (one of ${LEVELS.join(', ')})`);
+        else if (typeof v === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v)) slot.effort = v;
+        else throw new Error(`fleet-roles config: role "${roleKey}": invalid effort ${JSON.stringify(v)} (one of ${EFFORT_LEVELS.join(', ')})`);
       }
     }
     out[roleKey as FleetRole] = slot;
