@@ -136,11 +136,11 @@ Scripts and the Claude Code events they fire on:
   denied only another workspace's worktree/scratch; the table's `bashDeny` (regex sources → ERE by `toEre`: newlines flattened to `;`,
   verb anchored at a command boundary, `merge` ≠ `merge-base`, `master|main` = the exact branch name, `git -C x` handled;
   lifted for the table's rules only when the command `cd`/`-C`s into scratch and does NOT push — a verifier rebases/resets in a scratch clone); plus this module's own rules: every non-coordinator role may not
-  `gh pr merge` nor `orchestra delete|archive`; and, for EVERY role, the **chain rule** — a check
+  `gh pr merge`, `orchestra delete|archive`, **`orchestra fanout deliver`** (#473: it merges through gh internally, invisible to the `gh pr merge` rule) nor `orchestra fanout state init|set` (the coordinator's one-writer state file); `fanout state show` / `fanout resume` stay allowed to every role (read / reconcile) — deny text points to the coordinator; and, for EVERY role, the **chain rule** — a check
   (`orchestra verify-landed`, `gh pr checks|view|status`, `gh run view|watch|list`, `git ls-remote|rev-list|cherry|merge-base --is-ancestor`)
   AND a destructive act (`gh pr merge`, force/delete push, `git branch -D`, `git worktree remove`,
   `orchestra delete|archive`) in ONE Bash command. Verbs are matched at a command boundary (`;&|({`,
-  newline, `$(`, then/do/else, `bash -c "`, after `command|exec|env|sudo`) so a quoted mention in a ticket comment passes; a heredoc line that STARTS with a verb
+  newline, `$(`, then/do/else, `bash -c "`, after `command|exec|env [-i] [A=1]|sudo`) so a quoted mention in a ticket comment passes; a heredoc line that STARTS with a verb
   still trips it (split the call). GNU `grep -E` (`\b`). Fail-open on any parse miss.
   **Follow-up (review #468 m1–m5):** for the non-implementer roles a HEURISTIC (not a sandbox — the deny text says
   so) also refuses Bash writes: `sed -i`, a redirect / `tee` target outside scratch (`/dev/null`, `$TMPDIR`,
@@ -156,8 +156,8 @@ Scripts and the Claude Code events they fire on:
   class, exit 0 per allowed class, the `|| true` must-FAIL arm, the script mutants that must each redden the
   matrix; its worktree root is NOT under `/tmp` because `/tmp` is scratch), `src/main/role-guard-wiring.test.ts`;
   real CLI: `pnpm run test:role-guard-cli` (`scripts/role-guard/e2e-role-guard-cli.mjs`: real `claude -p`
-  against the fake Anthropic API, scratch HOME/CLAUDE_CONFIG_DIR, 7 arms incl. an allowed control, a
-  no-sentinel control and the `|| true` must-FAIL; AskUserQuestion needs the SDK's stream-json +
+  against the fake Anthropic API, scratch HOME/CLAUDE_CONFIG_DIR, 15 arms incl. an allowed control, a
+  no-sentinel control, the `|| true` must-FAIL and the #473 `fanout deliver` arms (an `orchestra` shim that records it ran: denied ⇒ never ran); AskUserQuestion needs the SDK's stream-json +
   `--permission-prompt-tool stdio` mode — plain `-p` disables the tool).
 - **`home-root-guard.sh`** — PreToolUse, matcher
   `Bash|Edit|MultiEdit|Write|NotebookEdit`, every workspace. Script lives in

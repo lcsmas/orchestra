@@ -57,6 +57,10 @@ function matrix(): Array<[string, Role | null, (w: string) => object, 0 | 2]> {
   m.push(['implementer: push of its own branch allowed', 'implementer', () => bash('git push origin impl-x'), 0]);
   for (const r of NOT_COORD) m.push([`gh pr merge denied: ${r}`, r, () => bash('gh pr merge 1 --merge'), 2]);
   m.push(['gh pr merge allowed: coordinator', 'coordinator', () => bash('gh pr merge 1 --merge'), 0]);
+  for (const r of NOT_COORD) m.push([`orchestra fanout deliver denied (it merges, #473): ${r}`, r, () => bash('orchestra fanout deliver --branch b --into master --ticket 1'), 2]);
+  for (const r of NOT_COORD) { m.push([`orchestra fanout state set denied: ${r}`, r, () => bash('orchestra fanout state set T1 --status merged'), 2]); m.push([`orchestra fanout state show allowed: ${r}`, r, () => bash('orchestra fanout state show'), 0]); }
+  m.push(['orchestra fanout state set allowed: coordinator', 'coordinator', () => bash('orchestra fanout state set T1 --status merged'), 0]);
+  m.push(['orchestra fanout deliver allowed: coordinator', 'coordinator', () => bash('orchestra fanout deliver --branch b --into master --ticket 1'), 0]);
   for (const r of NOT_COORD) { m.push([`orchestra delete denied: ${r}`, r, () => bash('orchestra delete ws-9'), 2]); m.push([`orchestra archive denied: ${r}`, r, () => bash('orchestra archive ws-9'), 2]); }
   m.push(['orchestra delete allowed: coordinator', 'coordinator', () => bash('orchestra delete ws-9'), 0]);
   for (const r of ALL) m.push([`check chained with a destructive act in ONE command denied: ${r}`, r, () => bash('orchestra verify-landed ws-9 && orchestra delete ws-9'), 2]);
@@ -78,10 +82,10 @@ function drift(script: string): string[] {
 
 test('the guard-script claims of the skill text hold against master\'s role-guard.sh (each with an allow and a deny arm)', () => {
   const m = matrix();
-  assert.ok(m.some((c) => c[3] === 0) && m.some((c) => c[3] === 2) && m.length === 56, `${m.length} probes, both outcomes present`);
+  assert.ok(m.some((c) => c[3] === 0) && m.some((c) => c[3] === 2) && m.length === 73, `${m.length} probes, both outcomes present`);
   assert.deepEqual(drift(ROLE_GUARD_SCRIPT), []);
   // the text still states what is probed
-  for (const re of [/gh pr merge` and workspace delete\/archive to every role but the coordinator/, /a check chained with a destructive act in ONE command/, /a push of master\/main to an implementer/, /inert/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  for (const re of [/gh pr merge` and workspace delete\/archive to every role but the coordinator/, /a check[\s\S]*chained with a destructive act[\s\S]*in ONE command/, /a push of master\/main to an implementer/, /inert/, /`fanout state init\|set` to every role but the\s+coordinator/]) assert.match(VERIFIED_FANOUT_SKILL, re);
 });
 
 test('must-FAIL: a guard with the chain rule or every Bash rule removed (or an always-allow script) is seen', () => {

@@ -137,10 +137,10 @@ The CLI side of merging, store-less (only `gh`, behind the injectable `GhRunner`
   `wrong-base`, `pr-closed`, `merge-conflict`. Could-not-check (exit 1): gh failed, timeout (`--timeout`, default 1800 s), unreadable/ill-typed verdict, no verified head, a non-head `gh pr merge` failure.
 - **Check and act are ONE call**: the merge is `gh pr merge N --merge|--squash|--rebase --match-head-commit <verified head>`; GitHub compares the head inside the merge, so a push between the last
   check and the merge makes `gh` refuse (`classifyMergeFailure` → `head-moved`, exit 2). The verified head = `--verified-head` or the verdict's `head` (both given and different ⇒ refused).
-- Verdict file (frozen): `{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}`; strict parse, `minor` never refuses. Without `--review-verdict` the result says `reviewGated:false`.
+- Verdict file (frozen): `{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}`; strict parse, `minor` never refuses. **The review gate is mandatory (#473)**: no `--review-verdict` ⇒ refused (exit 2, `no-verdict`, before any gh call) unless the explicit `--no-review-gate` is given (then the result says `reviewGated:false`); both flags together is a usage error (exit 1). Role-guarded: only the coordinator may run `deliver` / `state init|set` (`hooks-cli-socket.md`).
 - Output: ONE JSON line on stdout (`verdict` merged|already-merged|refused|unchecked, `reason`, `pr`, `url`, `head`, `mergeCommit`, `combinedSuite`); progress on stderr. `combinedSuite` is the exact command the
   coordinator runs on the target after N merges (`git fetch … && git checkout --detach origin/INTO && … && <--suite-cmd, default pnpm run test>`); the verb never runs a repo suite.
-- Tests: `src/shared/fanout-deliver.test.ts` + `src/cli/fanout-deliver.test.ts` (fake gh that, like GitHub, refuses a merge whose `--match-head-commit` ≠ its head). Must-FAIL arms: zero-step green (single and mixed), moved head (before the check AND between check and merge), MAJOR/BLOCKING verdict.
+- Tests: `src/shared/fanout-deliver.test.ts` + `src/cli/fanout-deliver.test.ts` (fake gh that, like GitHub, refuses a merge whose `--match-head-commit` ≠ its head). Must-FAIL arms: zero-step green (single and mixed), moved head (before the check AND between check and merge), MAJOR/BLOCKING verdict, omitted verdict without `--no-review-gate`.
 
 ## Error handling
 Helpers swallow and return safe defaults (`[]`/`''`/`null`/all-false merge
