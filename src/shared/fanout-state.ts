@@ -176,8 +176,8 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ('dependsOn' in patch) next.dependsOn = depsOf(patch.dependsOn);
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
   if ('mergedAccepted' in patch) next.mergedAccepted = strOrNull(patch.mergedAccepted, 'mergedAccepted');
-  if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   if ('status' in patch) next.status = enumOf(patch.status, TICKET_STATUSES, 'status');
+  if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   if (next.dependsOn.includes(id)) throw new FanoutStateError(`ticket ${id} cannot depend on itself`);
   const out: FanoutState = { ...state, tickets: { ...state.tickets, [id]: next }, updatedAt: now };
   assertAcyclic(out);
