@@ -34,6 +34,7 @@ import {
   unknownRunRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
+import { runFanout } from './fanout-deliver.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
@@ -1577,6 +1578,15 @@ async function main(argv: string[]): Promise<void> {
             : '') +
           reparentSuffix(res).replace(/^\n/, ''),
       );
+      return;
+    }
+
+    case 'fanout': {
+      // #467/#469: the verified-fanout verbs; all logic in ./fanout-deliver.ts (runFanout dispatches the subcommand). Exit 0 merged · 2 refused · 1 could-not-check.
+      const r = await runFanout(args);
+      if (r.error !== undefined) fail(r.error);
+      if (r.stdout) process.stdout.write(r.stdout);
+      if (r.exit !== 0) exitWith(r.exit);
       return;
     }
 

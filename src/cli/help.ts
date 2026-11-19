@@ -459,6 +459,24 @@ Exit codes: 0 = landed, 2 = unmerged commits remain,
             1 = could not check (unknown id, no branch, …)`,
   },
 
+  {
+    name: 'fanout',
+    group: 'Structure',
+    summary: 'Verified-fanout verbs (deliver: one PR per ticket, merged at the verified head)',
+    detail: `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> [--review-verdict <file>] [--verified-head <sha>]
+                                [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
+                                [--suite-cmd <cmd>] [--repo <owner/name>]
+
+Open or reuse the PR <branch> → <target>, wait for CI, then merge with
+\`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
+Refuses on: 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
+the verdict file, a head that is not the verified head, a conflict. Prints ONE JSON
+line (verdict, reason, pr, head, combinedSuite = the command to run on <target>
+after N merges). Verdict file: {"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}.
+Exit codes: 0 = merged (or already merged at the verified head), 2 = refused,
+            1 = could not check (usage, gh failed, timeout, unreadable verdict)`,
+  },
+
   // ── Tickets ───────────────────────────────────────────────────────────
   {
     name: 'linear',

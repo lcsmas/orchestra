@@ -126,6 +126,22 @@ no `git:merge` IPC channel, no `mergeWorktree` preload wrapper, and no toolbar
 "Open PR" button (removed in #229; both only typed a prompt into the agent PTY).
 The toolbar's `PR #N` link button was removed with PR tracking (2026-10-26).
 
+## `orchestra fanout deliver` — one PR per ticket (#467, verified-fanout v2)
+The CLI side of merging, store-less (only `gh`, behind the injectable `GhRunner`; no socket). Pure decision
+`src/shared/fanout-deliver.ts` (`decideDelivery` → wait / refuse / merge / already-merged), I/O in `src/cli/fanout-deliver.ts` (`deliver`, `runFanout`).
+- Flow: `gh pr list --head B --base INTO` (reuse the OPEN PR, else `gh pr create`) → poll `gh pr view --json …statusCheckRollup` → for each passing Actions
+  check `gh run view <run> --json jobs` counts the job's non-skipped steps (a lookup failure is could-not-check, never "no steps") → decide.
+- Steps = non-skipped, `success` steps of the job that are not runner bookkeeping (`isUserStep`: not "Set up job"/"Complete job"/"Post …", which every real job has). A merge also needs the check-name set unchanged across two polls (a fast status can register before the real workflow) and every `--require-check <name>` present (waits `--no-checks-grace`, then `no-checks`). A MERGED PR is reused only at the verified head.
+- Refuses (exit 2): `zero-steps` (a passing check with 0 steps, or nothing actually passed), `no-checks` (0 checks after `--no-checks-grace`, default 120 s),
+  `ci-red`, `review-blocking` (verdict BLOCKING/MAJOR > 0), `verdict-head-mismatch`, `head-moved` (PR head ≠ verified head — also a merged PR at another head),
+  `wrong-base`, `pr-closed`, `merge-conflict`. Could-not-check (exit 1): gh failed, timeout (`--timeout`, default 1800 s), unreadable/ill-typed verdict, no verified head, a non-head `gh pr merge` failure.
+- **Check and act are ONE call**: the merge is `gh pr merge N --merge|--squash|--rebase --match-head-commit <verified head>`; GitHub compares the head inside the merge, so a push between the last
+  check and the merge makes `gh` refuse (`classifyMergeFailure` → `head-moved`, exit 2). The verified head = `--verified-head` or the verdict's `head` (both given and different ⇒ refused).
+- Verdict file (frozen): `{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}`; strict parse, `minor` never refuses. Without `--review-verdict` the result says `reviewGated:false`.
+- Output: ONE JSON line on stdout (`verdict` merged|already-merged|refused|unchecked, `reason`, `pr`, `url`, `head`, `mergeCommit`, `combinedSuite`); progress on stderr. `combinedSuite` is the exact command the
+  coordinator runs on the target after N merges (`git fetch … && git checkout --detach origin/INTO && … && <--suite-cmd, default pnpm run test>`); the verb never runs a repo suite.
+- Tests: `src/shared/fanout-deliver.test.ts` + `src/cli/fanout-deliver.test.ts` (fake gh that, like GitHub, refuses a merge whose `--match-head-commit` ≠ its head). Must-FAIL arms: zero-step green (single and mixed), moved head (before the check AND between check and merge), MAJOR/BLOCKING verdict.
+
 ## Error handling
 Helpers swallow and return safe defaults (`[]`/`''`/`null`/all-false merge
 state). User-facing errors (branch-switch collision) are re-thrown with a
