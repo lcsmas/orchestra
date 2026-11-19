@@ -274,6 +274,22 @@ ship with the repo:
   [hooks-cli-socket.md](hooks-cli-socket.md)).
 - **codebase-map** — this index.
 
+### The bundled `verified-fanout` v2 skill (#470, verified-fanout v2 ledger #471)
+Not a file of this repo's `.claude/skills/`: its text is `src/shared/verified-fanout-skill.ts` (`VERIFIED_FANOUT_SKILL`, `¤` = backtick), written by `installOrchestraHooks`
+(`writeSkill(VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_SKILL)` beside the `orchestra-*` ones; the text is in the `HOOKS_VERSION` hash, so an edit reinstalls once;
+nothing evicted) into `<worktree>/.claude/skills/verified-fanout/SKILL.md`. It is the frozen v1 (`verified-fanout-v1-prose`, never modified) with each rule that moved to
+code replaced by a pointer to its verb/guard (`fanout deliver|state|resume`, `handoff`, the role guard, the `scribe-` role); `docs/evidence/470-v1-vs-v2.diff` is the
+full-context `diff -u` (regenerate: `scripts/verified-fanout-v1-vs-v2-diff.mjs <v1 SKILL.md>`). v1's `references/` and `scripts/` are NOT copied: SKILL.md points at them and stays complete without.
+- **Precedence (D3, MEASURED).** Claude Code 2.1.325, the real CLI against the local fake API (`scripts/skill-precedence/measure-skill-precedence.mjs`, scratch HOME + config dir, positive
+  controls personal-only / project-only, then both; 3 runs, same verdict, `docs/evidence/470-skill-precedence.jsonl`; the `claude` on PATH, version recorded in each line): with a personal `<config dir>/skills/verified-fanout` AND the worktree's `.claude/skills/verified-fanout`, the
+  **personal one is listed and loaded; the worktree one is not**. So v2 applies on a machine with NO personal copy (the benchmark VPS) and never shadows a personal v1.
+- **VPS install.** Install an Orchestra AppImage release that contains this change (a release is the owner's call, ledger D5); any worktree install (a spawn) writes the skill. No personal
+  `verified-fanout` there ⇒ nothing shadows it. To read v2 on a machine that has a personal copy, look in the worktree file; to make v2 load there, move the personal copy aside (never done by the app).
+- Tests: `src/shared/verified-fanout-skill.test.ts` — every `orchestra <verb> [sub] [--flag]` span of the text must exist in `COMMANDS` (the CLI's own help; must-FAIL: fake verb, the deleted
+  `orchestra link`, fake sub-verb, fake flag), the diff artifact rebuilds BOTH sides (v2 == the module, v1 == sha256 of the frozen file), the `workspaces.ts` wiring pin (import / `writeSkill` /
+  `HOOKS_VERSION` / not in `RETIRED_SKILLS`, each with a must-FAIL), and the REAL `installOrchestraHooks` through `scripts/e2e-verified-fanout-skill-install.mjs` (lands in a fresh worktree,
+  rewritten on a spawn after an upgrade, the `orchestra-*` skills untouched, a same-version install is a no-op).
+
 ## Storage / .gitignore
 Build outputs (`dist/`, `dist-electron/`, `release/`, `.vite/`), `node_modules/`,
 `*.log`, and user `.claude/*` (except `skills/`) and `.planning/` are ignored.

@@ -673,7 +673,7 @@ suffixed it → the target decides). One last look after the run catches a child
 `installOrchestraHooks(worktreePath)` — `workspaces.ts:2156`. Idempotent via a
 `HOOKS_VERSION` stamp hashing every script body + command. Writes the shell
 scripts to `<worktree>/.orchestra/` (temp file + `rename()`, so a running hook
-keeps its inode) and 7 capability skills (the 7th, `orchestra-browser`, is `src/shared/browser-skill.ts`, #399) to
+keeps its inode) and 7 capability skills (the 7th, `orchestra-browser`, is `src/shared/browser-skill.ts`, #399; `verified-fanout` v2 is `src/shared/verified-fanout-skill.ts`, #470 — see build-release.md) to
 `<worktree>/.claude/skills/`, then merges hook commands into
 `settings.local.json` and evicts deprecated ones. Full detail (events, scripts,
 env-guarding) in [hooks-cli-socket.md](hooks-cli-socket.md).
