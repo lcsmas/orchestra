@@ -263,7 +263,7 @@ _Avoid_: branch name (an implementation detail), label, title
 
 **Rôle** (role):
 What a spawned agent is there to do, the first word of its name: `ops`,
-`impl`, `verif`, `review`, or `explo` (research, spike).
+`impl`, `verif`, `review`, `explo` (research, spike), or `scribe` (mechanical steps: ledger writes, polling; Haiku).
 _Avoid_: kind, type
 
 **Default model**:

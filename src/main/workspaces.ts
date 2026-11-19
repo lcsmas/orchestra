@@ -1436,7 +1436,7 @@ function spawnedModelBriefLine(spawned: string): string {
   const what =
     spawned === ACCOUNT_DEFAULT_MODEL ? "the account's default model" : `\`${spawned}\``;
   return (
-    `Children are spawned on ${what} — the user's spawned-agent default, applied when you pass no "model" param, so simply omit it. ` +
+    `Children are spawned on ${what} — the user's spawned-agent default, applied when you pass no "model" param (a "scribe-" name takes its role's Haiku instead), so simply omit it. ` +
     'To override, pass a full wire id (short versioned aliases like `opus-4-8` are rejected).'
   );
 }
@@ -3617,7 +3617,7 @@ Optional flags:
 - \`--base <branch>\` — cut the new branch from a specific base.
 - \`--model <model>\` — pin the new agent to a model (an alias like \`haiku\`/
   \`sonnet\`/\`opus\` or a full model id). **Omitting it pins the child to the
-  user's spawned-agent default model** (Orchestra's Default models settings).
+  user's spawned-agent default model** (Orchestra's Default models settings) — except a \`scribe-\` name, whose role pins \`claude-haiku-5-5\` + effort low.
   Short versioned forms like \`opus-4-8\` are rejected — override with a full
   wire id. Do NOT downgrade implementation workers on your own
   initiative to economize — that trade-off is the user's call, not yours.
