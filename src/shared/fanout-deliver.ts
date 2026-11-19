@@ -107,6 +107,9 @@ export function decideDelivery(i: DecideInput): Decision {
     if (pr.headRefOid !== i.verifiedHead) {
       return { action: 'refuse', reason: 'head-moved', detail: `PR was merged at ${short(pr.headRefOid)}, verified head is ${short(i.verifiedHead)}` };
     }
+    if (verdict && (verdict.blocking > 0 || verdict.major > 0)) {
+      return { action: 'refuse', reason: 'review-blocking', detail: `PR already merged, but review round ${verdict.round} has ${verdict.blocking} BLOCKING / ${verdict.major} MAJOR` };
+    }
     return { action: 'already-merged' };
   }
   if (pr.state === 'CLOSED') return { action: 'refuse', reason: 'pr-closed', detail: 'the PR is closed (not merged)' };
@@ -153,8 +156,13 @@ export function decideDelivery(i: DecideInput): Decision {
   const succeeded = checks.filter((c) => c.state === 'success');
   const empty = succeeded.filter((c) => c.steps === 0);
   if (empty.length > 0) return { action: 'refuse', reason: 'zero-steps', detail: `green with 0 steps: ${empty.map((c) => c.name).join(', ')}` };
-  if (!succeeded.some((c) => c.steps === null || c.steps > 0)) {
-    return { action: 'refuse', reason: 'zero-steps', detail: 'no check actually passed (all skipped/neutral)' };
+  // A REQUIRED check must have actually run: skipped/neutral is "ran nothing", the green this rule exists to refuse.
+  const required = i.requiredChecks ?? [];
+  const notRun = checks.filter((c) => required.includes(c.name) && c.state !== 'success');
+  if (notRun.length > 0) return { action: 'refuse', reason: 'zero-steps', detail: `required check(s) skipped/neutral, never ran: ${notRun.map((c) => c.name).join(', ')}` };
+  // Without --require-check, green needs ≥1 check with COUNTED steps: an external status / non-Actions check (steps null) alone proves nothing ran.
+  if (required.length === 0 && !succeeded.some((c) => c.steps !== null && c.steps > 0)) {
+    return { action: 'refuse', reason: 'zero-steps', detail: 'no Actions check with counted steps passed (all skipped/neutral/external) — name external CI with --require-check' };
   }
   return { action: 'merge', head: i.verifiedHead };
 }

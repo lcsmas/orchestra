@@ -93,6 +93,24 @@ test('isUserStep: runner bookkeeping steps are not work', () => {
   assert.equal(isUserStep('Run tests'), true);
 });
 
+test('MUST-FAIL: a REQUIRED check that was skipped/neutral refuses even beside a green check', () => {
+  const d = decideDelivery(input({ checks: [{ name: 'test', state: 'neutral', steps: null }, ok('lint', 3)], requiredChecks: ['test'] }));
+  assert.equal((d as { reason: string }).reason, 'zero-steps');
+  assert.match((d as { detail: string }).detail, /test/);
+});
+
+test('MUST-FAIL: external status alone (steps null) is not green without --require-check; with it, it is', () => {
+  const checks: DeliverCheck[] = [{ name: 'ci', state: 'neutral', steps: null }, { name: 'codecov', state: 'success', steps: null }];
+  assert.equal((decideDelivery(input({ checks })) as { reason: string }).reason, 'zero-steps');
+  assert.equal(decideDelivery(input({ checks: [{ name: 'circleci', state: 'success', steps: null }], requiredChecks: ['circleci'] })).action, 'merge');
+});
+
+test('MUST-FAIL: already merged + MAJOR in the verdict is refused, not exit-0 green', () => {
+  const pr = { state: 'MERGED' as const, baseRefName: 'bench/x', headRefOid: H, mergeable: 'UNKNOWN' };
+  const d = decideDelivery(input({ pr, verdict: { round: 1, blocking: 0, major: 1, minor: 0, head: H } }));
+  assert.equal((d as { reason: string }).reason, 'review-blocking');
+});
+
 test('red CI refuses, pending waits, wrong base / closed / conflict refuse', () => {
   assert.equal((decideDelivery(input({ checks: [ok(), { name: 'lint', state: 'failure', steps: null }] })) as { reason: string }).reason, 'ci-red');
   assert.equal(decideDelivery(input({ checks: [ok(), { name: 'slow', state: 'pending', steps: null }] })).action, 'wait');

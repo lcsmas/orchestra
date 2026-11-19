@@ -259,13 +259,17 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
           }
           return done({ verdict: 'unchecked', reason: 'merge-failed', detail: `gh pr merge failed (exit ${m.code}): ${m.stderr.trim().slice(0, 400)}`, ...prInfo, head: d.head }, reviewGated);
         }
-        let mergeCommit: string | undefined;
+        // Read it back: exit 0 can mean "queued" (merge queue / auto-merge), which is not merged. Unknown state ⇒ could-not-check, never "merged".
+        let after: { state?: string; mergeCommit?: { oid?: string } | null };
         try {
-          const after = JSON.parse(await ghOk(['pr', 'view', prId, '--json', 'state,mergeCommit'])) as { state?: string; mergeCommit?: { oid?: string } | null };
-          mergeCommit = after.mergeCommit?.oid ?? undefined;
-        } catch {
-          // best effort: the merge itself already succeeded
+          after = JSON.parse(await ghOk(['pr', 'view', prId, '--json', 'state,mergeCommit']));
+        } catch (e) {
+          return done({ verdict: 'unchecked', reason: 'merge-failed', detail: `gh pr merge exited 0 but the PR state could not be read back: ${(e as Error).message}`, ...prInfo, head: d.head }, reviewGated);
         }
+        if (after.state !== 'MERGED') {
+          return done({ verdict: 'unchecked', reason: 'merge-failed', detail: `gh pr merge exited 0 but the PR is ${after.state ?? 'in an unknown state'} (merge queue / auto-merge?), not MERGED`, ...prInfo, head: d.head }, reviewGated);
+        }
+        const mergeCommit = after.mergeCommit?.oid ?? undefined;
         return done({ verdict: 'merged', ...prInfo, head: d.head, ...(mergeCommit ? { mergeCommit } : {}) }, reviewGated);
       }
       if (deps.now() - t0 + opts.intervalMs > opts.timeoutMs) {

@@ -15,6 +15,8 @@ interface FakeOpts {
   views: { state?: string; base?: string; head?: string; mergeable?: string; checks: Check[] }[];
   existing?: { number: number; url: string; state: string }[];
   steps?: number;
+  /** State `pr view` reports AFTER a merge call exited 0 (default MERGED; OPEN = merge queue). */
+  stateAfterMerge?: string;
   /** The head GitHub holds at MERGE time (a push after the last view). Default: the last view's head. */
   headAtMerge?: string;
   runViewFails?: boolean;
@@ -33,7 +35,7 @@ function fakeGh(o: FakeOpts) {
     if (a === 'pr' && b === 'list') return ok(JSON.stringify(o.existing ?? []));
     if (a === 'pr' && b === 'create') return ok('https://github.com/o/r/pull/42\n');
     if (a === 'pr' && b === 'view') {
-      if (args.includes('state,mergeCommit')) return ok(JSON.stringify({ state: 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } }));
+      if (args.includes('state,mergeCommit')) return ok(JSON.stringify({ state: o.stateAfterMerge ?? 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } }));
       const v = o.views[Math.min(viewN++, o.views.length - 1)];
       return ok(JSON.stringify({ state: v.state ?? 'OPEN', baseRefName: v.base ?? 'bench/x', headRefOid: v.head ?? H, mergeable: v.mergeable ?? 'MERGEABLE', statusCheckRollup: v.checks }));
     }
@@ -214,6 +216,23 @@ test('COULD-NOT-CHECK (exit 1, never 2): gh failing, unreadable steps, bad/unrea
   await unchecked(deliver(opts({ verifiedHead: undefined }), deps(fakeGh({ views: [{ checks: [green()] }] }).gh).d), 'no-verified-head');
   await unchecked(deliver(opts({ timeoutMs: 25_000 }), deps(fakeGh({ views: [{ checks: [pending()] }] }).gh).d), 'timeout');
   await unchecked(deliver(opts(), deps(fakeGh({ views: [{ checks: [green()] }], mergeStderr: 'GraphQL: Required status check is expected' }).gh).d), 'merge-failed');
+});
+
+test('MUST-FAIL: merge exit 0 but the PR is still OPEN (merge queue) is could-not-check, never "merged"', async () => {
+  const f = fakeGh({ views: [{ checks: [green()] }], stateAfterMerge: 'OPEN' });
+  const r = await deliver(opts(), deps(f.gh).d);
+  assert.equal(r.exit, 1);
+  assert.equal(r.result.verdict, 'unchecked');
+  assert.equal(r.result.reason, 'merge-failed');
+});
+
+test('MUST-FAIL: a required check that is skipped refuses end to end, no merge', async () => {
+  const skipped: Check = { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SKIPPED', detailsUrl: RUN_URL };
+  const f = fakeGh({ views: [{ checks: [skipped, green()] }] });
+  const r = await deliver(opts({ requireChecks: ['test'] }), deps(f.gh).d);
+  assert.equal(r.exit, 2);
+  assert.equal(r.result.reason, 'zero-steps');
+  assert.equal(f.merges().length, 0);
 });
 
 test('already merged at the verified head → exit 0, no merge call', async () => {
