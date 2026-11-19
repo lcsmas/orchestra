@@ -1,6 +1,6 @@
 --- v1/verified-fanout/SKILL.md
 +++ v2/src/shared/verified-fanout-skill.ts (rendered)
-@@ -1,649 +1,324 @@
+@@ -1,649 +1,323 @@
  ---
  name: verified-fanout
  description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
@@ -33,16 +33,15 @@
 +  default applies), `scribe-` pins the cheap model at low effort; `--model` / `--effort`
 +  on `orchestra spawn` win; `<ORCHESTRA_HOME>/fleet-roles.json` overrides (`orchestra help spawn`;
 +  an unknown key or role is refused). A `scribe-` gets only judgement-free steps; gating, review and design stay strong.
-+- **Scribe jobs — a CLUSTER (≥2 calls) goes to a scribe; a lone call you run yourself** (#476: the OPS is the largest
-+  cache-read seat, 35%, yet these are ~7% of the fleet's, and 52% of ALL cache-read is the static prefix: keep this file small,
-+  `orchestra handoff` late, §0a). One nested `orchestra spawn --name scribe-<object> --task "<body text or absolute path,
-+  run id, fixed commands, ledger #N>"` per cluster (a scribe's TMPDIR is not yours); it ends with `worker_done --cap`, then you delete it:
-+  - `scribe-ledger` — ledger writes: `gh issue comment|edit --body-file`, `scripts/ledger-set`.
-+  - `scribe-state` — `orchestra fanout state set --run <id>` relays of a verdict you already read (`--accept-merged` is denied to it).
-+  - `scribe-ci` — `gh pr checks --watch` / `gh run watch` to the final line; you run `deliver` after.
-+  - `scribe-sweep` — the §5 range + porcelain + `orchestra peers` greps, output verbatim.
++- **A scribe only for a multi-turn mechanical loop with NO judgement; a single call or write you run yourself** (delegating
++  one call costs the same turns plus a session; `fanout deliver` already absorbs CI polling). #476: the OPS holds 35% of cache-read but
++  these loops ~7% of the fleet's; 52% is the static prefix: keep this file small, `orchestra handoff` late, §0a. One nested `orchestra spawn --name scribe-<object> --task "<body text or absolute path,
++  run id, fixed commands, ledger #N>"` per loop; it ends with `worker_done --cap`, then you delete it:
++  - `scribe-sweep` — the §5 range + porcelain loop over every wave agent, then the `orchestra peers` grep, output verbatim.
++  - `scribe-state` — a batch of `orchestra fanout state set --run <id>` relays from verdicts you read (`--accept-merged` is denied to it).
++  - `scribe-ledger` — a batch of `scripts/ledger-set` rows or `gh issue comment --body-file` writes from files you prepared.
 +
-+  You keep decisions, dispositions, merges and fleet mail.
++  You keep decisions, merges, fleet mail.
 +- **Tool limits — the PreToolUse role guard** (exit 2, `[orchestra] BLOCKED (role: …): <reason>`)
 +  denies `AskUserQuestion` to every role, even as a probe; Edit/Write to the coordinator,
 +  reviewer, explorer and scribe (the verifier edits scratch only, an implementer its own

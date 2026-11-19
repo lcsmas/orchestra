@@ -92,6 +92,7 @@ test('#476: the relay is `state set` only — every OTHER role stays denied it, 
 });
 
 test('#476: the skill names each scribe job (the probed list and the text cannot drift)', () => {
-  for (const re of [/scribe-ledger/, /scribe-state/, /scribe-ci/, /scribe-sweep/]) assert.match(VERIFIED_FANOUT_SKILL, re);
-  for (const re of [/gh issue comment\|edit/, /fanout state set/, /gh pr checks/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  for (const re of [/scribe-ledger/, /scribe-state/, /scribe-sweep/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /scribe-ci/, '`fanout deliver` absorbs CI polling: not a scribe job (LEAD scope change)');
+  for (const re of [/gh issue comment --body-file/, /fanout state set/, /scripts\/ledger-set/]) assert.match(VERIFIED_FANOUT_SKILL, re);
 });
