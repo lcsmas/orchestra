@@ -109,7 +109,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed';
+  reason?: RefuseReason | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args';
   detail?: string;
   ticket: string;
   branch: string;
@@ -165,6 +165,9 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
     return r.stdout;
   };
 
+  if (!SAFE_REF.test(opts.into) || !SAFE_REF.test(opts.branch)) {
+    return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-args', detail: 'unsafe --into/--branch', ...base, reviewGated: false } };
+  }
   // 1. The verified head and the (optional) review verdict.
   let verdict: ReviewVerdict | undefined;
   if (opts.reviewVerdict) {

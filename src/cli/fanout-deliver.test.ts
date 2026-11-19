@@ -20,6 +20,10 @@ interface FakeOpts {
   /** The head GitHub holds at MERGE time (a push after the last view). Default: the last view's head. */
   headAtMerge?: string;
   runViewFails?: boolean;
+  /** Several jobs in ONE run: job id → steps the workflow ran (overrides `steps`). */
+  jobs?: Record<number, number>;
+  /** `pr view --json state,mergeCommit` (the post-merge read-back) fails. */
+  readbackFails?: boolean;
   mergeStderr?: string;
 }
 
@@ -35,6 +39,7 @@ function fakeGh(o: FakeOpts) {
     if (a === 'pr' && b === 'list') return ok(JSON.stringify(o.existing ?? []));
     if (a === 'pr' && b === 'create') return ok('https://github.com/o/r/pull/42\n');
     if (a === 'pr' && b === 'view') {
+      if (args.includes('state,mergeCommit') && o.readbackFails) return { code: 1, stdout: '', stderr: 'HTTP 502' };
       if (args.includes('state,mergeCommit')) return ok(JSON.stringify({ state: o.stateAfterMerge ?? 'MERGED', mergeCommit: { oid: 'c'.repeat(40) } }));
       const v = o.views[Math.min(viewN++, o.views.length - 1)];
       return ok(JSON.stringify({ state: v.state ?? 'OPEN', baseRefName: v.base ?? 'bench/x', headRefOid: v.head ?? H, mergeable: v.mergeable ?? 'MERGEABLE', statusCheckRollup: v.checks }));
@@ -42,13 +47,14 @@ function fakeGh(o: FakeOpts) {
     if (a === 'run' && b === 'view') {
       if (o.runViewFails) return { code: 1, stdout: '', stderr: 'HTTP 500' };
       // Like a real job: runner bookkeeping steps always exist; `o.steps` = steps the WORKFLOW ran.
-      const steps = [
+      const stepsOf = (n: number) => [
         { name: 'Set up job', conclusion: 'success' },
-        ...Array.from({ length: o.steps ?? 6 }, (_, k) => ({ name: `Run step ${k}`, conclusion: 'success' })),
+        ...Array.from({ length: n }, (_, k) => ({ name: `Run step ${k}`, conclusion: 'success' })),
         { name: 'Post Run actions/checkout', conclusion: 'success' },
         { name: 'Complete job', conclusion: 'success' },
       ];
-      return ok(JSON.stringify({ jobs: [{ databaseId: 901, steps }] }));
+      const jobs = o.jobs ?? { 901: o.steps ?? 6 };
+      return ok(JSON.stringify({ jobs: Object.entries(jobs).map(([id, n]) => ({ databaseId: Number(id), steps: stepsOf(n) })) }));
     }
     if (a === 'pr' && b === 'merge') {
       const want = args[args.indexOf('--match-head-commit') + 1];
@@ -235,11 +241,51 @@ test('MUST-FAIL: a required check that is skipped refuses end to end, no merge',
   assert.equal(f.merges().length, 0);
 });
 
+test('MUST-FAIL: two jobs of ONE run — a 0-step job must not inherit the other job\'s step count (cache keyed per job)', async () => {
+  const job = (id: number, name: string): Check => ({ __typename: 'CheckRun', name, status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: `https://github.com/o/r/actions/runs/900/job/${id}` });
+  const f = fakeGh({ views: [{ checks: [job(901, 'build'), job(902, 'test')] }], jobs: { 901: 6, 902: 0 } });
+  const r = await deliver(opts(), deps(f.gh).d);
+  assert.equal(r.exit, 2);
+  assert.equal(r.result.reason, 'zero-steps');
+  assert.match(r.result.detail ?? '', /test/);
+  assert.equal(f.merges().length, 0);
+  // control: both jobs real ⇒ merges
+  const g = fakeGh({ views: [{ checks: [job(901, 'build'), job(902, 'test')] }], jobs: { 901: 6, 902: 3 } });
+  assert.equal((await deliver(opts(), deps(g.gh).d)).exit, 0);
+});
+
+test('--strategy squash / rebase reach the `pr merge` argv (default is --merge)', async () => {
+  for (const strategy of ['squash', 'rebase', 'merge'] as const) {
+    const f = fakeGh({ views: [{ checks: [green()] }] });
+    await deliver(opts({ strategy }), deps(f.gh).d);
+    assert.deepEqual(f.merges()[0], ['pr', 'merge', '42', `--${strategy}`, '--match-head-commit', H]);
+  }
+});
+
+test('MUST-FAIL: merge exit 0 but the read-back call fails ⇒ could-not-check, never "merged"', async () => {
+  const f = fakeGh({ views: [{ checks: [green()] }], readbackFails: true });
+  const r = await deliver(opts(), deps(f.gh).d);
+  assert.equal(r.exit, 1);
+  assert.equal(r.result.verdict, 'unchecked');
+  assert.equal(r.result.reason, 'merge-failed');
+});
+
+test('--into / --branch are validated at PARSE and again in deliver() (no throw out of done())', async () => {
+  assert.equal(parseDeliverArgs(['--branch', 'b', '--into', 'x;rm -rf', '--ticket', 't']).ok, false);
+  assert.equal(parseDeliverArgs(['--branch', 'b', '--into', '--delete-branch', '--ticket', 't']).ok, false);
+  const f = fakeGh({ views: [{ checks: [green()] }] });
+  const r = await deliver(opts({ into: 'x;rm -rf' }), deps(f.gh).d);
+  assert.equal(r.exit, 1);
+  assert.equal(r.result.reason, 'bad-args');
+  assert.equal(f.calls.length, 0);
+});
+
 test('already merged at the verified head → exit 0, no merge call', async () => {
   const f = fakeGh({ views: [{ state: 'MERGED', checks: [] }], existing: [{ number: 5, url: 'https://github.com/o/r/pull/5', state: 'MERGED', headRefOid: H } as never] });
   const r = await deliver(opts(), deps(f.gh).d);
   assert.equal(r.exit, 0);
   assert.equal(r.result.verdict, 'already-merged');
+  assert.match(r.result.combinedSuite ?? '', /^git fetch origin bench\/x && git checkout --detach origin\/bench\/x/);
   assert.equal(f.merges().length, 0);
 });
 
