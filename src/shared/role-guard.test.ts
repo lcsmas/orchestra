@@ -172,6 +172,26 @@ allow('coordinator', 'comment body with check + merge lines', bash("gh issue com
 deny('coordinator', 'a real chain AFTER a heredoc still trips', bash("cat <<'EOF' > $TMPDIR/x\nbody\nEOF\norchestra verify-landed a && orchestra delete b --yes"), /chained/);
 allow('reviewer', 'Write to a scratch file named a..b.txt', edit('Write', `${scratchDir}/a..b.txt`));
 
+// delta review #468: `>` inside quotes / arrows / [[ ]] is not a redirect; a quoted TARGET still is
+for (const role of ['coordinator', 'reviewer', 'verifier']) {
+  allow(role, 'gh --body "a -> b" (the ledger post itself)', bash('gh issue comment 471 --body "m1 -> fixed, x => y, count > 3"'));
+  allow(role, "awk '$1 > 5' | jq select(.n > 3)", bash("awk '$1 > 5' f | jq 'select(.n > 3)'"));
+  allow(role, 'node -e arrows and 1>0', bash('node -e "[1].map(x => x+1); console.log(1>0)"'));
+  allow(role, '[[ a > b ]]', bash('[[ $a > $b ]] && echo ok'));
+  allow(role, "git log --format='%h > %s'", bash("git log --format='%h > %s' -3"));
+  allow(role, 'unquoted ~ redirect into agent-tmp', bash('echo x > ~/.orchestra/agent-tmp/ws-1/x'));
+  deny(role, 'quoted redirect TARGET', bash('echo x > "src/a.ts"'), /shell write to 'src\/a\.ts'/);
+  deny(role, "single-quoted redirect TARGET", bash("echo x > 'src/a.ts'"), /shell write to 'src\/a\.ts'/);
+  deny(role, 'a quoted arrow AND a real redirect', bash('echo "a -> b" > src/a.ts'), /shell write/);
+}
+allow('coordinator', 'redirect into an auto-memory file', bash('cat > $HOME/.claude-mc/projects/-x/memory/a.md'));
+for (const role of ['verifier', 'reviewer', 'explorer', 'scribe']) {
+  allow(role, 'git branch -a --format=… (--format is not -f)', bash('git branch -a --format=%(refname)'));
+  deny(role, 'git branch -f', bash('git branch -f x y'), /rewrites the working tree/);
+  deny(role, '$((1<<n)) does not hide the next line', bash('echo $((1<<n))\ngit push origin master'), /fleet-roles table/);
+  deny(role, 'a here-string does not hide the next line', bash('cat <<<"x" > /dev/null\ngit commit -m x'), /fleet-roles table/);
+}
+
 function runMatrix(script: string, tag: string, firstOnly = false): string[] {
   const bad: string[] = [];
   for (const c of CASES) {
@@ -241,6 +261,9 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['chain rule needs only the destructive half', "&& chk '", "|| chk '"],
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
+    ['quoted > counts as a redirect', 'printf \'%s\' "$wcmd" | grep', 'printf \'%s\' "$cmd" | grep'],
+    ['here-strings open a heredoc', 'gsub(/<<</, "", c);', ''],
+    ['git branch --format reads as -f', 'branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))', 'branch[[:space:]]+[^;&|]*(-f|--force))'],
     ['heredoc bodies are scanned as commands', '| awk "$awk_prog" |', '| cat |'],
     ['redirect targets are never judged', 'for t in $targets; do', 'for t in ; do'],
     ['sed -i is allowed', "if chk '(^|", "if false && chk '(^|"],

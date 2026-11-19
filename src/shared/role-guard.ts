@@ -56,14 +56,14 @@ export function toEre(src: string): string {
 
 /** awk program dropping HEREDOC BODIES from a newline-split command: a body line is text, not a command (pre-review m3). The payload
  *  carries quotes as `\"`, hence the optional backslash before the delimiter's quote. */
-const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/, "", l); if (l == h) h=""; next } print; if (match($0, /<<-?[ \t]*\\*["']?[A-Za-z_][A-Za-z0-9_]*/)) { t=substr($0, RSTART, RLENGTH); sub(/<<-?[ \t]*\\*["']?/, "", t); h=t } }`;
+const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/, "", l); if (l == h) h=""; next } print; c=$0; gsub(/<<</, "", c); gsub(/\(\([^)]*\)\)/, "", c); if (match(c, /<<-?[ \t]*\\*["']?[A-Za-z_][A-Za-z0-9_]*/)) { t=substr(c, RSTART, RLENGTH); sub(/<<-?[ \t]*\\*["']?/, "", t); h=t } }`;
 
 /** The guard's own wiring (sentinel, script, hook settings) is never written by the role it constrains (pre-review m4). */
 const PROTECT_RE = `([0-9]?>>?|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod)|sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
 /** Cheap Bash write heuristics (pre-review m1): the edit tools are only one door; these close the obvious others for the read-only
  *  roles. Redirect/`tee` TARGETS are judged in bash (scratch allowed); `sed -i` and in-place git acts are denied outright. */
 const SED_I = `${B}sed[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*i[a-zA-Z]*|--in-place)([[:space:]=]|$)`;
-const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|restore|update-ref|checkout[[:space:]][^;&|]*[[:space:]]--([[:space:]]|$)|clean[[:space:]]+[^;&|]*-[a-zA-Z]*f|branch[[:space:]]+[^;&|]*(-f|--force))`;
+const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|restore|update-ref|checkout[[:space:]][^;&|]*[[:space:]]--([[:space:]]|$)|clean[[:space:]]+[^;&|]*-[a-zA-Z]*f|branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))`;
 
 interface Rule { re: string; why: string }
 
@@ -191,10 +191,12 @@ if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
   # Heuristic, not a sandbox: a redirect / tee target outside scratch, sed -i, in-place git acts. Write into $TMPDIR instead.
   if chk '${sq(SED_I)}'; then deny "sed -i edits files in place — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). Copy the file there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
   if [ "$write_guard" = git ] && chk '${sq(GIT_WRITE)}' && ! chk '${sq(`${GIT}[[:space:]]+${G}apply[[:space:]]+([^;&|]*[[:space:]])?--check`)}'; then deny "a git command that rewrites the working tree (apply/am/cherry-pick/revert/pull/restore/clean -f/checkout -- /branch -f/update-ref) — the $role role does not change the tree; do it in a scratch clone (cd into \$TMPDIR/…). (Heuristic: not every shell write is visible.)"; fi
-  targets="$(printf '%s' "$cmd" | grep -oE '[0-9]?>>?[[:space:]]*[^[:space:]&;|><()]+|(^|[;&|])[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^[:space:]&;|><()]+' | sed -E 's/^[;&|]?[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//; s/^[0-9]?>>?[[:space:]]*//; s/^\\\\?["'"'"']//; s/\\\\?["'"'"']$//')"
+  # Blank what is not a redirect: arrows (->, =>), [[ a > b ]], quoted strings (gh --body "a -> b", awk '$1>5'); a quoted TARGET is unquoted first.
+  wcmd="$(printf '%s' "$cmd" | sed -E 's/[-=]>/ /g; s/>[[:space:]]*\\\\"([^"\\\\ ]+)\\\\"/> \\1/g; s/>[[:space:]]*\\x27([^\\x27 ]+)\\x27/> \\1/g; s/\\[\\[[^]]*\\]\\]/ /g; s/\\\\"/\\x01/g; s/\\x01[^\\x01]*\\x01/""/g; s/\\x27[^\\x27]*\\x27/\\x27\\x27/g')"
+  targets="$(printf '%s' "$wcmd" | grep -oE '[0-9]?>>?[[:space:]]*[^[:space:]&;|><()]+|(^|[;&|])[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^[:space:]&;|><()]+' | sed -E 's/^[;&|]?[[:space:]]*tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//; s/^[0-9]?>>?[[:space:]]*//; s/^\\\\?["'"'"']//; s/\\\\?["'"'"']$//')"
   for t in $targets; do
     case "$t" in
-      /dev/null|/dev/stderr|/dev/stdout|/dev/fd/*|/tmp/*|/var/tmp/*|\\$TMPDIR/*|\\$\\{TMPDIR\\}/*|~/.orchestra/agent-tmp/*|~/.orchestra-dev/agent-tmp/*|\\$HOME/.orchestra/agent-tmp/*|"$HOME"/.orchestra/agent-tmp/*|"$HOME"/.orchestra-dev/agent-tmp/*|"\${TMPDIR:-/nonexistent}"/*|"\${ORCHESTRA_HOME:-/nonexistent}"/agent-tmp/*) ;;
+      /dev/null|/dev/stderr|/dev/stdout|/dev/fd/*|/tmp/*|/var/tmp/*|\\$TMPDIR/*|\\$\\{TMPDIR\\}/*|"~"/.orchestra/agent-tmp/*|"~"/.orchestra-dev/agent-tmp/*|"$HOME"/.claude*/projects/*/memory/*|\\$HOME/.claude*/projects/*/memory/*|"~"/.claude*/projects/*/memory/*|\\$HOME/.orchestra/agent-tmp/*|"$HOME"/.orchestra/agent-tmp/*|"$HOME"/.orchestra-dev/agent-tmp/*|"\${TMPDIR:-/nonexistent}"/*|"\${ORCHESTRA_HOME:-/nonexistent}"/agent-tmp/*) ;;
       *) deny "a shell write to '$t' — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/); redirect there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)" ;;
     esac
   done
