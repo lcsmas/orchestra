@@ -335,7 +335,7 @@ forwards it — #467's `deliver` is intercepted in that case and goes to `runDel
   `merged-at-ungated-head` (a gated/merged ticket whose pass/approve verdict covered another head than the merge) is NOT
   written back and withholds its dependents until the merged head is recorded after a re-gate. `mergedAccepted`
   (`state set <t> --accept-merged <reason>`, merged tickets only) is the one explicit override of a reality that contradicts
-  a `merged` state (stacked base later squash-landed). A failed git/gh read is `reality-unreadable`
+  a `merged` state (stacked base later squash-landed); to un-merge such a ticket clear it in the same call: `--json '{"mergedAccepted":null,"status":"…"}'`. A failed git/gh read is `reality-unreadable`
   (UNKNOWN), never "gone". Dependents are released by what REALITY confirms, so a false `merged` claim unblocks nobody.
   Write-back records only reality-AHEAD facts (merged; moved head + verdict reset); state-ahead claims stay reported.
   A write-back entry carries the ticket's `updatedAt` it was planned from and is skipped if the coordinator wrote since;
