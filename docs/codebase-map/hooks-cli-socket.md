@@ -354,7 +354,7 @@ no registry entry — adding a verb means adding its entry.
 ### `orchestra fanout state|resume` — the vague state file (#469, verified-fanout v2 lever 5)
 One state file per vague: `<ORCHESTRA_HOME>/fanout/<run>/state.json` (D4; `--run`, else the caller's OWN run = its workspace id — `resolveFanoutRun`, #486: `$ORCHESTRA_RUN_ID` is the PARENT's run
 until an OPS's first spawn, so it is only the default outside a workspace; `init` on an existing file names the collision + fix, a missing own
-set/show/resume fall back to the parent's run (stderr note) only when no state exists at the own run and one does at the parent's — a scribe/verifier's case; `init` never; a traversal-safe id). Pure logic in `src/shared/fanout-state.ts`; argv + the injectable git/gh `Runner` in
+show/resume fall back to the parent's run (stderr note) only when no state exists at the own run and one does at the parent's — a scribe/verifier's read; `init` never, and `set` is REFUSED there (an OPS that skipped `init` must not write the parent's state; a scribe passes `--run`); a traversal-safe id). Pure logic in `src/shared/fanout-state.ts`; argv + the injectable git/gh `Runner` in
 `src/cli/fanout-state.ts` (`runFanout` returns `{code,stdout,stderr}`; `index.ts` has ONE `case 'fanout'` line that
 forwards it — #467's `deliver` is intercepted in that case and goes to `runDeliver` (`fanout-deliver.ts`)). Direct-store verbs: no socket.
 - **Schema**: `FanoutState` (run, target, repo, tickets, updatedAt, reconciledAt) with per-ticket branch / pr /

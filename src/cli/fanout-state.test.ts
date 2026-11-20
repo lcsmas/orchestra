@@ -228,7 +228,7 @@ test('#486 `state init` on an existing file names the collision and the fix; ini
   assert.match(c.stderr, /state already exists at .*ops-ws-1.*earlier vague.*resume --run ops-ws-1.*init --run <new id>/s);
 });
 
-test('#486 a member with no run of its own (scribe/verifier) reads + updates the parent\'s state via set/show/resume, noted on stderr; once it has its own state that wins', (t) => {
+test('#486 a member with no run of its own (scribe/verifier) READS the parent\'s state via show/resume (stderr note) and updates it with an explicit --run; a bare set is refused; once it has its own state that wins', (t) => {
   const home = mkHome(t);
   const d = deps(home, noRunner, { env: OPS_ENV(home) });
   runFanout(['state', 'init', '--run', 'lead-run-1'], d);
@@ -236,7 +236,12 @@ test('#486 a member with no run of its own (scribe/verifier) reads + updates the
   assert.equal(show.code, 0);
   assert.match(show.stdout, /^run lead-run-1/);
   assert.match(show.stderr, /using your parent's run lead-run-1/);
-  assert.equal(runFanout(['state', 'set', 'A', '--status', 'started'], d).code, 0);
+  const bare = runFanout(['state', 'set', 'A', '--status', 'started'], d);
+  assert.equal(bare.code, 1);
+  assert.match(bare.stderr, /no fanout state for your own run ops-ws-1.*init.*--run lead-run-1/s);
+  assert.equal(runFanout(['state', 'show', '--run', 'lead-run-1', '--json'], d).code, 0);
+  assert.equal(JSON.parse(runFanout(['state', 'show', '--run', 'lead-run-1', '--json'], d).stdout).tickets.A, undefined, 'the refused set wrote nothing');
+  assert.equal(runFanout(['state', 'set', 'A', '--run', 'lead-run-1', '--status', 'started'], d).code, 0);
   assert.ok('A' in JSON.parse(runFanout(['state', 'show', '--run', 'lead-run-1', '--json'], d).stdout).tickets);
   const rs = runFanout(['resume', '--no-write', '--no-fetch'], deps(home, () => ({ code: 0, stdout: '', stderr: '' }), { env: OPS_ENV(home) }));
   assert.match(rs.stdout, /^resume lead-run-1/);
@@ -249,4 +254,25 @@ test('#486 a member with no run of its own (scribe/verifier) reads + updates the
   const own = runFanout(['state', 'show'], d);
   assert.match(own.stdout, /^run ops-ws-1/);
   assert.equal(own.stderr, '');
+});
+
+test('#486 built CLI: the parent-run note reaches stderr on rc 0 AND rc 2; a bare `set` is refused rc 1 and writes nothing', { skip: fs.existsSync(CLI) ? false : 'dist-electron/cli.js not built — run `pnpm run build:cli`' }, (t) => {
+  const home = mkHome(t);
+  const env = { PATH: process.env.PATH ?? '', ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'scribe-ws', ORCHESTRA_RUN_ID: 'lead-run-1' };
+  const cli = (...a: string[]) => spawnSync('node', [CLI, 'fanout', ...a], { env, encoding: 'utf8', cwd: home });
+  const NOTE = /using your parent's run lead-run-1/;
+  assert.equal(cli('state', 'init', '--run', 'lead-run-1').status, 0);
+  const show = cli('state', 'show');
+  assert.equal(show.status, 0);
+  assert.match(show.stdout, /^run lead-run-1/);
+  assert.match(show.stderr, NOTE);
+  const bare = cli('state', 'set', 'A', '--status', 'started');
+  assert.equal(bare.status, 1);
+  assert.match(bare.stderr, /no fanout state for your own run scribe-ws.*--run lead-run-1/s);
+  assert.equal(JSON.parse(cli('state', 'show', '--run', 'lead-run-1', '--json').stdout).tickets.A, undefined);
+  // rc 2 path: a merged ticket with no branch/PR recorded is a divergence (no git call needed)
+  assert.equal(cli('state', 'set', 'M', '--run', 'lead-run-1', '--status', 'merged').status, 0);
+  const res = cli('resume', '--no-fetch', '--no-write');
+  assert.equal(res.status, 2, res.stderr);
+  assert.match(res.stderr, NOTE);
 });

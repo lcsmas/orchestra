@@ -50,7 +50,7 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
-  --run defaults to YOUR OWN run (your workspace id; init always); set/show/resume use your parent's run only when you have no state and it does (#486).`;
+  --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
 interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
 
@@ -74,14 +74,18 @@ function parseArgs(args: string[], valueFlags: string[], boolFlags: string[]): P
 function homeOf(env: NodeJS.ProcessEnv): string {
   return env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
 }
-function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use'): { run: string; note: string } {
+function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use' | 'write'): { run: string; note: string } {
   const { run, inherited } = resolveFanoutRun(p.vals['--run'], deps.env);
   if (!run) throw new FanoutStateError('no run: pass --run <id> (not inside an Orchestra workspace, so no own run to default to)');
   // #486 — `init` is ALWAYS the caller's own run. A scribe/verifier/worker (no run of its own) reads/updates the coordinator's state: set/show/resume
   // fall back to the parent's run ONLY when no state exists at the own run and one does at the parent's — said on stderr, never for init.
-  if (mode === 'use' && inherited) {
+  // `set` (mode 'write') is refused there: an OPS that skipped `init` would write into its parent's state (#486 review MINOR 1) — a scribe passes --run.
+  if (mode !== 'init' && inherited) {
     const has = (r: string): boolean => { try { return readState(stateFile(homeOf(deps.env), r)) !== null; } catch { return false; } };
-    if (!has(run) && has(inherited)) return { run: inherited, note: `note: no fanout state for your own run ${run}; using your parent's run ${inherited} (pass --run to choose)\n` };
+    if (!has(run) && has(inherited)) {
+      if (mode === 'write') throw new FanoutStateError(`no fanout state for your own run ${run} — run \`orchestra fanout state init\` first; to update your parent's run ${inherited} (a scribe), pass --run ${inherited}`);
+      return { run: inherited, note: `note: no fanout state for your own run ${run}; using your parent's run ${inherited} (pass --run to choose)\n` };
+    }
   }
   return { run, note: '' };
 }
@@ -136,7 +140,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v;
     }
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
-    const r = runOf(p, deps, 'use');
+    const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
