@@ -36,6 +36,7 @@ async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect,
   fs.mkdirSync(path.join(wt, '.orchestra'), { recursive: true });
   fs.mkdirSync(path.join(wt, '.claude'), { recursive: true });
   fs.mkdirSync(cfg, { recursive: true });
+  fs.mkdirSync(path.join(home, 'scratch'), { recursive: true });
   spawnSync('git', ['init', '-q', wt]);
   spawnSync('git', ['-C', wt, '-c', 'user.email=a@b', '-c', 'user.name=x', 'commit', '-q', '--allow-empty', '-m', 'base']);
   fs.writeFileSync(path.join(wt, '.orchestra', 'role-guard.sh'), ROLE_GUARD_SCRIPT, { mode: 0o755 });
@@ -61,6 +62,7 @@ async function arm({ name, role, hookCmd = HOOK_ROLE_GUARD_CMD, toolUse, expect,
   const env = {
     PATH: shim ? `${binDir}:${process.env.PATH}` : process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: cfg, TERM: 'dumb',
     ANTHROPIC_BASE_URL: api.url, ANTHROPIC_API_KEY: 'sk-ant-fake-role-guard', HTTPS_PROXY: api.proxyUrl, HTTP_PROXY: api.proxyUrl, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost',
+    TMPDIR: path.join(home, 'scratch'), // the role's scratch (#475): $TMPDIR resolves here for the guard AND for the shell
     ORCHESTRA_WORKTREE: wt, ORCHESTRA_WS_ID: `rg-${name}`, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
   };
   const out = await new Promise((resolve) => {
@@ -110,6 +112,17 @@ await arm({ name: 'reviewer-grep-c-gt-allowed', role: 'reviewer', toolUse: { nam
 // delta review: a quoted arrow is NOT a redirect — the ledger post itself (`--body "a -> b"`) must reach the shell.
 await arm({ name: 'reviewer-quoted-arrow-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo "m1 -> fixed, count > 3"', description: 'probe' } },
   expect: (c) => ({ ok: /m1 -> fixed/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'echo with -> and > inside quotes ran, no BLOCKED' }) });
+// #475 (trial false positives): the REAL CLI relays the allow, and the sibling shape (a repo target) is still refused.
+await arm({ name: 'reviewer-escaped-quote-brief-allowed', role: 'reviewer', toolUse: { name: 'Bash', input: { command: 'echo "ack \\"<branch> @ <tip>, <x>\\" done"; echo brief-ran', description: 'probe' } },
+  expect: (c) => ({ ok: /brief-ran/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'angle-bracket text inside a quoted string with escaped quotes ran, no BLOCKED' }) });
+await arm({ name: 'verifier-scratch-var-write-allowed', role: 'verifier', toolUse: { name: 'Bash', input: { command: 'S=$TMPDIR/x; mkdir -p $S; echo scratch-ok > $S/out.txt; cd $S && echo rel-ok > rel.txt; cat out.txt rel.txt', description: 'probe' } },
+  expect: (c) => ({ ok: /scratch-ok/.test(c.resultText) && /rel-ok/.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'writes via $VAR and a relative path after cd $S ran, no BLOCKED' }) });
+await arm({ name: 'verifier-unresolved-var-write-denied', role: 'verifier', toolUse: { name: 'Bash', input: { command: 'S=$(echo .); echo leak > $S/leaked3.txt', description: 'probe' } },
+  expect: (c) => ({ ok: !exists(c.wt, 'leaked3.txt') && /shell write to '\$S\/leaked3\.txt'/.test(c.resultText), why: 'unresolvable VAR target refused, file NOT created' }) });
+await arm({ name: 'coordinator-sed-i-scratch-allowed', role: 'coordinator', toolUse: { name: 'Bash', input: { command: 'echo a > $TMPDIR/f.txt; sed -i s/a/b/ $TMPDIR/f.txt; cat $TMPDIR/f.txt', description: 'probe' } },
+  expect: (c) => ({ ok: /^b$/m.test(c.resultText) && !/BLOCKED/.test(c.resultText), why: 'sed -i on a scratch file ran (file now says b), no BLOCKED' }) });
+await arm({ name: 'coordinator-sed-i-repo-denied', role: 'coordinator', toolUse: { name: 'Bash', input: { command: 'echo a > code.ts; sed -i s/a/b/ code.ts', description: 'probe' } },
+  expect: (c) => ({ ok: !exists(c.wt, 'code.ts') && /sed -i edits files in place/.test(c.resultText), why: 'sed -i on a repo file refused, nothing ran (code.ts NOT created)' }) });
 // #473: `orchestra fanout deliver` (merges a PR via gh internally) is denied to a non-coordinator, REACHES the CLI, and the CLI never runs it.
 const DELIVER = 'orchestra fanout deliver --branch impl-x --into master --ticket 473';
 const deliverArm = (name, role, ok, why) => arm({ name, role, shim: true, toolUse: { name: 'Bash', input: { command: DELIVER, description: 'probe' } }, expect: (c) => ({ ok: ok(c), why }) });

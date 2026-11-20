@@ -205,7 +205,7 @@ for (const role of ['coordinator', 'reviewer', 'verifier']) {
   deny(role, 'ssh h "… > f"', bash('ssh h "cat > f"'), /shell write/);
   deny(role, 'tee "quoted target"', bash('echo x | tee "src/a.ts"'), /shell write to 'src\/a\.ts'/);
   deny(role, 'tee -a "f"', bash('echo x | tee -a "f"'), /shell write/);
-  deny(role, '> "path with a space"', bash('echo x > "src/my file.ts"'), /shell write to 'src\/my'/);
+  deny(role, '> "path with a space"', bash('echo x > "src/my file.ts"'), /shell write to 'src\/my file\.ts'/);
   deny(role, 'echo foo=>src/a.ts (a real redirect, not an arrow)', bash('echo foo=>src/a.ts'), /shell write to 'src\/a\.ts'/);
   deny(role, '>| clobber', bash('echo x >| f'), /shell write/);
   allow(role, 'bash -c writing into scratch', bash('bash -c "echo x > /var/tmp/q/f"'));
@@ -338,16 +338,16 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['fanout deliver rule removed', 'orchestra[[:space:]]+fanout[[:space:]]+deliver(', 'orchestra[[:space:]]+NOFANOUTVERB('],
     ['fanout state write rule removed', 'fanout[[:space:]]+state[[:space:]]+(init|set)', 'fanout[[:space:]]+state[[:space:]]+NOVERB'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
-    ['unquote after ANY -c (grep -c ">" reads as a redirect)', '(bash|sh|zsh|dash|ksh)', '(bash|sh|zsh|dash|ksh|grep|psql|python3?|rg)'],
-    ['shell wrappers are never unquoted (bash -c "… > f" invisible)', '(bash|sh|zsh|dash|ksh)', '(nomatchwrapper)'],
-    ['tee targets are not unquoted', 's/(tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)\\\\"([^"\\\\]+)\\\\"/\\1\\3/g;', ''],
-    ['arrow blank eats foo=>f', 's/[[:space:]][-=]>/ /g;', 's/[-=]>/ /g;'],
-    ['quoted > counts as a redirect', 'printf \'%s\' "$wcmd" | grep', 'printf \'%s\' "$cmd" | grep'],
+    ['unquote after ANY -c (grep -c ">" reads as a redirect)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh" || nm == "grep" || nm == "psql" || nm == "python3" || nm == "rg") code_operand'],
+    ['shell wrappers are never unquoted (bash -c "… > f" invisible)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh") nm = nm'],
+    ['tee targets are not judged', 'if (base == "tee") {', 'if (base == "tee") { return }\n  if (0) {'],
+    ['arrow blank eats foo=>f', '(P < 3 || ws(substr(S, P - 2, 1)))', '1'],
+    ['quoted > counts as a redirect', 'if (c == "\\"") { wq = 1; dqparse(); continue }', 'if (c == "\\"") { P++; continue }'],
     ['here-strings open a heredoc', 'gsub(/<<</, "", c);', ''],
     ['git branch --format reads as -f', 'branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))', 'branch[[:space:]]+[^;&|]*(-f|--force))'],
     ['heredoc bodies are scanned as commands', '| awk "$awk_prog" |', '| cat |'],
-    ['redirect targets are never judged', 'for t in $targets; do', 'for t in ; do'],
-    ['sed -i is allowed', "if chk '(^|", "if false && chk '(^|"],
+    ['redirect targets are never judged', 'judge("W", wd, wv)', 'wv = wv'],
+    ['sed -i is allowed', 'if (!inpl) return', 'return'],
     ['the guard wiring is editable', "*/.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)", "*/.orchestra/NEVER)"],
     ['the table\'s bashDeny rules are never evaluated', 'if ! { [ "$in_scratch" = 1 ] && [ "$i" -lt "$n_table" ]; } && chk', 'if false && chk'],
     ['scratch-clone exemption removed', 'then in_scratch=1; fi', 'then in_scratch=0; fi'],

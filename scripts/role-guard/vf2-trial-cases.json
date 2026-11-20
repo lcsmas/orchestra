@@ -1,0 +1,622 @@
+{
+ "_doc": "Verbatim role-guard refusals from the first real v2 trial (lcsmas/vf2-trial ledger #4; transcripts ~/.claude-vf2/projects/*/*.jsonl): Bash tool_use inputs whose tool_result starts 'PreToolUse:Bash hook error' and carries 'BLOCKED (role:'. `cases` = FALSE POSITIVES (expected allow after #475; deny on the pre-#475 guard). Each has must-DENY `siblings` (same shape; a prepended/replaced span makes the target a real repo path or an unresolvable variable). `byDesign` = check chained with force-push, denied BY DESIGN (control, not a false positive). cwd = the transcript entry's cwd (else the previous entry's); tmpdir = the scratch dir named in the deny text (= the hook env TMPDIR).",
+ "cases": [
+  {
+   "id": "vf2-01",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/0f230a3e-b933-4bf0-a72a-80e5f644d8ef.jsonl",
+   "ts": "2026-11-19T23:21:55.685Z",
+   "command": "sed -i 's/Dispdispositions/Dispositions/' \"$TMPDIR/ops/c3.md\" && gh api -X PATCH repos/lcsmas/vf2-trial/issues/comments/7025018825 -F body=@\"$TMPDIR/ops/c3.md\" -q .html_url 2>&1 | tail -1; git fetch origin -q; git ls-remote origin refs/heads/main | cut -c1-40",
+   "verbatimDeny": "sed -i edits files in place",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "D: sed -i on the role's own scratch file",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "sed -i on a repo file",
+     "replace": [
+      "\"$TMPDIR/ops/c3.md\"",
+      "src/a.ts"
+     ],
+     "expected": "deny",
+     "denyRe": "sed -i edits files in place"
+    },
+    {
+     "name": "sed -i on an unresolvable variable",
+     "replace": [
+      "\"$TMPDIR/ops/c3.md\"",
+      "\"$NOPE/c3.md\""
+     ],
+     "expected": "deny",
+     "denyRe": "sed -i edits files in place"
+    }
+   ]
+  },
+  {
+   "id": "vf2-02",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:06.728Z",
+   "command": "orchestra spawn --name impl-money-parse-format-1 --task \"You implement ticket #1 (A: money) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the frozen interface and edge-case defaults are Decisions D1 in the same ledger; they are FROZEN, do not change them. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/money.js (ESM named exports parseAmount, formatCents) + test/money.test.js exactly per issue #1 (gh issue view 1 -R lcsmas/vf2-trial) and ledger D1. Ticket B consumes these two signatures from another worktree right now — do not change a signature or an export name. Files you may touch: src/money.js, test/money.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 saying 'A nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. After your nomination comment, finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"A nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-03",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:13.783Z",
+   "command": "orchestra spawn --name impl-invoice-total-2 --task \"You implement ticket #2 (B: invoice) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); Decisions D1 (A's frozen signatures), D2 (your math) and D4 (how you start before A merges) are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/invoice.js (invoiceTotal) + test/invoice.test.js per issue #2 (gh issue view 2 -R lcsmas/vf2-trial) and ledger D2. You depend on ticket A (issue #1), being built in parallel by impl-money-parse-format-1: you start NOW against A's frozen signatures (ledger D1), not after it merges. Per D4: do NOT commit a src/money.js; create an untracked local stub src/money.js implementing D1 faithfully, add 'src/money.js' to .git/info/exclude (git rev-parse --git-path info/exclude), and import { parseAmount, formatCents } from './money.js' in src/invoice.js. Once A is merged on origin/main (poll: git fetch origin && git log origin/main -- src/money.js; the OPS also pings you), delete the stub, rebase on origin/main, re-run npm test against the REAL money.js, then nominate. Until A merges you may push checkpoints but you must NOT nominate. Files you may touch: src/invoice.js, test/invoice.test.js ONLY (committed). No dependencies; run tests with npm test. If A's real behaviour differs from D1 or an A change breaks your tests, post one line in ledger #4 (Open questions) and ping the OPS; never edit A's files.\nDONE = (after A merged) branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green with the real money.js, self-gate answers + one in-process pre-review (Agent tool), then ONE ledger comment on #4 in the Briefing report format, then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'B nominated: new comment on ledger #4'. Do not open a PR, merge, or push main. Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"B nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-04",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:18.323Z",
+   "command": "orchestra spawn --name impl-slugify-product-3 --task \"You implement ticket #3 (C: slug) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the edge-case defaults are Decisions D3 in the same ledger and are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/slug.js (ESM named export slugify) + test/slug.test.js exactly per issue #3 (gh issue view 3 -R lcsmas/vf2-trial) and ledger D3. Independent of A and B. Files you may touch: src/slug.js, test/slug.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'C nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"C nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-05",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-money-parse-format-1 --task \"You implement ticket #1 (A: money) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the frozen interface and edge-case defaults are Decisions D1 in the same ledger; they are FROZEN, do not change them. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/money.js (ESM named exports parseAmount, formatCents) + test/money.test.js exactly per issue #1 (gh issue view 1 -R lcsmas/vf2-trial) and ledger D1. Ticket B consumes these two signatures from another worktree right now — do not change a signature or an export name. Files you may touch: src/money.js, test/money.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 saying 'A nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. After your nomination comment, finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"A nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-06",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-invoice-total-2 --task \"You implement ticket #2 (B: invoice) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); Decisions D1 (A's frozen signatures), D2 (your math) and D4 (how you start before A merges) are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/invoice.js (invoiceTotal) + test/invoice.test.js per issue #2 (gh issue view 2 -R lcsmas/vf2-trial) and ledger D2. You depend on ticket A (issue #1), being built in parallel by impl-money-parse-format-1: you start NOW against A's frozen signatures (ledger D1), not after it merges. Per D4: do NOT commit a src/money.js; create an untracked local stub src/money.js implementing D1 faithfully, add 'src/money.js' to .git/info/exclude (git rev-parse --git-path info/exclude), and import { parseAmount, formatCents } from './money.js' in src/invoice.js. Once A is merged on origin/main (poll: git fetch origin && git log origin/main -- src/money.js; the OPS also pings you), delete the stub, rebase on origin/main, re-run npm test against the REAL money.js, then nominate. Until A merges you may push checkpoints but you must NOT nominate. Files you may touch: src/invoice.js, test/invoice.test.js ONLY (committed). No dependencies; run tests with npm test. If A's real behaviour differs from D1 or an A change breaks your tests, post one line in ledger #4 (Open questions) and ping the OPS; never edit A's files.\nDONE = (after A merged) branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green with the real money.js, self-gate answers + one in-process pre-review (Agent tool), then ONE ledger comment on #4 in the Briefing report format, then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'B nominated: new comment on ledger #4'. Do not open a PR, merge, or push main. Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"B nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-07",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-slugify-product-3 --task \"You implement ticket #3 (C: slug) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the edge-case defaults are Decisions D3 in the same ledger and are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/slug.js (ESM named export slugify) + test/slug.test.js exactly per issue #3 (gh issue view 3 -R lcsmas/vf2-trial) and ledger D3. Independent of A and B. Files you may touch: src/slug.js, test/slug.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'C nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"C nominated: <branch> @ <tip>; self-gate+pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to '@'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-08",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:37.650Z",
+   "command": "orchestra spawn --name impl-money-parse-format-1 --task \"You implement ticket #1 (A: money) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the frozen interface and edge-case defaults are Decisions D1 in the same ledger; they are FROZEN, do not change them. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/money.js (ESM named exports parseAmount, formatCents) + test/money.test.js exactly per issue #1 (gh issue view 1 -R lcsmas/vf2-trial) and ledger D1. Ticket B consumes these two signatures from another worktree right now — do not change a signature or an export name. Files you may touch: src/money.js, test/money.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 saying 'A nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. After your nomination comment, finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"A nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-09",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:43.328Z",
+   "command": "orchestra spawn --name impl-invoice-total-2 --task \"You implement ticket #2 (B: invoice) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); Decisions D1 (A's frozen signatures), D2 (your math) and D4 (how you start before A merges) are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/invoice.js (invoiceTotal) + test/invoice.test.js per issue #2 (gh issue view 2 -R lcsmas/vf2-trial) and ledger D2. You depend on ticket A (issue #1), being built in parallel by impl-money-parse-format-1: you start NOW against A's frozen signatures (ledger D1), not after it merges. Per D4: do NOT commit a src/money.js; create an untracked local stub src/money.js implementing D1 faithfully, add 'src/money.js' to .git/info/exclude (git rev-parse --git-path info/exclude), and import { parseAmount, formatCents } from './money.js' in src/invoice.js. Once A is merged on origin/main (poll: git fetch origin and git log origin/main -- src/money.js; the OPS also pings you), delete the stub, rebase on origin/main, re-run npm test against the REAL money.js, then nominate. Until A merges you may push checkpoints but you must NOT nominate. Files you may touch: src/invoice.js, test/invoice.test.js ONLY (committed). No dependencies; run tests with npm test. If A's real behaviour differs from D1 or an A change breaks your tests, post one line in ledger #4 (Open questions) and ping the OPS; never edit A's files.\nDONE = (after A merged) branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green with the real money.js, self-gate answers + one in-process pre-review (Agent tool), then ONE ledger comment on #4 in the Briefing report format, then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'B nominated: new comment on ledger #4'. Do not open a PR, merge, or push main. Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"B nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-10",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": "2026-11-19T23:07:47.696Z",
+   "command": "orchestra spawn --name impl-slugify-product-3 --task \"You implement ticket #3 (C: slug) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the edge-case defaults are Decisions D3 in the same ledger and are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/slug.js (ESM named export slugify) + test/slug.test.js exactly per issue #3 (gh issue view 3 -R lcsmas/vf2-trial) and ledger D3. Independent of A and B. Files you may touch: src/slug.js, test/slug.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'C nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"C nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-11",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-money-parse-format-1 --task \"You implement ticket #1 (A: money) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the frozen interface and edge-case defaults are Decisions D1 in the same ledger; they are FROZEN, do not change them. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/money.js (ESM named exports parseAmount, formatCents) + test/money.test.js exactly per issue #1 (gh issue view 1 -R lcsmas/vf2-trial) and ledger D1. Ticket B consumes these two signatures from another worktree right now — do not change a signature or an export name. Files you may touch: src/money.js, test/money.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 saying 'A nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. After your nomination comment, finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"A nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-12",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-invoice-total-2 --task \"You implement ticket #2 (B: invoice) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); Decisions D1 (A's frozen signatures), D2 (your math) and D4 (how you start before A merges) are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/invoice.js (invoiceTotal) + test/invoice.test.js per issue #2 (gh issue view 2 -R lcsmas/vf2-trial) and ledger D2. You depend on ticket A (issue #1), being built in parallel by impl-money-parse-format-1: you start NOW against A's frozen signatures (ledger D1), not after it merges. Per D4: do NOT commit a src/money.js; create an untracked local stub src/money.js implementing D1 faithfully, add 'src/money.js' to .git/info/exclude (git rev-parse --git-path info/exclude), and import { parseAmount, formatCents } from './money.js' in src/invoice.js. Once A is merged on origin/main (poll: git fetch origin and git log origin/main -- src/money.js; the OPS also pings you), delete the stub, rebase on origin/main, re-run npm test against the REAL money.js, then nominate. Until A merges you may push checkpoints but you must NOT nominate. Files you may touch: src/invoice.js, test/invoice.test.js ONLY (committed). No dependencies; run tests with npm test. If A's real behaviour differs from D1 or an A change breaks your tests, post one line in ledger #4 (Open questions) and ping the OPS; never edit A's files.\nDONE = (after A merged) branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green with the real money.js, self-gate answers + one in-process pre-review (Agent tool), then ONE ledger comment on #4 in the Briefing report format, then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'B nominated: new comment on ledger #4'. Do not open a PR, merge, or push main. Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"B nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-13",
+   "role": "coordinator",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde",
+   "tmpdir": "/var/tmp/orch-1000-b17728/940e4bdec09a",
+   "transcript": "vf2-trial-ops-essai-vf2-940e4bde/583e9416-bd5c-49f2-804e-8bba4951ff23.jsonl",
+   "ts": null,
+   "command": "cd /home/lmas/.orchestra/worktrees/vf2-trial-ops-essai-vf2-940e4bde && orchestra spawn --name impl-slugify-product-3 --task \"You implement ticket #3 (C: slug) of repo lcsmas/vf2-trial (your worktree). The contract is the Briefing section of ledger #4 (https://github.com/lcsmas/vf2-trial/issues/4) — pull it first (gh issue view 4 -R lcsmas/vf2-trial); the edge-case defaults are Decisions D3 in the same ledger and are FROZEN. Your name is set by your parent; never rename yourself. Your parent/coordinator workspace id is 940e4bde-c09a-4ed7-998f-02db715f5d33.\nGOAL: add src/slug.js (ESM named export slugify) + test/slug.test.js exactly per issue #3 (gh issue view 3 -R lcsmas/vf2-trial) and ledger D3. Independent of A and B. Files you may touch: src/slug.js, test/slug.test.js ONLY. No dependencies; run tests with npm test.\nDONE = branch pushed to origin under your own branch name (git branch --show-current; frozen once nominated), rebased on current origin/main, npm test green, self-gate answers + one in-process pre-review (Agent tool) done, then ONE ledger comment on #4 in the Briefing report format (STATE via ls-remote, npm test counts, self-gate answers, pre-review findings, NOT VERIFIED), then ONE status ping to 940e4bde-c09a-4ed7-998f-02db715f5d33 'C nominated: new comment on ledger #4'. Do not open a PR, merge, or push main (the OPS does). Scratch files under \\$TMPDIR, never directly on the RAM tmp mount. A BLOCKED from a role guard is the answer: report the branch ref in the ledger, never route around it. Finish with orchestra send --type worker_done --to 940e4bde-c09a-4ed7-998f-02db715f5d33 --cap \\\"\\$(orchestra token)\\\" \\\"C nominated: branch <branch>, tip <tip>; self-gate and pre-review in ledger #4; any guard refusal text; NOT VERIFIED\\\" in the SAME turn as your last act.\" 2>&1 | grep -v bus.cc",
+   "verbatimDeny": "a shell write to ','",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "A: --task brief with shell-escaped quotes — angle-bracket text inside the quotes read as a redirect",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "brief with a REAL $( ) writing into the repo",
+     "replace": [
+      "\\\"\\$(orchestra token)\\\"",
+      "\\\"$(echo x > src/a.ts)\\\""
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-14",
+   "role": "reviewer",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-review-money-parse-format-1-ab073e06",
+   "tmpdir": "/var/tmp/orch-1000-b17728/ab073e0616ce",
+   "transcript": "vf2-trial-review-money-parse-format-1-ab073e06/02c0710c-9068-4958-93c5-d83a0d95aeef.jsonl",
+   "ts": "2026-11-19T23:16:59.194Z",
+   "command": "S=$TMPDIR/rev && mkdir -p $S/base && cp -r src test package.json $S/base/ && cp src/money.js $S/money.orig.js && cat > $S/oracle.mjs <<'EOF'\n// independent oracle: tokenizer + BigInt, no regex\nconst BL = new Set([' ', ' ', ' ']);\nconst isD = (c) => c >= '0' && c <= '9';\nexport function oracleParse(x) {\n  if (typeof x !== 'string') return 'RANGE';\n  let a = [...x]; // code points\n  const strip = () => { while (a.length && BL.has(a[0])) a.shift(); while (a.length && BL.has(a[a.length-1])) a.pop(); };\n  strip();\n  if (a.length === 0) return 'RANGE';\n  if (a[0] === '€') { a.shift(); strip(); }\n  else if (a[a.length-1] === '€') { a.pop(); strip(); }\n  if (a.length === 0) return 'RANGE';\n  // decimal mark\n  let marks = a.filter(c => c === '.' || c === ',').length;\n  if (marks > 1) return 'RANGE';\n  let ip = a, fp = [];\n  if (marks === 1) { const i = a.findIndex(c => c === '.' || c === ','); ip = a.slice(0, i); fp = a.slice(i+1); if (fp.length < 1 || fp.length > 2 || !fp.every(isD)) return 'RANGE'; }\n  if (ip.length === 0) return 'RANGE';\n  // integer part\n  let digits = '';\n  if (ip.every(isD)) digits = ip.join('');\n  else {\n    // groups separated by single blank chars\n    const groups = []; let cur = [];\n    for (const c of ip) { if (isD(c)) cur.push(c); else if (BL.has(c)) { groups.push(cur); cur = []; } else return 'RANGE'; }\n    groups.push(cur);\n    if (groups[0].length < 1 || groups[0].length > 3) return 'RANGE';\n    for (let i = 1; i < groups.length; i++) if (groups[i].length !== 3) return 'RANGE';\n    digits = groups.map(g => g.join('')).join('');\n  }\n  const v = BigInt(digits) * 100n + BigInt((fp.join('') + '00').slice(0, 2));\n  if (v > BigInt(Number.MAX_SAFE_INTEGER)) return 'RANGE';\n  return Number(v);\n}\nexport function oracleFormat(n) {\n  if (typeof n !== 'number' || !Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) return 'RANGE';\n  const b = BigInt(n); const w = (b / 100n).toString(); const f = (b % 100n).toString().padStart(2, '0');\n  let o = ''; for (let i = 0; i < w.length; i++) { if (i > 0 && (w.length - i) % 3 === 0) o += ' '; o += w[i]; }\n  return o + ',' + f + ' €';\n}\nEOF\ncat > $S/fuzz.mjs <<'EOF'\nimport { oracleParse, oracleFormat } from './oracle.mjs';\nconst impl = await import(process.argv[2] || './money.orig.js');\nlet seed = 12345; const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2**32;\nconst pick = (a) => a[Math.floor(rnd() * a.length)];\nconst AL = ['0','1','2','3','4','5','6','7','8','9','0','1','2','3',' ',' ',' ','.',',','€','-','\\n','\\t','a',' ','﻿','+','e','٣','－'];\nconst res = (f, x) => { try { return f(x); } catch (e) { return e instanceof RangeError ? 'RANGE' : 'OTHER:' + e.name; } };\nlet n = 0, diffs = [], valid = 0, others = 0;\nconst check = (s) => { n++; const a = res(impl.parseAmount, s), b = oracleParse(s); if (typeof b === 'number') valid++; if (String(a).startsWith('OTHER')) others++; if (a !== b) diffs.push([s, a, b]); };\nfor (let i = 0; i < 400000; i++) { let s = ''; const L = Math.floor(rnd() * 15); for (let j = 0; j < L; j++) s += pick(AL); check(s); }\n// structured near-valid\nconst SP = [' ', ' ', ' '];\nfor (let i = 0; i < 300000; i++) {\n  const ng = 1 + Math.floor(rnd()*5); let ip = String(Math.floor(rnd()*1000)).padStart(Math.floor(rnd()*3) ? 1 : 3, '0');\n  for (let g = 1; g < ng; g++) ip += (rnd() < .9 ? pick(SP) : '') + String(Math.floor(rnd()*1000)).padStart(rnd()<.9?3:2, '0');\n  let s = ip; const r = rnd();\n  if (r < .5) s += pick(['.', ',']) + String(Math.floor(rnd()*1000)).slice(0, Math.floor(rnd()*4));\n  const e = rnd(); if (e < .25) s = '€' + pick(['', ' ', ' ']) + s; else if (e < .5) s += pick(['', ' ', ' ']) + '€';\n  if (rnd() < .3) s = pick(['', ' ', '  ']) + s + pick(['', ' ']);\n  check(s);\n}\n// magnitude edges\nfor (const w of ['90071992547409','90071992547410','9007199254740','90071992547408']) for (const f of ['','.9','.91','.99','.00']) { check(w+f); }\nfor (let i = 0; i < 20000; i++) { check(String(Math.floor(rnd()*1e16)) + pick(['', '.5', ',99'])); }\n// format\nlet fd = [];\nconst nums = [0,1,99,100,101,999,1000,99999,100000,Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER+1,2**53+2,-0,0.5,-1,NaN,Infinity,'5',null,undefined,1n,[],{}, 1e21, 5e-324, 123456789012345];\nfor (let i = 0; i < 100000; i++) nums.push(Math.floor(rnd() * 10 ** Math.floor(rnd()*16)));\nfor (const v of nums) { const a = res(impl.formatCents, v), b = oracleFormat(v); if (a !== b) fd.push([String(v), a, b]); }\n// roundtrip\nlet rt = 0; for (let i = 0; i < 50000; i++) { const v = Math.floor(rnd()*10**Math.floor(rnd()*16)); if (res(impl.parseAmount, res(impl.formatCents, v)) !== v) rt++; }\nconsole.log(JSON.stringify({ parseChecks: n, validCases: valid, nonRange_throws: others, parseDiffs: diffs.length, formatChecks: nums.length, formatDiffs: fd.length, roundtripFail: rt }));\nconsole.log(diffs.slice(0, 10).map(d => JSON.stringify(d)).join('\\n'), fd.slice(0,5).map(d=>JSON.stringify(d)).join('\\n'));\nEOF\ncd $S && node fuzz.mjs",
+   "verbatimDeny": "a shell write to '$S/oracle.mjs'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "C: $VAR assigned in the same command (heredoc target)",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "VAR is a repo-relative dir",
+     "replace": [
+      "S=$TMPDIR/rev",
+      "S=src/rev"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$S/oracle\\.mjs'"
+    },
+    {
+     "name": "VAR is unresolvable ($( ))",
+     "replace": [
+      "S=$TMPDIR/rev",
+      "S=$(cat $TMPDIR/p)"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$S/oracle\\.mjs'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-15",
+   "role": "reviewer",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-review-slugify-product-3-13315557",
+   "tmpdir": "/var/tmp/orch-1000-b17728/133155572d77",
+   "transcript": "vf2-trial-review-slugify-product-3-13315557/bf2076b4-bfff-4d0e-888b-41c4d255cd33.jsonl",
+   "ts": "2026-11-19T23:12:06.067Z",
+   "command": "S=$(cat $TMPDIR/rev-slug-path); cd $S && node --test test/*.test.js 2>&1 | grep -E \"^# (tests|pass|fail|skipped)\"\nM=$TMPDIR/mut; rm -rf $M; mkdir -p $M\ncp $S/src/slug.js $M/orig.js\nrun(){ # name sedexpr\n  rm -rf $M/w; mkdir -p $M/w/src $M/w/test; cp $S/test/slug.test.js $M/w/test/; cp $S/package.json $M/w/\n  sed -E \"$2\" $M/orig.js > $M/w/src/slug.js\n  if cmp -s $M/orig.js $M/w/src/slug.js; then echo \"$1: MUTANT NOT APPLIED\"; return; fi\n  r=$(cd $M/w && node --test test/*.test.js 2>&1 | grep -E \"^# fail\" ); echo \"$1: $r\"\n  # sweep control\n  cp $M/w/src/slug.js $M/w/src/slug.js.bak\n}\nrun m1_lt \"s/full.length <= MAX/full.length < MAX/\"\nrun m2_cutge \"s/cut > 0/cut >= 0/\"\nrun m3_noAE \"s/\\.replace\\(\\/Æ\\/g, 'ae'\\)//\"\nrun m4_noOE \"s/\\.replace\\(\\/Œ\\/g, 'oe'\\)//\"\nrun m5_marks \"s/\\\\\\\\p\\{M\\}\\+\\/gu/[\\\\\\\\u0300-\\\\\\\\u036f]\\/g/\"\nrun m6_NFKC \"s/NFKD/NFKC/\"\nrun m7_idx \"s/full\\[MAX\\] !== '-'/full[MAX-1] !== '-'/\"\nrun m8_lastIdx \"s/out.lastIndexOf/out.indexOf/\"\nrun m9_cutplus \"s/out.slice\\(0, cut\\)/out.slice(0, cut+1)/\"\nrun m10_trail \"s/return out.replace\\(\\/-\\+\\\\$\\/, ''\\)/return out/\"\nrun m11_trimstart \"s/\\.replace\\(\\/\\^-\\+\\|-\\+\\\\$\\/g, ''\\)//\"\nrun m12_empty \"s/full === ''/full === 'zzz'/\"\nrun m13_ss \"s/'ss'/'s'/\"\nrun m14_nonalnum \"s/\\[\\^a-z0-9\\]\\+/[^a-z]+/\"\nrun m15_lowerfirst \"s/\\.toLowerCase\\(\\)//\"\nrun m16_MAX \"s/MAX = 60/MAX = 61/\"\nrun m17_MAX \"s/MAX = 60/MAX = 59/\"\nrun m18_typeof \"s/typeof name !== 'string'/false/\"\nrun m19_throwtype \"s/new RangeError\\('slugify: empty/new Error('slugify: empty/\"",
+   "verbatimDeny": "a shell write to '$M/w/src/slug.js'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "C: $VAR assigned in the same command (redirect inside a function body)",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "VAR is a repo-relative dir",
+     "replace": [
+      "M=$TMPDIR/mut",
+      "M=src/mut"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$M/w/src/slug\\.js'"
+    },
+    {
+     "name": "VAR is unresolvable ($( ))",
+     "replace": [
+      "M=$TMPDIR/mut",
+      "M=$(pwd)/mut"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$M/w/src/slug\\.js'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-16",
+   "role": "verifier",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745",
+   "tmpdir": "/var/tmp/orch-1000-b17728/ac2b2745ec11",
+   "transcript": "vf2-trial-verif-gate-vf2-trial-ac2b2745/44717e8d-e7b5-40c2-af88-e56a9c50ac45.jsonl",
+   "ts": "2026-11-19T23:11:24.010Z",
+   "command": "S=$TMPDIR/f0 && rm -rf $S && mkdir -p $S && git archive HEAD | tar -x -C $S && cd $S && cp package.json $TMPDIR/f0.package.json.orig && cp test/smoke.test.js $TMPDIR/f0.smoke.orig\nrun(){ for v in v20.19.5 v22.22.0; do ( PATH=$HOME/.nvm/versions/node/$v/bin:$PATH; out=$(npm test 2>&1); rc=$?; echo \"  $v RC=$rc $(echo \"$out\" | grep -E '^# (tests|pass|fail|skipped)' | tr '\\n' ' ') $(echo \"$out\" | grep -m1 -E 'Cannot find|Could not find|ERR')\" ); done; }\necho \"[base arm: git show origin/main:package.json]\"; git -C /home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745 show origin/main:package.json > package.json; run\necho \"[M1 no-match glob]\"; sed 's#test/\\*\\.test\\.js#test/*.nomatch.js#' $TMPDIR/f0.package.json.orig > package.json; cat package.json|tail -1; run\necho \"[M2 assertion flipped in smoke]\"; cp $TMPDIR/f0.package.json.orig package.json; sed 's/, 2)/, 3)/' $TMPDIR/f0.smoke.orig > test/smoke.test.js; run\necho \"[restore + cmp]\"; cp $TMPDIR/f0.package.json.orig package.json; cp $TMPDIR/f0.smoke.orig test/smoke.test.js\ncmp package.json /home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745/package.json && cmp test/smoke.test.js /home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745/test/smoke.test.js && echo CMP_CLEAN\necho \"[restored arm]\"; run\ncd /home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745 && git status --porcelain -uall | grep -v '^?? .claude/'; git rev-parse HEAD",
+   "verbatimDeny": "a shell write to 'package.json'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "B: relative target after cd $VAR (VAR = scratch)",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "cd into the repo worktree instead of scratch",
+     "replace": [
+      "S=$TMPDIR/f0 && rm",
+      "S=/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745 && rm"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'package\\.json'"
+    },
+    {
+     "name": "cd into an unresolvable dir",
+     "replace": [
+      "S=$TMPDIR/f0 && rm",
+      "S=$(cat $TMPDIR/p) && rm"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to 'package\\.json'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-17",
+   "role": "verifier",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745",
+   "tmpdir": "/var/tmp/orch-1000-b17728/ac2b2745ec11",
+   "transcript": "vf2-trial-verif-gate-vf2-trial-ac2b2745/44717e8d-e7b5-40c2-af88-e56a9c50ac45.jsonl",
+   "ts": "2026-11-19T23:11:38.526Z",
+   "command": "W=/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745; S=$TMPDIR/f0; P=$S/package.json\nrun(){ for v in v20.19.5 v22.22.0; do ( cd $S; PATH=$HOME/.nvm/versions/node/$v/bin:$PATH; out=$(npm test 2>&1); rc=$?; echo \"  $v RC=$rc $(echo \"$out\" | grep -E '^# (tests|pass|fail|skipped)' | tr '\\n' ' ') $(echo \"$out\" | grep -m1 -E 'Cannot find|Could not find|ERR')\" ); done; }\necho \"[base arm: origin/main package.json]\"; git -C $W show origin/main:package.json > $P; tail -1 $P; run\necho \"[M1 no-match glob]\"; sed 's#test/\\*\\.test\\.js#test/*.nomatch.js#' $TMPDIR/f0.pkg.orig > $P; tail -1 $P; run\necho \"[M2 smoke assertion flipped]\"; cp $TMPDIR/f0.pkg.orig $P; sed 's/, 2)/, 3)/' $TMPDIR/f0.smoke.orig > $S/test/smoke.test.js; run\necho \"[restore + cmp vs candidate checkout]\"; cp $TMPDIR/f0.pkg.orig $P; cp $TMPDIR/f0.smoke.orig $S/test/smoke.test.js\ncmp $P $W/package.json && cmp $S/test/smoke.test.js $W/test/smoke.test.js && echo CMP_CLEAN\necho \"[restored arm]\"; run\ngit -C $W status --porcelain -uall | grep -v '^?? .claude/'; git -C $W rev-parse HEAD",
+   "verbatimDeny": "a shell write to '$P'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "C: $P assigned from another VAR in the same command",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "VAR is a repo path",
+     "replace": [
+      "S=$TMPDIR/f0;",
+      "S=/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745;"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$P'"
+    },
+    {
+     "name": "VAR is unresolvable ($( ))",
+     "replace": [
+      "S=$TMPDIR/f0;",
+      "S=$(echo $TMPDIR/f0);"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$P'"
+    }
+   ]
+  },
+  {
+   "id": "vf2-18",
+   "role": "verifier",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745",
+   "tmpdir": "/var/tmp/orch-1000-b17728/ac2b2745ec11",
+   "transcript": "vf2-trial-verif-gate-vf2-trial-ac2b2745/44717e8d-e7b5-40c2-af88-e56a9c50ac45.jsonl",
+   "ts": "2026-11-19T23:24:34.783Z",
+   "command": "W=/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745; T=/var/tmp/orch-1000-b17728/ac2b2745ec11\nexport PATH=$HOME/.nvm/versions/node/v22.22.0/bin:$PATH\ncd $T/b\necho \"[invoice.test.js ALONE under money.js mutants]\"\nsed -E 's/\\* 100 \\+ Number\\(frac\\)/* 10 + Number(frac)/' $T/b-money.orig > $T/b/src/money.js; echo \"M1 parse: $(node --test test/invoice.test.js 2>&1 | grep -E '^# (pass|fail)' | tr '\\n' ' ')\"\nsed -E \"s/'\\\\\\\\u202F'\\);/'\\\\\\\\u00A0');/\" $T/b-money.orig > $T/b/src/money.js; echo \"M2 fmt sep: $(node --test test/invoice.test.js 2>&1 | grep -E '^# (pass|fail)' | tr '\\n' ' ')\"\ncp $T/b-money.orig $T/b/src/money.js; cmp $T/b/src/money.js $W/src/money.js && echo CMP_CLEAN; echo \"restored invoice alone: $(node --test test/invoice.test.js 2>&1 | grep -E '^# (pass|fail|skipped)' | tr '\\n' ' ')\"\necho \"[stub check]\"; grep -n \"import\" $W/src/invoice.js; git -C $W ls-files src/money.js; git -C $W merge-base HEAD origin/main; git -C $W cat-file -p HEAD | head -3\necho \"[safe-range corner]\"; cd $W; node -e \"\nimport('./src/invoice.js').then(({invoiceTotal})=>{ for (const [a,q,r] of [['450 000 000 000,00',1,20],['300 000 000 000,00',1,20],['90 071 992 547 409,91',1,0],['1,00',2**40,20]]) { try { console.log(a,q,r,JSON.stringify(invoiceTotal([{label:'x',amount:a,qty:q,vatRate:r}]))) } catch(e){ console.log(a,q,r,e.name,e.message) } } })\"\ngit -C $W status --porcelain -uall | grep -v '^?? .claude/'; git -C $W ls-remote origin refs/heads/impl-invoice-total-2 refs/heads/main; date -u",
+   "verbatimDeny": "a shell write to '$T/b/src/money.js'",
+   "expected": "allow",
+   "expectedOnPre475": "deny",
+   "rootCause": "C: $VAR assigned a literal scratch path in the same command",
+   "siblings": [
+    {
+     "name": "same command + a real write into the repo (prepended)",
+     "prepend": "echo oops > src/a.ts\n",
+     "expected": "deny",
+     "denyRe": "shell write to 'src/a\\.ts'"
+    },
+    {
+     "name": "VAR is a repo path",
+     "replace": [
+      "T=/var/tmp/orch-1000-b17728/ac2b2745ec11",
+      "T=/home/lmas/.orchestra/worktrees/vf2-trial-verif-gate-vf2-trial-ac2b2745"
+     ],
+     "expected": "deny",
+     "denyRe": "shell write to '\\$T/b/src/money\\.js'"
+    }
+   ]
+  }
+ ],
+ "byDesign": [
+  {
+   "id": "vf2-by-design-1",
+   "role": "implementer",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-impl-invoice-total-2-4cc92076",
+   "transcript": "vf2-trial-impl-invoice-total-2-4cc92076/48d51a05-6097-43ee-a9d4-6fe86e26f493.jsonl",
+   "command": "git push -q --force-with-lease origin impl-invoice-total-2 2>&1 | tail -1; git ls-remote origin impl-invoice-total-2",
+   "verbatimDeny": "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command.",
+   "expected": "deny",
+   "denyRe": "chained with a destructive act"
+  },
+  {
+   "id": "vf2-by-design-2",
+   "role": "implementer",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-impl-money-parse-format-1-f28f41e2",
+   "transcript": "vf2-trial-impl-money-parse-format-1-f28f41e2/90282bba-5123-48b1-9fc7-69fb8f389070.jsonl",
+   "command": "orchestra ack 11859 --run 940e4bde-c09a-4ed7-998f-02db715f5d33 2>&1 | grep -v \"bus.cc\"\ncd /home/lmas/.orchestra/worktrees/vf2-trial-impl-money-parse-format-1-f28f41e2 && git rebase origin/main 2>&1 | tail -1; node --version; cat package.json; npm test 2>&1 | grep -E \"^# (tests|pass|fail|skipped)|^not ok\"; git diff --stat origin/main..HEAD; git push -q --force-with-lease origin HEAD 2>&1; git ls-remote origin impl-money-parse-format-1; git rev-parse HEAD; git rev-list --count HEAD..origin/main",
+   "verbatimDeny": "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command.",
+   "expected": "deny",
+   "denyRe": "chained with a destructive act"
+  },
+  {
+   "id": "vf2-by-design-3",
+   "role": "implementer",
+   "cwd": "/home/lmas/.orchestra/worktrees/vf2-trial-impl-slugify-product-3-5b6f171d",
+   "transcript": "vf2-trial-impl-slugify-product-3-5b6f171d/ae2b1890-0f07-4651-ba2b-a0b44ad47978.jsonl",
+   "command": "orchestra ack 11857 --run 940e4bde-c09a-4ed7-998f-02db715f5d33 2>&1 | grep -v bus.cc\ncd /home/lmas/.orchestra/worktrees/vf2-trial-impl-slugify-product-3-5b6f171d && git rev-parse --show-toplevel && git branch --show-current && OLD=$(git rev-parse HEAD) && git rebase origin/main 2>&1 | tail -1 && git diff --stat origin/main | tail -3 && echo \"content-diff vs old tip:\" && git diff $OLD HEAD --stat | tail -2; npm test 2>&1 | grep -E \"^# (tests|pass|fail|skipped)\"; node --version\ngit push --force-with-lease=impl-slugify-product-3:$OLD origin impl-slugify-product-3 2>&1 | tail -1; git ls-remote origin refs/heads/impl-slugify-product-3; git rev-parse HEAD; git rev-list --count HEAD..origin/main",
+   "verbatimDeny": "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command.",
+   "expected": "deny",
+   "denyRe": "chained with a destructive act"
+  }
+ ]
+}

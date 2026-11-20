@@ -3,6 +3,7 @@
 // table cannot drift. INERT without `.orchestra/role` (human sessions, the LEAD, role-less agents). Pure bash + grep/sed, no jq.
 // Lives in shared/ so the test runs THIS string through bash (like home-root-guard.ts).
 import { FLEET_ROLES, roleSpec, type FleetRole } from './fleet-roles.ts';
+import { AWK_WRITES } from './role-guard-writes.ts';
 
 /** Sentinel the hook installer writes in `.orchestra/` (the role word, from `roleOfName(ws.name)`). Absent ⇒ guard inert. */
 export const ROLE_SENTINEL_FILE = 'role';
@@ -68,7 +69,6 @@ const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/,
 const PROTECT_RE = `([0-9]?>>?|${B}(tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|${B}sed[[:space:]]+-[a-zA-Z]*i|[[:space:]]sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
 /** Cheap Bash write heuristics (pre-review m1): the edit tools are only one door; these close the obvious others for the read-only
  *  roles. Redirect/`tee` TARGETS are judged in bash (scratch allowed); `sed -i` and in-place git acts are denied outright. */
-const SED_I = `${B}sed[[:space:]]+([^;&|]*[[:space:]])?(-[a-zA-Z]*i[a-zA-Z]*|--in-place)([[:space:]=]|$)`;
 const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|restore|update-ref|checkout[[:space:]][^;&|]*[[:space:]]--([[:space:]]|$)|clean[[:space:]]+[^;&|]*-[a-zA-Z]*f|branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))`;
 
 interface Rule { re: string; why: string }
@@ -187,6 +187,11 @@ AWK
 )"
 cmd="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g' | grep -oE '"command": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"command": *"//; s/"$//; s/\\\\[rt]/ /g' | sed 's/\\\\n/\\n/g' | awk "$awk_prog" | tr '\\n' ';')"
 [ -n "$cmd" ] || exit 0
+cwd="$(printf '%s' "$input" | grep -oE '"cwd": *"[^"]*"' | head -1 | sed -E 's/^"cwd": *"//; s/"$//')"
+awk_writes="$(cat <<'AWK2'
+${AWK_WRITES}
+AWK2
+)"
 chk() { printf '%s' "$cmd" | grep -qE -- "$1"; }
 # A command that works INSIDE a scratch clone (cd/-C into scratch) may rebase/merge/reset/commit there — a verifier gates a combined
 # tip in one. Never a push: the clone's origin is the real remote. Only the TABLE's rules (the first n_table) are lifted; this
@@ -200,17 +205,13 @@ while [ "$i" -lt "\${#rules_re[@]}" ]; do
 done
 if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
   # Heuristic, not a sandbox: a redirect / tee target outside scratch, sed -i, in-place git acts. Write into $TMPDIR instead.
-  if chk '${sq(SED_I)}'; then deny "sed -i edits files in place — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). Copy the file there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
+  # Write targets (redirect / tee / sed -i): ONE quote-aware scan (role-guard-writes.ts); every target not provably scratch is listed.
+  wout="$(printf '%s' "$cmd" | RG_CWD="$cwd" awk "$awk_writes" 2>&1)"; wrc=$?
+  if [ "$wrc" != 0 ]; then deny "the write scanner could not run (awk exit $wrc: $(printf '%s' "$wout" | head -c 120)) — this guard fails closed on its own errors; tell the human/coordinator, do not retry around it."; fi
+  if printf '%s\n' "$wout" | grep -q '^SEDI'; then deny "sed -i edits files in place — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). Copy the file there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
   if [ "$write_guard" = git ] && chk '${sq(GIT_WRITE)}' && ! chk '${sq(`${GIT}[[:space:]]+${G}apply[[:space:]]+([^;&|]*[[:space:]])?--check`)}'; then deny "a git command that rewrites the working tree (apply/am/cherry-pick/revert/pull/restore/clean -f/checkout -- /branch -f/update-ref) — the $role role does not change the tree; do it in a scratch clone (cd into \$TMPDIR/…). (Heuristic: not every shell write is visible.)"; fi
-  # Blank what is not a redirect: arrows (->, =>), [[ a > b ]], quoted strings (gh --body "a -> b", awk '$1>5'); a quoted TARGET is unquoted first.
-  wcmd="$(printf '%s' "$cmd" | sed -E 's/[[:space:]][-=]>/ /g; s/\\$?\\(\\([^)]*\\)\\)/ /g; s/>\\|?[[:space:]]*\\\\"([^"\\\\]+)\\\\"/> \\1/g; s/>\\|?[[:space:]]*\\x27([^\\x27]+)\\x27/> \\1/g; s/(tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)\\\\"([^"\\\\]+)\\\\"/\\1\\3/g; s/(tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*)\\x27([^\\x27]+)\\x27/\\1\\3/g; s/((^|[[:space:];&|(/])(bash|sh|zsh|dash|ksh)([[:space:]]+-[-a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c|(^|[;&|(])[[:space:]]*((sudo|command|exec|time|nohup|env)[[:space:]]+)*(eval|ssh[[:space:]]+[^;&|"\\x27\\\\]*))[[:space:]]+\\\\"([^"]*)\\\\"/\\1 \\9/g; s/((^|[[:space:];&|(/])(bash|sh|zsh|dash|ksh)([[:space:]]+-[-a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c|(^|[;&|(])[[:space:]]*((sudo|command|exec|time|nohup|env)[[:space:]]+)*(eval|ssh[[:space:]]+[^;&|"\\x27\\\\]*))[[:space:]]+\\x27([^\\x27]*)\\x27/\\1 \\9/g; s/\\[\\[[^]]*\\]\\]/ /g; s/\\\\"/\\x01/g; s/\\x01[^\\x01]*\\x01/""/g; s/\\x27[^\\x27]*\\x27/\\x27\\x27/g')"
-  targets="$(printf '%s' "$wcmd" | grep -oE '[0-9]?>(>|\\|)?[[:space:]]*[^[:space:]&;|><()]+|(^|[;&|])[[:space:]]*(sudo[[:space:]]+)?tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^[:space:]&;|><()]+' | sed -E 's/^[;&|]?[[:space:]]*(sudo[[:space:]]+)?tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*//; s/^[0-9]?>(>|\\|)?[[:space:]]*//; s/^\\\\?["'"'"']//; s/\\\\?["'"'"']$//')"
-  for t in $targets; do
-    case "$t" in
-      /dev/null|/dev/stderr|/dev/stdout|/dev/fd/*|/tmp/*|/var/tmp/*|\\$TMPDIR/*|\\$\\{TMPDIR\\}/*|"~"/.orchestra/agent-tmp/*|"~"/.orchestra-dev/agent-tmp/*|"$HOME"/.claude*/projects/*/memory/*|\\$HOME/.claude*/projects/*/memory/*|"~"/.claude*/projects/*/memory/*|\\$HOME/.orchestra/agent-tmp/*|"$HOME"/.orchestra/agent-tmp/*|"$HOME"/.orchestra-dev/agent-tmp/*|"\${TMPDIR:-/nonexistent}"/*|"\${ORCHESTRA_HOME:-/nonexistent}"/agent-tmp/*) ;;
-      *) deny "a shell write to '$t' — the $role role writes only scratch (\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/); redirect there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)" ;;
-    esac
-  done
+  t="$(printf '%s\n' "$wout" | sed -n 's/^W\t//p' | head -1)"
+  if [ -n "$t" ]; then deny "a shell write to '$t' — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/); redirect there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
 fi
 if chk '${sq(CHECK)}' && chk '${sq(DESTRUCTIVE)}'; then
   deny "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command. Run the check as its own call, read the result, THEN act in a second call."
