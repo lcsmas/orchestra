@@ -1,5 +1,6 @@
 import type { PendingPrompt } from './pending-prompts.ts';
 import type { ContextUsage } from './context-usage.ts';
+import type { FleetRole } from './fleet-roles.ts';
 
 export type WorkspaceStatus = 'idle' | 'running' | 'waiting' | 'error' | 'stopped';
 
@@ -504,6 +505,10 @@ export interface Workspace {
    * workspaces and every pre-#380 record. The id (not a boolean) so a `--detached` child, which has no `parentId`,
    * still knows its namer. */
   namedByParent?: string;
+  /** #489: the fleet role the spawner gave at `orchestra spawn --name` (the name's prefix), FROZEN at creation: the role guard sentinel,
+   * the handoff bound and the rename nudge read it, never the current branch — a rename (any caller, or an out-of-band `git branch -m`)
+   * cannot change the role. Absent on human-created workspaces and pre-#489 records (their role then follows the branch name). */
+  spawnRole?: FleetRole;
   /** The branch name this workspace carried before its latest rename (parent rename or migration) — shown as
    * "ex-…" in `orchestra peers` and the sidebar tooltip (#380/#384). Absent = never renamed. Persisted. */
   formerBranch?: string;

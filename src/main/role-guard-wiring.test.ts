@@ -43,9 +43,11 @@ test('the sentinel is refreshed on a rename (3 sites) and on every real install 
   const w = codeOf('src/main/workspaces.ts');
   const inst = w.slice(w.indexOf('export async function installOrchestraHooks('));
   assert.ok(inst.indexOf('writeRoleSentinel(worktreePath') > 0 && inst.indexOf('writeRoleSentinel(worktreePath') < inst.indexOf("const stamp = path.join(dir, '.hooks-version')"), 'before the stamp short-circuit');
-  assert.equal((w.match(/writeRoleSentinel\(updated\.worktreePath, updated\.branch\)/g) ?? []).length, 3, 'rename re-writes the role');
+  assert.equal((w.match(/writeRoleSentinel\(updated\.worktreePath, updated\.branch, updated\.spawnRole\)/g) ?? []).length, 3, 'rename re-writes the role (#489: from the record\'s frozen spawnRole first)');
+  assert.ok(/writeRoleSentinel\(worktreePath, roleWs\.branch, roleWs\.spawnRole\)/.test(w), 'every session start: same anchor');
+  assert.ok(/initialNaming\(\{ namedBy: naming\?\.namedBy, \.\.\.\(naming\?\.exactName \? \{ spawnName: branch \} : \{\}\) \}\)/.test(w), '#489: only the agent spawn route freezes a role');
   assert.ok(!/writeRoleSentinel\([^)]*\.name\)/.test(w), 'never from ws.name');
-  assert.ok(/writeRoleSentinel\(ws\.worktreePath, ws\.branch\)/.test(w), 'at creation (startBusRunAndWriteNotice), from the BRANCH — ws.name is "<repo> · <branch>" and maps to no role');
+  assert.ok(/writeRoleSentinel\(ws\.worktreePath, ws\.branch, ws\.spawnRole\)/.test(w), 'at creation (startBusRunAndWriteNotice), from the BRANCH — ws.name is "<repo> · <branch>" and maps to no role');
 });
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'role-sentinel-'));
@@ -89,4 +91,19 @@ test('#446: the installed orchestrator-guard command denies with exit 2; the old
   assert.equal(real.status, 2, `${real.stderr}\n--script--\n${script.slice(0, 400)}`);
   assert.match(real.stderr, /BLOCKED: you are an ORCHESTRATOR/);
   assert.equal(go(`${cmd} || true`).status, 0, 'the broken form swallows the deny — the must-FAIL arm');
+});
+
+test('#489: the role frozen at spawn survives any rename — sentinel keeps it; a record without one still follows its name', async () => {
+  const wt = path.join(root, 'wt489');
+  const file = path.join(wt, '.orchestra', 'role');
+  assert.equal(await writeRoleSentinel(wt, 'impl-manual-return-button-4454', 'implementer'), 'implementer');
+  // a self-rename / parent rename / out-of-band `git branch -m` to an unprefixed name, then the session-start refresh:
+  assert.equal(await writeRoleSentinel(wt, 'nmc-4455-carrier-return-state', 'implementer'), 'implementer');
+  assert.equal(fs.readFileSync(file, 'utf8').trim(), 'implementer', 'guard still armed');
+  // even a rename to ANOTHER role's prefix cannot change it
+  assert.equal(await writeRoleSentinel(wt, 'ops-whatever', 'implementer'), 'implementer');
+  // control (the other direction): no frozen role ⇒ today's name-derived rule (human-created / pre-#489 record)
+  assert.equal(await writeRoleSentinel(wt, 'nmc-4455-carrier-return-state'), null);
+  assert.ok(!fs.existsSync(file), 'no anchor + no prefix ⇒ guard inert');
+  assert.equal(await writeRoleSentinel(wt, 'impl-x'), 'implementer');
 });

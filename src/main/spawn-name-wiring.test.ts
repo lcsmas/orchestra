@@ -87,7 +87,7 @@ test('D4 — dispatchSpawnRequest itself never demands a name: the requirement i
 
 test('createWorkspace records the namer through the policy module, not an inline field', () => {
   const body = bodyOf(workspacesSrc, 'export async function createWorkspace(');
-  assert.match(body, /\.\.\.initialNaming\(\{ namedBy: naming\?\.namedBy \}\)/);
+  assert.match(body, /\.\.\.initialNaming\(\{ namedBy: naming\?\.namedBy, \.\.\.\(naming\?\.exactName \? \{ spawnName: branch \} : \{\}\) \}\)/); // #489: + the agent route's role
   assert.doesNotMatch(body, /branchManuallySet: false/);
   assert.doesNotMatch(body, /namedByParent:/); // no inline copy of the field
 });

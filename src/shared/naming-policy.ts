@@ -2,6 +2,7 @@
 // INTERFACE FREEZE (OPS, vague #380): signatures + docs are FROZEN in the ledger; bodies marked STUB are
 // filled by the owning ticket (#381 today's rule, #382 spawn name, #383 authority). Do not change a signature
 // without a "what changed" line on the ledger.
+import { roleOfName } from './fleet-roles.ts';
 import type { Workspace } from './types.ts';
 
 /** Rôle prefixes of a spawned agent's name (CONTEXT.md "Rôle"). */
@@ -21,20 +22,21 @@ export function sanitizeBranchName(raw: string): string {
 }
 
 /** The Workspace fields the policy reads. */
-export type NamingFields = Pick<Workspace, 'branchManuallySet' | 'autoRenameCount' | 'namedByParent' | 'parentId'>;
+export type NamingFields = Pick<Workspace, 'branchManuallySet' | 'autoRenameCount' | 'namedByParent' | 'parentId' | 'spawnRole'>;
 
 // ── #381 (today's rule, no behaviour change) ────────────────────────────────
 
 /** Is the rename nudge still active? #381: `!branchManuallySet && (autoRenameCount ?? 0) < MAX_AUTO_RENAMES`
- *  (today's `autoRenameActive`), `&& !namedByParent` (#382: a child named by its parent is never nudged). The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
+ *  (today's `autoRenameActive`), `&& !namedByParent` (#382: a child named by its parent is never nudged), `&& !spawnRole` (#489: nor is any spawn that carries a role, even when its namer could not be resolved). The nudge hook's `ORCHESTRA_BRANCH_AUTO` reads ONLY this. */
 export function nudgeActive(ws: NamingFields): boolean {
-  return !ws.branchManuallySet && !ws.namedByParent && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
+  return !ws.branchManuallySet && !ws.namedByParent && !ws.spawnRole && (ws.autoRenameCount ?? 0) < MAX_AUTO_RENAMES;
 }
 
 /** Naming fields of a freshly created workspace: `{ branchManuallySet: false }`, plus `namedByParent: namedBy` when
  *  an agent named it at spawn (#382). `createWorkspace` spreads this — no inline `branchManuallySet: false` stays. */
-export function initialNaming(opts?: { namedBy?: string }): Pick<Workspace, 'branchManuallySet' | 'namedByParent'> {
-  return { branchManuallySet: false, ...(opts?.namedBy ? { namedByParent: opts.namedBy } : {}) };
+export function initialNaming(opts?: { namedBy?: string; spawnName?: string }): Pick<Workspace, 'branchManuallySet' | 'namedByParent' | 'spawnRole'> {
+  const role = opts?.spawnName ? roleOfName(opts.spawnName) : null; // #489: `spawnName` = the agent route's checked name; the role is frozen here
+  return { branchManuallySet: false, ...(opts?.namedBy ? { namedByParent: opts.namedBy } : {}), ...(role ? { spawnRole: role } : {}) };
 }
 
 // ── #382 (spawn-name check) ─────────────────────────────────────────────────

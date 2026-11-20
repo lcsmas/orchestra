@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { COORDINATOR_HANDOFF_BOUND_TURNS, FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, type FleetRole } from './fleet-roles.ts';
+import { COORDINATOR_HANDOFF_BOUND_TURNS, FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, workspaceRole, type FleetRole } from './fleet-roles.ts';
 import { ROLES, checkSpawnName } from './naming-policy.ts';
 import { HANDOFF_MIN_BOUND_TURNS, HandoffTurnCounter, resolveHandoffBound } from './handoff.ts';
 
@@ -164,4 +164,12 @@ test('MUST-FAIL (#478): a coordinator default of 0 / a non-coordinator default o
   const lax = await mutant((s) => s.replace('v >= HANDOFF_MIN_BOUND_TURNS)', 'v >= 1)'));
   assert.doesNotThrow(() => lax.parseRoleConfig({ coordinator: { handoffBoundTurns: 2 } }), 'the mutant accepts a bound under the minimum');
   assert.throws(() => parseRoleConfig({ coordinator: { handoffBoundTurns: 2 } }), /invalid handoffBoundTurns/);
+});
+
+test('#489 workspaceRole: the role frozen at spawn wins over the current name; no frozen role ⇒ the name decides', () => {
+  assert.equal(workspaceRole({ branch: 'nmc-4455-carrier-return-state', spawnRole: 'implementer' }), 'implementer');
+  assert.equal(workspaceRole({ branch: 'ops-x', spawnRole: 'implementer' }), 'implementer');
+  assert.equal(workspaceRole({ branch: 'impl-x-1' }), 'implementer', 'pre-#489 / human-created record: follows the name');
+  assert.equal(workspaceRole({ branch: 'nmc-4455-carrier-return-state' }), null);
+  assert.equal(workspaceRole({ branch: undefined }), null);
 });
