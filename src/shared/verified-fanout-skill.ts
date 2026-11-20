@@ -46,15 +46,12 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   default applies), ¤scribe-¤ pins the cheap model at low effort; ¤--model¤ / ¤--effort¤
   on ¤orchestra spawn¤ win; ¤<ORCHESTRA_HOME>/fleet-roles.json¤ overrides (¤orchestra help spawn¤;
   an unknown key or role is refused). A ¤scribe-¤ gets only judgement-free steps; gating, review and design stay strong.
-- **A scribe only for a multi-turn mechanical loop with NO judgement; a single call or write you run yourself** (delegating
-  one call costs the same turns plus a session; ¤fanout deliver¤ already absorbs CI polling). #476: the OPS holds 35% of cache-read but
-  these loops ~7% of the fleet's; 52% is the static prefix: keep this file small, ¤orchestra handoff¤ late, §0a. One nested ¤orchestra spawn --name scribe-<object> --task "<body text or absolute path,
-  run id, fixed commands, ledger #N>"¤ per loop; it ends with ¤worker_done --cap¤, then you delete it:
-  - ¤scribe-sweep¤ — the §5 range + porcelain loop over every wave agent, then the ¤orchestra peers¤ grep, output verbatim.
-  - ¤scribe-state¤ — a batch of ¤orchestra fanout state set --run <id>¤ relays from verdicts you read (¤--accept-merged¤ is denied to it).
-  - ¤scribe-ledger¤ — a batch of ¤scripts/ledger-set¤ rows or ¤gh issue comment --body-file¤ writes from files you prepared.
-
-  You keep decisions, merges, fleet mail.
+- **A scribe only for steps that need turns BETWEEN them (poll, retry, read-then-act) with NO judgement** — e.g. waiting on a
+  rig or on CI beyond what ¤fanout deliver¤ absorbs. A batch one Bash call can run (for / &&) or a single call you run yourself:
+  spawn + ¤worker_done¤ + delete cost more turns than they save. #476: the OPS holds 35% of cache-read, scribe-able turns are a
+  ≤6% ceiling, ≥49% is the static prefix: keep this file small, ¤orchestra handoff¤ late, §0a. Shape: ¤orchestra spawn --name
+  scribe-<object> --task "<body text or absolute path, run id, fixed commands, ledger #N>"¤; it ends with ¤worker_done --cap¤, then
+  you delete it. A scribe's ¤state set¤ never carries ¤--accept-merged¤, ¤--json¤ or ¤mergedAccepted¤ (guard-denied).
 - **Tool limits — the PreToolUse role guard** (exit 2, ¤[orchestra] BLOCKED (role: …): <reason>¤)
   denies ¤AskUserQuestion¤ to every role, even as a probe; Edit/Write to the coordinator,
   reviewer, explorer and scribe (the verifier edits scratch only, an implementer its own

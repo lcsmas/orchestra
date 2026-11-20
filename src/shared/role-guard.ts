@@ -32,7 +32,8 @@ const ORCH_DELETE = `${B}orchestra[[:space:]]+(delete|archive)([[:space:]]|$)`;
 const FANOUT_DELIVER = `${B}orchestra[[:space:]]+fanout[[:space:]]+deliver([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_WRITE = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+(init|set)([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_INIT = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+init([[:space:];&|)"'\\]|$)`;
-const FANOUT_ACCEPT_MERGED = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+set[[:space:]][^;&|]*--accept-merged`;
+// #476: a scribe's `state set` may not override a merge claim: `--accept-merged`, or `--json` (any payload can carry `mergedAccepted`, even piped in) — `.*`, not `[^;&|]*`, so `--note "a; b"` cannot hide the flag.
+const FANOUT_ACCEPT_MERGED = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+set[[:space:]].*(--accept-merged|--json|mergedAccepted)`;
 const FORCE_PUSH = `${B}${GIT}[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
 const BRANCH_D = `${B}${GIT}[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
 const WT_REMOVE = `${B}${GIT}[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
@@ -76,7 +77,7 @@ const NO_MERGE: Rule = { re: GH_MERGE, why: 'merging a PR belongs to the coordin
 const NO_DELIVER: Rule = { re: FANOUT_DELIVER, why: 'orchestra fanout deliver opens and MERGES a PR — that belongs to the coordinator; report the branch ref instead (ledger comment + one ping)' };
 const NO_STATE_WRITE: Rule = { re: FANOUT_STATE_WRITE, why: "orchestra fanout state init|set writes the coordinator's state file (one writer) — report the fact to the coordinator; state show / resume stay allowed" };
 const NO_STATE_INIT: Rule = { re: FANOUT_STATE_INIT, why: "orchestra fanout state init creates the coordinator's state file — report to the coordinator; a scribe may relay state set only" };
-const NO_ACCEPT_MERGED: Rule = { re: FANOUT_ACCEPT_MERGED, why: '--accept-merged is the coordinator\'s human-style override of a merge claim — a scribe relays facts, it never accepts one; report to the coordinator' };
+const NO_ACCEPT_MERGED: Rule = { re: FANOUT_ACCEPT_MERGED, why: "a scribe's state set carries no --accept-merged / --json / mergedAccepted (they override a merge claim) — pass plain flags (--status --branch --pr --head), or report to the coordinator" };
 const NO_PROTECT: Rule = { re: PROTECT_RE, why: "the role guard's own wiring (.orchestra/role, role-guard.sh, .claude/settings*.json) is never written by a fleet role" };
 const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace belongs to the coordinator that owns it' };
 

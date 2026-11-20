@@ -77,38 +77,69 @@ export function summarize(rows) {
   return { total, byWs, byRole, byModel, byRoleModel }
 }
 
-/** OPS tool calls by kind (deduped by message.id); `scribeable` = what the skill hands to a scribe-: ledger writes, `fanout state set`, CI polling, sweeps. */
-export function opsCalls(projects) {
-  const seen = new Set(), c = {}
+/** Kind of one tool call; the first four are what a scribe-able loop is made of. */
+export function kindOf(name, cmd = '') {
+  if (name !== 'Bash') return name
+  return /orchestra (send|check|ack|spawn|token|ask)\b/.test(cmd) ? 'fleet-mail'
+    : /\bgh (issue|pr) (comment|edit)\b|ledger-set/.test(cmd) ? 'ledger-write'
+    : /fanout state set/.test(cmd) ? 'state-set'
+    : /\bgh (pr (checks|view|list)|run)\b/.test(cmd) ? 'ci-poll'
+    : /orchestra (verify-landed|peers)|git (-C \S+ )?(log|status|ls-remote|rev-list)\b/.test(cmd) ? 'sweep'
+    : 'other-bash'
+}
+const MECHANICAL = new Set(['ledger-write', 'state-set', 'ci-poll', 'sweep'])
+
+/** Per-message view (deduped by message.id, tool kinds accumulated over the streamed lines), in file order. */
+function messages(projects) {
+  const out = []
   for (const dir of readdirSync(projects)) {
-    if (wsOfDir(dir).role !== 'ops') continue
+    const ws = wsOfDir(dir)
     for (const f of walk(join(projects, dir))) {
+      if (f.includes('/subagents/')) continue
+      const byId = new Map()
       for (const line of readFileSync(f, 'utf8').split('\n')) {
-        if (!line.includes('"tool_use"')) continue
+        if (!line.includes('"usage"')) continue
         let o
         try { o = JSON.parse(line) } catch { continue }
-        if (o.type !== 'assistant' || !o.message?.id) continue
-        for (const b of o.message.content ?? []) {
-          if (b.type !== 'tool_use') continue
-          const key = `${o.message.id}/${b.id}`
-          if (seen.has(key)) continue
-          seen.add(key)
-          const cmd = b.input?.command ?? ''
-          const k = b.name !== 'Bash' ? b.name
-            : /orchestra (send|check|ack|spawn|token|ask)\b/.test(cmd) ? 'fleet-mail'
-            : /\bgh (issue|pr) (comment|edit)\b|ledger-set/.test(cmd) ? 'ledger-write'
-            : /fanout state set/.test(cmd) ? 'state-set'
-            : /\bgh (pr (checks|view|list)|run)\b/.test(cmd) ? 'ci-poll'
-            : /orchestra (verify-landed|peers)|git (-C \S+ )?(log|status|ls-remote|rev-list)\b/.test(cmd) ? 'sweep'
-            : 'other-bash'
-          c[k] = (c[k] ?? 0) + 1
-        }
+        const m = o.message
+        if (o.type !== 'assistant' || !m?.usage || !m.id || m.model === '<synthetic>') continue
+        let e = byId.get(m.id)
+        if (!e) { e = { ws, file: f, read: m.usage.cache_read_input_tokens ?? 0, create: m.usage.cache_creation_input_tokens ?? 0, kinds: [] }; byId.set(m.id, e); out.push(e) }
+        for (const b of m.content ?? []) if (b.type === 'tool_use' && !e.kinds.some((k) => k.id === b.id)) e.kinds.push({ id: b.id, kind: kindOf(b.name, b.input?.command ?? '') })
       }
     }
   }
+  return out
+}
+
+/** OPS tool calls by kind; `scribeable` = ledger-write + state-set + ci-poll + sweep. */
+export function opsCalls(projects) {
+  const c = {}
+  for (const e of messages(projects)) if (e.ws.role === 'ops') for (const k of e.kinds) c[k.kind] = (c[k.kind] ?? 0) + 1
   const total = Object.values(c).reduce((a, b) => a + b, 0)
-  const scribeable = (c['ledger-write'] ?? 0) + (c['state-set'] ?? 0) + (c['ci-poll'] ?? 0) + (c['sweep'] ?? 0)
+  const scribeable = [...MECHANICAL].reduce((a, k) => a + (c[k] ?? 0), 0)
   return { total, scribeable, byKind: c }
+}
+
+/** The two figures the skill quotes, each a BOUND with its derivation (#476 review MINOR 4):
+ *  - ceiling: OPS turns whose tool calls are ALL mechanical × the OPS mean cache-read per turn ÷ fleet cache-read (assumes every such turn vanishes, ignores the scribe seats' own cost);
+ *  - lower bound of the static prefix: (turns − sessions) × the smallest first-turn read+create of any session ÷ fleet cache-read. */
+export function bounds(projects) {
+  const msgs = messages(projects)
+  const total = msgs.reduce((a, e) => a + e.read, 0)
+  const ops = msgs.filter((e) => e.ws.role === 'ops')
+  const opsMean = ops.reduce((a, e) => a + e.read, 0) / (ops.length || 1)
+  const mech = ops.filter((e) => e.kinds.length > 0 && e.kinds.every((k) => MECHANICAL.has(k.kind)))
+  let runs = 0, prev = null
+  for (const e of ops) { const isM = mech.includes(e); if (isM && prev !== true) runs++; prev = isM }
+  const firsts = new Map()
+  for (const e of msgs) if (!firsts.has(e.file)) firsts.set(e.file, e.read + e.create)
+  const minPrefix = Math.min(...firsts.values())
+  return {
+    total,
+    ceiling: { mechTurns: mech.length, runs, opsMeanRead: Math.round(opsMean), pct: (100 * mech.length * opsMean) / total },
+    staticPrefix: { sessions: firsts.size, turns: msgs.length, minPrefix, pct: (100 * (msgs.length - firsts.size) * minPrefix) / total },
+  }
 }
 
 const M = (n) => (n / 1e6).toFixed(2) + 'M'
@@ -136,5 +167,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(table('Per model', 'model', s.byModel, s.total), '\n')
     const oc = opsCalls(root)
     console.log(`OPS tool calls: ${oc.total}, scribe-able (ledger-write + state-set + ci-poll + sweep): ${oc.scribeable} — ${JSON.stringify(oc.byKind)}`)
+    const bd = bounds(root)
+    console.log(`CEILING  (mechanical-only OPS turns): ${bd.ceiling.mechTurns} turns in ${bd.ceiling.runs} runs × ${bd.ceiling.opsMeanRead} mean OPS cache-read/turn ÷ ${M(bd.total)} (main sessions; sidechains excluded) = ${bd.ceiling.pct.toFixed(1)}% (upper bound: every such turn vanishes, scribe seats' own cost ignored)`)
+    console.log(`LOWER BOUND (static prefix): (${bd.staticPrefix.turns} turns − ${bd.staticPrefix.sessions} sessions) × ${bd.staticPrefix.minPrefix} smallest first-turn read+create ÷ ${M(bd.total)} = ${bd.staticPrefix.pct.toFixed(1)}%`)
   }
 }

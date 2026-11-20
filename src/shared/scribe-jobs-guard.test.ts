@@ -37,6 +37,7 @@ export const SCRIBE_JOBS: ReadonlyArray<readonly [job: string, command: string]>
   ['ledger: comment from a body file', 'gh issue comment 471 -R lcsmas/orchestra --body-file $TMPDIR/c.md'],
   ['ledger: body rewrite from a file', 'gh issue edit 471 -R lcsmas/orchestra --body-file $TMPDIR/body.md'],
   ['ledger: a table row via ledger-set', '.claude/skills/verified-fanout/scripts/ledger-set lcsmas/orchestra 471 Candidates 476 "| #476 | gated |"'],
+  ['state relay: fanout state set --run', 'orchestra fanout state set 476 --run 067968a4 --status nominated --branch impl-x --head 0123456789abcdef0123456789abcdef01234567'],
   ['state relay: fanout state set', 'orchestra fanout state set 476 --status gated --head 0123456789abcdef0123456789abcdef01234567 --pr 12'],
   ['state read: fanout state show', 'orchestra fanout state show'],
   ['CI poll: gh pr checks --watch', 'gh pr checks 12 -R lcsmas/orchestra --watch'],
@@ -58,6 +59,10 @@ export const SCRIBE_DENIED: ReadonlyArray<readonly [what: string, command: strin
   ['fanout deliver', 'orchestra fanout deliver --branch b --into main --ticket 1 --review-verdict f --verified-head abc'],
   ['fanout state init', 'orchestra fanout state init --run r --target main'],
   ['state set --accept-merged (review MINOR 3)', 'orchestra fanout state set 476 --status merged --accept-merged "relay"'],
+  ['state set --json carrying mergedAccepted (review MINOR 2)', `orchestra fanout state set 476 --status merged --json '{"mergedAccepted":"relay"}'`],
+  ['state set --json - from an echo pipe', `echo '{"mergedAccepted":"r"}' | orchestra fanout state set 476 --json -`],
+  ['state set --json - from a heredoc', "orchestra fanout state set 476 --json - <<'EOF'\n{\"mergedAccepted\":\"r\"}\nEOF"],
+  ['--note with a `;` before --accept-merged', 'orchestra fanout state set 476 --note "a; b" --accept-merged x'],
   ['state set --accept-merged after &&', 'cd /r && orchestra fanout state set 476 --accept-merged x --status merged'],
   ['workspace delete', 'orchestra delete impl-foo-1'],
   ['sed -i in the worktree', "sed -i 's/a/b/' src/a.ts"],
@@ -91,8 +96,9 @@ test('#476: the relay is `state set` only — every OTHER role stays denied it, 
   assert.equal(sh(install('coordinator'), 'orchestra fanout state init --run r --target main').code, 0);
 });
 
-test('#476: the skill names each scribe job (the probed list and the text cannot drift)', () => {
-  for (const re of [/scribe-ledger/, /scribe-state/, /scribe-sweep/]) assert.match(VERIFIED_FANOUT_SKILL, re);
-  assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /scribe-ci/, '`fanout deliver` absorbs CI polling: not a scribe job (LEAD scope change)');
-  for (const re of [/gh issue comment --body-file/, /fanout state set/, /scripts\/ledger-set/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+test('#476: the skill states the scribe criterion, no named per-job scribes, and the guard denial it promises', () => {
+  assert.match(VERIFIED_FANOUT_SKILL, /steps that need turns BETWEEN them/);
+  for (const re of [/scribe-ci/, /scribe-sweep/, /scribe-state/, /scribe-ledger/]) assert.doesNotMatch(VERIFIED_FANOUT_SKILL, re, `${re}: a batch one Bash call can run is not a scribe job (LEAD ruling)`);
+  // the note in the skill names exactly the three things the guard denies
+  for (const w of ['--accept-merged', '--json', 'mergedAccepted']) assert.ok(VERIFIED_FANOUT_SKILL.includes(w), w);
 });

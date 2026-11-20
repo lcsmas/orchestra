@@ -175,6 +175,11 @@ export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = 
   ['traps.md pointer carries its four rung triggers + line ranges', /L23–117\) when[\s\S]*L118–394\) when[\s\S]*L395–559\) when[\s\S]*L560–723\) when/],
   ['close-out: reported done != landed', /"Agent reported done" and "work \*\*landed\*\*" are two different events/],
   ['delete only a FINISHED agent, re-take the sweep', /\*\*Deleting a workspace requires the agent to be FINISHED, not merely landed\.\*\*/],
+  ['scribe only for steps that need turns between them (poll/retry/read-then-act), no judgement', /A scribe only for steps that need turns BETWEEN them \(poll, retry, read-then-act\) with NO judgement/],
+  ['a single call or a one-Bash-call batch is run by the coordinator (spawn + worker_done + delete cost more)', /A batch one Bash call can run \(for \/ &&\) or a single call you run yourself:\s+spawn \+ `worker_done` \+ delete cost more turns than they save/],
+  ['scribe lever: scribe-able turns are a ceiling, the static prefix dominates, handoff late', /scribe-able turns are a\s+≤6% ceiling, ≥49% is the static prefix: keep this file small, `orchestra handoff` late/],
+  ['scribe spawn shape: body text or absolute path + run id; the coordinator deletes it', /scribe-<object> --task "<body text or absolute path, run id, fixed commands, ledger #N>"`; it ends with `worker_done --cap`, then\s+you delete it/],
+  ['a scribe\'s state set never carries --accept-merged / --json / mergedAccepted', /A scribe's `state set` never carries `--accept-merged`, `--json` or `mergedAccepted` \(guard-denied\)/],
   ['deliverable file exists on the integration branch', /Then confirm each deliverable \*\*file\*\* exists on the integration branch/],
 ];
 
