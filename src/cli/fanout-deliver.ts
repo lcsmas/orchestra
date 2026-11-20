@@ -8,6 +8,8 @@ import fs from 'node:fs';
 import {
   classifyMergeFailure,
   combinedSuiteCommand,
+  detectPackageManager,
+  suiteCommandFor,
   DELIVER_EXIT,
   decideDelivery,
   isUserStep,
@@ -20,6 +22,7 @@ import {
   type RefuseReason,
   type ReviewVerdict,
   type RollupItem,
+  type SuiteSource,
 } from '../shared/fanout-deliver.ts';
 
 export interface GhResult {
@@ -129,6 +132,8 @@ export interface DeliverResult {
   reviewGated: boolean;
   /** Run this on the target after the merges (the verb never runs a repo suite). Present when the PR is on the target. */
   combinedSuite?: string;
+  /** #487 — where `combinedSuite`'s test command came from: --suite-cmd, package.json packageManager, a lockfile on the target, or the npm fallback. */
+  combinedSuiteSource?: SuiteSource;
 }
 
 export interface DeliverDeps {
@@ -155,7 +160,31 @@ export interface DeliverOutcome {
   result: DeliverResult;
 }
 
+/** #487 — the target repo's test command, read from `<target>` on GitHub (root listing + package.json), never from this checkout. */
+export async function suiteCommandForTarget(opts: Pick<DeliverOpts, 'into' | 'repo' | 'suiteCmd'>, gh: GhRunner): Promise<{ cmd: string; source: SuiteSource }> {
+  if (opts.suiteCmd) return { cmd: opts.suiteCmd, source: 'flag' };
+  const base = `repos/${opts.repo ?? '{owner}/{repo}'}/contents`;
+  const ref = `?ref=${encodeURIComponent(opts.into)}`;
+  try {
+    const root = await gh(['api', `${base}${ref}`]);
+    if (root.code !== 0) throw new Error('root listing');
+    const names = (JSON.parse(root.stdout) as { name?: string }[]).map((e) => String(e.name));
+    const pj = names.includes('package.json') ? await gh(['api', '-H', 'Accept: application/vnd.github.raw+json', `${base}/package.json${ref}`]) : null;
+    const found = detectPackageManager(pj && pj.code === 0 ? pj.stdout : null, names);
+    if (found) return { cmd: suiteCommandFor(found.pm), source: found.source };
+  } catch { /* could not read the target: the fallback below */ }
+  return { cmd: suiteCommandFor(null), source: 'fallback' };
+}
+
 export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
+  const out = await deliverGated(opts, deps);
+  if (out.result.combinedSuite === undefined) return out;
+  const s = await suiteCommandForTarget(opts, deps.gh);
+  if (s.source === 'fallback') deps.log('combinedSuite: could not tell the target repo\'s package manager (no packageManager field / lockfile read) — using "npm test"; pass --suite-cmd to set it');
+  return { exit: out.exit, result: { ...out.result, combinedSuite: combinedSuiteCommand(opts.into, s.cmd), combinedSuiteSource: s.source } };
+}
+
+async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
   const base = { ticket: opts.ticket, branch: opts.branch, into: opts.into };
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
     const full: DeliverResult = { ...result, ...base, reviewGated };
@@ -307,7 +336,8 @@ merge ungated: the result then says reviewGated:false), 0 checks, a passing chec
 the verdict file, a head that is not the verified head, a conflict, a --require-check
 that is missing or skipped (name external CI with it: statuses alone are not green).
 Prints ONE JSON line (verdict, reason, pr, head, combinedSuite = the command to run
-on <target> after N merges). Verdict file: {"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}.
+on <target> after N merges, its test command read from the target: package.json
+packageManager, else the lockfile, else "npm test"; --suite-cmd overrides). Verdict file: {"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}.
 Exit codes: 0 = merged (or already merged at the verified head), 2 = refused,
             1 = could not check (usage, gh failed, timeout, unreadable verdict)`;
 

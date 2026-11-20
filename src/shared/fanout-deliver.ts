@@ -212,8 +212,34 @@ export function classifyMergeFailure(stderr: string): 'head-moved' | 'other' {
 /** Names that are safe to splice into a shell line and into `gh` argv (no leading `-`, no metacharacters). */
 export const SAFE_REF = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
 
+export type PackageManager = 'pnpm' | 'yarn' | 'npm' | 'bun';
+export type SuiteSource = 'flag' | 'packageManager' | 'lockfile' | 'fallback';
+
+/** #487 — the package manager of the TARGET repo: `package.json` `packageManager` ("pnpm@9.1.0") wins, else the root lockfile
+ *  (pnpm-lock.yaml > yarn.lock > bun.lock[b] > package-lock.json), else null (the caller falls back). Pure: the I/O is the caller's. */
+export function detectPackageManager(packageJson: string | null, rootFiles: readonly string[]): { pm: PackageManager; source: 'packageManager' | 'lockfile' } | null {
+  if (packageJson) {
+    try {
+      const field = (JSON.parse(packageJson) as { packageManager?: unknown }).packageManager;
+      const m = typeof field === 'string' ? /^(pnpm|yarn|npm|bun)(@|$)/.exec(field.trim()) : null;
+      if (m) return { pm: m[1] as PackageManager, source: 'packageManager' };
+    } catch { /* unparseable package.json: fall through to the lockfile */ }
+  }
+  const has = (f: string) => rootFiles.includes(f);
+  if (has('pnpm-lock.yaml') || has('pnpm-workspace.yaml')) return { pm: 'pnpm', source: 'lockfile' };
+  if (has('yarn.lock')) return { pm: 'yarn', source: 'lockfile' };
+  if (has('bun.lock') || has('bun.lockb')) return { pm: 'bun', source: 'lockfile' };
+  if (has('package-lock.json') || has('npm-shrinkwrap.json')) return { pm: 'npm', source: 'lockfile' };
+  return null;
+}
+
+/** The test command of a package manager. `npm test` is also the fallback when the repo names none (works in any node repo with a test script). */
+export function suiteCommandFor(pm: PackageManager | null): string {
+  return pm === 'pnpm' ? 'pnpm run test' : pm === 'yarn' ? 'yarn test' : pm === 'bun' ? 'bun run test' : 'npm test';
+}
+
 /** The command the COORDINATOR runs on the target after N merges (the verb never runs a repo suite itself). */
-export function combinedSuiteCommand(into: string, suiteCmd = 'pnpm run test'): string {
+export function combinedSuiteCommand(into: string, suiteCmd = suiteCommandFor(null)): string {
   if (!SAFE_REF.test(into)) throw new Error(`unsafe target ref: ${into}`);
   return `git fetch origin ${into} && git checkout --detach origin/${into} && git rev-list --count HEAD..origin/${into} && ${suiteCmd}`;
 }
