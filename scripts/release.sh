@@ -56,6 +56,8 @@
 # RELEASE GATE (#207/#208): before any tag/push the tree must pass `npx tsc --noEmit`, the full
 # suite, the session-budget suite and the Admission rigs (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
 # --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
+# #484: the gate is SKIPPED when scripts/release-gate.sh already PASSED on this exact tree (a receipt keyed by the git tree id, package.json's
+# version line masked; any other change, another gate version or an unclean tree runs it). The vague's final gate runs `bash scripts/release-gate.sh`.
 #
 # Requirements: a clean working tree on a non-detached branch, up to date with
 # its own remote, and an authenticated gh CLI.
@@ -393,13 +395,20 @@ say "Releasing $CURRENT → $NEW  (tag $TAG)"
 # After every cheap refusal, BEFORE the first mutation; order tsc -> test -> build:bus-abi -> bump -> build.
 say "Release gate (#207/#208/#287): typecheck + full suite + session-budget suite + Admission rigs on this tree"
 if [ "$DRY_RUN" = 1 ]; then
+  if [ "$SKIP_GATE" != 1 ] && _rg_why="$(rg_receipt_check)"; then printf '  [dry-run] release gate: would be SKIPPED — %s\n' "$_rg_why"; fi
   printf '  [dry-run] release gate: npx tsc --noEmit -> pnpm run test (0 fail, 0 skipped) -> pnpm run test:session-budget -> pnpm run test:admission-hold -> pnpm run test:admission-wake%s\n' \
     "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
 elif [ "$SKIP_GATE" = 1 ]; then
   printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite, the session-budget suite and the Admission rigs were NOT run. Reason: %s\n' "$SKIP_GATE_REASON" >&2
   echo "  (this is recorded in the release notes)" >&2
 else
-  rg_run_gate || exit 1
+  # #484: a PASS receipt for this tree (modulo package.json's version line) means the gate already ran on exactly this code.
+  if _rg_why="$(rg_receipt_check)"; then
+    echo "release-gate: SKIPPED — $_rg_why"
+  else
+    echo "  receipt: $_rg_why — running the gate"
+    rg_run_gate || exit 1
+  fi
 fi
 if [ "$CI_ONLY" = 0 ]; then
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] pnpm run build:bus-abi\n'; else rg_prepare_native || exit 1; fi

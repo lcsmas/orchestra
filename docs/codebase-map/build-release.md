@@ -218,6 +218,20 @@ real `release.sh` in a sandbox (local bare origin, fake `gh`, real tsc/`node
 --test`, stub build scripts) across the refusal/bypass/order/once/`--to-master`/
 `--ci-only` arms; nothing real is tagged or pushed.
 
+**PASS receipt (#484, `rg_receipt_write` / `rg_receipt_check` / `rg_norm_tree` in `release-gate.sh`).** A full gate PASS writes
+`<git-common-dir>/release-gate-receipts/<tree>` (outside the working tree, shared by every worktree; `RELEASE_GATE_RECEIPT_DIR` overrides)
+with `gate_version`, `norm_tree`, `raw_tree`, `head`, `version`, `date`. `<tree>` is HEAD's git tree id with **package.json's one top-level
+`"version"` line masked** (`rg_norm_tree`: a scratch index + alternate object dir, so no objects are added; no single such line → the raw tree id,
+fail closed). `release.sh` calls `rg_receipt_check` before the gate and **skips it** (`release-gate: SKIPPED — PASS receipt: …`; `build:bus-abi`,
+bump, build, ship still run) only when ALL hold: no tracked/untracked change (`_rg_tree_dirt`), a receipt exists for HEAD's masked tree, its
+`gate_version` == `RG_GATE_VERSION` (bump the constant when the gate's checks change meaning), its stored `norm_tree` equals the file name, and — the
+explicit proof — HEAD's tree is the gated tree or differs from it by `package.json` alone (`git diff-tree`, when the gated tree is still in the
+object db; the masked-id equality already means "that file's version line only"). Anything else prints the reason and runs the gate; a failed gate
+writes nothing; `--skip-release-gate` is unchanged (receipt ignored). The vague's final gate runs **`bash scripts/release-gate.sh`** (standalone: gate
++ receipt, leaves node_modules at node ABI) instead of tsc + suite by hand. Assumption: a bump re-serialises package.json only on the version line
+(true for this repo's canonical 2-space file under `pnpm version`; a non-canonical file just misses the receipt). Rig: `pnpm run test:release-receipt`
+(scratch repo + FAKE gate stubs, no real suite) and `pnpm run test:release-receipt-mutants` (8 clause mutants must all turn it red).
+
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +
 validate AppImage → (if `--install`) **atomic** cp-to-temp, the version sidecar

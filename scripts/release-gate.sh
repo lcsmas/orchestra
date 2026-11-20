@@ -6,6 +6,12 @@
 # -> tree == HEAD (tracked unchanged, no untracked files); then build:bus-abi (suite = node ABI 127, package = Electron 130).
 # Opt-in: RELEASE_REAL_API_SMOKE_CONFIG_DIR=<account CLAUDE_CONFIG_DIR> adds ONE real cheap-model turn (real tokens).
 # Refusal: `release-gate: REFUSED — check '<name>' failed: <why>` on stderr. Rig: verify-release-gate.sh.
+# #484 RECEIPT: a full PASS writes `<git-common-dir>/release-gate-receipts/<tree>` (the gated tree with package.json's `version` line masked + the
+# gate version); release.sh skips the gate when HEAD's masked tree has a receipt of this gate version (rg_receipt_check). Standalone: `bash scripts/release-gate.sh`.
+# Rig: verify-release-receipt.sh.
+
+# Bump this when the gate's checks change meaning: every receipt of another version stops counting (#484).
+RG_GATE_VERSION=1
 
 # Sum the node --test summary counters (TAP `# key N` or spec `ℹ key N`) over the whole log.
 # Prints `tests=N pass=N fail=N cancelled=N skipped=N todo=N`; rc 3 if a required key is absent.
@@ -29,6 +35,70 @@ _rg_tree_dirt() {
   git diff-index --quiet HEAD -- || echo "tracked files changed: $(git status --short --untracked-files=no | head -5 | tr '\n' ';')"
   local u; u="$(git ls-files --others --exclude-standard | head -5 | tr '\n' ';')"
   [ -z "$u" ] || echo "untracked files not ignored (the tag would lack them): $u"
+}
+
+# ---------------------------------------------------------------- #484 receipt ---
+# Receipt dir: outside the working tree (shared by every worktree of the repo); RELEASE_GATE_RECEIPT_DIR overrides it (rig).
+_rg_receipt_dir() { printf '%s\n' "${RELEASE_GATE_RECEIPT_DIR:-$(git rev-parse --path-format=absolute --git-common-dir)/release-gate-receipts}"; }
+
+# Prints the id of <rev>'s tree with package.json's top-level `"version"` line masked (the ONLY thing a release bump changes). Two trees share this id iff
+# they are byte-identical except that one line. If package.json has no single top-level version line the id is the raw tree id (fails closed: a bump then
+# changes it). The masked tree is built in a scratch index + object dir (alternates = the real one), so the repo gains no objects.
+rg_norm_tree() { # [rev=HEAD]
+  local rev="${1:-HEAD}" raw tmp mode objs norm=""
+  raw="$(git rev-parse --verify -q "$rev^{tree}")" || return 1
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/rg-norm.XXXXXX")" || { printf '%s\n' "$raw"; return 0; }
+  mode="$(git ls-tree "$raw" -- package.json | awk '{print $1}')"
+  if [ -n "$mode" ] && git cat-file blob "$raw:package.json" | node -e '
+      const raw = require("node:fs").readFileSync(0, "utf8");
+      let v; try { v = JSON.parse(raw).version; } catch { process.exit(1); }
+      if (typeof v !== "string") process.exit(1);
+      const re = /^( {2}|\t)"version"[ \t]*:[ \t]*"([^"\\]*)"(,?[ \t]*)$/gm;
+      const hits = [...raw.matchAll(re)];
+      if (hits.length !== 1 || hits[0][2] !== v) process.exit(1);
+      process.stdout.write(raw.replace(re, "$1\"version\": \"0.0.0-masked\"$3"));' > "$tmp/pkg" 2>/dev/null; then
+    objs="$(git rev-parse --path-format=absolute --git-path objects)"; mkdir -p "$tmp/obj"
+    norm="$(GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/obj" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objs" sh -c '
+      git read-tree "$1" && b="$(git hash-object -w --stdin < "$3")" && git update-index --add --cacheinfo "$2,$b,package.json" && git write-tree' _ "$raw" "$mode" "$tmp/pkg" 2>/dev/null)" || norm=""
+  fi
+  rm -rf "$tmp"
+  printf '%s\n' "${norm:-$raw}"
+}
+
+_rg_receipt_field() { sed -n "s/^$2=//p" "$1" | head -1; }
+
+# Called after a full PASS on a clean tree (rg_run_gate): record it. Atomic (tmp + mv); a failed write never fails the gate.
+rg_receipt_write() { # detail
+  local dir norm raw tmp; dir="$(_rg_receipt_dir)" || return 0
+  norm="$(rg_norm_tree HEAD)" || return 0; raw="$(git rev-parse 'HEAD^{tree}')"
+  mkdir -p "$dir" 2>/dev/null && tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" || return 0
+  {
+    printf 'gate_version=%s\nnorm_tree=%s\nraw_tree=%s\nhead=%s\nversion=%s\ndate=%s\ndetail=%s\n' \
+      "$RG_GATE_VERSION" "$norm" "$raw" "$(git rev-parse HEAD)" "$(node -p "require('./package.json').version" 2>/dev/null)" "$(date -u +%Y-%m-%dT%H:%MZ)" "$1"
+  } > "$tmp" && mv -f "$tmp" "$dir/$norm" || rm -f "$tmp"
+  echo "  receipt: PASS recorded for tree ${norm:0:12} (gate v$RG_GATE_VERSION)"
+}
+
+# Is there a PASS receipt for HEAD? Returns 0 (hit: the gate need not run; proof lines on stdout) or 1 (miss: why on stdout; run the gate).
+# Hit = tree has no tracked/untracked change AND a receipt exists for HEAD's masked tree AND it is this gate version AND (explicit proof) HEAD's tree
+# equals the gated tree outright or differs from it by package.json's version line only.
+rg_receipt_check() {
+  local dirt dir norm raw f rv rnorm rraw changed
+  dirt="$(_rg_tree_dirt)"; [ -z "$dirt" ] || { echo "no receipt honoured — $dirt"; return 1; }
+  dir="$(_rg_receipt_dir)"; norm="$(rg_norm_tree HEAD)" || { echo "no receipt honoured — cannot resolve HEAD's tree"; return 1; }
+  raw="$(git rev-parse 'HEAD^{tree}')"; f="$dir/$norm"
+  [ -f "$f" ] || { echo "no receipt for tree ${norm:0:12}"; return 1; }
+  rv="$(_rg_receipt_field "$f" gate_version)"; rnorm="$(_rg_receipt_field "$f" norm_tree)"; rraw="$(_rg_receipt_field "$f" raw_tree)"
+  [ "$rv" = "$RG_GATE_VERSION" ] || { echo "receipt for tree ${norm:0:12} is gate v${rv:-?}, this gate is v$RG_GATE_VERSION"; return 1; }
+  [ "$rnorm" = "$norm" ] && [ -n "$rraw" ] || { echo "receipt for tree ${norm:0:12} is malformed (norm_tree/raw_tree)"; return 1; }
+  if [ "$rraw" = "$raw" ]; then
+    echo "PASS receipt: HEAD tree ${raw:0:12} is the gated tree (gate v$RG_GATE_VERSION, gated $(_rg_receipt_field "$f" date))"; return 0
+  fi
+  if git cat-file -e "$rraw^{tree}" 2>/dev/null; then
+    changed="$(git diff-tree -r --name-only "$rraw" "$raw" | tr '\n' ' ' | sed 's/ $//')"
+    [ "$changed" = package.json ] || { echo "receipt tree ${rraw:0:12} vs HEAD tree ${raw:0:12} differ in [$changed], not package.json alone"; return 1; }
+  fi
+  echo "PASS receipt: HEAD tree ${raw:0:12} == gated tree ${rraw:0:12} except package.json version ($(_rg_receipt_field "$f" version) -> $(node -p "require('./package.json').version" 2>/dev/null)); masked tree ${norm:0:12} (gate v$RG_GATE_VERSION)"
 }
 
 # Judge a test log + the test command's rc. Prints the PASS detail on stdout and returns 0,
@@ -168,6 +238,7 @@ rg_run_gate() {
     return 1
   fi
   rm -rf "$dir"
+  rg_receipt_write "tsc clean; $detail"
   echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 'HEAD^{tree}')"
 }
 
@@ -188,3 +259,9 @@ rg_bypass_record() { # reason
   printf '\n## ⚠ Release gate bypassed\n\nCut with `--skip-release-gate`: `npx tsc --noEmit`, the full test suite, the session-budget suite and the Admission rigs were **not run** on this tree.\n\n- reason: %s\n- tree: %s\n- date: %s\n' \
     "$1" "$(git rev-parse --short=12 'HEAD^{tree}')" "$(date -u +%Y-%m-%dT%H:%MZ)"
 }
+
+# Standalone (`bash scripts/release-gate.sh`): the vague's final gate — runs the gate on this tree and leaves the #484 receipt release.sh honours.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  cd "$(git rev-parse --show-toplevel)" && rg_run_gate
+  exit $?
+fi

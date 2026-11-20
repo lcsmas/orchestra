@@ -73,7 +73,10 @@ header documents every flag (`--to-master`, `--install`, `--notes-file`,
    The script first runs `tsc`, the full suite (0 fail, **0 skipped**) and
    `build:bus-abi` (#207, `scripts/release-gate.sh`); any refusal leaves the
    repo untouched — fix and re-run. `--skip-release-gate "<reason>"` is never
-   a way past a red suite. A "not an ancestor" refusal usually means a sibling
+   a way past a red suite. If `bash scripts/release-gate.sh` already PASSED on
+   this exact tree (a vague's final gate; only `package.json`'s version line may
+   differ) release.sh prints `release-gate: SKIPPED — PASS receipt…` and does not
+   re-run the suite (#484); any other change re-runs it. A "not an ancestor" refusal usually means a sibling
    moved master: redo step 2, then this step.
 
 6. **Report back**: the new version/tag, the evidence cited in step 3, and tell
