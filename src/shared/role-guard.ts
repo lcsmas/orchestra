@@ -206,6 +206,8 @@ done
 if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
   # Heuristic, not a sandbox: a redirect / tee target outside scratch, sed -i, in-place git acts. Write into $TMPDIR instead.
   # Write targets (redirect / tee / sed -i): ONE quote-aware scan (role-guard-writes.ts); every target not provably scratch is listed.
+  # Size cap BEFORE the scanner (mawk's string handling is quadratic: 3 MB took 109 s, past the hook timeout = fail-open). Real max over 92,913 commands: 12.5 KB.
+  if [ "\${#cmd}" -gt 65536 ]; then deny "the command is too large (\${#cmd} chars > 65536) for the write scanner — this guard fails closed; put the long text in a scratch file and pass it by reference."; fi
   wout="$(printf '%s' "$cmd" | RG_CWD="$cwd" awk "$awk_writes" 2>&1)"; wrc=$?
   if [ "$wrc" != 0 ]; then deny "the write scanner could not run (awk exit $wrc: $(printf '%s' "$wout" | head -c 120)) — this guard fails closed on its own errors; tell the human/coordinator, do not retry around it."; fi
   if printf '%s\n' "$wout" | grep -q '^SEDI'; then deny "sed -i edits files in place — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). Copy the file there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi

@@ -336,6 +336,29 @@ function gtBad(script: string, tag: string): string[] {
   }
   return bad;
 }
+test('a command past the size cap is denied BEFORE the scanner (mawk is quadratic: 3 MB took 109 s = hook timeout = fail-open)', () => {
+  const big = (n: number) => 'echo hello world; '.repeat(Math.ceil(n / 18));
+  for (const role of WRITE_ROLES) {
+    const w = install(ROLE_GUARD_SCRIPT, role, `cap-${role}`);
+    assert.equal(run(w, big(60_000)).code, 0, 'a 60 KB command (real max is 12.5 KB) still passes');
+    const r = run(w, big(70_000));
+    assert.equal(r.code, 2); assert.match(r.err, /too large/);
+  }
+  assert.equal(run(install(ROLE_GUARD_SCRIPT, 'implementer', 'cap-impl'), big(70_000)).code, 0, 'no write check, no cap');
+  const noCap = ROLE_GUARD_SCRIPT.replace('-gt 65536 ]', '-gt 65536000 ]');
+  assert.notEqual(noCap, ROLE_GUARD_SCRIPT);
+  assert.equal(run(install(noCap, 'verifier', 'cap-mut'), big(70_000)).code, 0, 'without the cap the same command is not refused — the arm above can fail');
+  // 3 MB through the real mawk when the host has one (Ubuntu/Debian default awk), the default awk otherwise: denied fast either way
+  const mawk = spawnSync('bash', ['-c', 'command -v mawk'], { encoding: 'utf8' }).stdout.trim();
+  const shim = path.join(root, 'shim-awk');
+  fs.mkdirSync(shim, { recursive: true });
+  if (mawk) fs.symlinkSync(mawk, path.join(shim, 'awk'), 'file');
+  const t0 = Date.now();
+  const r3 = run(install(ROLE_GUARD_SCRIPT, 'verifier', 'cap-3mb'), big(3_000_000), { env: mawk ? { PATH: `${shim}:${process.env.PATH}` } : {} });
+  assert.equal(r3.code, 2); assert.match(r3.err, /too large/);
+  assert.ok(Date.now() - t0 < 15_000, `3 MB must be refused fast (${Date.now() - t0} ms, awk=${mawk || 'default'})`);
+});
+
 test('a scanner crash is LOUD (deny), never a silent fail-open', () => {
   const broken = ROLE_GUARD_SCRIPT.replace('RG_CWD="$cwd" awk "$awk_writes"', 'RG_CWD="$cwd" awk "$awk_writes BROKEN ("');
   assert.notEqual(broken, ROLE_GUARD_SCRIPT);
