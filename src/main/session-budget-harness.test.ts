@@ -545,7 +545,7 @@ test('handoff-role judge (#478): off = quiet; on = nudged + handed off + opened 
 });
 
 test('handoff-cache mutants: every anchor matches the shipped source exactly once', () => {
-  for (const name of ['handoff-noop-clear', 'handoff-no-nudge', 'handoff-role-ignored', 'handoff-role-by-name', 'handoff-role-all-on']) {
+  for (const name of ['handoff-noop-clear', 'handoff-no-nudge', 'handoff-role-ignored', 'handoff-role-by-name', 'handoff-wipes-state', 'handoff-role-all-on']) {
     const m = mutants.MUTANTS[name];
     const src = fs.readFileSync(`${REPO}${m.file}`, 'utf8');
     assert.equal([...src.matchAll(m.find)].length, 1, `${name} anchors exactly once in ${m.file}`);

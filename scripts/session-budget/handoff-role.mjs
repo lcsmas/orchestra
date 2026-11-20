@@ -2,7 +2,7 @@
 // the fan-out state file (`orchestra fanout state show`, the REAL built CLI) is identical before/after and its refs reach the fresh context. Same fake-API / real-keeper / real-`claude` path as handoff-cache.mjs.
 //   node scripts/session-budget/handoff-role.mjs [--turns N]      (N must exceed the coordinator bound + 2; default 36, heavy profile)
 // Arms: coord-env0 (env 0 = off, the baseline) · coord-default (env unset ⇒ role default) · coord-file (fleet-roles.json bound 12) · impl-default (env unset, non-coordinator ⇒ must show NO drop)
-// + must-FAIL mutants `handoff-role-ignored` (coordinator never nudged), `handoff-role-by-name` (role read from ws.name) and `handoff-role-all-on` (an implementer nudged).
+// + must-FAIL mutants `handoff-role-ignored` (coordinator never nudged), `handoff-role-by-name` (role read from ws.name), `handoff-wipes-state` (the handoff deletes the fan-out state: ONLY stateIdentical may fail) and `handoff-role-all-on` (an implementer nudged).
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { runHandoffCacheArm, ensureBuilt } from './harness.mjs';
@@ -54,6 +54,7 @@ if (await arm('coord-env0', { wsName: 'ops-handoff-rig', envBound: '0', kind: 'o
   }
   await arm('mutant handoff-role-ignored (must-FAIL)', { wsName: 'ops-handoff-rig', mutant: 'handoff-role-ignored', kind: 'on', wantFail: MUST_FAIL_ON });
   await arm('mutant handoff-role-by-name (must-FAIL)', { wsName: 'ops-handoff-rig', mutant: 'handoff-role-by-name', kind: 'on', wantFail: MUST_FAIL_ON });
+  await arm('mutant handoff-wipes-state (must-FAIL: only stateIdentical)', { wsName: 'ops-handoff-rig', mutant: 'handoff-wipes-state', kind: 'on', wantFail: ['stateIdentical'] });
   await arm('mutant handoff-role-all-on (must-FAIL)', { wsName: 'impl-handoff-rig', mutant: 'handoff-role-all-on', kind: 'off', wantFail: ['quiet'] });
   const b = reports['coord-env0'], d = reports['coord-default'];
   if (b && d) {
