@@ -11,6 +11,7 @@ import {
   newState,
   readState,
   reconcile,
+  resolveFanoutRun,
   stateFile,
   updateState,
   type FanoutState,
@@ -49,7 +50,7 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
-  --run defaults to $ORCHESTRA_RUN_ID.`;
+  --run defaults to YOUR OWN run (your workspace id; init always); set/show/resume use your parent's run only when you have no state and it does (#486).`;
 
 interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
 
@@ -73,14 +74,20 @@ function parseArgs(args: string[], valueFlags: string[], boolFlags: string[]): P
 function homeOf(env: NodeJS.ProcessEnv): string {
   return env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
 }
-function runOf(p: Parsed, env: NodeJS.ProcessEnv): string {
-  const run = p.vals['--run'] ?? env.ORCHESTRA_RUN_ID;
-  if (!run) throw new FanoutStateError('no run: pass --run <id> (or set $ORCHESTRA_RUN_ID)');
-  return run;
+function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use'): { run: string; note: string } {
+  const { run, inherited } = resolveFanoutRun(p.vals['--run'], deps.env);
+  if (!run) throw new FanoutStateError('no run: pass --run <id> (not inside an Orchestra workspace, so no own run to default to)');
+  // #486 — `init` is ALWAYS the caller's own run. A scribe/verifier/worker (no run of its own) reads/updates the coordinator's state: set/show/resume
+  // fall back to the parent's run ONLY when no state exists at the own run and one does at the parent's — said on stderr, never for init.
+  if (mode === 'use' && inherited) {
+    const has = (r: string): boolean => { try { return readState(stateFile(homeOf(deps.env), r)) !== null; } catch { return false; } };
+    if (!has(run) && has(inherited)) return { run: inherited, note: `note: no fanout state for your own run ${run}; using your parent's run ${inherited} (pass --run to choose)\n` };
+  }
+  return { run, note: '' };
 }
 function loadOrFail(file: string): FanoutState {
   const s = readState(file);
-  if (!s) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init --run <id>\` first`);
+  if (!s) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
   return s;
 }
 
@@ -102,10 +109,10 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
   if (verb === 'init') {
     const p = parseArgs(rest, ['--run', '--target', '--repo'], []);
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]}`);
-    const run = runOf(p, deps.env);
+    const { run } = runOf(p, deps, 'init');
     const file = stateFile(homeOf(deps.env), run);
     updateState(file, (cur) => {
-      if (cur) throw new FanoutStateError(`state already exists at ${file}`);
+      if (cur) throw new FanoutStateError(`state already exists at ${file} (run ${cur.run}, ${Object.keys(cur.tickets).length} ticket(s), updated ${cur.updatedAt}) — an earlier vague's, or another coordinator's. Continue it: \`orchestra fanout resume --run ${run}\`; start a fresh one: \`orchestra fanout state init --run <new id>\` (default is your own run ${resolveFanoutRun(undefined, deps.env).run ?? '<id>'}).`);
       return newState(run, { target: p.vals['--target'], repo: p.vals['--repo'] ?? null, now: deps.now() });
     });
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
@@ -129,25 +136,27 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v;
     }
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
-    const file = stateFile(homeOf(deps.env), runOf(p, deps.env));
+    const r = runOf(p, deps, 'use');
+    const file = stateFile(homeOf(deps.env), r.run);
     const next = updateState(file, (cur) => {
-      if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init --run <id>\` first`);
+      if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
       return applyTicketPatch(cur, ticket, patch, deps.now());
     });
     const t = next.tickets[ticket];
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}\n`, stderr: '' };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}\n`, stderr: r.note };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]}`);
-    const file = stateFile(homeOf(deps.env), runOf(p, deps.env));
+    const r = runOf(p, deps, 'use');
+    const file = stateFile(homeOf(deps.env), r.run);
     const s = loadOrFail(file);
-    if (p.bools.has('--json')) return { code: 0, stdout: `${JSON.stringify(s, null, 2)}\n`, stderr: '' };
+    if (p.bools.has('--json')) return { code: 0, stdout: `${JSON.stringify(s, null, 2)}\n`, stderr: r.note };
     const rows = Object.entries(s.tickets).map(([id, t]) => [id, t.status, t.verdict, t.branch ?? '-', t.pr ? `#${t.pr}` : '-', t.head?.slice(0, 8) ?? '-', t.dependsOn.join(',') || '-', t.frozenInterface ?? '-']);
     const head = ['ticket', 'status', 'verdict', 'branch', 'pr', 'head', 'dependsOn', 'frozen'];
     const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${[fmt(head), ...rows.map(fmt)].join('\n')}\n`, stderr: '' };
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${[fmt(head), ...rows.map(fmt)].join('\n')}\n`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
 }
@@ -208,7 +217,8 @@ export function gatherReality(state: FanoutState, runner: Runner, cwd: string, o
 function runResume(args: string[], deps: FanoutDeps): RunResult {
   const p = parseArgs(args, ['--run', '--cwd'], ['--no-fetch', '--no-write', '--json']);
   if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]}`);
-  const file = stateFile(homeOf(deps.env), runOf(p, deps.env));
+  const r = runOf(p, deps, 'use');
+  const file = stateFile(homeOf(deps.env), r.run);
   const out: string[] = [];
   // 1/5 load
   const state = loadOrFail(file);
@@ -235,6 +245,6 @@ function runResume(args: string[], deps: FanoutDeps): RunResult {
   }
   out.push(`5/5 write back  ${wrote}`);
   const code = plan.divergences.length ? 2 : 0;
-  if (p.bools.has('--json')) return { code, stdout: `${JSON.stringify({ run: state.run, divergences: plan.divergences, tickets: plan.tickets, writeBack: plan.writeBack }, null, 2)}\n`, stderr: '' };
-  return { code, stdout: `${out.join('\n')}\n`, stderr: '' };
+  if (p.bools.has('--json')) return { code, stdout: `${JSON.stringify({ run: state.run, divergences: plan.divergences, tickets: plan.tickets, writeBack: plan.writeBack }, null, 2)}\n`, stderr: r.note };
+  return { code, stdout: `${out.join('\n')}\n`, stderr: r.note };
 }
