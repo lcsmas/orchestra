@@ -44,6 +44,7 @@ import {
   clearScrollback,
 } from './pty';
 import { expandConfigDir, planAccountMigration, scratchDefaultAccountId } from '../shared/accounts';
+import { loginFailureHint, resolveChildAccount } from '../shared/spawn-account';
 import { sanitizeStatusText } from '../shared/status-text.ts';
 import { owesOpeningTask } from '../shared/opening-task.ts';
 import { HOME_ROOT_GUARD_MATCHER, HOME_ROOT_GUARD_SCRIPT } from '../shared/home-root-guard.ts';
@@ -371,6 +372,14 @@ export async function createWorkspace(
   const id = randomUUID();
   const repoName = path.basename(input.repoPath);
   const repo = store.repos.find((r) => r.path === input.repoPath);
+  // #480: the ONE decision of a child's account (explicit > caller's > repo's > default) — before any worktree exists, so a refusal creates nothing.
+  const childAccount = resolveChildAccount({
+    explicit: input.account,
+    callerAccountId: input.accountFrom ? store.getWorkspace(input.accountFrom)?.accountId : undefined,
+    repoAccountId: repo?.accountId,
+    accounts: store.accounts,
+  });
+  if (!childAccount.ok) throw new Error(childAccount.error);
   const baseBranch = input.baseBranch || repo?.defaultBranch || 'main';
   // An explicit branch name is sanitized and deduped the same way a rename is,
   // so a caller-supplied name (today: a ticket's key-first branch) can never
@@ -433,9 +442,7 @@ export async function createWorkspace(
     // Pin the repo's currently-assigned account at creation. The agent's
     // conversation will live in that account's CLAUDE_CONFIG_DIR, so the
     // workspace must keep using it even if the repo's account changes later.
-    ...(store.repos.find((r) => r.path === input.repoPath)?.accountId
-      ? { accountId: store.repos.find((r) => r.path === input.repoPath)!.accountId }
-      : {}),
+    ...(childAccount.accountId ? { accountId: childAccount.accountId } : {}),
     // Record the spawning orchestrator only when it still exists — a stale id
     // would render a child orphaned under a phantom parent in the sidebar.
     ...(input.parentId && store.getWorkspace(input.parentId)
@@ -1398,12 +1405,13 @@ async function startWorkspaceAgentOnce(id: string, origin?: PauseOrigin, admitte
     // An errored first turn can leave the CLI alive (only a dead one is gone already): the kept child must be STOPPED, not half-running.
     await sdkStopIfLive(id).catch(() => {});
     const model = `(model: ${ws.model ?? 'default'})`;
+    const loginFix = loginFailureHint({ reason: turn.reason, workspaceId: id, accountId: ws.accountId, accounts: store.accounts }); // #480: ONE line naming the fix
     return {
       ok: false,
       error:
-        turn.cause === 'turn-error'
+        (turn.cause === 'turn-error'
           ? `the agent's first turn failed: ${turn.reason} ${model}`
-          : `the agent exited before its first turn produced output: ${turn.reason} ${model}`,
+          : `the agent exited before its first turn produced output: ${turn.reason} ${model}`) + loginFix,
     };
   }
   if (turn.state === 'timeout') {
@@ -1492,6 +1500,8 @@ export async function dispatchSpawnRequest(
      *  the human paths and the sandbox wire pass neither, so their child is always ephemeral. What the caller HOLDS is read here from its record. */
     profile?: string;
     key?: string;
+    /** #480: `orchestra spawn --account` (id / label / `default`). Absent → the child takes the CALLER's (`from`) account — see `resolveChildAccount`. */
+    account?: string;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1577,6 +1587,8 @@ export async function dispatchSpawnRequest(
       model,
       ...(effort ? { effort } : {}),
       branch: input.branch,
+      ...(input.account ? { account: input.account } : {}),
+      ...(input.from ? { accountFrom: input.from } : {}), // #480: also for --detached (it skips only the parent nesting)
     }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.

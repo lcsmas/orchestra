@@ -108,7 +108,7 @@ with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long bo
     name: 'spawn',
     group: 'Workspaces',
     summary: 'Spawn a new worktree + agent',
-    detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--detached]
+    detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--account <id|label|default>] [--detached]
 
 Spawn a new worktree + agent, nested under the caller by default.
   --name <name>     the child's name (required): ${NAME_CONVENTION}.
@@ -129,6 +129,9 @@ Spawn a new worktree + agent, nested under the caller by default.
                     hold (the human attaches it from your panel's URL bar). Any other profile
                     is refused: the child is still created, in navigation éphémère, and a
                     warning says so. Omitted = navigation éphémère.
+  --account <id|label|default>
+                    the child's Claude account ('orchestra accounts' lists them); omitted = YOUR
+                    account (not the default login), else the repo's. 'default' = the default login.
   --detached        top-level, not nested under the caller`,
   },
   {

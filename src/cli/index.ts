@@ -1294,16 +1294,18 @@ async function main(argv: string[]): Promise<void> {
       const { value: effort, rest: r4b } = takeFlag(r4, '--effort');
       const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
       const { value: profile, rest: r4d } = takeFlag(r4c, '--profile');
-      const { present: detached, rest: r5 } = takeBoolFlag(r4d, '--detached');
+      const { value: account, rest: r4e } = takeFlag(r4d, '--account');
+      const { present: detached, rest: r5 } = takeBoolFlag(r4e, '--detached');
+      if (account !== undefined && !account.trim()) fail('refusing to spawn: --account needs a value (an account id or label, or `default`).\nNothing was created.');
       if (!task)
         fail(
-          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--detached]',
+          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--account <id|label|default>] [--detached]',
         );
       // A value option with no value (last on the line) or whose "value" is exactly the NEXT option was swallowed by the parser: `--repo` last silently
       // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. A value that merely STARTS with `--` (a brief
       // beginning `--- notes`) is still a value. (`--name` has its own, convention-restating refusal.)
-      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--profile', '--detached'];
-      for (const f of ['--task', '--repo', '--base', '--model', '--effort', '--profile']) {
+      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--profile', '--account', '--detached'];
+      for (const f of ['--task', '--repo', '--base', '--model', '--effort', '--profile', '--account']) {
         const i = args.indexOf(f);
         if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))
           fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
@@ -1341,6 +1343,7 @@ async function main(argv: string[]): Promise<void> {
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;
       if (effort !== undefined) body.effort = effort;
+      if (account !== undefined) body.account = account; // #480: omitted → the host gives the child the CALLER's account
       // #401: the profile REQUEST rides with the session key, so the host can vouch the call is the live session of `from`
       // (ADR 0008). What the caller holds is read by the host from its own record — never sent from here.
       if (profile !== undefined) {

@@ -88,6 +88,7 @@
     "test:container-memory-shot": "bash scripts/e2e-contained-rig.sh node scripts/container-memory-screenshot.mjs",
     "test:composed-night": "pnpm run build:cli && node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-composed-night.mjs",
     "test:plain-parent-mutants": "node scripts/plain-parent-mutants.mjs",
+    "test:spawn-account-inherit": "node --experimental-strip-types --import ./scripts/.r2-register.mjs scripts/e2e-spawn-account-inherit.mjs && node scripts/check-spawn-account-single-resolver.mjs",
     "test:roles-position": "pnpm run build:cli && node scripts/verify-roles-follow-position.mjs",
     "test:roles-position-mutants": "node scripts/roles-position-mutants.mjs",
     "test:spawn-dispatch-mutants": "node scripts/spawn-dispatch-mutants.mjs",
