@@ -39,15 +39,20 @@ function scratch(p,   rest) {
   }
   return 0
 }
-function san(v) { return (v ~ "[ \t{}]") ? UNRES : v }
+function san(v) { return (v ~ "[ \t{};]" || (ifs && !safetok(v))) ? UNRES : v }
+function jlog(nm) {
+  # remember nm before a mutation so the enclosing scope can undo it (O(changes), not O(variables) per scope)
+  if (sd == 0) return
+  jn++; JN[jn] = nm; JH[jn] = (nm in vals)
+  if (JH[jn]) { JV[jn] = vals[nm]; JP[jn] = vpoison[nm] }
+}
 function poisonvar(nm) {
+  jlog(nm)
   vals[nm] = UNRES; vpoison[nm] = 1
-  if (fxon && sd == fxsd) fxvars = fxvars " " nm
 }
 function poison_all(   n) {
-  for (n in vals) { vals[n] = UNRES; vpoison[n] = 1 }
+  for (n in vals) { jlog(n); vals[n] = UNRES; vpoison[n] = 1 }
   envpoison = 1; cwd = ""
-  if (fxon && sd == fxsd) fxall = 1
 }
 function getvar(nm) {
   if (nm in vals) return (vpoison[nm]) ? UNRES : vals[nm]
@@ -62,27 +67,34 @@ function okpath(v) { return index(v, UNRES) == 0 && scratch(absp(v)) }
 function safetok(v) { return (index(v, UNRES) == 0 && v ~ "^[A-Za-z0-9_][A-Za-z0-9_.-]*$" && v != "..") }
 function setvar(nm, v) {
   # reassigning one single-component token to another cannot change where a path lands, so it is not a hazard
+  jlog(nm)
   if ((nm in vals) && !(safetok(vals[nm]) && safetok(v)) && !(okpath(vals[nm]) && okpath(v))) vpoison[nm] = 1
   vals[nm] = v
-  if (fxon && sd == fxsd) fxvars = fxvars " " nm
 }
-function judge(kind, disp, v, br,   p) {
+function judge(kind, disp, v, br,   p, praw) {
   if (br || index(v, UNRES)) { emit(kind, disp); return }
   if (v ~ "[*?[]" && v ~ "(^|/)[.][.](/|$)") { emit(kind, disp); return }
   p = absp(v)
   if (!scratch(p)) { emit(kind, disp); return }
-  if (!quiet && p !~ "^/dev/") print "OK\t" p
+  praw = (substr(v, 1, 1) == "/") ? v : cwd "/" v
+  if (!quiet && p !~ "^/dev/") print "OK\t" praw
 }
-function scope_in(   n) {
-  sd++; SNC[sd] = cwd; SNL[sd] = ""
-  for (n in vals) { SNV[sd, n] = vals[n]; SNP[sd, n] = vpoison[n]; SNL[sd] = SNL[sd] " " n }
-}
-function scope_out(   n, a, m, i) {
+function scope_in() { sd++; SNC[sd] = cwd; SNJ[sd] = jn }
+function scope_out(   nm) {
   cwd = SNC[sd]
-  split("", vals); split("", vpoison)
-  m = split(SNL[sd], a, " ")
-  for (i = 1; i <= m; i++) { n = a[i]; vals[n] = SNV[sd, n]; if (SNP[sd, n] != "") vpoison[n] = SNP[sd, n] }
+  while (jn > SNJ[sd]) {
+    nm = JN[jn]
+    if (JH[jn]) { vals[nm] = JV[jn]; vpoison[nm] = JP[jn] } else { delete vals[nm]; delete vpoison[nm] }
+    jn--
+  }
   sd--
+}
+function run_inline(code,   sS, sP, sN, a, b, c, d, g) {
+  # executes CODE in the CURRENT shell state (function bodies, trap handlers): effects persist
+  sS = S; sP = P; sN = N; a = wv; b = wd; c = wq; d = wany; g = bd
+  S = code; N = length(S); P = 1
+  parse_seq("")
+  S = sS; P = sP; N = sN; wv = a; wd = b; wq = c; wany = d; bd = g
 }
 function run_code(code,   sS, sP, sN, a, b, c, d, g) {
   sS = S; sP = P; sN = N; a = wv; b = wd; c = wq; d = wany; g = bd
@@ -94,7 +106,7 @@ function run_code(code,   sS, sP, sN, a, b, c, d, g) {
 }
 function safe_subst(inner) {
   # command substitutions whose output is a harmless single component: date +FMT; mktemp under TMPDIR (unless TMPDIR was reassigned here)
-  if (inner ~ "^[ \t]*date([ \t]+[+%A-Za-z0-9_:.-]+)*[ \t]*$") return "0"
+  if (index(inner, "%") && inner ~ "^[ \t]*date([ \t]+[+%A-Za-z0-9_:.-]+)*[ \t]*$") return "0"
   if (!("TMPDIR" in vals) && (inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]*$" || inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]+(-t|-dt|-td)[ \t]+[A-Za-z0-9_.-]+[ \t]*$")) return ((TMPD == "") ? "/tmp" : TMPD) "/.mktemp"
   return UNRES
 }
@@ -262,12 +274,12 @@ function assign(f, i,   nm) {
   if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[[]") { sub("[[].*$", "", nm); poisonvar(nm); return }
   if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[+]=") { sub("[+]=.*$", "", nm); poisonvar(nm); return }
   sub("=.*$", "", nm)
+  if (nm == "IFS") { ifs = 1; poison_all(); return }
   if (nm == "CDPATH") cdpath = 1
   setvar(nm, substr(CW[f, i], length(nm) + 2))
 }
 function do_cd(f, i, k, term, inpipe_cmd,   j, w, tgt, have, rest, old, t1, t2) {
   have = 0; old = cwd
-  if (fxon && sd == fxsd) fxcd = 1
   for (j = i + 1; j <= k; j++) {
     w = CW[f, j]
     if (substr(w, 1, 1) == "-" && w != "-") { if (w == "--") continue; continue }
@@ -307,7 +319,7 @@ function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx, scr, ffile) {
   if (!inpl) return
   if (!haveS && nop >= 1) scr = CW[f, idx[1]]
   # sed script commands/flags that write or execute (s///w file, w file, e): not judged, so denied; -f script contents are unknown
-  if (ffile || scr ~ "(^|[^A-Za-z0-9_\\\\])[we]([ \t;}]|$)") emit("SEDI", "(sed script with a w/e command or flag, or -f)")
+  if (ffile || scr ~ "(^|[^A-Za-z_\\\\])[weWE]([ \t;}]|$)") emit("SEDI", "(sed script with a w/e command or flag, or -f)")
   nf = 0
   for (j = ((haveS) ? 1 : 2); j <= nop; j++) { nf++; judge("SEDI", CD[f, idx[j]], CW[f, idx[j]], CB[f, idx[j]]) }
   if (nf == 0) emit("SEDI", "(no file operand)")
@@ -348,26 +360,30 @@ function process_cmd(f, k, term, inpipe_cmd,   n, i, nm) {
   process_cmd2(f, k, term, inpipe_cmd)
   for (i = 1; i <= n; i++) {
     nm = PAn[pd, i]
+    jlog(nm)
     if (PAh[pd, nm]) { vals[nm] = PAv[pd, nm]; if (PAp[pd, nm] != "") vpoison[nm] = PAp[pd, nm]; else delete vpoison[nm] }
     else { delete vals[nm]; delete vpoison[nm] }
   }
   pd--
 }
-function apply_fn(nm,   a, m, i) {
-  if (FNall[nm]) poison_all()
-  if (FNcd[nm]) { cwd = ""; if (fxon && sd == fxsd) fxcd = 1 }
-  m = split(FNvars[nm], a, " ")
-  for (i = 1; i <= m; i++) poisonvar(a[i])
-}
 function call_fn(nm, f, i, k,   p, d) {
-  # the body runs HERE (current cwd / variables / positional parameters), then its lasting effects are applied
+  # the body runs HERE, in the caller's shell (cwd, variables, positional parameters); its effects persist like in bash
+  if (FNunk[nm]) { poison_all(); return }
   pn++; d = pn
   for (p = 1; p <= 9; p++) { SPh[d, p] = (p in POS); if (SPh[d, p]) SPv[d, p] = POS[p]; delete POS[p] }
   for (p = 1; p <= 9 && i + p <= k; p++) POS[p] = CW[f, i + p]
-  if (!FNact[nm]) { FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0 }
+  if (!FNact[nm]) { FNact[nm] = 1; run_inline(FNbody[nm]); FNact[nm] = 0 }
   for (p = 1; p <= 9; p++) { delete POS[p]; if (SPh[d, p]) POS[p] = SPv[d, p] }
   pn--
-  apply_fn(nm)
+}
+function def_function(fn,   bs, j) {
+  # P is just after the name (or after the parens): a brace body is registered (judged at each call); any other form is unknown => its call poisons everything
+  while (P <= N && (ws(substr(S, P, 1)) || substr(S, P, 1) == ";")) P++
+  if (substr(S, P, 1) != "{") { FNdef[fn] = 1; FNunk[fn] = 1; FNbody[fn] = ""; return }
+  bs = P; j = brace_len(bs + 1)
+  if (j == 0) { emit("W", "(unterminated function body)"); abort = 1; return }
+  FNdef[fn] = 1; FNunk[fn] = 0; FNbody[fn] = substr(S, bs + 1, j - 1)
+  P = bs + 1 + j
 }
 function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, safe, first) {
   i = 1
@@ -389,6 +405,16 @@ function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, sa
       continue
     }
     break
+  }
+  if (index(CW[f, i], UNRES) && index(CW[f, i], "/") == 0) {
+    # a command word nobody can name ($n, $(echo f)): it may be ANY defined function or builtin — judge every body, then poison
+    for (nm in FNdef) if (!FNunk[nm] && !FNact[nm]) { FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0 }
+    poison_all()
+    return
+  }
+  if (base == "trap") {
+    for (j = i + 1; j <= k; j++) { if (substr(CW[f, j], 1, 1) == "-") continue; if (CW[f, j] != "") run_inline(CW[f, j]); break }
+    return
   }
   if (base in FNdef) { call_fn(base, f, i, k); return }
   for (j = i; j <= k; j++) {
@@ -415,13 +441,15 @@ function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, sa
   if (base == "export" || base == "declare" || base == "local" || base == "readonly" || base == "typeset") {
     for (j = i + 1; j <= k; j++) {
       if (CW[f, j] ~ "^-[a-zA-Z]*n") poison_all()
-      if (is_assign(f, j)) assign(f, j)
+      if (is_assign(f, j)) {
+        if (base == "local") { nm = CD[f, j]; sub("[+]?=.*$", "", nm); sub("[[].*$", "", nm); poisonvar(nm) } else assign(f, j)
+      }
     }
     return
   }
   if (base == "source" || base == ".") { poison_all(); return }
   if (base == "cd" || base == "pushd") { do_cd(f, i, k, term, inpipe_cmd); return }
-  if (base == "popd") { cwd = ""; if (fxon && sd == fxsd) fxcd = 1; return }
+  if (base == "popd") { cwd = ""; return }
   if (base == "unset") {
     for (j = i + 1; j <= k; j++) if (CW[f, j] ~ "^[A-Za-z_][A-Za-z0-9_]*$") poisonvar(CW[f, j])
     return
@@ -448,7 +476,16 @@ function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, sa
   }
   if (base == "ssh") do_ssh(f, i, k)
 }
-function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2, fn, o1, o2, o3, o4, o5) {
+function array_body() {
+  while (P <= N && !abort) {
+    skipws()
+    c9 = substr(S, P, 1)
+    if (c9 == ")") { P++; return }
+    if (c9 == ";" || c9 == "&" || c9 == "|" || c9 == "<" || c9 == ">" || c9 == "(") { P++; continue }
+    readword()
+  }
+}
+function parse_cmd(   f, k, c, c2, e, nxt, inpipe, q2) {
   fr++; f = fr; k = 0
   inpipe = 0; q2 = P - 1
   while (q2 >= 1 && ws(substr(S, q2, 1))) q2--
@@ -462,23 +499,17 @@ function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2, 
       break
     }
     if (c == "(") {
-      if (k == 1 && substr(S, P + 1, 1) == ")") {
-        # name() { body } — a function DEFINITION: its body runs elsewhere, so its cd / writes are judged in isolation
-        P += 2; skipws()
-        if (substr(S, P, 1) == "{") {
-          depth = 0; bs = P
-          for (be = P; be <= N; be++) { ch = substr(S, be, 1); if (ch == "{") depth++; else if (ch == "}") { depth--; if (depth == 0) break } }
-          body = substr(S, bs + 1, be - bs - 1)
-          P = be + 1
-          fn = CW[f, 1]
-          o1 = fxon; o2 = fxcd; o3 = fxall; o4 = fxvars; o5 = fxsd
-          fxon = 1; fxcd = 0; fxall = 0; fxvars = ""; fxsd = sd + 1
-          quiet++
-          run_code(body)
-          quiet--
-          FNdef[fn] = 1; FNbody[fn] = body; FNcd[fn] = fxcd; FNall[fn] = fxall; FNvars[fn] = fxvars
-          fxon = o1; fxcd = o2; fxall = o3; fxvars = o4; fxsd = o5
-        }
+      if (k >= 1 && substr(S, P - 1, 1) == "=" && CD[f, k] ~ "^[A-Za-z_][A-Za-z0-9_]*[+]?=$") {
+        # NAME=( words ): an array assignment — the words are DATA (their substitutions are still scanned), the variable becomes unknown
+        e = CD[f, k]; sub("[+]?=$", "", e); P++
+        array_body()
+        poisonvar(e); k--
+        continue
+      }
+      if ((k == 1 || (k == 2 && CW[f, 1] == "function" && !CQ[f, 1])) && substr(S, P + 1, 1) == ")") {
+        # name() BODY and function name() BODY: register the function (the body is judged at each call)
+        P += 2
+        def_function(CW[f, k])
         k = 0
         continue
       }
@@ -489,6 +520,12 @@ function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2, 
     readword()
     if (wany && !wq && wv ~ "^[0-9]+$" && (substr(S, P, 1) == ">" || substr(S, P, 1) == "<")) continue
     k++; CW[f, k] = wv; CD[f, k] = wd; CQ[f, k] = wq; CB[f, k] = bd
+    if (k == 2 && CW[f, 1] == "function" && !CQ[f, 1]) {
+      # function name { BODY }
+      q2 = P
+      while (q2 <= N && ws(substr(S, q2, 1))) q2++
+      if (substr(S, q2, 1) == "{") { P = q2; def_function(CW[f, 2]); k = 0; continue }
+    }
     if (k == 1 && wv == "[[" && !wq) {
       e = index(substr(S, P), "]]")
       if (e > 0) P += e + 1
@@ -539,7 +576,7 @@ function main(   n0, D, i, c) {
   TMPD = envget("TMPDIR")
   if (TMPD ~ "^/[^/]+/[^/]") TMPD = norm(TMPD); else TMPD = ""
   if (TMPD == HOMEV) TMPD = ""
-  fr = 0; sd = 0; pd = 0; pn = 0; BUDGET = 300000; abort = 0; quiet = 0; fxon = 0; fxsd = -1; envpoison = 0
+  fr = 0; sd = 0; pd = 0; pn = 0; jn = 0; BUDGET = 300000; abort = 0; quiet = 0; envpoison = 0; ifs = 0
   cdpath = (envget("CDPATH") != "")
   parse_seq("")
   if (abort) emit("W", "(command too complex for the write scanner)")

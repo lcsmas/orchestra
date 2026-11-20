@@ -90,6 +90,12 @@ const scratchRoot = path.join(root, 'xtmp', 'ws-7'); // a TMPDIR that is NOT und
 const agentTmp = path.join(home, '.orchestra', 'agent-tmp', 'ws-1');
 interface Probe { name: string; cmd: string; deny?: RegExp; cwd?: string; tmpdir?: string; env?: Record<string, string> }
 const ALLOW: Probe[] = [
+  { name: 'sed -i scripts that merely contain w / e letters stay allowed', cmd: 'sed -i s/x/y/ $TMPDIR/f; sed -i "/w/d" $TMPDIR/f; sed -i s/word/yes/ $TMPDIR/f; sed -i s/a/e/g $TMPDIR/f' },
+  { name: 'array assignment from a substitution (zsh/bash) does not poison the shell', cmd: 'files=($(ls)); files2=("${(@f)$(ls)}"); echo x > $TMPDIR/o; echo y >> "$TMPDIR/p"' },
+  { name: 'function bodies run in the CALLER shell: their cd persists, so a relative write lands in scratch (real bash agrees)', cmd: 'D=$TMPDIR/s; f(){ cd $D; }; f; echo x > f' },
+  { name: 'function bodies with quoted braces are fine when every write is scratch', cmd: 'f(){ printf "{"; echo "}" > $TMPDIR/o; }; f; echo x > $TMPDIR/p' },
+  { name: 'function f { … } with a scratch write, called', cmd: 'function f { echo x > $TMPDIR/a; }; f' },
+  { name: 'trap with a scratch cleanup', cmd: 'trap "rm -f $TMPDIR/x" EXIT; echo x > $TMPDIR/y' },
   { name: 'positional parameters of a function are bound to the call arguments', cmd: 'f(){ echo x > $TMPDIR/o-$1.log; }; f a; f b; g(){ echo x > "$1"; }; g $TMPDIR/ok.txt' },
   { name: 'two loops over the same variable (literal tokens) are not a reassignment hazard', cmd: 'for v in A B; do mkdir -p $TMPDIR/app$v; done; for v in A B; do for n in 1 2; do echo x > $TMPDIR/var$v-$n.log; done; done' },
   { name: 'brace default with :? (set TMPDIR)', cmd: 'echo hi > ${TMPDIR:?}/o.txt' },
@@ -102,7 +108,7 @@ const ALLOW: Probe[] = [
   { name: 'd=$(mktemp -d); write under it', cmd: 'd=$(mktemp -d); echo ok > $d/res.txt; e=$(mktemp); echo ok > $e' },
   { name: 'cd $(mktemp -d) && relative write', cmd: 'cd $(mktemp -d) && echo ok > res.txt' },
   { name: 'mktemp -d -t TEMPLATE', cmd: 'd=$(mktemp -d -t foo.XXXX); echo ok > $d/res.txt' },
-  { name: 'a long ordinary command stays well inside the scan budget', cmd: 'echo "a b" \'c d\' > $TMPDIR/x; '.repeat(1200) },
+  { name: 'a long ordinary command stays well inside the scan budget', cmd: 'echo "a b" \'c d\' > $TMPDIR/x; '.repeat(600) },
   { name: 'loop VAR inside the LAST component of a $TMPDIR path (real-world: log per iteration)', cmd: 'for i in 1 2 3; do node t.js > $TMPDIR/run-$i.log 2>&1; done; for f in a b; do echo x > $TMPDIR/seat/$f; done; echo y > "$TMPDIR/b-$(date +%s).log"' },
   { name: 'docker run … sh -c writing a CONTAINER path under scratch', cmd: 'docker run --rm img sh -c "echo x > /var/tmp/q/out.txt"' },
   { name: 'angle-bracket text inside a quoted brief', cmd: 'orchestra spawn --name x --task "report <branch> @ <tip>, then <ack>" 2>&1 | tail -1' },
@@ -136,6 +142,14 @@ const ALLOW: Probe[] = [
   { name: 'function body cd stays isolated, the write is absolute scratch', cmd: 'D=$TMPDIR/s; run(){ cd $D; echo x > f; }; run; echo y > $TMPDIR/g' },
 ];
 const DENY: Probe[] = [
+  { name: 'local P is gone after the call (P unset: the write lands at /a)', cmd: 'f(){ local P=$TMPDIR/s; }; f; echo x > $P/a', deny: /shell write to '[$]P[/]a'/ },
+  { name: 'a write inside an array assignment substitution', cmd: 'arr=( "$(echo x > src/a.ts)" )', deny: /shell write to 'src[/]a[.]ts'/ },
+  { name: 'an array assignment makes the variable unknown', cmd: 'D=$TMPDIR/s; D=(a b); echo x > $D/f', deny: /shell write/ },
+  { name: 'more than 100 distinct write targets are too many to symlink-check', cmd: 'S=$TMPDIR; ' + Array.from({ length: 105 }, (_, n) => `echo x > $S/t${n}; `).join(''), deny: /more than 100 distinct write targets/ },
+  { name: 'an unterminated function body is denied', cmd: 'f(){ echo x > $TMPDIR/a', deny: /unterminated function body/ },
+  { name: 'local shadows a scratch VAR with an unknown value', cmd: 'P=src; f(){ local P=$TMPDIR/s; }; f; echo x > $P/a', deny: /shell write to '[$]P[/]a'/ },
+  { name: 'an unresolvable command word may be any function: its body is judged', cmd: 'f(){ echo x > src/a.ts; }; $(echo f)', deny: /shell write to 'src[/]a[.]ts'/ },
+  { name: 'a value with a semicolon is not a path', cmd: 'V="$TMPDIR/a;src/b"; echo x | tee $V', deny: /shell write to '[$]V'/ },
   { name: 'a function argument that is a repo path', cmd: 'g(){ echo x > "$1"; }; g src/a.ts', deny: /shell write to '[$]1'/ },
   { name: 'a function argument that is unresolvable', cmd: 'g(){ echo x > "$1"; }; g $(ls)', deny: /shell write to '[$]1'/ },
   { name: 'a function body reads $1 from the CALL, not from an outer function', cmd: 'g(){ echo x > "$1"; }; h(){ g $TMPDIR/ok; echo y > $1; }; h src/b.ts', deny: /shell write to '[$]1'/ },
@@ -152,7 +166,6 @@ const DENY: Probe[] = [
   { name: 'a piped cd (lhs) runs in a subshell', cmd: 'D=$TMPDIR/s; cd $D | cat; echo a > f', deny: /shell write to 'f'/ },
   { name: 'a piped cd (rhs) runs in a subshell', cmd: 'D=$TMPDIR/s; ls | cd $D; echo a > f', deny: /shell write to 'f'/ },
   { name: 'variables assigned in a subshell do not survive it', cmd: '(D=$TMPDIR/s); cd $D; echo a > f', deny: /shell write to 'f'/ },
-  { name: 'variables assigned in a function body do not survive it', cmd: 'f(){ D=$TMPDIR/s; }; f; cd $D; echo a > f', deny: /shell write to 'f'/ },
   { name: 'unset VAR', cmd: 'D=$TMPDIR/s; unset D; cd $D; echo a > f', deny: /shell write to 'f'/ },
   { name: 'printf -v VAR', cmd: 'D=$TMPDIR/s; printf -v D src; echo a > $D/f', deny: /shell write to '\$D\/f'/ },
   { name: 'VAR[0]= element assignment', cmd: 'D=$TMPDIR/s; D[0]=src; echo a > $D/f', deny: /shell write to '\$D\/f'/ },
@@ -190,7 +203,6 @@ const DENY: Probe[] = [
   { name: 'relative write after cd into an unresolvable dir', cmd: 'cd $(cat $TMPDIR/p) && echo x > f', deny: /shell write to 'f'/ },
   { name: 'subshell cd does not leak: the write is in the repo', cmd: 'D=$TMPDIR/s; (cd $D && ls); echo x > f', deny: /shell write to 'f'/ },
   { name: 'cd inside $( ) does not leak', cmd: 'D=$TMPDIR/s; X=$(cd $D && ls); echo x > f', deny: /shell write to 'f'/ },
-  { name: 'cd in a function body does not leak', cmd: 'D=$TMPDIR/s; run(){ cd $D; }; run; echo x > f', deny: /shell write to 'f'/ },
   { name: 'cd - is unknown', cmd: 'D=$TMPDIR/s; cd $D; cd -; echo x > f', deny: /shell write to 'f'/ },
   { name: '.. climbs out of $TMPDIR', cmd: 'echo x > $TMPDIR/../../../../home/x/f', deny: /shell write/ },
   { name: '.. climbs out of /var/tmp', cmd: 'echo x > /var/tmp/../home/x/f', deny: /shell write/ },
@@ -300,8 +312,28 @@ const GT: GroundTruth[] = [
   { name: 'symlink in scratch → repo ($TMPDIR target)', cmd: 'echo x > $TMPDIR/link/a', cwd: 'repo', landed: 'a', masterAllows: true, setup: ln('@REPO@', '@SCR@/link') },
   { name: 'sed s///w FILE', cmd: "printf 'x\\n' > @SCR@/f; sed -i 's/x/y/w @REPO@/pwn' @SCR@/f", cwd: 'scr', landed: 'pwn' },
   { name: 'sed s///e executes', cmd: "echo 'touch @REPO@/p2' > @SCR@/f; sed -i -e 's/^t/t/e' @SCR@/f", cwd: 'scr', landed: 'p2' },
+  { name: "sed 1w FILE (address before the w command)", cmd: "printf 'x\\n' > @SCR@/f; sed -i '1w @REPO@/pwn' @SCR@/f", cwd: 'scr', landed: 'pwn' },
+  { name: 'sed W FILE (first line of the pattern space)', cmd: "printf 'x\\n' > @SCR@/f; sed -i 'W @REPO@/pwn2' @SCR@/f", cwd: 'scr', landed: 'pwn2' },
+  { name: 'sed 1e executes the pattern space', cmd: "echo 'touch @REPO@/p3' > @SCR@/f; sed -i 1e @SCR@/f", cwd: 'scr', landed: 'p3' },
   { name: 'mktemp after TMPDIR was reassigned here', cmd: 'TMPDIR=@REPO@; f=$(mktemp); echo x > $f', cwd: 'scr', landedAny: true },
   { name: 'prefix assignment does not outlive its command', cmd: 'RGV_W=@SCR@/x true; echo x > $RGV_W/f', cwd: 'scr', landed: 'f', env: { RGV_W: '@REPO@' } },
+  // ---- last round (delta review 7028550242): one real-bash arm per fix
+  { name: 'function body with a quoted { (printf) swallowed the rest of the command', cmd: "f(){ printf '{'; }; echo x > src/a.js", cwd: 'repo', landed: 'src/a.js' },
+  { name: 'function body with a quoted } hid the next write', cmd: 'f(){ echo "}"; }; echo "a"; echo x > @REPO@/a; echo "b"', cwd: 'scr', landed: 'a' },
+  { name: 'function body with "$1}"', cmd: 'f(){ echo "$1}"; }; echo x > @REPO@/a; echo "b"', cwd: 'scr', landed: 'a' },
+  { name: 'trap f EXIT runs the function body', cmd: 'f(){ echo x > @REPO@/a; }; trap f EXIT', cwd: 'scr', landed: 'a' },
+  { name: 'indirect call through $n', cmd: 'n=$(echo f); f(){ echo x > @REPO@/a; }; $n', cwd: 'scr', landed: 'a' },
+  { name: 'a callee defined later re-points a scratch VAR through its caller', cmd: 'g(){ f; }; f(){ P=@REPO@; }; P=$TMPDIR/ok; g; echo x > $P/a', cwd: 'scr', landed: 'a' },
+  { name: 'a callee defined later cds through its caller', cmd: 'cd @SCR@; g(){ f; }; f(){ cd @REPO@; }; g; echo x > a.js', cwd: 'scr', landed: 'a.js' },
+  { name: 'function f { … } (ksh style) then cd scratch, call', cmd: 'function f { cd @REPO@; }; cd @SCR@; f; echo x > a.js', cwd: 'scr', landed: 'a.js' },
+  { name: 'function f() { … } then cd scratch, call', cmd: 'function f() { cd @REPO@; }; cd @SCR@; f; echo x > a.js', cwd: 'scr', landed: 'a.js' },
+  { name: 'f() if … fi (compound body the scanner does not parse) then cd scratch, call', cmd: 'f() if true; then cd @REPO@; fi; cd @SCR@; f; echo x > a.js', cwd: 'scr', landed: 'a.js' },
+  { name: 'Allman f() newline { … }', cmd: 'f()\n{ cd @REPO@; }; cd @SCR@; f; echo x > a.js', cwd: 'scr', landed: 'a.js' },
+  { name: 'newline in a quoted value splits the word', cmd: 'V="@SCR@/a\n@REPO@/b"; echo x | tee $V', cwd: 'scr', landed: 'b' },
+  { name: 'IFS=: splits the value', cmd: 'IFS=:; V="@SCR@/a:@REPO@/b"; echo x | tee $V', cwd: 'scr', landed: 'b' },
+  { name: '$(date +..) prints ".." (no % conversion)', cmd: 'S=$TMPDIR/a; mkdir -p $S; echo x > $S/$(date +..)/$(date +..)/repo/a', cwd: 'scr', landed: 'a' },
+  { name: 'symlink then .. (the link is followed BEFORE the ..)', cmd: 'S=$TMPDIR; echo x > $S/link/../f', cwd: 'scr', landed: 'f', setup: () => fs.symlinkSync(path.join(SBX_REPO, 'src'), path.join(SBX_SCR, 'link')) },
+  { name: 'the symlink target is the 41st (sorted last) of 41 scratch targets', cmd: 'S=$TMPDIR; ' + Array.from({ length: 41 }, (_, n) => `echo x > $S/a${String(n).padStart(2, '0')}; `).join('') + 'echo x > $S/zlink/src/z.js', cwd: 'scr', landed: 'src/z.js', setup: () => fs.symlinkSync(SBX_REPO, path.join(SBX_SCR, 'zlink')) },
   { name: 'quoted } inside a brace default does not desync the lexer', cmd: "echo ${X:-'}'}; echo hi > src/f; echo 'x'", cwd: 'repo', landed: 'src/f' },
 ];
 const gtSandbox = (g: GroundTruth) => {
@@ -340,14 +372,14 @@ test('a command past the size cap is denied BEFORE the scanner (mawk is quadrati
   const big = (n: number) => 'echo hello world; '.repeat(Math.ceil(n / 18));
   for (const role of WRITE_ROLES) {
     const w = install(ROLE_GUARD_SCRIPT, role, `cap-${role}`);
-    assert.equal(run(w, big(60_000)).code, 0, 'a 60 KB command (real max is 12.5 KB) still passes');
-    const r = run(w, big(70_000));
+    assert.equal(run(w, big(30_000)).code, 0, 'a 30 KB command (real max is 12.5 KB) still passes');
+    const r = run(w, big(40_000));
     assert.equal(r.code, 2); assert.match(r.err, /too large/);
   }
-  assert.equal(run(install(ROLE_GUARD_SCRIPT, 'implementer', 'cap-impl'), big(70_000)).code, 0, 'no write check, no cap');
-  const noCap = ROLE_GUARD_SCRIPT.replace('-gt 65536 ]', '-gt 65536000 ]');
+  assert.equal(run(install(ROLE_GUARD_SCRIPT, 'implementer', 'cap-impl'), big(40_000)).code, 0, 'no write check, no cap');
+  const noCap = ROLE_GUARD_SCRIPT.replace('-gt 32768 ]', '-gt 32768000 ]');
   assert.notEqual(noCap, ROLE_GUARD_SCRIPT);
-  assert.equal(run(install(noCap, 'verifier', 'cap-mut'), big(70_000)).code, 0, 'without the cap the same command is not refused — the arm above can fail');
+  assert.equal(run(install(noCap, 'verifier', 'cap-mut'), big(40_000)).code, 0, 'without the cap the same command is not refused — the arm above can fail');
   // 3 MB through the real mawk when the host has one (Ubuntu/Debian default awk), the default awk otherwise: denied fast either way
   const mawk = spawnSync('bash', ['-c', 'command -v mawk'], { encoding: 'utf8' }).stdout.trim();
   const shim = path.join(root, 'shim-awk');
@@ -388,23 +420,32 @@ test('baseline is clean; every #475 mutant reddens the fixture/probes', () => {
     ['an unknown cwd resolves relative targets as scratch', '  if (cwd == "") return ""\n', '  if (cwd == "") return "/tmp/x"\n'],
     ['.. is not collapsed (escapes through $TMPDIR/..)', 'if (a[i] == "..") { if (k > 0) k--; continue }', ''],
     ['a subshell cd/vars leak out', 'scope_in()\n      parse_seq(")")\n      scope_out()\n      continue', 'parse_seq(")")\n      continue'],
-    ['a resolved value with spaces / braces is still a path (word split / brace re-expansion)', 'function san(v) { return (v ~ "[ \\t{}]") ? UNRES : v }', 'function san(v) { return v }'],
+    ['a resolved value with spaces / braces / semicolons is still a path (word split / brace re-expansion)', 'function san(v) { return (v ~ "[ \\t{};]" || (ifs && !safetok(v))) ? UNRES : v }', 'function san(v) { return v }'],
     ['an unquoted brace in a tee/sed/redirect word is ignored', 'judge("W", CD[f, j], CW[f, j], CB[f, j])', 'judge("W", CD[f, j], CW[f, j], 0)'],
     ['eval does not poison variables / cwd', 'if (sk != "") run_code(sk)\n    poison_all()', 'if (sk != "") run_code(sk)'],
     ['source / . does not poison variables / cwd', 'if (base == "source" || base == ".") { poison_all(); return }', 'if (base == "source" || base == ".") { return }'],
     ['declare -n does not poison variables', 'if (CW[f, j] ~ "^-[a-zA-Z]*n") poison_all()', ''],
     ['CDPATH is ignored by cd', 'if (cdpath && substr(tgt, 1, 1) != "/") { cwd = ""; return }', ''],
     ['function positional parameters are not bound', 'for (p = 1; p <= 9 && i + p <= k; p++) POS[p] = CW[f, i + p]', ''],
-    ['a function call does not run its body at the call site', 'FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0', 'FNact[nm] = 1; FNact[nm] = 0'],
-    ['a function call does not apply its variable effects', 'm = split(FNvars[nm], a, " ")', 'm = 0'],
-    ['a function call does not apply its cd effect', 'if (FNcd[nm]) { cwd = ""', 'if (0) { cwd = ""'],
-    ['a prefix assignment outlives its command', 'if (n == 0 || n == k) { process_cmd2(f, k, term, inpipe_cmd); return }', 'if (1) { process_cmd2(f, k, term, inpipe_cmd); return }'],
+    ['a function body ends at the first closing brace (not quote-aware)', 'bs = P; j = brace_len(bs + 1)', 'bs = P; j = index(substr(S, bs + 1), "}")'],
+    ['an array assignment is parsed as commands (zsh expansions poison the shell)', 'poisonvar(e); k--', 'k--'],
+    ['an unrecognised function definition is a no-op call', 'if (FNunk[nm]) { poison_all(); return }', 'if (FNunk[nm]) { return }'],
+    ['trap handlers are never judged', 'if (substr(CW[f, j], 1, 1) == "-") continue; if (CW[f, j] != "") run_inline(CW[f, j]); break', 'break'],
+    ['an unresolvable command word does not judge function bodies', 'for (nm in FNdef) if (!FNunk[nm] && !FNact[nm]) { FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0 }', ''],
+    ['IFS does not poison', 'if (nm == "IFS") { ifs = 1; poison_all(); return }', ''],
+    ['date needs no % conversion', 'if (index(inner, "%") && inner ~', 'if (inner ~'],
+    ['the symlink check follows the NORMALISED path', 'praw = (substr(v, 1, 1) == "/") ? v : cwd "/" v', 'praw = p'],
+    ['more than 100 write targets are not refused', '-gt 100 ]', '-gt 100000 ]'],
+    ['local keeps the assigned value', 'if (base == "local") { nm = CD[f, j]; sub("[+]?=.*$", "", nm); sub("[[].*$", "", nm); poisonvar(nm) } else assign(f, j)', 'assign(f, j)'],
+    ['a function call does not run its body at the call site', 'FNact[nm] = 1; run_inline(FNbody[nm]); FNact[nm] = 0', 'FNact[nm] = 1; FNact[nm] = 0'],
+            ['a prefix assignment outlives its command', 'if (n == 0 || n == k) { process_cmd2(f, k, term, inpipe_cmd); return }', 'if (1) { process_cmd2(f, k, term, inpipe_cmd); return }'],
+    ['the sed w/e check skips addressed commands and W/E', '[^A-Za-z_\\\\\\\\])[weWE]', '[^A-Za-z0-9_\\\\\\\\])[we]'],
     ['sed w/e commands and -f scripts are not looked at', 'if (ffile || scr ~', 'if (0 && scr ~'],
     ['mktemp counts as scratch even after TMPDIR was reassigned', 'if (!("TMPDIR" in vals) && (inner ~', 'if ((inner ~'],
     ['a quote inside a brace expansion is not honoured', 'if (ch == "\'" || ch == "\\"") { mode = ch; continue }', ''],
     ['the symlink check is advisory only', '[ "$okp" = 1 ] || deny', '[ "$okp" = 1 ] || true'],
     ['a scope exit (subshell / $( ) / function / eval) keeps the inner cwd', 'cwd = SNC[sd]\n', '\n'],
-    ['a scope exit keeps the inner variables', 'split("", vals); split("", vpoison)\n', '\n'],
+    ['a scope exit keeps the inner variables', '    if (JH[jn]) { vals[nm] = JV[jn]; vpoison[nm] = JP[jn] } else { delete vals[nm]; delete vpoison[nm] }\n', '\n'],
     ['subshell ((…;…)) is skipped as arithmetic', 'if (index(body, ";") || index(body, "$(") || index(body, "\\140")) return 0\n', '\n'],
     ['a piped / backgrounded cd moves the shell', 'if (inpipe_cmd || (t1 == "|" && t2 != "|") || (t1 == "&" && t2 != "&")) { cwd = old; return }', ''],
     ['unset keeps the old value', 'if (base == "unset") {', 'if (base == "unset-x") {'],
