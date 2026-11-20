@@ -116,7 +116,7 @@ Coordinator-side rules:
   explicit echo of it; their stale status line, not your outbox, tells you your answer never arrived.
 - **State-only acks** from message one. Evaluative glosses breed correction loops that carry zero state.
 - **Execution state lives in the state file, decisions in the ledger.**
-  ¤orchestra fanout state init --run <id> --target <branch>¤ once, then
+  ¤orchestra fanout state init --target <branch>¤ once (own run), then
   ¤orchestra fanout state set <ticket> --status … --branch … --pr … --head …¤ as each fact
   lands and ¤orchestra fanout state show¤ to read: one writer (you); an unknown field is
   refused — fix the spelling, never hand-edit the file. The ledger keeps spec decisions,

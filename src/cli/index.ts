@@ -2453,6 +2453,7 @@ async function main(argv: string[]): Promise<void> {
       // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
       const r = runFanout(args, { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') });
       if (r.stdout) process.stdout.write(r.stdout);
+      if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
       if (r.code !== 0) throw new CliExit(r.code);
       return;
