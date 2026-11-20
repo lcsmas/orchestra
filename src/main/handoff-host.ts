@@ -23,7 +23,9 @@ import { clearOwed, listOwed, readOwed, writeOwed } from './handoff-owed.ts';
 import { setTurnEndListener } from './handoff-seam.ts';
 import { createHandoffController, type HandoffReply } from './handoff-controller.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { HANDOFF_ERRORS, parseHandoffBound } from '../shared/handoff.ts';
+import { HANDOFF_ERRORS, parseHandoffBound, resolveHandoffBound } from '../shared/handoff.ts';
+import { roleOfName, roleSpec, type RoleConfig } from '../shared/fleet-roles.ts';
+import { loadRoleConfig } from './fleet-roles-config.ts';
 
 export type { HandoffReply };
 
@@ -78,6 +80,22 @@ export function resumeOwedOpenings(): void {
   for (const { wsId } of listOwed(OWED_ROOT())) void resumeOwed(wsId).catch((e) => log.warn(`handoff: owed opening of ${wsId} failed`, e));
 }
 
+let warnedRoleFile = '';
+/** #478: the role's bound from the workspace's spawn name (`ws.branch`, the role sentinel's source) + fleet-roles.json, re-read each turn end. A file that does not parse ⇒ built-in table + ONE warning per message. */
+function roleBoundOf(id: string): number {
+  const role = roleOfName(store.getWorkspace(id)?.branch);
+  if (!role) return 0;
+  let cfg: RoleConfig | undefined;
+  try {
+    cfg = loadRoleConfig();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg !== warnedRoleFile) log.warn(`handoff: ${msg} — using the built-in role bounds`);
+    warnedRoleFile = msg;
+  }
+  return roleSpec(role, cfg).handoffBoundTurns;
+}
+
 const controller = createHandoffController({
   now: () => Date.now(),
   vouched: (id, key) => sessionKeys().verify(id, key) === 'ok',
@@ -110,7 +128,7 @@ const controller = createHandoffController({
     fs.writeFileSync(file, summary.endsWith('\n') ? summary : `${summary}\n`, { mode: 0o600 });
     return file;
   },
-  bound: () => parseHandoffBound(process.env).bound,
+  bound: (id) => resolveHandoffBound(process.env, roleBoundOf(id)).bound,
   endContext: async (id) => {
     await sdkRestart(id, { fresh: true, trigger: 'cli' });
     await clearBusRunStale(id); // like `orchestra restart`: the relaunch re-reads the run, so a stale-run block (#142) is resolved by it

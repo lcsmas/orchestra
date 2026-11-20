@@ -184,5 +184,5 @@ export function runSelfTest(o) {
 
 /** The handoff-cache rig (`handoff-cache.mjs`, #466): N user turns through the real session path with / without the production handoff host, cache usage from the fake API's SIMULATED prefix cache. */
 export function runHandoffCacheArm(o) {
-  return runContained(o, 'handoff-cache-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, turns: o.turns ?? 24, bound: o.bound ?? 0, fillerChars: o.fillerChars, replyChars: o.replyChars }, '{"handoffCache"');
+  return runContained(o, 'handoff-cache-runner.mjs', o.arm, { arm: o.arm, mutant: o.mutant ?? null, turns: o.turns ?? 24, bound: o.bound ?? 0, fillerChars: o.fillerChars, replyChars: o.replyChars, ...(o.extra ?? {}) }, '{"handoffCache"');
 }

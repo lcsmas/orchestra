@@ -22,8 +22,8 @@ export interface HandoffDeps {
   sessionOf(id: string): string | undefined;
   /** Persist the summary; returns its path (throws ⇒ refused, nothing scheduled). */
   saveSummary(id: string, summary: string): string;
-  /** The bound in turns (0 = off), read at each turn end. */
-  bound(): number;
+  /** The bound in turns (0 = off) of THIS workspace (env > its role's setting, #478), read at each turn end. */
+  bound(wsId: string): number;
   /** Is a turn of the workspace running RIGHT NOW? false ⇒ nothing will end soon, so an accepted handoff runs at once (not at some unrelated later turn end). */
   turnInFlight(id: string): boolean;
   /** m1: write the owed-opening marker (BEFORE the context is ended). Throws ⇒ nothing is ended. */
@@ -111,7 +111,7 @@ export function createHandoffController(deps: HandoffDeps) {
   /** A turn of `info.wsId` just ended. Returns the handoff run it started (tests await it), if any. */
   function onTurnEnd(info: TurnEndInfo): Promise<void> | undefined {
     const { wsId } = info;
-    const bound = deps.bound();
+    const bound = deps.bound(wsId);
     const tally = counter.noteTurnEnd(wsId, info.sessionId, bound);
     const p = pending.get(wsId);
     if (p) {

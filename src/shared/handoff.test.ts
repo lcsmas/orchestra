@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   HANDOFF_SUMMARY_MAX_CHARS, HandoffTurnCounter, composeDroppedNotice, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError,
-  parseHandoffBound, validateHandoffSummary,
+  parseHandoffBound, resolveHandoffBound, validateHandoffSummary,
 } from './handoff.ts';
 
 const GOOD = `## STATE
@@ -113,6 +113,20 @@ test('bound: one env value; unset/0/garbage = off', () => {
     assert.match(r.invalid ?? '', /under the minimum 4/);
   }
   assert.deepEqual(parseHandoffBound({ ORCHESTRA_HANDOFF_BOUND_TURNS: '4' }), { bound: 4 });
+});
+
+test('#478 resolveHandoffBound: env (set) > role bound; env 0 forces off; invalid env = off, never the role value; unset env = the role value', () => {
+  const E = (v?: string) => (v === undefined ? {} : { ORCHESTRA_HANDOFF_BOUND_TURNS: v });
+  assert.deepEqual(resolveHandoffBound(E(), 30), { bound: 30, source: 'role' });
+  assert.deepEqual(resolveHandoffBound(E(''), 30), { bound: 30, source: 'role' }, 'an empty env is unset');
+  assert.deepEqual(resolveHandoffBound(E('50'), 30), { bound: 50, source: 'env' }, 'env wins over the role');
+  assert.deepEqual(resolveHandoffBound(E('50'), 0), { bound: 50, source: 'env' }, 'env turns on a role that is off');
+  assert.deepEqual(resolveHandoffBound(E('0'), 30), { bound: 0, source: 'off' }, '0 forces off for a role that is on');
+  const bad = resolveHandoffBound(E('abc'), 30);
+  assert.deepEqual([bad.bound, bad.source], [0, 'off']);
+  assert.match(bad.invalid ?? '', /not a non-negative integer/);
+  assert.equal(resolveHandoffBound(E('2'), 30).bound, 0, 'under the minimum = off, not the role value');
+  assert.deepEqual(resolveHandoffBound(E(), 0), { bound: 0, source: 'off' }, 'no env, role off');
 });
 
 test('counter: nudges ONCE at the bound, never before, never again in the same session', () => {

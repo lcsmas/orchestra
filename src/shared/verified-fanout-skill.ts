@@ -89,8 +89,9 @@ the run of an **OPS** (has a parent, spawned its own: one batch of tickets). Rol
 - **A long-lived member re-reads its whole context every turn** → ¤orchestra handoff --summary-file <path>¤
   (STATE, NEXT STEPS, REFS, NOT VERIFIED, each non-empty), then END YOUR TURN: the host starts a fresh
   session in the SAME workspace, worktree, branch and run. Refused, nothing ended: ¤handoff-summary-invalid¤
-  (fix the missing section), ¤handoff-outside-run¤ (not a member of an open run), ¤handoff-unvouched¤ (run it
-  from the agent itself). Hand off a heavy long-lived member (verifier, coordinator), not a light one.
+  (fix the section), ¤handoff-outside-run¤ (not in an open run), ¤handoff-unvouched¤ (run it yourself).
+  Hand off a heavy member (verifier, coordinator). The host nudges the coordinator at 30 turns;
+  its summary holds state-file path + ledger refs, open decisions, NEXT.
 - **WALL-CLOCK IS A GOAL:** pipeline, never batch — gate/review each candidate the moment it exists; remove DEAD TIME, never thin verification.
 
 → **Read ¤references/lead-ops-tiers.md¤ when you are the LEAD or the OPS** (the LEAD's report format, dead-ops detection, closing a wave).

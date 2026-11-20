@@ -180,7 +180,11 @@ hand off, then END YOUR TURN: at the turn end the host starts a fresh session in
 worktree, branch and run (nothing on disk is touched) whose first turn is your summary.
 Refused, nothing ended: a summary missing a section (handoff-summary-invalid), a workspace outside an
 open run (handoff-outside-run), a session the host cannot vouch for (handoff-unvouched).
-The host nudges once an agent past ORCHESTRA_HANDOFF_BOUND_TURNS turns; it never ends a context itself.
+The host nudges once an agent past its bound; it never ends a context itself. Bound per role (#478): the
+coordinator (ops-) 30 turns, every other role off; <ORCHESTRA_HOME>/fleet-roles.json sets it per role
+({"coordinator":{"handoffBoundTurns":40}}: an integer >= 4, or 0 / null / "default" = off); env
+ORCHESTRA_HANDOFF_BOUND_TURNS, if set, wins for every workspace (0 = off). A coordinator's summary holds the
+state-file path + ledger refs, the open decisions, NEXT.
   --summary-file <path>   the summary file (- for stdin)
   --summary <text>        the summary inline`,
   },

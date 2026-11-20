@@ -44,9 +44,13 @@ test('agent-sdk announces every ended turn through the seam, after the gate is r
   assert.doesNotMatch(read('handoff-seam.ts'), /from '\.\/agent-sdk/, 'the seam must not import agent-sdk (cycle)');
 });
 
-test('the bound is ONE env value read at each turn end; the listener is registered at load', () => {
+test('the bound = env > the workspace role (#478), read at each turn end; the listener is registered at load', () => {
   const host = read('handoff-host.ts');
-  assert.match(host, /bound: \(\) => parseHandoffBound\(process\.env\)\.bound/);
+  assert.match(host, /bound: \(id\) => resolveHandoffBound\(process\.env, roleBoundOf\(id\)\)\.bound/);
+  // the role is the SPAWN NAME (ws.branch) — the role sentinel's own source (workspaces.ts writeRoleSentinel(…, ws.branch)) — through the table + the override file
+  assert.match(host, /roleOfName\(store\.getWorkspace\(id\)\?\.branch\)/);
+  assert.match(host, /roleSpec\(role, cfg\)\.handoffBoundTurns/);
+  assert.match(host, /cfg = loadRoleConfig\(\)/);
   assert.ok(live(host, 'setTurnEndListener((info) => void controller.onTurnEnd(info));'));
 });
 

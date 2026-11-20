@@ -126,6 +126,17 @@ export function parseHandoffBound(env: Record<string, string | undefined>): { bo
   return { bound: n };
 }
 
+/** #478: the bound in force for ONE workspace at a turn end. Order: env `ORCHESTRA_HANDOFF_BOUND_TURNS` (host-wide; set ⇒ wins, `0` forces off, an invalid value ⇒ off + `invalid`)
+ *  > `roleBound` (the role's override file entry, else its built-in default; 0 / role-less ⇒ off). `roleBound` is resolved by the caller (roleSpec) so this file stays import-free. */
+export function resolveHandoffBound(env: Record<string, string | undefined>, roleBound: number): { bound: number; source: 'env' | 'role' | 'off'; invalid?: string } {
+  const raw = env.ORCHESTRA_HANDOFF_BOUND_TURNS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const e = parseHandoffBound(env);
+    return { ...e, source: e.bound > 0 ? 'env' : 'off' };
+  }
+  return roleBound > 0 ? { bound: roleBound, source: 'role' } : { bound: 0, source: 'off' };
+}
+
 /** Per-session turn counter + the once-per-session nudge latch. A session is identified by its SDK session id: a clear / handoff /
  *  fresh restart changes it, which resets the count AND re-arms the latch (a new context may be nudged once more). The count lives
  *  in memory: an app restart restarts it (an under-count — the nudge is late, never early). */

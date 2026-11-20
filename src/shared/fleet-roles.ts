@@ -1,5 +1,6 @@
 import { EFFORT_LEVELS } from './effort-defaults.ts';
 import { isValidModelArg } from './model-defaults.ts';
+import { HANDOFF_MIN_BOUND_TURNS } from './handoff.ts';
 
 // Fleet roles (#465, verified-fanout v2 lever 1) — the ONE table of the role → model / effort / tool-policy, keyed by the `--name`
 // prefix (#382). Pure: no Electron, no node:*. Interface FROZEN in ledger #471 §Interfaces item 1; #468 (role guard) builds on it.
@@ -38,21 +39,27 @@ export interface RoleSpec {
   /** `undefined` = pin nothing; a level of EFFORT_LEVELS otherwise. */
   effort: string | undefined;
   tools: RoleTools;
+  /** #478: turns after which the host nudges the role to `orchestra handoff` (0 = off). */
+  handoffBoundTurns: number;
 }
 
 /** Wire id of the cheap model (never the short alias — `unrecognized_model`). */
 export const SCRIBE_MODEL = 'claude-haiku-5-5';
 
+/** #478: the coordinator's built-in handoff bound. Replaying rts-vf2-local-1's OPS (214 turns, ~3.5 requests/turn, +2.4k tok/turn) the weighted cache cost is
+ *  minimal at 14-24 turns (fresh base 60-160k tok) and flat to 40; 30 is within 1-4 points of it with fewer handoffs (docs/evidence/478-handoff-bound.txt). */
+export const COORDINATOR_HANDOFF_BOUND_TURNS = 30;
+
 const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'];
 const NO_COMMIT = ['\\bgit\\s+(commit|push|merge|rebase|reset)\\b'];
 
 const DEFAULT_TABLE: Readonly<Record<FleetRole, RoleSpec>> = {
-  coordinator: { role: 'coordinator', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: [] } },
-  implementer: { role: 'implementer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion'], edit: 'own-worktree', bashDeny: ['\\bgit\\s+push\\b[^\\n]*\\b(master|main)\\b'] } },
-  verifier: { role: 'verifier', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion'], edit: 'scratch', bashDeny: NO_COMMIT } },
-  reviewer: { role: 'reviewer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT } },
-  explorer: { role: 'explorer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT } },
-  scribe: { role: 'scribe', model: SCRIBE_MODEL, effort: 'low', tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT } },
+  coordinator: { role: 'coordinator', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: [] }, handoffBoundTurns: COORDINATOR_HANDOFF_BOUND_TURNS },
+  implementer: { role: 'implementer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion'], edit: 'own-worktree', bashDeny: ['\\bgit\\s+push\\b[^\\n]*\\b(master|main)\\b'] }, handoffBoundTurns: 0 },
+  verifier: { role: 'verifier', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion'], edit: 'scratch', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
+  reviewer: { role: 'reviewer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
+  explorer: { role: 'explorer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
+  scribe: { role: 'scribe', model: SCRIBE_MODEL, effort: 'low', tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
 };
 
 /** Role of a spawn name (`impl-foo-12` → `implementer`), or null when the name has no role prefix. Reads the prefix
@@ -73,13 +80,14 @@ export function roleSpec(role: FleetRole, overrides?: RoleConfig): RoleSpec {
     model: o && 'model' in o ? o.model : base.model,
     effort: o && 'effort' in o ? o.effort : base.effort,
     tools: { denyTools: [...base.tools.denyTools], edit: base.tools.edit, bashDeny: [...base.tools.bashDeny] },
+    handoffBoundTurns: o && 'handoffBoundTurns' in o ? (o.handoffBoundTurns ?? 0) : base.handoffBoundTurns,
   };
 }
 
-/** Per-role override of model / effort (the optional `<ORCHESTRA_HOME>/fleet-roles.json`). */
-export type RoleConfig = Partial<Record<FleetRole, { model?: string; effort?: string }>>;
+/** Per-role override of model / effort / handoff bound (the optional `<ORCHESTRA_HOME>/fleet-roles.json`). `handoffBoundTurns: 0` = off. */
+export type RoleConfig = Partial<Record<FleetRole, { model?: string; effort?: string; handoffBoundTurns?: number }>>;
 
-const ROLE_KEYS = ['model', 'effort'] as const;
+const ROLE_KEYS = ['model', 'effort', 'handoffBoundTurns'] as const;
 
 /** First object key that appears twice in the same object of a JSON text (JSON.parse is last-wins and would hide the first copy), or undefined. */
 function findDuplicateKey(text: string): string | undefined {
@@ -110,9 +118,9 @@ function findDuplicateKey(text: string): string | undefined {
   return undefined;
 }
 
-/** STRICT parse of the override file's JSON text (or an already-parsed object): `{ "<role>": { "model"?, "effort"? } }`.
+/** STRICT parse of the override file's JSON text (or an already-parsed object): `{ "<role>": { "model"?, "effort"?, "handoffBoundTurns"? } }`.
  *  An unknown role, an unknown key, a wrong type or an invalid model / effort THROWS with a named error. A model of `"default"` or
- *  `null` pins nothing (clears the role's pin). */
+ *  `null` pins nothing (clears the role's pin); a `handoffBoundTurns` of `0` / `null` / `"default"` is OFF, else an integer >= HANDOFF_MIN_BOUND_TURNS. */
 export function parseRoleConfig(raw: unknown): RoleConfig {
   let value = raw;
   if (typeof raw === 'string') {
@@ -127,13 +135,17 @@ export function parseRoleConfig(raw: unknown): RoleConfig {
       throw new Error(`fleet-roles config: unknown role "${roleKey}" (known: ${FLEET_ROLES.join(', ')})`);
     }
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`fleet-roles config: role "${roleKey}" must be an object`);
-    const slot: { model?: string; effort?: string } = {};
+    const slot: { model?: string; effort?: string; handoffBoundTurns?: number } = {};
     for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
       if (!(ROLE_KEYS as readonly string[]).includes(k)) throw new Error(`fleet-roles config: unknown key "${k}" in role "${roleKey}" (known: ${ROLE_KEYS.join(', ')})`);
       if (k === 'model') {
         if (v === null || v === 'default') slot.model = undefined;
         else if (typeof v === 'string' && isValidModelArg(v)) slot.model = v;
         else throw new Error(`fleet-roles config: role "${roleKey}": invalid model ${JSON.stringify(v)}`);
+      } else if (k === 'handoffBoundTurns') {
+        if (v === null || v === 'default' || v === 0) slot.handoffBoundTurns = 0;
+        else if (typeof v === 'number' && Number.isInteger(v) && v >= HANDOFF_MIN_BOUND_TURNS) slot.handoffBoundTurns = v;
+        else throw new Error(`fleet-roles config: role "${roleKey}": invalid handoffBoundTurns ${JSON.stringify(v)} (an integer >= ${HANDOFF_MIN_BOUND_TURNS}, or 0 / null / "default" = off)`);
       } else if (k === 'effort') {
         if (v === null || v === 'default') slot.effort = undefined;
         else if (typeof v === 'string' && (EFFORT_LEVELS as readonly string[]).includes(v)) slot.effort = v;

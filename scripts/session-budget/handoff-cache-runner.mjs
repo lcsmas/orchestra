@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const cfg = JSON.parse(process.env.SB_CONFIG ?? '{}');
-const { REPO, root, arm, mutant = null, turns = 24, bound = 0, fillerChars = 1800, replyChars = 1200, timeoutMs = 240_000 } = cfg;
+const { REPO, root, arm, mutant = null, turns = 24, bound = 0, fillerChars = 1800, replyChars = 1200, timeoutMs = 240_000, wsName = 'impl-handoff-rig', envBound = null, roleFile = null, withState = false } = cfg; // #478: wsName / envBound / roleFile / withState drive the per-role arms (handoff-role.mjs)
 const HERE = path.join(REPO, 'scripts', 'session-budget');
 
 const { assertScratch } = await import(`${HERE}/scratch-guard.mjs`);
@@ -25,7 +25,9 @@ fs.mkdirSync(orchHome, { recursive: true });
 process.env.HOME = home;
 process.env.ORCHESTRA_HOME = orchHome;
 process.env.CLAUDE_CONFIG_DIR = cfgDir;
-if (bound > 0) process.env.ORCHESTRA_HANDOFF_BOUND_TURNS = String(bound); else delete process.env.ORCHESTRA_HANDOFF_BOUND_TURNS;
+if (envBound !== null) process.env.ORCHESTRA_HANDOFF_BOUND_TURNS = String(envBound); // '0' = the host-wide off switch, set ON PURPOSE
+else if (bound > 0) process.env.ORCHESTRA_HANDOFF_BOUND_TURNS = String(bound); else delete process.env.ORCHESTRA_HANDOFF_BOUND_TURNS;
+if (roleFile) fs.writeFileSync(path.join(orchHome, 'fleet-roles.json'), JSON.stringify(roleFile));
 
 if (mutant) register(pathToFileURL(`${HERE}/mutants.mjs`).href, { parentURL: import.meta.url, data: { mutant } });
 const { startFakeApi } = await import(`${HERE}/fake-anthropic-api.mjs`);
@@ -39,17 +41,19 @@ execFileSync('git', ['-c', 'user.email=rig@invalid', '-c', 'user.name=rig', 'com
 
 const WS_ID = 'ws-handoff-rig';
 const KEY = 'handoff-rig-session-key-not-real';
+const STATE_FILE = path.join(orchHome, 'fanout', WS_ID, 'state.json');
+const LEDGER_URL = 'https://github.com/lcsmas/orchestra/issues/481';
 const SUMMARY = [
   'STATE: HANDOFF-SUMMARY-MARK — implemented the lever, tests green on branch handoff-bounded-lifetime-466.',
   'NEXT STEPS: 1. run the rig  2. nominate on the ledger.',
-  'REFS: https://github.com/lcsmas/orchestra/issues/471 and fanout/ops/state.json',
+  withState ? `REFS: ${LEDGER_URL} and ${STATE_FILE}` : 'REFS: https://github.com/lcsmas/orchestra/issues/471 and fanout/ops/state.json',
   'NOT VERIFIED: the packaged app was not driven.',
 ].join('\n');
 // deterministic filler: the prompt of turn i / the reply of turn i (distinct text per turn, so only a REAL shared prefix is cached)
 const filler = (tag, i, n) => { let s = ''; for (let k = 0; s.length < n; k++) s += `${tag}${i}.${k} work log line ${(i * 7919 + k * 104729) % 100003}; `; return s.slice(0, n); };
 const lastUser = (msgs) => JSON.stringify([...(msgs ?? [])].reverse().find((m) => m.role === 'user')?.content ?? '');
 
-const out = { arm, mutant, turns, bound, nudges: 0, handoffsDispatched: 0, dispatchResults: [] };
+const out = { arm, mutant, wsName, turns, bound, nudges: 0, handoffsDispatched: 0, dispatchResults: [] };
 let hostRef = null;
 const api = await startFakeApi({
   apiPort: cfg.apiPort, proxyPort: cfg.proxyPort, keepMessages: true, cacheModel: true,
@@ -114,7 +118,7 @@ const { DEFAULT_BUS_SWITCHES } = await import(`${REPO}/src/shared/bus-switches.t
 hostRef = await import(`${REPO}/src/main/handoff-host.ts`); // the PRODUCTION host: registers the turn-end listener at load
 await store.load?.();
 bus.initBus();
-await store.upsertWorkspace({ id: WS_ID, name: 'impl-handoff-rig', kind: 'scratch', repoPath: '', worktreePath: repoDir, status: 'idle', createdAt: Date.now(), hasInput: true });
+await store.upsertWorkspace({ id: WS_ID, name: `rig-repo · ${wsName}`, branch: wsName, kind: 'scratch', repoPath: '', worktreePath: repoDir, status: 'idle', createdAt: Date.now(), hasInput: true });
 busRuns.startRun(bus.getBus(), { id: WS_ID, kind: 'mission', coordinator: WS_ID }, DEFAULT_BUS_SWITCHES);
 
 const deadline = Date.now() + timeoutMs;
@@ -140,8 +144,17 @@ async function userTurn(i) {
   await settle();
 }
 
+// the REAL built CLI over the fan-out state (`orchestra fanout state …`, store-less): what a coordinator's NEXT/REFS point at must survive a handoff untouched
+const cli = (...args) => execFileSync(process.execPath, [path.join(REPO, 'dist-electron', 'cli.js'), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', ORCHESTRA_HOME: orchHome } });
+let stateBefore = null;
+
 let error = null;
 try {
+  if (withState) {
+    cli('fanout', 'state', 'init', '--run', WS_ID, '--target', 'master');
+    cli('fanout', 'state', 'set', 'T478', '--run', WS_ID, '--status', 'merged', '--branch', 'impl-handoff-bound-478', '--pr', '478', '--head', 'abcdef0123456789abcdef0123456789abcdef01');
+    stateBefore = cli('fanout', 'state', 'show', '--run', WS_ID, '--json');
+  }
   // positive controls of the instrument, once, before the run: a wrong key and a workspace with no run are REFUSED with their names
   const wrong = hostRef.dispatchHandoffRequest({ id: WS_ID, key: 'not-the-key', summary: SUMMARY });
   out.controlWrongKey = wrong.ok ? 'ACCEPTED' : wrong.error.split(':')[0];
@@ -172,6 +185,19 @@ out.openingRequests = main.filter((r) => lastUser(r.messages).includes('HANDOFF-
 // the context REALLY ended: some request carrying the summary has no earlier user prompt in it
 out.freshContextAfterHandoff = main.some((r) => lastUser(r.messages).includes('HANDOFF-SUMMARY-MARK') && !/PROMPT-\d+ /.test(flat(r).replace(/HANDOFF-SUMMARY-MARK/g, '')));
 out.nudgeRequests = main.filter((r) => lastUser(r.messages).includes('[Orchestra] This context has run')).length;
+// #478: the context size at the nudge vs at the fresh session's first request, and what survived (state file untouched, the refs reach the fresh context)
+const tok = (r) => Math.floor(r.usage.prefixChars / 4);
+const nudgeReq = main.find((r) => lastUser(r.messages).includes('[Orchestra] This context has run'));
+const openReq = main.find((r) => lastUser(r.messages).includes('HANDOFF-SUMMARY-MARK'));
+out.ctxAtNudge = nudgeReq ? tok(nudgeReq) : 0;
+out.ctxAtOpening = openReq ? tok(openReq) : 0;
+if (withState) {
+  out.openingCarriesRefs = !!openReq && lastUser(openReq.messages).includes(STATE_FILE) && lastUser(openReq.messages).includes(LEDGER_URL);
+  try {
+    const after = cli('fanout', 'state', 'show', '--run', WS_ID, '--json');
+    out.stateIdentical = stateBefore !== null && after === stateBefore && after.includes('"pr": 478');
+  } catch (e) { out.stateIdentical = false; out.stateError = String(e?.message ?? e).slice(0, 200); }
+}
 out.handoffFiles = (() => { try { return fs.readdirSync(path.join(orchHome, 'handoff', WS_ID)).length; } catch { return 0; } })();
 
 try {

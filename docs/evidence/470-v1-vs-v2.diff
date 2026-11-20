@@ -1,6 +1,6 @@
 --- v1/verified-fanout/SKILL.md
 +++ v2/src/shared/verified-fanout-skill.ts (rendered)
-@@ -1,649 +1,321 @@
+@@ -1,649 +1,322 @@
  ---
  name: verified-fanout
  description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
@@ -78,8 +78,9 @@
 +- **A long-lived member re-reads its whole context every turn** → `orchestra handoff --summary-file <path>`
 +  (STATE, NEXT STEPS, REFS, NOT VERIFIED, each non-empty), then END YOUR TURN: the host starts a fresh
 +  session in the SAME workspace, worktree, branch and run. Refused, nothing ended: `handoff-summary-invalid`
-+  (fix the missing section), `handoff-outside-run` (not a member of an open run), `handoff-unvouched` (run it
-+  from the agent itself). Hand off a heavy long-lived member (verifier, coordinator), not a light one.
++  (fix the section), `handoff-outside-run` (not in an open run), `handoff-unvouched` (run it yourself).
++  Hand off a heavy member (verifier, coordinator). The host nudges the coordinator at 30 turns;
++  its summary holds state-file path + ledger refs, open decisions, NEXT.
 +- **WALL-CLOCK IS A GOAL:** pipeline, never batch — gate/review each candidate the moment it exists; remove DEAD TIME, never thin verification.
  
 -- A **mission** is the run of a top-level agent, born with it; the **LEAD**

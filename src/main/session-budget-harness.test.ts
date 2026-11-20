@@ -525,8 +525,27 @@ test('handoff-cache judge: baseline quiet; handoff must nudge, hand off, open fr
   assert.equal(hc.weighted({ cacheReadTokens: 1000, cacheCreationTokens: 100 }), 225);
 });
 
-test('handoff-cache mutants: both anchors match the shipped source exactly once', () => {
-  for (const name of ['handoff-noop-clear', 'handoff-no-nudge']) {
+test('handoff-role judge (#478): off = quiet; on = nudged + handed off + opened + a SMALLER fresh context + state untouched + refs carried + a cache-read drop; each clause has a must-FAIL arm', () => {
+  const rep = (over: object = {}) => ({
+    error: undefined, turns: 36, mainRequests: 38, controlWrongKey: 'handoff-unvouched', controlNoRun: 'handoff-outside-run',
+    nudges: 1, nudgeRequests: 1, handoffsDispatched: 1, dispatchResults: ['scheduled'], handoffFiles: 1, openingRequests: 1, freshContextAfterHandoff: true,
+    cacheReadTokens: 900, lastRequestTokens: 30, ctxAtNudge: 120, ctxAtOpening: 14, stateIdentical: true, openingCarriesRefs: true, ...over,
+  });
+  const base = rep({ mainRequests: 36, nudges: 0, nudgeRequests: 0, handoffsDispatched: 0, dispatchResults: [], handoffFiles: 0, openingRequests: 0, freshContextAfterHandoff: false, cacheReadTokens: 1500, lastRequestTokens: 130, ctxAtNudge: 0, ctxAtOpening: 0, stateIdentical: true, openingCarriesRefs: false });
+  const failed = (v: object) => Object.entries(v).filter(([, ok]) => !ok).map(([k]) => k);
+  assert.deepEqual(failed(hc.judgeHandoffRole('off', base)), []);
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep(), base)), []);
+  assert.deepEqual(failed(hc.judgeHandoffRole('off', rep())), ['quiet'], 'a role that should be off but nudged');
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', base, base)), ['nudged', 'handedOff', 'opened', 'ctxDrops', 'openingRefs', 'drop'], 'no bound ⇒ nothing, no drop');
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep({ ctxAtOpening: 120 }), base)), ['ctxDrops'], 'the fresh context is not smaller');
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep({ stateIdentical: false }), base)), ['stateIdentical']);
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep({ openingCarriesRefs: false }), base)), ['openingRefs']);
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep({ cacheReadTokens: 1500 }), base)), ['drop'], 'an equal read total is not a drop');
+  assert.deepEqual(failed(hc.judgeHandoffRole('on', rep({ nudgeRequests: 1, nudges: 1, handoffsDispatched: 1 }), base, 2)), ['nudged', 'handedOff'], 'the file arm wants at least 2 handoffs');
+});
+
+test('handoff-cache mutants: every anchor matches the shipped source exactly once', () => {
+  for (const name of ['handoff-noop-clear', 'handoff-no-nudge', 'handoff-role-ignored', 'handoff-role-by-name', 'handoff-role-all-on']) {
     const m = mutants.MUTANTS[name];
     const src = fs.readFileSync(`${REPO}${m.file}`, 'utf8');
     assert.equal([...src.matchAll(m.find)].length, 1, `${name} anchors exactly once in ${m.file}`);
