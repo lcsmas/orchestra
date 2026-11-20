@@ -25,6 +25,8 @@ interface FakeOpts {
   /** `pr view --json state,mergeCommit` (the post-merge read-back) fails. */
   readbackFails?: boolean;
   mergeStderr?: string;
+  /** #487 — the TARGET repo's root files + package.json as `gh api contents` serves them (absent = the API call fails). */
+  target?: { files: string[]; packageJson?: string };
 }
 
 /** A fake `gh`: records every argv, answers like gh does, and — like GitHub — refuses a merge whose --match-head-commit != the head it holds. */
@@ -36,6 +38,11 @@ function fakeGh(o: FakeOpts) {
     calls.push(args);
     const ok = (stdout: string): GhResult => ({ code: 0, stdout, stderr: '' });
     const [a, b] = args;
+    if (a === 'api') {
+      if (!o.target) return { code: 1, stdout: '', stderr: 'HTTP 404' };
+      if (args[args.length - 1].includes('/contents/package.json')) return ok(o.target.packageJson ?? '{}');
+      return ok(JSON.stringify(o.target.files.map((name) => ({ name }))));
+    }
     if (a === 'pr' && b === 'list') return ok(JSON.stringify(o.existing ?? []));
     if (a === 'pr' && b === 'create') return ok('https://github.com/o/r/pull/42\n');
     if (a === 'pr' && b === 'view') {
@@ -353,4 +360,44 @@ test('argv: --no-review-gate is valueless, order-free, and contradicts --review-
   const noFlag = parseDeliverArgs(base);
   assert.ok(noFlag.ok && noFlag.opts.noReviewGate === false);
   assert.equal(parseDeliverArgs([...base, '--no-review-gate', '--review-verdict', 'v']).ok, false);
+});
+
+// #487 — combinedSuite's test command comes from the TARGET repo, not a hard-coded pnpm.
+const suiteFor = async (target: FakeOpts['target'], extra: Partial<DeliverOpts> = {}) => {
+  const f = fakeGh({ views: [{ checks: [green()] }], target });
+  const r = await deliver(opts(extra), deps(f.gh).d);
+  assert.equal(r.result.verdict, 'merged');
+  return r.result;
+};
+test('#487 combinedSuite: npm repo → npm test; pnpm repo → pnpm run test; yarn repo → yarn test', async () => {
+  const npm = await suiteFor({ files: ['package.json', 'package-lock.json'], packageJson: '{"name":"vf2-trial"}' });
+  assert.match(npm.combinedSuite ?? '', / && npm test$/);
+  assert.doesNotMatch(npm.combinedSuite ?? '', /pnpm/);
+  assert.equal(npm.combinedSuiteSource, 'lockfile');
+  assert.match((await suiteFor({ files: ['package.json', 'pnpm-lock.yaml'] })).combinedSuite ?? '', / && pnpm run test$/);
+  assert.match((await suiteFor({ files: ['package.json', 'yarn.lock'] })).combinedSuite ?? '', / && yarn test$/);
+});
+test('#487 combinedSuite: packageManager field beats the lockfile; --suite-cmd beats both; unreadable target falls back to npm test (named)', async () => {
+  const pm = await suiteFor({ files: ['package.json', 'package-lock.json'], packageJson: '{"packageManager":"pnpm@9.1.0"}' });
+  assert.match(pm.combinedSuite ?? '', / && pnpm run test$/);
+  assert.equal(pm.combinedSuiteSource, 'packageManager');
+  const flag = await suiteFor({ files: ['pnpm-lock.yaml'] }, { suiteCmd: 'make check' });
+  assert.match(flag.combinedSuite ?? '', / && make check$/);
+  assert.equal(flag.combinedSuiteSource, 'flag');
+  const nf = fakeGh({ views: [{ checks: [green()] }] });
+  const nd = deps(nf.gh);
+  await deliver(opts(), nd.d);
+  assert.ok(nd.logs.some((l) => /could not tell the target repo's package manager.*npm test/.test(l)), 'fallback is said on stderr');
+  const none = await suiteFor(undefined);
+  assert.match(none.combinedSuite ?? '', / && npm test$/);
+  assert.equal(none.combinedSuiteSource, 'fallback');
+});
+test('#487 the probe reads the TARGET ref on the --repo given, and a refused delivery prints no suite', async () => {
+  const f = fakeGh({ views: [{ checks: [green()] }], target: { files: ['package-lock.json'] } });
+  await deliver(opts({ repo: 'o/r' }), deps(f.gh).d);
+  assert.deepEqual(f.calls.filter((c) => c[0] === 'api')[0], ['api', 'repos/o/r/contents?ref=bench%2Fx']);
+  const red = fakeGh({ views: [{ checks: [] }], target: { files: [] } });
+  const r = await deliver(opts({ noChecksGraceMs: 0 }), deps(red.gh).d);
+  assert.equal(r.result.combinedSuite, undefined);
+  assert.equal(red.calls.filter((c) => c[0] === 'api').length, 0);
 });

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   classifyMergeFailure,
   combinedSuiteCommand,
+  detectPackageManager,
+  suiteCommandFor,
   decideDelivery,
   isUserStep,
   normaliseRollupItem,
@@ -150,6 +152,20 @@ test('actions url parse, merge-failure classification, suite command', () => {
   assert.equal(classifyMergeFailure('X Pull request is not mergeable: the head branch was modified. Review and try the merge again.'), 'head-moved');
   assert.equal(classifyMergeFailure('unknown flag: --match-head-commit'), 'other');
   assert.equal(classifyMergeFailure('GraphQL: Required status check is expected'), 'other');
-  assert.equal(combinedSuiteCommand('bench/x'), 'git fetch origin bench/x && git checkout --detach origin/bench/x && git rev-list --count HEAD..origin/bench/x && pnpm run test');
+  assert.equal(combinedSuiteCommand('bench/x'), 'git fetch origin bench/x && git checkout --detach origin/bench/x && git rev-list --count HEAD..origin/bench/x && npm test');
+  assert.equal(combinedSuiteCommand('m', 'pnpm run test'), 'git fetch origin m && git checkout --detach origin/m && git rev-list --count HEAD..origin/m && pnpm run test');
   assert.throws(() => combinedSuiteCommand('x; rm -rf /'));
+});
+
+test('#487 detectPackageManager: packageManager field wins over the lockfile; lockfiles map to their manager; nothing → null', () => {
+  assert.deepEqual(detectPackageManager(null, ['package.json', 'pnpm-lock.yaml']), { pm: 'pnpm', source: 'lockfile' });
+  assert.deepEqual(detectPackageManager(null, ['yarn.lock']), { pm: 'yarn', source: 'lockfile' });
+  assert.deepEqual(detectPackageManager(null, ['package-lock.json']), { pm: 'npm', source: 'lockfile' });
+  assert.deepEqual(detectPackageManager(null, ['bun.lockb']), { pm: 'bun', source: 'lockfile' });
+  assert.deepEqual(detectPackageManager('{"packageManager":"yarn@4.1.0"}', ['pnpm-lock.yaml']), { pm: 'yarn', source: 'packageManager' });
+  assert.deepEqual(detectPackageManager('{"packageManager":"pnpm@9.1.0+sha512.abc"}', []), { pm: 'pnpm', source: 'packageManager' });
+  assert.deepEqual(detectPackageManager('{"packageManager":"cargo@1"}', ['package-lock.json']), { pm: 'npm', source: 'lockfile' });
+  assert.deepEqual(detectPackageManager('not json', ['yarn.lock']), { pm: 'yarn', source: 'lockfile' });
+  assert.equal(detectPackageManager('{"name":"x"}', ['package.json', 'README.md']), null);
+  assert.deepEqual(['pnpm', 'yarn', 'npm', 'bun', null].map((m) => suiteCommandFor(m as never)), ['pnpm run test', 'yarn test', 'npm test', 'bun run test', 'npm test']);
 });
