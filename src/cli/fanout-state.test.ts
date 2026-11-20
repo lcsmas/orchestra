@@ -190,3 +190,63 @@ test('follow-up MINOR 2 (CLI): --accept-merged is recorded, shown in --json, ref
   assert.equal(set(d, 'A', '--accept-merged', 'landed via U squash').code, 0);
   assert.equal(JSON.parse(runFanout(['state', 'show', '--run', 'r1', '--json'], d).stdout).tickets.A.mergedAccepted, 'landed via U squash');
 });
+
+// #486 — a spawned OPS: $ORCHESTRA_RUN_ID is its PARENT's run (ownsRun is set at the first spawn), $ORCHESTRA_WS_ID is its own.
+const OPS_ENV = (home: string) => ({ ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'ops-ws-1', ORCHESTRA_RUN_ID: 'lead-run-1' });
+
+test('#486 default run = the caller\'s OWN run: state init/set/show never touch the parent\'s run, with no --run', (t) => {
+  const home = mkHome(t);
+  const d = deps(home, noRunner, { env: OPS_ENV(home) });
+  // The parent's (LEAD's) run already holds an earlier vague's state.
+  assert.equal(runFanout(['state', 'init', '--run', 'lead-run-1'], d).code, 0);
+  assert.equal(runFanout(['state', 'set', 'OLD', '--run', 'lead-run-1', '--status', 'merged', '--accept-merged', 'earlier vague'], d).code, 0);
+  const parentBefore = fs.readFileSync(path.join(home, 'fanout', 'lead-run-1', 'state.json'), 'utf8');
+  const init = runFanout(['state', 'init'], d);
+  assert.equal(init.code, 0, init.stderr);
+  assert.match(init.stdout, /fanout\/ops-ws-1\/state\.json/);
+  assert.equal(runFanout(['state', 'set', 'NEW', '--status', 'started'], d).code, 0);
+  assert.deepEqual(Object.keys(JSON.parse(runFanout(['state', 'show', '--json'], d).stdout).tickets), ['NEW']);
+  assert.equal(fs.readFileSync(path.join(home, 'fanout', 'lead-run-1', 'state.json'), 'utf8'), parentBefore, 'the parent\'s state is byte-exact');
+});
+
+test('#486 an explicit --run still wins; outside a workspace $ORCHESTRA_RUN_ID is the default (unchanged)', (t) => {
+  const home = mkHome(t);
+  const d = deps(home, noRunner, { env: OPS_ENV(home) });
+  assert.match(runFanout(['state', 'init', '--run', 'lead-run-1'], d).stdout, /fanout\/lead-run-1\//);
+  const out = deps(home, noRunner, { env: { ORCHESTRA_HOME: home, ORCHESTRA_RUN_ID: 'r9' } });
+  assert.match(runFanout(['state', 'init'], out).stdout, /fanout\/r9\//);
+  assert.match(runFanout(['state', 'init'], deps(home, noRunner)).stderr, /no run: pass --run/);
+});
+
+test('#486 `state init` on an existing file names the collision and the fix; init never falls back to the parent\'s run', (t) => {
+  const home = mkHome(t);
+  const d = deps(home, noRunner, { env: OPS_ENV(home) });
+  runFanout(['state', 'init', '--run', 'lead-run-1'], d);
+  assert.equal(runFanout(['state', 'init'], d).code, 0); // own run, although the parent's already holds a state
+  const c = runFanout(['state', 'init'], d);
+  assert.equal(c.code, 1);
+  assert.match(c.stderr, /state already exists at .*ops-ws-1.*earlier vague.*resume --run ops-ws-1.*init --run <new id>/s);
+});
+
+test('#486 a member with no run of its own (scribe/verifier) reads + updates the parent\'s state via set/show/resume, noted on stderr; once it has its own state that wins', (t) => {
+  const home = mkHome(t);
+  const d = deps(home, noRunner, { env: OPS_ENV(home) });
+  runFanout(['state', 'init', '--run', 'lead-run-1'], d);
+  const show = runFanout(['state', 'show'], d);
+  assert.equal(show.code, 0);
+  assert.match(show.stdout, /^run lead-run-1/);
+  assert.match(show.stderr, /using your parent's run lead-run-1/);
+  assert.equal(runFanout(['state', 'set', 'A', '--status', 'started'], d).code, 0);
+  assert.ok('A' in JSON.parse(runFanout(['state', 'show', '--run', 'lead-run-1', '--json'], d).stdout).tickets);
+  const rs = runFanout(['resume', '--no-write', '--no-fetch'], deps(home, () => ({ code: 0, stdout: '', stderr: '' }), { env: OPS_ENV(home) }));
+  assert.match(rs.stdout, /^resume lead-run-1/);
+  assert.match(rs.stderr, /using your parent's run/);
+  // neither exists → plain refusal naming the own state
+  const lone = deps(home, noRunner, { env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'x-ws', ORCHESTRA_RUN_ID: 'nothing' } });
+  assert.match(runFanout(['state', 'show'], lone).stderr, /no state at .*x-ws/);
+  // own state exists → it wins over the parent's
+  runFanout(['state', 'init'], d);
+  const own = runFanout(['state', 'show'], d);
+  assert.match(own.stdout, /^run ops-ws-1/);
+  assert.equal(own.stderr, '');
+});

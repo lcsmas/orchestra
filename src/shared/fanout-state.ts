@@ -58,6 +58,18 @@ export function assertRunId(run: string): string {
   if (!SAFE_ID.test(run) || run.includes('..')) throw new FanoutStateError(`unsafe run id ${JSON.stringify(run)} (letters, digits, . _ - only)`);
   return run;
 }
+/** #486 — the run `orchestra fanout state` acts on. --run wins; else the caller's OWN run (= its workspace id: a coordinator
+ *  owns the run named by its own id, `runIdOf`); `$ORCHESTRA_RUN_ID` only outside a workspace. Inside one it is the PARENT's run
+ *  until the first spawn (ownsRun is set then), so it is never the default — `inherited` carries it for the hint. */
+export function resolveFanoutRun(flag: string | undefined, env: { ORCHESTRA_WS_ID?: string; ORCHESTRA_WS_ID_IDENTITY?: string; ORCHESTRA_RUN_ID?: string }): { run: string | null; inherited: string | null } {
+  const own = (env.ORCHESTRA_WS_ID || env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+  const envRun = env.ORCHESTRA_RUN_ID?.trim() || null;
+  const f = flag?.trim();
+  if (f) return { run: f, inherited: null };
+  if (own) return { run: own, inherited: envRun && envRun !== own ? envRun : null };
+  return { run: envRun, inherited: null };
+}
+
 export function stateFile(home: string, run: string): string {
   return path.join(home, 'fanout', assertRunId(run), 'state.json');
 }
