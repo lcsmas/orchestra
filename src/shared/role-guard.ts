@@ -212,6 +212,26 @@ if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
   if [ "$write_guard" = git ] && chk '${sq(GIT_WRITE)}' && ! chk '${sq(`${GIT}[[:space:]]+${G}apply[[:space:]]+([^;&|]*[[:space:]])?--check`)}'; then deny "a git command that rewrites the working tree (apply/am/cherry-pick/revert/pull/restore/clean -f/checkout -- /branch -f/update-ref) — the $role role does not change the tree; do it in a scratch clone (cd into \$TMPDIR/…). (Heuristic: not every shell write is visible.)"; fi
   t="$(printf '%s\n' "$wout" | sed -n 's/^W\t//p' | head -1)"
   if [ -n "$t" ]; then deny "a shell write to '$t' — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/); redirect there, or delegate the change to an implementer. (This guard is a heuristic: it cannot see every shell write.)"; fi
+  # A scratch-judged target that resolves THROUGH an existing symlink to outside scratch is not scratch (a link created in this same command is not seen).
+  oks="$(printf '%s\n' "$wout" | sed -n 's/^OK\t//p' | sort -u | head -40)"
+  if [ -n "$oks" ] && command -v realpath >/dev/null 2>&1; then
+    tmproot=""; case "$TMPDIR" in /?*/?*) tmproot="$TMPDIR" ;; esac
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      rp="$(realpath -m -- "$p" 2>/dev/null)"
+      { [ -n "$rp" ] && [ "$rp" != "$p" ]; } || continue
+      okp=0
+      case "$rp" in "$HOME"/.claude*/projects/*/memory/*) okp=1 ;; esac
+      for root in /tmp /var/tmp "$HOME/.orchestra/agent-tmp" "$HOME/.orchestra-dev/agent-tmp" "\${ORCHESTRA_HOME:+$ORCHESTRA_HOME/agent-tmp}" "$tmproot"; do
+        [ -n "$root" ] || continue
+        for rr in "$root" "$(realpath -m -- "$root" 2>/dev/null)"; do
+          [ -n "$rr" ] || continue
+          case "$rp" in "$rr"/*) okp=1 ;; esac
+        done
+      done
+      [ "$okp" = 1 ] || deny "a shell write to '$p' resolves through a symlink to '$rp', outside scratch — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). (This guard is a heuristic: it cannot see every shell write.)"
+    done <<< "$oks"
+  fi
 fi
 if chk '${sq(CHECK)}' && chk '${sq(DESTRUCTIVE)}'; then
   deny "a check (verify-landed / gh pr checks / CI / rev-list) chained with a destructive act (delete, force-push, merge, branch -D, worktree remove) in ONE command. Run the check as its own call, read the result, THEN act in a second call."

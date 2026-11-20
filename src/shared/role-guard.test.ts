@@ -346,7 +346,7 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['here-strings open a heredoc', 'gsub(/<<</, "", c);', ''],
     ['git branch --format reads as -f', 'branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))', 'branch[[:space:]]+[^;&|]*(-f|--force))'],
     ['heredoc bodies are scanned as commands', '| awk "$awk_prog" |', '| cat |'],
-    ['redirect targets are never judged', 'judge("W", wd, wv)', 'wv = wv'],
+    ['redirect targets are never judged', 'judge("W", wd, wv, bd)', 'wv = wv'],
     ['sed -i is allowed', 'if (!inpl) return', 'return'],
     ['the guard wiring is editable', "*/.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)", "*/.orchestra/NEVER)"],
     ['the table\'s bashDeny rules are never evaluated', 'if ! { [ "$in_scratch" = 1 ] && [ "$i" -lt "$n_table" ]; } && chk', 'if false && chk'],

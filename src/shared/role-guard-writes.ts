@@ -8,7 +8,7 @@
 export const AWK_WRITES = String.raw`
 function ws(c) { return c == " " || c == "\t" || c == "\r" }
 function isop(c) { return c == ";" || c == "&" || c == "|" || c == "(" || c == ")" || c == "<" || c == ">" }
-function emit(kind, disp) { print kind "\t" disp }
+function emit(kind, disp) { if (!quiet) print kind "\t" disp }
 function norm(p,   n, a, i, k, r, out) {
   n = split(p, a, "/"); k = 0
   for (i = 1; i <= n; i++) {
@@ -39,28 +39,39 @@ function scratch(p,   rest) {
   }
   return 0
 }
+function san(v) { return (v ~ "[ \t{}]") ? UNRES : v }
+function poisonvar(nm) {
+  vals[nm] = UNRES; vpoison[nm] = 1
+  if (fxon && sd == fxsd) fxvars = fxvars " " nm
+}
+function poison_all(   n) {
+  for (n in vals) { vals[n] = UNRES; vpoison[n] = 1 }
+  envpoison = 1; cwd = ""
+  if (fxon && sd == fxsd) fxall = 1
+}
 function getvar(nm) {
   if (nm in vals) return (vpoison[nm]) ? UNRES : vals[nm]
+  if (envpoison) return UNRES
+  if (nm == "RANDOM") return "12345"
   if (nm == "PWD") return (cwd == "") ? UNRES : cwd
   if ((nm in ENVIRON) && ENVIRON[nm] != "") return ENVIRON[nm]
   if (nm == "TMPDIR") return "/tmp/.TMPDIR"
   return UNRES
 }
 function okpath(v) { return index(v, UNRES) == 0 && scratch(absp(v)) }
+function safetok(v) { return (index(v, UNRES) == 0 && v ~ "^[A-Za-z0-9_][A-Za-z0-9_.-]*$" && v != "..") }
 function setvar(nm, v) {
-  if ((nm in vals) && !(okpath(vals[nm]) && okpath(v))) vpoison[nm] = 1
+  # reassigning one single-component token to another cannot change where a path lands, so it is not a hazard
+  if ((nm in vals) && !(safetok(vals[nm]) && safetok(v)) && !(okpath(vals[nm]) && okpath(v))) vpoison[nm] = 1
   vals[nm] = v
+  if (fxon && sd == fxsd) fxvars = fxvars " " nm
 }
-function judge(kind, disp, v,   k, pre, rest) {
-  k = index(v, UNRES)
-  if (k > 0) {
-    # e.g. TMPDIR/run-N.log: an unknown part is tolerated only inside the LAST component, under a resolved scratch directory
-    pre = substr(v, 1, k - 1); rest = substr(v, k)
-    sub("[^/]*$", "", pre)
-    if (index(rest, "/") == 0 && pre != "" && scratch(absp(pre "x"))) return
-    emit(kind, disp); return
-  }
-  if (!scratch(absp(v))) emit(kind, disp)
+function judge(kind, disp, v, br,   p) {
+  if (br || index(v, UNRES)) { emit(kind, disp); return }
+  if (v ~ "[*?[]" && v ~ "(^|/)[.][.](/|$)") { emit(kind, disp); return }
+  p = absp(v)
+  if (!scratch(p)) { emit(kind, disp); return }
+  if (!quiet && p !~ "^/dev/") print "OK\t" p
 }
 function scope_in(   n) {
   sd++; SNC[sd] = cwd; SNL[sd] = ""
@@ -73,13 +84,33 @@ function scope_out(   n, a, m, i) {
   for (i = 1; i <= m; i++) { n = a[i]; vals[n] = SNV[sd, n]; if (SNP[sd, n] != "") vpoison[n] = SNP[sd, n] }
   sd--
 }
-function run_code(code,   sS, sP, sN, a, b, c, d) {
-  sS = S; sP = P; sN = N; a = wv; b = wd; c = wq; d = wany
+function run_code(code,   sS, sP, sN, a, b, c, d, g) {
+  sS = S; sP = P; sN = N; a = wv; b = wd; c = wq; d = wany; g = bd
   S = code; N = length(S); P = 1
   scope_in()
   parse_seq("")
   scope_out()
-  S = sS; P = sP; N = sN; wv = a; wd = b; wq = c; wany = d
+  S = sS; P = sP; N = sN; wv = a; wd = b; wq = c; wany = d; bd = g
+}
+function safe_subst(inner) {
+  # command substitutions whose output is a harmless single component: date +FMT; mktemp under TMPDIR (unless TMPDIR was reassigned here)
+  if (inner ~ "^[ \t]*date([ \t]+[+%A-Za-z0-9_:.-]+)*[ \t]*$") return "0"
+  if (!("TMPDIR" in vals) && (inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]*$" || inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]+(-t|-dt|-td)[ \t]+[A-Za-z0-9_.-]+[ \t]*$")) return ((TMPD == "") ? "/tmp" : TMPD) "/.mktemp"
+  return UNRES
+}
+function brace_len(from,   q, ch, depth, mode) {
+  # length (from FROM) up to and including the closing brace of a parameter expansion, quotes honoured; 0 when unterminated
+  depth = 1; mode = ""
+  for (q = from; q <= N; q++) {
+    ch = substr(S, q, 1)
+    if (mode == "'") { if (ch == "'") mode = ""; continue }
+    if (mode == "\"") { if (ch == "\\") { q++; continue } if (ch == "\"") mode = ""; continue }
+    if (ch == "\\") { q++; continue }
+    if (ch == "'" || ch == "\"") { mode = ch; continue }
+    if (ch == "{") depth++
+    else if (ch == "}") { depth--; if (depth == 0) return q - from + 1 }
+  }
+  return 0
 }
 function backtick(   j, code, start) {
   start = P
@@ -88,7 +119,7 @@ function backtick(   j, code, start) {
   code = substr(S, P + 1, j - 1)
   P = P + j + 1
   run_code(code)
-  wv = wv UNRES; wd = wd substr(S, start, P - start)
+  wv = wv safe_subst(code); wd = wd substr(S, start, P - start)
 }
 function arith_end(from,   depth, j, ch, body) {
   # index of the closing paren of the (( that starts at FROM, or 0 when it is not pure arithmetic (code inside: a semicolon, a command substitution)
@@ -103,7 +134,7 @@ function arith_end(from,   depth, j, ch, body) {
   if (index(body, ";") || index(body, "$(") || index(body, "\140")) return 0
   return j
 }
-function dollar(   c2, nm, j, v, e, start, a, b, c, d, inner, dflt) {
+function dollar(   c2, nm, j, v, e, start, a, b, c, d, g, inner, dflt) {
   c2 = substr(S, P + 1, 1)
   start = P
   if (c2 == "(") {
@@ -111,28 +142,29 @@ function dollar(   c2, nm, j, v, e, start, a, b, c, d, inner, dflt) {
       j = arith_end(P + 1)
       if (j > 0) { wv = wv UNRES; wd = wd substr(S, P, j - P + 1); P = j + 1; return }
     }
-    P += 2; a = wv; b = wd; c = wq; d = wany
+    P += 2; a = wv; b = wd; c = wq; d = wany; g = bd
     scope_in()
     parse_seq(")")
     scope_out()
-    wv = a; wd = b; wq = c; wany = d
+    wv = a; wd = b; wq = c; wany = d; bd = g
     inner = substr(S, start + 2, P - start - 3)
-    # mktemp [-d|-u|-q] or mktemp -t TEMPLATE creates under TMPDIR (/tmp when unset): the role's scratch
-    if (inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]*$" || inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]+(-t|-dt|-td)[ \t]+[A-Za-z0-9_.-]+[ \t]*$") wv = wv ((TMPD == "") ? "/tmp" : TMPD) "/.mktemp"
-    else wv = wv UNRES
+    wv = wv safe_subst(inner)
     wd = wd substr(S, start, P - start)
     return
   }
   if (c2 == "{") {
-    j = index(substr(S, P + 2), "}")
+    j = brace_len(P + 2)
     if (j == 0) { wv = wv "$"; wd = wd "$"; P++; return }
     nm = substr(S, P + 2, j - 1)
-    if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*$") v = getvar(nm)
+    if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*$") v = san(getvar(nm))
+    else if (nm ~ "^[1-9]$" && (nm in POS)) v = san(POS[nm])
+    else if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*:?[?]") { sub(":?[?].*$", "", nm); v = san(getvar(nm)) }
     else if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*:?-") {
       # brace form with a :- / - default: the value when VAR is known and non-empty, else a literal default
       dflt = nm; sub("^[A-Za-z_][A-Za-z0-9_]*:?-", "", dflt); sub(":?-.*$", "", nm)
       v = getvar(nm)
-      if (index(v, UNRES) == 0 && v == "") v = (index(dflt, "$") || index(dflt, "\140")) ? UNRES : dflt
+      if (index(v, UNRES) == 0 && v == "") v = (index(dflt, "$") || index(dflt, "\140") || dflt ~ "[\"'\\\\]") ? UNRES : dflt
+      v = san(v)
     } else v = UNRES
     wv = wv v; wd = wd substr(S, P, j + 2); P += j + 2
     return
@@ -141,10 +173,12 @@ function dollar(   c2, nm, j, v, e, start, a, b, c, d, inner, dflt) {
     j = P + 1
     while (j <= N && substr(S, j, 1) ~ "^[A-Za-z0-9_]$") j++
     nm = substr(S, P + 1, j - P - 1)
-    wv = wv getvar(nm); wd = wd "$" nm; P = j
+    wv = wv san(getvar(nm)); wd = wd "$" nm; P = j
     return
   }
-  if (c2 ~ "^[0-9@*?$!#-]$") { wv = wv UNRES; wd = wd "$" c2; P += 2; return }
+  if (c2 == "$") { wv = wv "1"; wd = wd "$$"; P += 2; return }
+  if (c2 ~ "^[1-9]$" && (c2 in POS)) { wv = wv san(POS[c2]); wd = wd "$" c2; P += 2; return }
+  if (c2 ~ "^[0-9@*?!#-]$") { wv = wv UNRES; wd = wd "$" c2; P += 2; return }
   if (c2 == "'") {
     e = index(substr(S, P + 2), "'")
     if (e > 0) { wv = wv UNRES; wd = wd substr(S, P, e + 2); P += e + 2; return }
@@ -193,6 +227,7 @@ function readword(   c, c2, e, lit, sp) {
     if (c == "\"") { wq = 1; dqparse(); continue }
     if (c == "$") { dollar(); continue }
     if (c == "\140") { backtick(); continue }
+    if (c == "{") bd = 1
     wv = wv c; wd = wd c; P++
   }
 }
@@ -217,26 +252,30 @@ function redirect(c,   c2, c3, pv) {
   }
   skipws()
   if (substr(S, P, 2) == ">(" || substr(S, P, 2) == "<(") return
+  bd = 0
   readword()
-  judge("W", wd, wv)
+  judge("W", wd, wv, bd)
 }
 function is_assign(f, i) { return CD[f, i] ~ "^[A-Za-z_][A-Za-z0-9_]*([[][^]]*[]])?[+]?=" }
 function assign(f, i,   nm) {
   nm = CD[f, i]
-  if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[[]") { sub("[[].*$", "", nm); vals[nm] = UNRES; vpoison[nm] = 1; return }
-  if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[+]=") { sub("[+]=.*$", "", nm); vals[nm] = UNRES; vpoison[nm] = 1; return }
+  if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[[]") { sub("[[].*$", "", nm); poisonvar(nm); return }
+  if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[+]=") { sub("[+]=.*$", "", nm); poisonvar(nm); return }
   sub("=.*$", "", nm)
+  if (nm == "CDPATH") cdpath = 1
   setvar(nm, substr(CW[f, i], length(nm) + 2))
 }
 function do_cd(f, i, k, term, inpipe_cmd,   j, w, tgt, have, rest, old, t1, t2) {
   have = 0; old = cwd
+  if (fxon && sd == fxsd) fxcd = 1
   for (j = i + 1; j <= k; j++) {
     w = CW[f, j]
     if (substr(w, 1, 1) == "-" && w != "-") { if (w == "--") continue; continue }
     tgt = w; have = 1; break
   }
   if (!have) { cwd = HOMEV; return }
-  if (tgt == "-" || index(tgt, UNRES)) { cwd = ""; return }
+  if (tgt == "-" || index(tgt, UNRES) || tgt ~ "[ \t{}]") { cwd = ""; return }
+  if (cdpath && substr(tgt, 1, 1) != "/") { cwd = ""; return }
   cwd = absp(tgt)
   # a cd piped from / into something, or backgrounded, runs in a subshell: the shell stays where it was
   t1 = substr(term, 1, 1); t2 = substr(term, 2, 1)
@@ -244,27 +283,33 @@ function do_cd(f, i, k, term, inpipe_cmd,   j, w, tgt, have, rest, old, t1, t2) 
   # cd X || <something other than exit/return>: a failed cd would leave us elsewhere, so the cwd is unknown
   if (term == "||") { rest = substr(S, P + 2); sub("^[ \t]+", "", rest); if (rest !~ "^(exit|return)([ ;&|)]|$)") cwd = "" }
 }
-function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx) {
-  opts = 1; inpl = 0; haveS = 0; nop = 0; nf = 0
+function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx, scr, ffile) {
+  opts = 1; inpl = 0; haveS = 0; nop = 0; nf = 0; scr = ""; ffile = 0
   for (j = i + 1; j <= k; j++) {
     w = CW[f, j]
     if (opts && substr(w, 1, 1) == "-" && w != "-") {
       if (w == "--") { opts = 0; continue }
       if (w ~ "^--in-place") { inpl = 1; continue }
-      if (w == "--expression" || w == "--file") { haveS = 1; j++; continue }
-      if (w ~ "^--expression=" || w ~ "^--file=") { haveS = 1; continue }
+      if (w == "--expression") { haveS = 1; j++; scr = scr " " CW[f, j]; continue }
+      if (w == "--file") { haveS = 1; ffile = 1; j++; continue }
+      if (w ~ "^--expression=") { haveS = 1; scr = scr " " w; continue }
+      if (w ~ "^--file=") { haveS = 1; ffile = 1; continue }
       if (w == "--line-length") { j++; continue }
       if (w ~ "^--") continue
       if (w == "-l") { j++; continue }
       if (w ~ "^-[a-zA-Z]*i") inpl = 1
-      else if (w ~ "^-[a-zA-Z]*[ef]$") { haveS = 1; j++ }
+      else if (w ~ "^-[a-zA-Z]*e$") { haveS = 1; j++; scr = scr " " CW[f, j] }
+      else if (w ~ "^-[a-zA-Z]*f$") { haveS = 1; ffile = 1; j++ }
       continue
     }
     nop++; idx[nop] = j
   }
   if (!inpl) return
+  if (!haveS && nop >= 1) scr = CW[f, idx[1]]
+  # sed script commands/flags that write or execute (s///w file, w file, e): not judged, so denied; -f script contents are unknown
+  if (ffile || scr ~ "(^|[^A-Za-z0-9_\\\\])[we]([ \t;}]|$)") emit("SEDI", "(sed script with a w/e command or flag, or -f)")
   nf = 0
-  for (j = ((haveS) ? 1 : 2); j <= nop; j++) { nf++; judge("SEDI", CD[f, idx[j]], CW[f, idx[j]]) }
+  for (j = ((haveS) ? 1 : 2); j <= nop; j++) { nf++; judge("SEDI", CD[f, idx[j]], CW[f, idx[j]], CB[f, idx[j]]) }
   if (nf == 0) emit("SEDI", "(no file operand)")
 }
 function code_operand(f, i, k,   j, w) {
@@ -289,13 +334,48 @@ function do_ssh(f, i, k,   j, w, code) {
   for (; j <= k; j++) code = code ((code == "") ? "" : " ") CW[f, j]
   if (code != "") run_code(code)
 }
-function process_cmd(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk) {
+function process_cmd(f, k, term, inpipe_cmd,   n, i, nm) {
+  n = 0
+  while (n < k && is_assign(f, n + 1)) n++
+  if (n == 0 || n == k) { process_cmd2(f, k, term, inpipe_cmd); return }
+  # VAR=x cmd: the assignment lives for that one command only
+  pd++
+  for (i = 1; i <= n; i++) {
+    nm = CD[f, i]; sub("[+]?=.*$", "", nm); sub("[[].*$", "", nm)
+    PAn[pd, i] = nm; PAh[pd, nm] = (nm in vals)
+    if (PAh[pd, nm]) { PAv[pd, nm] = vals[nm]; PAp[pd, nm] = vpoison[nm] }
+  }
+  process_cmd2(f, k, term, inpipe_cmd)
+  for (i = 1; i <= n; i++) {
+    nm = PAn[pd, i]
+    if (PAh[pd, nm]) { vals[nm] = PAv[pd, nm]; if (PAp[pd, nm] != "") vpoison[nm] = PAp[pd, nm]; else delete vpoison[nm] }
+    else { delete vals[nm]; delete vpoison[nm] }
+  }
+  pd--
+}
+function apply_fn(nm,   a, m, i) {
+  if (FNall[nm]) poison_all()
+  if (FNcd[nm]) { cwd = ""; if (fxon && sd == fxsd) fxcd = 1 }
+  m = split(FNvars[nm], a, " ")
+  for (i = 1; i <= m; i++) poisonvar(a[i])
+}
+function call_fn(nm, f, i, k,   p, d) {
+  # the body runs HERE (current cwd / variables / positional parameters), then its lasting effects are applied
+  pn++; d = pn
+  for (p = 1; p <= 9; p++) { SPh[d, p] = (p in POS); if (SPh[d, p]) SPv[d, p] = POS[p]; delete POS[p] }
+  for (p = 1; p <= 9 && i + p <= k; p++) POS[p] = CW[f, i + p]
+  if (!FNact[nm]) { FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0 }
+  for (p = 1; p <= 9; p++) { delete POS[p]; if (SPh[d, p]) POS[p] = SPv[d, p] }
+  pn--
+  apply_fn(nm)
+}
+function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, safe, first) {
   i = 1
   for (;;) {
     while (i <= k && is_assign(f, i)) { assign(f, i); i++ }
     if (i > k) return
     w = CW[f, i]
-    if (!CQ[f, i] && (w == "then" || w == "do" || w == "else" || w == "elif" || w == "if" || w == "while" || w == "until" || w == "!" || w == "{" || w == "}" || w == "time" || w == "coproc" || w == "function")) { i++; continue }
+    if (!CQ[f, i] && (w == "then" || w == "do" || w == "else" || w == "elif" || w == "if" || w == "while" || w == "until" || w == "!" || w == "{" || w == "}" || w == "time" || w == "coproc" || w == "function")) { if (w == "function") poison_all(); i++; continue }
     base = w; sub("^.*/", "", base)
     moved = 1
     if (base == "sudo" || base == "env" || base == "command" || base == "exec" || base == "nohup" || base == "timeout" || base == "nice" || base == "builtin") {
@@ -310,34 +390,51 @@ function process_cmd(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk) {
     }
     break
   }
+  if (base in FNdef) { call_fn(base, f, i, k); return }
   for (j = i; j <= k; j++) {
     nm = CW[f, j]; sub("^.*/", "", nm)
     if (nm == "bash" || nm == "sh" || nm == "zsh" || nm == "dash" || nm == "ksh") code_operand(f, j, k)
   }
-  if (base == "for" || base == "select") { nm = CW[f, i + 1]; vals[nm] = UNRES; vpoison[nm] = 1; return }
+  if (base == "for" || base == "select") {
+    nm = CW[f, i + 1]
+    # a loop over LITERAL single-component words (or a numeric range) keeps the variable safe; anything else poisons it
+    safe = (CW[f, i + 2] == "in" && k >= i + 3); first = ""
+    for (j = i + 3; j <= k && safe; j++) {
+      w = CW[f, j]
+      if (CD[f, j] ~ "^[$][(]seq [0-9 ]+[)]$" || w ~ "^[{][0-9]+[.][.][0-9]+[}]$") { if (first == "") first = "1"; continue }
+      if (index(w, UNRES) == 0 && w ~ "^[A-Za-z0-9_][A-Za-z0-9_.-]*$" && w != "..") { if (first == "") first = w; continue }
+      safe = 0
+    }
+    if (safe) setvar(nm, first); else poisonvar(nm)
+    return
+  }
   if (base == "read" || base == "mapfile" || base == "readarray" || base == "getopts") {
-    for (j = i + 1; j <= k; j++) if (CW[f, j] ~ "^[A-Za-z_][A-Za-z0-9_]*$") { vals[CW[f, j]] = UNRES; vpoison[CW[f, j]] = 1 }
+    for (j = i + 1; j <= k; j++) if (CW[f, j] ~ "^[A-Za-z_][A-Za-z0-9_]*$") poisonvar(CW[f, j])
     return
   }
   if (base == "export" || base == "declare" || base == "local" || base == "readonly" || base == "typeset") {
-    for (j = i + 1; j <= k; j++) if (is_assign(f, j)) assign(f, j)
+    for (j = i + 1; j <= k; j++) {
+      if (CW[f, j] ~ "^-[a-zA-Z]*n") poison_all()
+      if (is_assign(f, j)) assign(f, j)
+    }
     return
   }
+  if (base == "source" || base == ".") { poison_all(); return }
   if (base == "cd" || base == "pushd") { do_cd(f, i, k, term, inpipe_cmd); return }
-  if (base == "popd") { cwd = ""; return }
+  if (base == "popd") { cwd = ""; if (fxon && sd == fxsd) fxcd = 1; return }
   if (base == "unset") {
-    for (j = i + 1; j <= k; j++) if (CW[f, j] ~ "^[A-Za-z_][A-Za-z0-9_]*$") { vals[CW[f, j]] = UNRES; vpoison[CW[f, j]] = 1 }
+    for (j = i + 1; j <= k; j++) if (CW[f, j] ~ "^[A-Za-z_][A-Za-z0-9_]*$") poisonvar(CW[f, j])
     return
   }
   if (base == "printf") {
-    for (j = i + 1; j < k; j++) if (CW[f, j] == "-v") { vals[CW[f, j + 1]] = UNRES; vpoison[CW[f, j + 1]] = 1 }
+    for (j = i + 1; j < k; j++) if (CW[f, j] == "-v") poisonvar(CW[f, j + 1])
     return
   }
   if (base == "tee") {
     sk = 0
     for (j = i + 1; j <= k; j++) {
       if (!sk && substr(CW[f, j], 1, 1) == "-" && CW[f, j] != "-") { if (CW[f, j] == "--") sk = 1; continue }
-      judge("W", CD[f, j], CW[f, j])
+      judge("W", CD[f, j], CW[f, j], CB[f, j])
     }
     return
   }
@@ -346,11 +443,12 @@ function process_cmd(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk) {
     sk = ""
     for (j = i + 1; j <= k; j++) sk = sk ((sk == "") ? "" : " ") CW[f, j]
     if (sk != "") run_code(sk)
+    poison_all()
     return
   }
   if (base == "ssh") do_ssh(f, i, k)
 }
-function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2) {
+function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2, fn, o1, o2, o3, o4, o5) {
   fr++; f = fr; k = 0
   inpipe = 0; q2 = P - 1
   while (q2 >= 1 && ws(substr(S, q2, 1))) q2--
@@ -372,7 +470,14 @@ function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2) 
           for (be = P; be <= N; be++) { ch = substr(S, be, 1); if (ch == "{") depth++; else if (ch == "}") { depth--; if (depth == 0) break } }
           body = substr(S, bs + 1, be - bs - 1)
           P = be + 1
+          fn = CW[f, 1]
+          o1 = fxon; o2 = fxcd; o3 = fxall; o4 = fxvars; o5 = fxsd
+          fxon = 1; fxcd = 0; fxall = 0; fxvars = ""; fxsd = sd + 1
+          quiet++
           run_code(body)
+          quiet--
+          FNdef[fn] = 1; FNbody[fn] = body; FNcd[fn] = fxcd; FNall[fn] = fxall; FNvars[fn] = fxvars
+          fxon = o1; fxcd = o2; fxall = o3; fxvars = o4; fxsd = o5
         }
         k = 0
         continue
@@ -380,9 +485,10 @@ function parse_cmd(   f, k, c, c2, e, nxt, bs, be, depth, body, ch, inpipe, q2) 
       break
     }
     if (c == ">" || c == "<") { redirect(c); continue }
+    bd = 0
     readword()
     if (wany && !wq && wv ~ "^[0-9]+$" && (substr(S, P, 1) == ">" || substr(S, P, 1) == "<")) continue
-    k++; CW[f, k] = wv; CD[f, k] = wd; CQ[f, k] = wq
+    k++; CW[f, k] = wv; CD[f, k] = wd; CQ[f, k] = wq; CB[f, k] = bd
     if (k == 1 && wv == "[[" && !wq) {
       e = index(substr(S, P), "]]")
       if (e > 0) P += e + 1
@@ -433,7 +539,8 @@ function main(   n0, D, i, c) {
   TMPD = envget("TMPDIR")
   if (TMPD ~ "^/[^/]+/[^/]") TMPD = norm(TMPD); else TMPD = ""
   if (TMPD == HOMEV) TMPD = ""
-  fr = 0; sd = 0; BUDGET = 300000; abort = 0
+  fr = 0; sd = 0; pd = 0; pn = 0; BUDGET = 300000; abort = 0; quiet = 0; fxon = 0; fxsd = -1; envpoison = 0
+  cdpath = (envget("CDPATH") != "")
   parse_seq("")
   if (abort) emit("W", "(command too complex for the write scanner)")
 }
