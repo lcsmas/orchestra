@@ -2,13 +2,13 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT, ROLE_SENTINEL_FILE, toEre } from './role-guard.ts';
+import { mkHomeScratch } from './home-scratch.ts';
 
 // Runs the INSTALLED command string (HOOK_ROLE_GUARD_CMD, as settings.json carries it) through bash in a scratch worktree.
 // NOT under os.tmpdir(): /tmp counts as scratch for the guard, so a /tmp root would make every "edit in a worktree" case vacuous.
-const root = fs.mkdtempSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '.rg-test-'));
+const root = mkHomeScratch('rg-test-');
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const home = path.join(root, 'home');
 const wt = '@WT@'; // the worktree the case runs in (its own worktree), substituted by run()

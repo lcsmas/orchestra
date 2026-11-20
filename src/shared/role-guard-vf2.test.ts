@@ -15,7 +15,7 @@ const FIXTURE = JSON.parse(fs.readFileSync(path.join(repo, 'scripts/role-guard/v
 const PRE475 = fs.readFileSync(path.join(repo, 'scripts/role-guard/pre-475-guard.sh'), 'utf8');
 
 // NOT under os.tmpdir(): /tmp is scratch for the guard, so a /tmp root would make every "repo write" case vacuous.
-const root = fs.mkdtempSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '.rgv-test-'));
+const root = mkHomeScratch('rgv-test-');
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const home = path.join(root, 'home');
 const WT = '@WT@';
@@ -295,6 +295,7 @@ test('the implementer (no write guard) and a role-less workspace are untouched',
 // Ground truth: the command is executed by real bash in a sandbox (cwd + TMPDIR as the hook payload says) and a file must land in the repo dir;
 // the guard (live script) must DENY the same command and the frozen pre-#475 guard (= master) does too (so none of these is a NEW deny→allow).
 import { execFileSync } from 'node:child_process';
+import { mkHomeScratch } from './home-scratch.ts';
 const SBX = path.join(root, 'sbx');
 const SBX_REPO = path.join(SBX, 'repo');
 const SBX_SCR = path.join(SBX, 'scr');
