@@ -6,7 +6,7 @@ import { createHandoffController, type HandoffDeps } from './handoff-controller.
 
 const GOOD = 'STATE: coded\nNEXT STEPS: nominate\nREFS: https://github.com/lcsmas/orchestra/issues/466\nNOT VERIFIED: the packaged app';
 
-function rig(opts: Partial<Omit<HandoffDeps, 'bound'>> & { bound?: number } = {}) {
+function rig(opts: Partial<Omit<HandoffDeps, 'bound'>> & { bound?: number | ((id: string) => number) } = {}) {
   const { bound, ...over } = opts;
   const calls = { owed: [] as string[], settled: [] as string[], notices: [] as { id: string; text: string }[], order: [] as string[], ended: [] as string[], opened: [] as { id: string; text: string }[], nudges: [] as { id: string; text: string }[], reports: [] as string[], saved: [] as string[] };
   let t = 1_000_000;
@@ -23,7 +23,7 @@ function rig(opts: Partial<Omit<HandoffDeps, 'bound'>> & { bound?: number } = {}
     settle: (id) => { calls.settled.push(id); },
     sendNotice: async (id, text) => { calls.notices.push({ id, text }); },
     saveSummary: (id, s) => { calls.saved.push(s); return `/h/handoff/${id}/x.md`; },
-    bound: () => bound ?? 0,
+    bound: (id) => (typeof bound === 'function' ? bound(id) : bound ?? 0),
     endContext: async (id) => { calls.order.push('end'); calls.ended.push(id); },
     deliverOpening: async (id, text) => { calls.order.push('deliver'); calls.opened.push({ id, text }); return 'sent'; },
     sendNudge: async (id, text) => { calls.nudges.push({ id, text }); },
@@ -178,6 +178,13 @@ test('must-FAIL control: bound 0 (handoff disabled) never nudges however long th
   const { c, calls } = rig({ bound: 0 });
   for (let i = 0; i < 100; i++) await turn(c);
   assert.equal(calls.nudges.length, 0);
+});
+
+test('#478: the bound is asked PER WORKSPACE at each turn end — a role-bounded member is nudged, a role-less one never', async () => {
+  const { c, calls } = rig({ bound: (id) => (id === 'ops-ws' ? 3 : 0) });
+  for (let i = 0; i < 5; i++) { await turn(c, 'ops-ws'); await turn(c, 'impl-ws'); }
+  assert.deepEqual(calls.nudges.map((n) => n.id), ['ops-ws'], 'only the coordinator-bounded workspace, once');
+  assert.match(calls.nudges[0].text, /3 turns \(bound 3\)/);
 });
 
 test('nudge re-arms for the fresh session after a handoff (a new context may be nudged once more)', async () => {

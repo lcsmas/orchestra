@@ -23,6 +23,23 @@ export const MUTANTS = {
     find: /if \(!tally\.nudge \|\| !deps\.workspaceLive\(wsId\) \|\| deps\.blocked\(wsId\) !== null\) return undefined;/g,
     replace: 'return undefined;',
   },
+  // #478 (handoff-role rig): the host ignores the role's bound (coordinator never nudged) / applies the coordinator bound to EVERY role.
+  'handoff-role-ignored': {
+    file: '/src/main/handoff-host.ts',
+    find: /  return roleSpec\(role, cfg\)\.handoffBoundTurns;\n/g,
+    replace: '  return 0;\n',
+  },
+  'handoff-role-all-on': {
+    file: '/src/main/handoff-host.ts',
+    find: /  return roleSpec\(role, cfg\)\.handoffBoundTurns;\n/g,
+    replace: '  return 30;\n',
+  },
+  // #478: the role is read from ws.name ('<repo> · <branch>', never a role prefix) instead of the spawn name ws.branch.
+  'handoff-role-by-name': {
+    file: '/src/main/handoff-host.ts',
+    find: /roleOfName\(store\.getWorkspace\(id\)\?\.branch\)/g,
+    replace: 'roleOfName(store.getWorkspace(id)?.name)',
+  },
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',

@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, type FleetRole } from './fleet-roles.ts';
+import { COORDINATOR_HANDOFF_BOUND_TURNS, FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, type FleetRole } from './fleet-roles.ts';
 import { ROLES, checkSpawnName } from './naming-policy.ts';
+import { HANDOFF_MIN_BOUND_TURNS, HandoffTurnCounter, resolveHandoffBound } from './handoff.ts';
 
 const SRC = path.join(import.meta.dirname, 'fleet-roles.ts');
 
@@ -68,6 +69,52 @@ test('spawn defaults: no flag → the role pin; explicit flag wins per field; ro
   assert.deepEqual(resolveSpawnRoleDefaults('impl-thing', { model: 'm' }, cfg), { model: 'm', effort: 'high' });
 });
 
+test('#478 handoffBoundTurns: built-in ON for the coordinator only; every other role off; the default is a usable bound', () => {
+  assert.equal(roleSpec('coordinator').handoffBoundTurns, COORDINATOR_HANDOFF_BOUND_TURNS);
+  assert.ok(COORDINATOR_HANDOFF_BOUND_TURNS >= HANDOFF_MIN_BOUND_TURNS);
+  for (const r of FLEET_ROLES.filter((x) => x !== 'coordinator')) assert.equal(roleSpec(r).handoffBoundTurns, 0, r);
+});
+
+test('#478 the number the skill, `orchestra help handoff` and the docs print IS the built-in coordinator bound', async () => {
+  const { VERIFIED_FANOUT_SKILL } = await import('./verified-fanout-skill.ts');
+  const { COMMANDS } = await import('../cli/help.ts');
+  const n = String(COORDINATOR_HANDOFF_BOUND_TURNS);
+  assert.match(VERIFIED_FANOUT_SKILL, new RegExp(`nudges the coordinator at ${n} turns`));
+  assert.match(COMMANDS.find((c) => c.name === 'handoff')?.detail ?? '', new RegExp(`coordinator \\(ops-\\) ${n} turns`));
+  assert.match(fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'docs', 'codebase-map', 'session-keeper.md'), 'utf8'), new RegExp(`COORDINATOR_HANDOFF_BOUND_TURNS\` = ${n} for the coordinator`));
+});
+
+test('#478 parseRoleConfig handoffBoundTurns: integer >= min, or 0 / null / "default" = off; everything else is a NAMED refusal', () => {
+  assert.equal(roleSpec('coordinator', parseRoleConfig({ coordinator: { handoffBoundTurns: 50 } })).handoffBoundTurns, 50);
+  assert.equal(roleSpec('implementer', parseRoleConfig({ implementer: { handoffBoundTurns: 40 } })).handoffBoundTurns, 40, 'another role can be turned ON');
+  assert.equal(roleSpec('coordinator', parseRoleConfig({ coordinator: { handoffBoundTurns: HANDOFF_MIN_BOUND_TURNS } })).handoffBoundTurns, HANDOFF_MIN_BOUND_TURNS);
+  for (const off of [0, null, 'default']) assert.equal(roleSpec('coordinator', parseRoleConfig({ coordinator: { handoffBoundTurns: off } })).handoffBoundTurns, 0, `${String(off)} = off, even for the coordinator`);
+  assert.equal(roleSpec('coordinator', parseRoleConfig({ coordinator: { effort: 'high' } })).handoffBoundTurns, COORDINATOR_HANDOFF_BOUND_TURNS, 'an override that does not name the field keeps the default');
+  for (const bad of [1, 3, -4, 2.5, '30', true, NaN]) {
+    assert.throws(() => parseRoleConfig({ coordinator: { handoffBoundTurns: bad } }), /invalid handoffBoundTurns/, String(bad));
+  }
+  assert.throws(() => parseRoleConfig({ coordinator: { handoffBound: 30 } }), /unknown key "handoffBound" in role "coordinator"/);
+  assert.throws(() => parseRoleConfig('{"coordinator":{"handoffBoundTurns":30,"handoffBoundTurns":40}}'), /duplicate key "handoffBoundTurns"/);
+});
+
+test('#478 end to end (pure): spawn name -> role -> bound -> nudge at the turn the bound says; env beats the file beats the default', () => {
+  const nudgeTurn = (name: string, env: Record<string, string>, file?: unknown, turns = 80): number | null => {
+    const role = roleOfName(name);
+    const roleBound = role ? roleSpec(role, file === undefined ? undefined : parseRoleConfig(file)).handoffBoundTurns : 0;
+    const { bound } = resolveHandoffBound(env, roleBound);
+    const c = new HandoffTurnCounter();
+    for (let i = 1; i <= turns; i++) if (c.noteTurnEnd('w', 's', bound).nudge) return i;
+    return null;
+  };
+  assert.equal(nudgeTurn('ops-vague-1', {}), COORDINATOR_HANDOFF_BOUND_TURNS, 'coordinator: default ON');
+  for (const n of ['impl-x', 'verif-x', 'review-x', 'explo-x', 'scribe-x', 'plain-name']) assert.equal(nudgeTurn(n, {}), null, `${n}: off`);
+  assert.equal(nudgeTurn('ops-x', {}, { coordinator: { handoffBoundTurns: 12 } }), 12, 'the file beats the default');
+  assert.equal(nudgeTurn('ops-x', { ORCHESTRA_HANDOFF_BOUND_TURNS: '9' }, { coordinator: { handoffBoundTurns: 12 } }), 9, 'env beats the file');
+  assert.equal(nudgeTurn('ops-x', { ORCHESTRA_HANDOFF_BOUND_TURNS: '0' }), null, 'env 0 forces the coordinator off');
+  assert.equal(nudgeTurn('ops-x', {}, { coordinator: { handoffBoundTurns: 0 } }), null, 'the file can turn the coordinator off');
+  assert.equal(nudgeTurn('impl-x', {}, { implementer: { handoffBoundTurns: 10 } }), 10, 'the file can turn another role on');
+});
+
 // MUST-FAIL arms: mutate a COPY of the module and prove the assertions above can see it.
 async function mutant(edit: (s: string) => string): Promise<typeof import('./fleet-roles.ts')> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-roles-mut-'));
@@ -102,4 +149,19 @@ test('MUST-FAIL: a duplicate-key check removed is seen', async () => {
   const m = await mutant((s) => s.replace('const dup = findDuplicateKey(raw);', 'const dup = undefined as string | undefined;'));
   assert.doesNotThrow(() => m.parseRoleConfig('{"scribe":{"effort":"low"},"scribe":{"effort":"high"}}'), 'the mutant lets the first copy vanish');
   assert.throws(() => parseRoleConfig('{"scribe":{"effort":"low"},"scribe":{"effort":"high"}}'), /duplicate key/);
+});
+
+test('MUST-FAIL (#478): a coordinator default of 0 / a non-coordinator default of 30 / a parse that drops the field are each seen', async () => {
+  const off = await mutant((s) => s.replace('handoffBoundTurns: COORDINATOR_HANDOFF_BOUND_TURNS }', 'handoffBoundTurns: 0 }'));
+  assert.equal(off.roleSpec('coordinator').handoffBoundTurns, 0, 'the mutant turns the coordinator default off…');
+  assert.equal(roleSpec('coordinator').handoffBoundTurns, COORDINATOR_HANDOFF_BOUND_TURNS, '…the live table does not');
+  const all = await mutant((s) => s.replace(/(implementer: \{[^\n]*)handoffBoundTurns: 0 \}/, '$1handoffBoundTurns: 30 }'));
+  assert.equal(all.roleSpec('implementer').handoffBoundTurns, 30, 'the mutant turns an implementer ON');
+  assert.equal(roleSpec('implementer').handoffBoundTurns, 0);
+  const ignore = await mutant((s) => s.replace("handoffBoundTurns: o && 'handoffBoundTurns' in o ? (o.handoffBoundTurns ?? 0) : base.handoffBoundTurns", 'handoffBoundTurns: base.handoffBoundTurns'));
+  assert.equal(ignore.roleSpec('coordinator', parseRoleConfig({ coordinator: { handoffBoundTurns: 50 } })).handoffBoundTurns, COORDINATOR_HANDOFF_BOUND_TURNS, 'the mutant ignores the file');
+  assert.equal(roleSpec('coordinator', parseRoleConfig({ coordinator: { handoffBoundTurns: 50 } })).handoffBoundTurns, 50);
+  const lax = await mutant((s) => s.replace('v >= HANDOFF_MIN_BOUND_TURNS)', 'v >= 1)'));
+  assert.doesNotThrow(() => lax.parseRoleConfig({ coordinator: { handoffBoundTurns: 2 } }), 'the mutant accepts a bound under the minimum');
+  assert.throws(() => parseRoleConfig({ coordinator: { handoffBoundTurns: 2 } }), /invalid handoffBoundTurns/);
 });
