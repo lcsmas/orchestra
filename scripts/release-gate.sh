@@ -68,14 +68,15 @@ rg_norm_tree() { # [rev=HEAD]
 _rg_receipt_field() { sed -n "s/^$2=//p" "$1" | head -1; }
 
 # Called after a full PASS on a clean tree (rg_run_gate): record it. Atomic (tmp + mv); a failed write never fails the gate.
-rg_receipt_write() { # detail
-  local dir norm raw tmp; dir="$(_rg_receipt_dir)" || return 0
-  norm="$(rg_norm_tree HEAD)" || return 0; raw="$(git rev-parse 'HEAD^{tree}')"
+rg_receipt_write() { # head0 detail — head0 = the commit the gate JUDGED; nothing is recorded if HEAD is no longer it
+  local head0="$1" dir norm raw tmp; dir="$(_rg_receipt_dir)" || return 0
+  if [ "$(git rev-parse HEAD)" != "$head0" ]; then echo "  receipt: NOT recorded — HEAD moved from ${head0:0:8} to $(git rev-parse --short=8 HEAD) after the gate ran"; return 0; fi
+  norm="$(rg_norm_tree "$head0")" || return 0; raw="$(git rev-parse "$head0^{tree}")"
   mkdir -p "$dir" 2>/dev/null && tmp="$(mktemp "$dir/.tmp.XXXXXX" 2>/dev/null)" || return 0
   {
     printf 'gate_version=%s\nnorm_tree=%s\nraw_tree=%s\nhead=%s\nversion=%s\ndate=%s\ndetail=%s\n' \
-      "$RG_GATE_VERSION" "$norm" "$raw" "$(git rev-parse HEAD)" "$(node -p "require('./package.json').version" 2>/dev/null)" "$(date -u +%Y-%m-%dT%H:%MZ)" "$1"
-  } > "$tmp" && mv -f "$tmp" "$dir/$norm" || rm -f "$tmp"
+      "$RG_GATE_VERSION" "$norm" "$raw" "$head0" "$(git show "$head0:package.json" 2>/dev/null | node -p "JSON.parse(require('node:fs').readFileSync(0,'utf8')).version" 2>/dev/null)" "$(date -u +%Y-%m-%dT%H:%MZ)" "$2"
+  } > "$tmp" && mv -f "$tmp" "$dir/$norm" || { rm -f "$tmp"; echo "  receipt: NOT recorded (write failed)"; return 0; }
   echo "  receipt: PASS recorded for tree ${norm:0:12} (gate v$RG_GATE_VERSION)"
 }
 
@@ -238,8 +239,8 @@ rg_run_gate() {
     return 1
   fi
   rm -rf "$dir"
-  rg_receipt_write "tsc clean; $detail"
-  echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 'HEAD^{tree}')"
+  rg_receipt_write "$head0" "tsc clean; $detail"
+  echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 "$head0^{tree}")"
 }
 
 # After the suite (node ABI 127) and before the packaged build (Electron ABI 130).

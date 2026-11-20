@@ -8,7 +8,7 @@
 # Must-PASS: hit_same_tree, hit_after_bump (+ explicit tree-equality proof), dry_run_skip_plan. Must-FAIL (the gate RUNS, steps = full list):
 # miss_no_receipt, miss_tracked_change, miss_untracked_change, miss_other_gate_version, miss_other_tree (a receipt filed under another tree's name),
 # miss_bump_plus_script / _plus_file / _reformat (a bump that changes more than the version field), miss_failed_gate_writes_none; bypass unchanged.
-# `--mutants`: re-runs this rig against clause-mutated copies of the scripts (each parses, differs by <= 3 lines) and requires every mutant to turn it RED. no_diff_proof is
+# `--mutants`: re-runs this rig against clause-mutated copies of the scripts (each parses, differs by <= 3 lines; a mutant equivalent to the code, e.g. building the receipt from HEAD behind the HEAD==head0 guard, is not listed) and requires every mutant to turn it RED. no_diff_proof is
 # the one DEFENCE-IN-DEPTH clause (masked-id equality already implies it): it is killed by miss_diff_proof, a receipt whose masked id was forged onto a bumped-AND-edited tree.
 # Env: RG_SCRIPTS_DIR=<dir with release.sh, release-preflight.sh, release-gate.sh> (default: this repo's scripts/).
 set -uo pipefail
@@ -48,8 +48,11 @@ X
   mutate no_diff_proof    release-gate.sh <<'X'
 [ "$changed" = package.json ] || {|||[ "$changed" = "$changed" ] || {
 X
+  mutate no_head_moved_check release-gate.sh <<'X'
+  if [ "$(git rev-parse HEAD)" != "$head0" ]; then echo|||  if false; then echo
+X
   mutate write_before_judge release-gate.sh <<'X'
-  local dir head0; dir="$(mktemp -d "${TMPDIR:-/tmp}/release-gate.XXXXXX")" || return 1|||  local dir head0; dir="$(mktemp -d "${TMPDIR:-/tmp}/release-gate.XXXXXX")" || return 1; rg_receipt_write "early"
+  head0="$(git rev-parse HEAD)"|||  head0="$(git rev-parse HEAD)"; rg_receipt_write "$head0" early
 X
   mutate gate_error_ignored release.sh <<'X'
     rg_run_gate || exit 1
@@ -138,6 +141,8 @@ PKG
   printf 'node_modules/\nrelease/\n' > "$W/.gitignore"; echo base > "$W/tracked.txt"
   ( cd "$W" && git add -A && git commit -qm base && git tag v0.5.270 && git remote add origin "$ORIGIN" && git push -q origin master --tags \
       && echo work >> tracked.txt && git add -A && git commit -qm work ) >/dev/null 2>&1
+  ( cd "$W" && git checkout -q -b other && echo side >> tracked.txt && git commit -qam side && git checkout -q master ) >/dev/null 2>&1
+  printf '#!/bin/sh\ncase "$*" in *release-gate.*) [ -z "${RG_FX_MOVE_HEAD:-}" ] || git checkout -q --detach other ;; esac\nexec /bin/rm "$@"\n' > "$SB/mvbin-rm"; chmod +x "$SB/mvbin-rm"
   HEAD0="$(git -C "$W" rev-parse HEAD)"; RDIR="$W/.git/release-gate-receipts"
 }
 gate() { OUT="$(cd "$W" && PATH="$SB/bin:$PATH" RG_FX_LOG="$LOG" bash scripts/release-gate.sh 2>&1)"; RC=$?; }   # the vague's final gate (standalone)
@@ -228,6 +233,15 @@ mk_fixture miss_bump_reformat; gate; ( cd "$W" && node -e 'const p=require("./pa
 expect_release "miss_bump_reformat (whitespace): gate runs" "$FULL $SHIP" v0.5.272
 mk_fixture miss_nested_version; gate; sed -i 's/"build": {}/"build": {"version": "2"}/' "$W/package.json"; commit "nested version key"; : > "$LOG"; release 0.5.271
 expect_release "miss_nested_version (other 'version' key): gate runs" "$FULL $SHIP" v0.5.271
+
+# HEAD moves after the gate's last check (a hostile/concurrent checkout hooked on the gate's own scratch cleanup): no receipt for the tree it never judged
+mk_fixture miss_head_moved_during_gate; mkdir -p "$D/shim"; cp "$SB/mvbin-rm" "$D/shim/rm"
+OUT="$(cd "$W" && PATH="$D/shim:$SB/bin:$PATH" RG_FX_MOVE_HEAD=1 RG_FX_LOG="$LOG" bash scripts/release-gate.sh 2>&1)"; RC=$?
+MOVED="$(git -C "$W" rev-parse 'HEAD^{tree}')"; JUDGED="$(git -C "$W" rev-parse 'master^{tree}')"
+if [ "$MOVED" != "$JUDGED" ] && [ "$(steps)" = "$FULL" ] && [ -z "$(ls "$RDIR" 2>/dev/null)" ] && [[ "$OUT" == *"receipt: NOT recorded — HEAD moved"* ]]; then
+  pass "miss_head_moved_during_gate: no receipt written" "gate ran at master, HEAD moved to other, rc=$RC, receipts=0"
+else fail "miss_head_moved_during_gate: no receipt written" "rc=$RC steps=[$(steps)] receipts=[$(ls "$RDIR" 2>/dev/null)] moved=${MOVED:0:8} judged=${JUDGED:0:8}; tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+git -C "$W" checkout -q -B moved; : > "$LOG"; release 0.5.271; expect_release "  …then release at the moved HEAD runs the gate" "$FULL $SHIP" v0.5.271
 
 # a failed gate leaves no receipt
 mk_fixture miss_failed_gate_writes_none; OUT="$(cd "$W" && PATH="$SB/bin:$PATH" RG_FX_LOG="$LOG" RG_FX_FAIL_TEST=1 bash scripts/release-gate.sh 2>&1)"; RC=$?

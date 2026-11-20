@@ -230,7 +230,7 @@ object db; the masked-id equality already means "that file's version line only")
 writes nothing; `--skip-release-gate` is unchanged (receipt ignored). The vague's final gate runs **`bash scripts/release-gate.sh`** (standalone: gate
 + receipt, leaves node_modules at node ABI) instead of tsc + suite by hand. Assumption: a bump re-serialises package.json only on the version line
 (true for this repo's canonical 2-space file under `pnpm version`; a non-canonical file just misses the receipt). Rig: `pnpm run test:release-receipt`
-(scratch repo + FAKE gate stubs, no real suite) and `pnpm run test:release-receipt-mutants` (10 clause mutants must all turn it red; all killed).
+(scratch repo + FAKE gate stubs, no real suite) and `pnpm run test:release-receipt-mutants` (11 clause mutants must all turn it red; all killed).
 
 Then: compute version → (if `--to-master`) `git push origin HEAD:master` →
 `pnpm version` (bump+commit+tag) → (unless `--ci-only`) `pnpm run build` +
