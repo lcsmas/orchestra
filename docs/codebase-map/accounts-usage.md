@@ -55,7 +55,7 @@ reads them transiently to query usage.
   special case: a new repo has no account, so the caller's wins. Restart / `--fresh` create no child.
   Grep gate `scripts/check-spawn-account-single-resolver.mjs` (+ `src/main/spawn-account-wiring.test.ts`).
   A first turn that fails with `Not logged in · Please run /login` gets ONE appended line from
-  `loginFailureHint` naming `orchestra migrate-account <id> <account>` + `orchestra restart <id>`.
+  `loginFailureHint` naming `orchestra migrate-account <id> <account>` (no restart advice: the kept-child message already carries it).
   Rig: `scripts/e2e-spawn-account-inherit.mjs [tree]` (real dispatch + store over the fake SDK seam,
   scratch home; run it against an `origin/master` worktree for the must-FAIL arm).
 - **Scratch default:** scratch/orchestrator sessions have no repo to take an
