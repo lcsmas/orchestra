@@ -142,6 +142,13 @@ The CLI side of merging, store-less (only `gh`, behind the injectable `GhRunner`
   coordinator runs on the target after N merges (`git fetch … && git checkout --detach origin/INTO && … && <--suite-cmd, default pnpm run test>`); the verb never runs a repo suite.
 - Tests: `src/shared/fanout-deliver.test.ts` + `src/cli/fanout-deliver.test.ts` (fake gh that, like GitHub, refuses a merge whose `--match-head-commit` ≠ its head). Must-FAIL arms: zero-step green (single and mixed), moved head (before the check AND between check and merge), MAJOR/BLOCKING verdict, omitted verdict without `--no-review-gate`.
 
+### `orchestra fanout open` — the PR at nomination (#479)
+`src/cli/fanout-open.ts` (`openPr`, `parseOpenArgs`, `runOpenRoute`), same store-less `GhRunner` as deliver. `open --branch --into --ticket [--repo]` ≡ `deliver --open-only …` (ONE path: `runOpenRoute` in the `fanout` case of `cli/index.ts` runs before deliver; `--open-only` plus merge flags is a usage error). Opens `<branch> → <target>` at nomination so CI runs while the verifier gates, or REUSES the open one; **never merges** (only `gh pr list|create|view`).
+- Lists `--head B --state all` WITHOUT `--base`: an open PR of the branch on another base ⇒ `wrong-base` (exit 2, no second PR); newest PR CLOSED unmerged and none open ⇒ `pr-closed` (exit 2); an earlier MERGED PR is ignored (new round). gh failure / no PR url ⇒ exit 1 `gh-failed`.
+- Output: ONE JSON line `{verdict:"opened",pr,url,head,reused,ticket,branch,into}` (refusal: `verdict:"refused",reason,detail`). Feed `pr` to `fanout state set <ticket> --pr <n>`.
+- Contract with deliver: deliver already reuses an OPEN PR; it still merges only at the verified head with CI green ON that head (`--match-head-commit`). A head pushed after open ⇒ CI reruns on the new head, deliver refuses `head-moved` (or waits for CI when re-verified at the new head).
+- Tests: `src/cli/fanout-open.test.ts` (stateful fake GitHub: open / reuse / closed / wrong base / head moved after open, deliver composed on the same fake) + rig `scripts/e2e-fanout-open.mjs` (`pnpm run test:fanout-open`, mutants `pnpm run test:fanout-open-mutants`).
+
 ## Error handling
 Helpers swallow and return safe defaults (`[]`/`''`/`null`/all-false merge
 state). User-facing errors (branch-switch collision) are re-thrown with a

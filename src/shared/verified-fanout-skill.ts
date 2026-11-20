@@ -59,7 +59,7 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   rebase and reset outside a scratch clone; a push of master/main to an implementer;
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
-  guarded). ¤orchestra fanout deliver¤ and ¤fanout state init|set¤ to every role but the
+  guarded). ¤orchestra fanout deliver|open¤ and ¤fanout state init|set¤ to every role but the
   coordinator (¤state show¤ and ¤resume¤ stay open); a ¤scribe-¤ may ¤state set¤. A BLOCKED is the answer, never to be routed around: report the branch ref to the
   coordinator (ledger comment + one ping), or hand the change to the role that may make it.
 
@@ -232,6 +232,7 @@ review, follow-ups included. The coordinator NEVER reviews (it wrote the specs);
 ## 4. Coordinate and gate
 
 - Implementer reports done → send the verifier the branch **ref**; FAIL → relay its exact output to the implementer.
+- **At nomination, parallel with the gate: ¤orchestra fanout open --branch <b> --into <target> --ticket <id>¤** (idempotent, never merges): CI runs while the verifier gates; ¤deliver¤ reuses the PR, a later push ⇒ ¤head-moved¤.
 - PASS → apply the **merge rule** below, through ¤orchestra fanout deliver¤ (one PR per
   ticket: it opens or reuses ¤<branch> → <target>¤ and merges it). Record the outcome with
   ¤orchestra fanout state set <ticket> --pr <n> --head <sha> --status merged¤ and the PR url

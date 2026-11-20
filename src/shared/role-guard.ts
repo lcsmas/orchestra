@@ -31,6 +31,8 @@ const GH_MERGE = `${B}${GHR}pr[[:space:]]+merge([[:space:]]|$)|${B}${GH}[[:space
 const ORCH_DELETE = `${B}orchestra[[:space:]]+(delete|archive)([[:space:]]|$)`;
 // #473: `fanout deliver` merges a PR through gh internally (invisible to GH_MERGE); `fanout state init|set` writes the coordinator's state file.
 const FANOUT_DELIVER = `${B}orchestra[[:space:]]+fanout[[:space:]]+deliver([[:space:];&|)"'\\]|$)`;
+// #479: `fanout open` opens the PR at nomination (the flag form `deliver --open-only` is already FANOUT_DELIVER's).
+const FANOUT_OPEN = `${B}orchestra[[:space:]]+fanout[[:space:]]+open([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_WRITE = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+(init|set)([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_INIT = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+init([[:space:];&|)"'\\]|$)`;
 // #476: a scribe's `state set` may not override a merge claim: `--accept-merged`, or `--json` (any payload can carry `mergedAccepted`, even piped in) — `.*`, not `[^;&|]*`, so `--note "a; b"` cannot hide the flag.
@@ -75,6 +77,7 @@ interface Rule { re: string; why: string }
 
 const NO_MERGE: Rule = { re: GH_MERGE, why: 'merging a PR belongs to the coordinator — report the branch ref instead (ledger comment + one ping)' };
 const NO_DELIVER: Rule = { re: FANOUT_DELIVER, why: 'orchestra fanout deliver opens and MERGES a PR — that belongs to the coordinator; report the branch ref instead (ledger comment + one ping)' };
+const NO_OPEN: Rule = { re: FANOUT_OPEN, why: 'orchestra fanout open opens the PR at nomination — that belongs to the coordinator; report the branch ref instead (ledger comment + one ping)' };
 const NO_STATE_WRITE: Rule = { re: FANOUT_STATE_WRITE, why: "orchestra fanout state init|set writes the coordinator's state file (one writer) — report the fact to the coordinator; state show / resume stay allowed" };
 const NO_STATE_INIT: Rule = { re: FANOUT_STATE_INIT, why: "orchestra fanout state init creates the coordinator's state file — report to the coordinator; a scribe may relay state set only" };
 const NO_ACCEPT_MERGED: Rule = { re: FANOUT_ACCEPT_MERGED, why: "a scribe's state set carries no --accept-merged / --json / mergedAccepted (they override a merge claim) — pass plain flags (--status --branch --pr --head), or report to the coordinator" };
@@ -84,8 +87,8 @@ const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace 
 /** Rules this module adds on top of the role table's `bashDeny` (the table is the frozen #465 interface; the ticket's classes are ours). */
 function extraRules(role: FleetRole): Rule[] {
   if (role === 'coordinator') return [NO_PROTECT];
-  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_DELETE, NO_PROTECT]; // #476: a scribe relays the coordinator's `state set` lines
-  return [NO_MERGE, NO_DELIVER, NO_STATE_WRITE, NO_DELETE, NO_PROTECT];
+  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_DELETE, NO_PROTECT]; // #476: a scribe relays the coordinator's `state set` lines
+  return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_WRITE, NO_DELETE, NO_PROTECT];
 }
 
 const WHY_TABLE = 'a command the fleet-roles table denies this role (push of the target branch / commit-class git act)';
