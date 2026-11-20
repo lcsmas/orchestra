@@ -5,12 +5,12 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_SCRIPT, ROLE_SENTINEL_FILE } from './role-guard.ts';
 import { VERIFIED_FANOUT_SKILL } from './verified-fanout-skill.ts';
+import { mkHomeScratch } from './home-scratch.ts';
 
 // NOT under os.tmpdir(): /tmp counts as scratch for the guard.
-const root = fs.mkdtempSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '.sj-test-'));
+const root = mkHomeScratch('sj-test-');
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const home = path.join(root, 'home');
 
