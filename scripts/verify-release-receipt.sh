@@ -8,7 +8,8 @@
 # Must-PASS: hit_same_tree, hit_after_bump (+ explicit tree-equality proof), dry_run_skip_plan. Must-FAIL (the gate RUNS, steps = full list):
 # miss_no_receipt, miss_tracked_change, miss_untracked_change, miss_other_gate_version, miss_other_tree (a receipt filed under another tree's name),
 # miss_bump_plus_script / _plus_file / _reformat (a bump that changes more than the version field), miss_failed_gate_writes_none; bypass unchanged.
-# `--mutants`: re-runs this rig against clause-mutated copies of the scripts and requires every mutant to turn it RED.
+# `--mutants`: re-runs this rig against clause-mutated copies of the scripts (each parses, differs by <= 3 lines) and requires every mutant to turn it RED. no_diff_proof is
+# the one DEFENCE-IN-DEPTH clause (masked-id equality already implies it): it is killed by miss_diff_proof, a receipt whose masked id was forged onto a bumped-AND-edited tree.
 # Env: RG_SCRIPTS_DIR=<dir with release.sh, release-preflight.sh, release-gate.sh> (default: this repo's scripts/).
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,18 +19,51 @@ mkdir -p "$BASE"
 
 if [ "${1:-}" = "--mutants" ]; then
   M="$(mktemp -d "$BASE/release-receipt-mutants.XXXXXX")"; trap 'rm -rf "$M"' EXIT
-  mutate() { # name file sed-expr   (the mutant must differ from the original, byte-checked)
-    local n="$1" f="$2" e="$3"; mkdir -p "$M/$n"; cp "$REPO"/scripts/release{,-preflight,-gate}.sh "$M/$n/"
-    sed -i -E "$e" "$M/$n/$f"; if cmp -s "$REPO/scripts/$f" "$M/$n/$f"; then echo "rig fault: mutant $n is a no-op"; exit 2; fi
+  mutate() { # name file <<< "old|||new" (EXACT, single-occurrence string swap); the mutant must parse, differ, and touch <= 3 lines
+    local n="$1" f="$2" pair; pair="$(cat)"; mkdir -p "$M/$n"; cp "$REPO"/scripts/release{,-preflight,-gate}.sh "$M/$n/"
+    MF="$M/$n/$f" MP="$pair" python3 -I - <<'PY' || { echo "rig fault: mutant $n: pattern not found exactly once"; exit 2; }
+import os,sys
+f=os.environ["MF"]; old,new=os.environ["MP"].split("|||",1); s=open(f).read()
+if s.count(old)!=1: sys.exit(1)
+open(f,"w").write(s.replace(old,new))
+PY
+    bash -n "$M/$n/$f" || { echo "rig fault: mutant $n does not parse"; exit 2; }
+    [ "$(diff "$REPO/scripts/$f" "$M/$n/$f" | grep -c '^>')" -le 3 ] && ! cmp -s "$REPO/scripts/$f" "$M/$n/$f" || { echo "rig fault: mutant $n is a no-op or rewrites the file"; exit 2; }
   }
-  mutate no_dirt_check    release-gate.sh 's|^  dirt="\$\(_rg_tree_dirt\)"; \[ -z "\$dirt" \] \|\| \{ echo "no receipt honoured.*$|  dirt=""|'
-  mutate no_version_check release-gate.sh 's|^  \[ "\$rv" = "\$RG_GATE_VERSION" \] \|\| \{.*$|  true|'
-  mutate raw_tree_only    release-gate.sh 's|^  raw="\$\(git rev-parse --verify -q "\$rev\^\{tree\}"\)" \|\| return 1$|  git rev-parse --verify -q "$rev^{tree}"; return 0|'
-  mutate mask_whole_pkg   release-gate.sh 's|if \[ -n "\$mode" \] && git cat-file blob "\$raw:package.json" \| node -e .$|if [ -n "$mode" ] \&\& echo "{}" \| node -e '"'"'|;s|^      const raw = require\("node:fs"\).readFileSync\(0, "utf8"\);|      const raw = "{\\"version\\":\\"1\\"}";|'
-  mutate no_norm_eq_check release-gate.sh 's|^  \[ "\$rnorm" = "\$norm" \] && \[ -n "\$rraw" \] \|\| \{.*$|  true|'
-  mutate receipt_on_fail  release.sh 's|^    rg_run_gate \|\| exit 1$|    rg_run_gate \|\| true|'
-  mutate always_skip      release.sh 's|if _rg_why="\$\(rg_receipt_check\)"; then$|if _rg_why="x"; then|'
-  mutate bypass_ignored   release.sh 's|^elif \[ "\$SKIP_GATE" = 1 \]; then$|elif false; then|'
+  mutate no_dirt_check    release-gate.sh <<'X'
+[ -z "$dirt" ] || { echo "no receipt honoured — $dirt"; return 1; }|||true
+X
+  mutate no_version_check release-gate.sh <<'X'
+  [ "$rv" = "$RG_GATE_VERSION" ] || { echo "receipt for tree ${norm:0:12} is gate v${rv:-?}, this gate is v$RG_GATE_VERSION"; return 1; }|||  true
+X
+  mutate raw_tree_only    release-gate.sh <<'X'
+  raw="$(git rev-parse --verify -q "$rev^{tree}")" || return 1|||  git rev-parse --verify -q "$rev^{tree}"; return 0
+X
+  mutate mask_whole_pkg   release-gate.sh <<'X'
+process.stdout.write(raw.replace(re, "$1\"version\": \"0.0.0-masked\"$3"));|||process.stdout.write("{}");
+X
+  mutate no_norm_eq_check release-gate.sh <<'X'
+  [ "$rnorm" = "$norm" ] && [ -n "$rraw" ] || { echo "receipt for tree ${norm:0:12} is malformed (norm_tree/raw_tree)"; return 1; }|||  true
+X
+  mutate no_diff_proof    release-gate.sh <<'X'
+[ "$changed" = package.json ] || {|||[ "$changed" = "$changed" ] || {
+X
+  mutate write_before_judge release-gate.sh <<'X'
+  local dir head0; dir="$(mktemp -d "${TMPDIR:-/tmp}/release-gate.XXXXXX")" || return 1|||  local dir head0; dir="$(mktemp -d "${TMPDIR:-/tmp}/release-gate.XXXXXX")" || return 1; rg_receipt_write "early"
+X
+  mutate gate_error_ignored release.sh <<'X'
+    rg_run_gate || exit 1
+  fi|||    rg_run_gate || true
+  fi
+X
+  mutate always_skip      release.sh <<'X'
+if _rg_why="$(rg_receipt_check)"; then
+    echo "release-gate: SKIPPED|||if _rg_why="x"; then
+    echo "release-gate: SKIPPED
+X
+  mutate bypass_ignored   release.sh <<'X'
+elif [ "$SKIP_GATE" = 1 ]; then|||elif false; then
+X
   bad=0
   for n in $(ls "$M"); do
     if RG_SCRIPTS_DIR="$M/$n" bash "$SELF" >"$M/$n.log" 2>&1; then echo "MUTANT SURVIVED  $n (rig stayed green)"; bad=1
@@ -171,6 +205,19 @@ OTHER="$(cd "$W" && . scripts/release-gate.sh && rg_norm_tree HEAD)"; cp "$RDIR/
 expect_release "miss_other_tree: gate runs" "$FULL $SHIP" v0.5.271
 mk_fixture miss_other_tree2; gate; echo more >> "$W/tracked.txt"; commit "other tree"; : > "$LOG"; release 0.5.271
 expect_release "miss_other_tree (receipt for the parent): gate runs" "$FULL $SHIP" v0.5.271
+
+# the gated tree object gone (gc): masked-id equality alone decides — a legit receipt still hits, a receipt filed under another tree's name still misses
+GONE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+mk_fixture hit_gated_tree_gone; gate; sed -i "s/^raw_tree=.*/raw_tree=$GONE/" "$RDIR"/*; bump 0.5.271; : > "$LOG"; release 0.5.272
+expect_release "hit_gated_tree_gone: masked-id equality decides" "$SHIP" v0.5.272
+mk_fixture miss_other_tree_gone; gate; R="$(ls "$RDIR")"; echo more >> "$W/tracked.txt"; commit "other tree"
+OTHER="$(cd "$W" && . scripts/release-gate.sh && rg_norm_tree HEAD)"; sed "s/^raw_tree=.*/raw_tree=$GONE/" "$RDIR/$R" > "$RDIR/$OTHER"; : > "$LOG"; release 0.5.271
+expect_release "miss_other_tree_gone: gate runs" "$FULL $SHIP" v0.5.271
+# forged receipt: right masked id + file name, but its raw_tree is an existing tree that differs from HEAD by more than package.json
+mk_fixture miss_diff_proof; gate; echo more >> "$W/tracked.txt"; commit "next"; NEXT="$(cd "$W" && . scripts/release-gate.sh && rg_norm_tree HEAD)"
+PARENT_RAW="$(git -C "$W" rev-parse 'HEAD~1^{tree}')"; R="$(ls "$RDIR")"; sed -e "s/^norm_tree=.*/norm_tree=$NEXT/" -e "s/^raw_tree=.*/raw_tree=$PARENT_RAW/" "$RDIR/$R" > "$RDIR/$NEXT"; : > "$LOG"; release 0.5.271
+expect_release "miss_diff_proof: gate runs" "$FULL $SHIP" v0.5.271
+[[ "$OUT" == *"differ in [tracked.txt], not package.json alone"* ]] && pass "miss_diff_proof: says why" "names the differing file" || fail "miss_diff_proof: says why" "$(printf '%s' "$OUT" | grep -i receipt | head -2)"
 
 # a bump that changes anything besides the version field
 mk_fixture miss_bump_plus_script; gate; sed -i 's/"a": "a"/"a": "changed"/' "$W/package.json"; bump 0.5.271; : > "$LOG"; release 0.5.272
