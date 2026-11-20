@@ -24,7 +24,7 @@ import { setTurnEndListener } from './handoff-seam.ts';
 import { createHandoffController, type HandoffReply } from './handoff-controller.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { HANDOFF_ERRORS, parseHandoffBound, resolveHandoffBound } from '../shared/handoff.ts';
-import { roleOfName, roleSpec, type RoleConfig } from '../shared/fleet-roles.ts';
+import { workspaceRole, roleSpec, type RoleConfig } from '../shared/fleet-roles.ts';
 import { loadRoleConfig } from './fleet-roles-config.ts';
 
 export type { HandoffReply };
@@ -83,7 +83,8 @@ export function resumeOwedOpenings(): void {
 let warnedRoleFile = '';
 /** #478: the role's bound from the workspace's spawn name (`ws.branch`, the role sentinel's source) + fleet-roles.json, re-read each turn end. A file that does not parse ⇒ built-in table + ONE warning per message. */
 function roleBoundOf(id: string): number {
-  const role = roleOfName(store.getWorkspace(id)?.branch);
+  const ws = store.getWorkspace(id);
+  const role = ws ? workspaceRole(ws) : null; // #489: the role frozen at spawn, not the current name
   if (!role) return 0;
   let cfg: RoleConfig | undefined;
   try {

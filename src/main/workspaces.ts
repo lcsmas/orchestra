@@ -438,7 +438,7 @@ export async function createWorkspace(
     status: 'idle',
     agent,
     lastTask: input.task,
-    ...initialNaming({ namedBy: naming?.namedBy }),
+    ...initialNaming({ namedBy: naming?.namedBy, ...(naming?.exactName ? { spawnName: branch } : {}) }), // #489: the agent route (exactName) freezes the name's role
     // Pin the repo's currently-assigned account at creation. The agent's
     // conversation will live in that account's CLAUDE_CONFIG_DIR, so the
     // workspace must keep using it even if the repo's account changes later.
@@ -1160,7 +1160,7 @@ export async function renameWorkspaceBranch(
       ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
     };
     await store.upsertWorkspace(updated);
-    await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
+    await writeRoleSentinel(updated.worktreePath, updated.branch, updated.spawnRole); // #468: a parent rename re-writes the role
     platform.broadcast('workspace:update', updated);
     return updated;
   }
@@ -1174,7 +1174,7 @@ export async function renameWorkspaceBranch(
     if (pinAdvancesGate(ws, opts)) {
       const updated = { ...ws, branch: liveBranch, ...gateFields, ...formerBranchPatch(ws, ws.branch, liveBranch, opts.namedByParent) };
       await store.upsertWorkspace(updated);
-      await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
+      await writeRoleSentinel(updated.worktreePath, updated.branch, updated.spawnRole); // #468: a parent rename re-writes the role
       platform.broadcast('workspace:update', updated);
       return updated;
     }
@@ -1192,7 +1192,7 @@ export async function renameWorkspaceBranch(
     ...formerBranchPatch(ws, ws.branch, newBranch, opts.namedByParent),
   };
   await store.upsertWorkspace(updated);
-  await writeRoleSentinel(updated.worktreePath, updated.branch); // #468: a parent rename re-writes the role
+  await writeRoleSentinel(updated.worktreePath, updated.branch, updated.spawnRole); // #468: a parent rename re-writes the role
   platform.broadcast('workspace:update', updated);
   return updated;
 }
@@ -4588,7 +4588,7 @@ async function startBusRunAndWriteNotice(ws: Workspace, remote = false): Promise
   const anchor = resolveAnchorInfo(ws);
   maybeStartRunAtAnchor(busRunAnchorDeps, anchor);
   if (!remote) await writeBusSwitchState(ws.worktreePath, anchor.anchorId);
-  if (!remote) await writeRoleSentinel(ws.worktreePath, ws.branch); // #468 (branch = the checked spawn name; ws.name is "<repo> · <branch>")
+  if (!remote) await writeRoleSentinel(ws.worktreePath, ws.branch, ws.spawnRole); // #468 (branch = the checked spawn name; ws.name is "<repo> · <branch>")
 }
 
 /** #434 — the first spawn of an agent makes its PARENT the owner of a run: `ownsRun` is recorded (persisted) and the standing-role
@@ -4798,7 +4798,7 @@ export async function installOrchestraHooks(
     // to the scripts or hook commands changes the hash and forces one rewrite.
     // The role sentinel follows the workspace's CURRENT name, so it sits OUTSIDE the hash gate (every session start refreshes it).
     const roleWs = store.workspaces.find((w) => w.worktreePath === worktreePath);
-    if (roleWs && roleWs.host?.kind !== 'sandbox') await writeRoleSentinel(worktreePath, roleWs.branch);
+    if (roleWs && roleWs.host?.kind !== 'sandbox') await writeRoleSentinel(worktreePath, roleWs.branch, roleWs.spawnRole);
     const stamp = path.join(dir, '.hooks-version');
     if (existsSync(stamp)) {
       try {

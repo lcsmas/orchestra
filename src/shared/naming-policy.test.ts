@@ -162,3 +162,29 @@ describe('sanitizeBranchName (moved verbatim from workspaces.ts)', () => {
     it(clause, () => assert.equal(sanitizeBranchName(input), out));
   }
 });
+
+// #489 — a spawn that carries a role is never nudged and keeps its role; the human-created workspace still is nudged.
+describe('#489 spawnRole — frozen at the agent spawn route', () => {
+  it('initialNaming: the agent route (spawnName) freezes the name\'s role, with or without a namer', () => {
+    assert.equal(initialNaming({ namedBy: 'p', spawnName: 'impl-x-1' }).spawnRole, 'implementer');
+    assert.equal(initialNaming({ spawnName: 'verif-x-1' }).spawnRole, 'verifier', 'from absent: still role-anchored');
+    assert.equal(initialNaming({ namedBy: 'p', spawnName: 'ops-x' }).spawnRole, 'coordinator');
+  });
+  it('initialNaming: no spawnName (human-created, pinned Linear, mobile) or a name with no role ⇒ no role', () => {
+    assert.equal('spawnRole' in initialNaming(), false);
+    assert.equal('spawnRole' in initialNaming({ namedBy: 'p' }), false);
+    assert.equal('spawnRole' in initialNaming({ spawnName: 'fix-the-thing' }), false);
+  });
+  it('prefixed spawn is never nudged — even when its namer is unknown (from absent) — and a human-created workspace still is', () => {
+    const spawnedNoNamer = ws({ ...initialNaming({ spawnName: 'impl-manual-return-button-4454' }) });
+    assert.equal(nudgeActive(spawnedNoNamer), false);
+    assert.equal(nudgeActive(ws({ ...initialNaming({ namedBy: 'p', spawnName: 'impl-x' }) })), false);
+    assert.equal(nudgeActive(ws({ ...initialNaming() })), true, 'control: human-created, unnamed');
+  });
+  it('a self-rename attempt never touches the role: the decision cannot pin or clear spawnRole (pinFields has no such key)', () => {
+    const spawned = { ...ws({ id: undefined, ...initialNaming({ spawnName: 'impl-x-1' }) } as Partial<NamingFields>), id: 'c', branch: 'impl-x-1' };
+    const d = decideRename(spawned, { kind: 'agent', id: 'c' });
+    assert.equal(d.allow, true, 'from-less spawn: the rename itself is allowed');
+    if (d.allow) assert.equal('spawnRole' in pinFields(spawned, d.pin), false);
+  });
+});

@@ -296,7 +296,7 @@ test('the pin is main-process / policy only: no renderer, preload, CLI, keeper o
 
 test('the policy module is pure: it imports only the Workspace type, nothing from Electron or node:*', () => {
   const imports = [...code(policySrc).matchAll(/^\s*import\s[^;]*from\s+'([^']+)';/gm)].map((m) => m[1]);
-  assert.deepEqual(imports, ['./types.ts']);
+  assert.deepEqual(imports, ['./fleet-roles.ts', './types.ts']); // #489: roleOfName (itself pure shared code) freezes the spawn role
   assert.match(policySrc, /^import type \{ Workspace \} from '\.\/types\.ts';/m);
 });
 
@@ -310,7 +310,7 @@ test('workspaces.ts takes MAX_AUTO_RENAMES / sanitizeBranchName / the decisions 
 
 test('spawn: createWorkspace (the one git-workspace creation path, spawn included) takes its naming fields from initialNaming()', () => {
   const b = body(workspacesSrc, 'export async function createWorkspace(');
-  assert.match(b, /\.\.\.initialNaming\(\{ namedBy: naming\?\.namedBy \}\),/); // #382: the namer rides in; absent = today's `initialNaming()` record
+  assert.match(b, /\.\.\.initialNaming\(\{ namedBy: naming\?\.namedBy, \.\.\.\(naming\?\.exactName \? \{ spawnName: branch \} : \{\}\) \}\),/); // #382 + #489 (only the agent route freezes a role): the namer rides in; absent = today's `initialNaming()` record
   // dispatchSpawnRequest has no creation site of its own: it reaches the policy through createWorkspace.
   assert.match(body(workspacesSrc, 'export async function dispatchSpawnRequest('), /await createWorkspace\(\{/);
   assert.equal([...code(workspacesSrc).matchAll(/createdAt: Date\.now\(\)/g)].length, 2, 'exactly two Workspace-record creation sites (git + scratch-like)');

@@ -3,15 +3,15 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { roleOfName } from '../shared/fleet-roles.ts';
+import { workspaceRole, type FleetRole } from '../shared/fleet-roles.ts';
 import { ROLE_SENTINEL_FILE } from '../shared/role-guard.ts';
 
-/** Write `.orchestra/role` (the role word of the `--name` prefix), or remove it when the name carries no role. Idempotent (no
+/** Write `.orchestra/role` (the role frozen at spawn, else the role word of the `--name` prefix), or remove it when neither carries a role. Idempotent (no
  *  write when unchanged). Best-effort: a failure leaves the guard inert and never blocks a spawn. Returns the role now in force. */
-export async function writeRoleSentinel(worktreePath: string, name: string | undefined | null): Promise<string | null> {
+export async function writeRoleSentinel(worktreePath: string, name: string | undefined | null, spawnRole?: FleetRole | null): Promise<string | null> {
   const file = path.join(worktreePath, '.orchestra', ROLE_SENTINEL_FILE);
   try {
-    const role = roleOfName(name);
+    const role = workspaceRole({ branch: name, spawnRole }); // #489: the role frozen at spawn wins over whatever the name is now
     if (!role) {
       await rm(file, { force: true });
       return null;

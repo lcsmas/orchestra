@@ -47,8 +47,9 @@ test('agent-sdk announces every ended turn through the seam, after the gate is r
 test('the bound = env > the workspace role (#478), read at each turn end; the listener is registered at load', () => {
   const host = read('handoff-host.ts');
   assert.match(host, /bound: \(id\) => resolveHandoffBound\(process\.env, roleBoundOf\(id\)\)\.bound/);
-  // the role is the SPAWN NAME (ws.branch) — the role sentinel's own source (workspaces.ts writeRoleSentinel(…, ws.branch)) — through the table + the override file
-  assert.match(host, /roleOfName\(store\.getWorkspace\(id\)\?\.branch\)/);
+  // the role is the one frozen at spawn (`spawnRole`, #489), else the name's prefix — workspaceRole(), the role sentinel's own source — through the table + the override file
+  assert.match(host, /workspaceRole\(ws\)/);
+  assert.match(host, /store\.getWorkspace\(id\)/);
   assert.match(host, /roleSpec\(role, cfg\)\.handoffBoundTurns/);
   assert.match(host, /cfg = loadRoleConfig\(\)/);
   assert.ok(live(host, 'setTurnEndListener((info) => void controller.onTurnEnd(info));'));

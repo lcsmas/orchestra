@@ -564,10 +564,15 @@ governed by the flags of the **innermost** run of its two parties).
 ## Branch management
 - `randomBranchName` ~`:249` (1024 adjective-noun combos).
 - **The naming rule is ONE pure module — `src/shared/naming-policy.ts`** (#381, no Electron
-  import; vague #380 grows it). `nudgeActive(ws)` (`:30`) — `!branchManuallySet && autoRenameCount < MAX_AUTO_RENAMES`
+  import; vague #380 grows it). `nudgeActive(ws)` (`:30`) — `!branchManuallySet && !namedByParent && !spawnRole && autoRenameCount < MAX_AUTO_RENAMES`
   (`:16`, =2) — is the single gate for the `ORCHESTRA_BRANCH_AUTO` env flag (`buildSdkEnv`, `agent-sdk.ts:882`) and the
   `${MAX_AUTO_RENAMES}` baked into the nudge hook script. `initialNaming()` (`:36`) is what
   `createWorkspace` / `createScratchLikeWorkspace` spread for a fresh record (`branchManuallySet:false`).
+  **#489 `spawnRole`**: `initialNaming({ spawnName })` freezes `roleOfName(name)` on the record — passed ONLY by the agent spawn route
+  (`exactName`), also when `from` is unresolved. It is the role in force (`workspaceRole(ws)` = `spawnRole ?? roleOfName(branch)`,
+  `fleet-roles.ts`): the role sentinel, the handoff bound and the nudge gate read it, so NO rename (self, parent, human, out-of-band
+  `git branch -m`) changes the role; model/effort were already frozen at spawn. Human-created / pre-#489 records have none and still follow
+  their name. Pinned by `naming-policy.test.ts` (#489 block), `fleet-roles.test.ts`, `role-guard-wiring.test.ts`.
   `decideRename(target, caller)` (`:69`) says what a rename pins: `{kind:'human'}` → `manual` pin, no counter;
   `{kind:'agent', id?}` → the human > parent > child matrix below (#383; an unnamed workspace keeps today's rule:
   `bumpAutoCount = nudgeActive(target)`). `pinFields(ws, pin)` is what an allowed rename writes; `pinAdvancesGate(ws, pin)` (`:80`)

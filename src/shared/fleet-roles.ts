@@ -70,6 +70,11 @@ export function roleOfName(name: string | undefined | null): FleetRole | null {
   return null;
 }
 
+/** #489: the role IN FORCE for a workspace — the one frozen at spawn (`spawnRole`), else (human-created / pre-#489 record) the current name's prefix. */
+export function workspaceRole(ws: { branch?: string | null; spawnRole?: FleetRole | null }): FleetRole | null {
+  return ws.spawnRole ?? roleOfName(ws.branch);
+}
+
 /** The spec of a role: the built-in table, with `overrides` (a {@link parseRoleConfig} result) applied on top. */
 export function roleSpec(role: FleetRole, overrides?: RoleConfig): RoleSpec {
   const base = DEFAULT_TABLE[role];
