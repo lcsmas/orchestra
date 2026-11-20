@@ -37,8 +37,8 @@ export const MUTANTS = {
   // #478: the role is read from ws.name ('<repo> · <branch>', never a role prefix) instead of the spawn name ws.branch.
   'handoff-role-by-name': {
     file: '/src/main/handoff-host.ts',
-    find: /roleOfName\(store\.getWorkspace\(id\)\?\.branch\)/g,
-    replace: 'roleOfName(store.getWorkspace(id)?.name)',
+    find: /workspaceRole\(ws\)/g,
+    replace: 'workspaceRole({ branch: ws.name })', // #489: no frozen role either, as for the rig's record
   },
   // #478: the handoff's context end also wipes the run's fan-out state file => the stateIdentical clause of handoff-role.mjs must FAIL (nothing else may).
   'handoff-wipes-state': {
