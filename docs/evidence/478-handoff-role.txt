@@ -4,11 +4,12 @@
 
 coord-env0: PASS (expected) | ops-handoff-rig requests 36, cache_read 2992297, weighted 502568, last request 158456 tok | nudges 0, handoffs 0, ctx at nudge 0 -> at opening 0 tok, state identical true, opening carries refs false
 coord-default: PASS (expected) | ops-handoff-rig requests 38, cache_read 2406753, weighted 455949, last request 37373 tok | nudges 1, handoffs 1, ctx at nudge 135894 -> at opening 14585 tok, state identical true, opening carries refs true
-coord-file: PASS (expected) | ops-handoff-rig requests 42, cache_read 1368675, weighted 369589, last request 21184 tok | nudges 3, handoffs 3, ctx at nudge 63052 -> at opening 14583 tok, state identical true, opening carries refs true
+coord-file: PASS (expected) | ops-handoff-rig requests 42, cache_read 1403399, weighted 380212, last request 17137 tok | nudges 3, handoffs 3, ctx at nudge 63052 -> at opening 14583 tok, state identical true, opening carries refs true
 impl-default (must-FAIL: no bound ⇒ no drop): FAIL [nudged, handedOff, opened, ctxDrops, openingRefs, drop] (expected) | impl-handoff-rig requests 36, cache_read 2992585, weighted 502617, last request 158464 tok | nudges 0, handoffs 0, ctx at nudge 0 -> at opening 0 tok, state identical true, opening carries refs false
 impl-default positive control (a non-coordinator is quiet): PASS
 mutant handoff-role-ignored (must-FAIL): FAIL [nudged, handedOff, opened, ctxDrops, openingRefs, drop] (expected) | ops-handoff-rig requests 36, cache_read 2992543, weighted 502611, last request 158463 tok | nudges 0, handoffs 0, ctx at nudge 0 -> at opening 0 tok, state identical true, opening carries refs false
 mutant handoff-role-by-name (must-FAIL): FAIL [nudged, handedOff, opened, ctxDrops, openingRefs, drop] (expected) | ops-handoff-rig requests 36, cache_read 2992543, weighted 502611, last request 158463 tok | nudges 0, handoffs 0, ctx at nudge 0 -> at opening 0 tok, state identical true, opening carries refs false
+mutant handoff-wipes-state (must-FAIL: only stateIdentical): FAIL [stateIdentical] (expected) | ops-handoff-rig requests 38, cache_read 2407281, weighted 456089, last request 37408 tok | nudges 1, handoffs 1, ctx at nudge 135906 -> at opening 14620 tok, state identical false, opening carries refs true
 mutant handoff-role-all-on (must-FAIL): FAIL [quiet] (expected) | impl-handoff-rig requests 38, cache_read 2407040, weighted 456025, last request 37392 tok | nudges 1, handoffs 1, ctx at nudge 135901 -> at opening 14604 tok, state identical true, opening carries refs true
 
 coordinator, 36 user turns, heavy profile (one turn = ONE API request here), default bound

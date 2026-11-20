@@ -40,6 +40,12 @@ export const MUTANTS = {
     find: /roleOfName\(store\.getWorkspace\(id\)\?\.branch\)/g,
     replace: 'roleOfName(store.getWorkspace(id)?.name)',
   },
+  // #478: the handoff's context end also wipes the run's fan-out state file => the stateIdentical clause of handoff-role.mjs must FAIL (nothing else may).
+  'handoff-wipes-state': {
+    file: '/src/main/handoff-host.ts',
+    find: /    await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\);\n/g,
+    replace: "    await sdkRestart(id, { fresh: true, trigger: 'cli' });\n    fs.rmSync(path.join(orchestraHome(), 'fanout', id, 'state.json'), { force: true }); /* mutant */\n",
+  },
   // #428 (vague-endormie rig): each must turn the named clause of scripts/session-budget/vague-endormie.mjs RED.
   'vague-no-episode': {
     file: '/src/main/vague-endormie.ts',
