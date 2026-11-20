@@ -104,9 +104,18 @@ function run_code(code,   sS, sP, sN, a, b, c, d, g) {
   scope_out()
   S = sS; P = sP; N = sN; wv = a; wd = b; wq = c; wany = d; bd = g
 }
-function safe_subst(inner) {
+function safe_subst(inner,   t, n, nm, v) {
   # command substitutions whose output is a harmless single component: date +FMT; mktemp under TMPDIR (unless TMPDIR was reassigned here)
-  if (index(inner, "%") && inner ~ "^[ \t]*date([ \t]+[+%A-Za-z0-9_:.-]+)*[ \t]*$") return "0"
+  t = inner; n = gsub("%[sNYmdHMS]", "", t)
+  if (n > 0 && index(t, "%") == 0 && inner ~ "^[ \t]*date([ \t]+[+%A-Za-z0-9_:.-]+)*[ \t]*$") return "0"
+  if (inner ~ "^[ \t]*basename[ \t]+[\"]?[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[\"]?[ \t]*$") {
+    nm = inner; sub("^[ \t]*basename[ \t]+[\"]?[$][{]?", "", nm); sub("[}]?[\"]?[ \t]*$", "", nm)
+    v = san(getvar(nm))
+    if (index(v, UNRES)) return UNRES
+    sub("/+$", "", v); sub("^.*/", "", v)
+    if (v != "" && v != "." && v != ".." && v !~ "[ \t{};]") return v
+    return UNRES
+  }
   if (!("TMPDIR" in vals) && (inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]*$" || inner ~ "^[ \t]*mktemp([ \t]+(-[duq]+|--directory|--quiet|--dry-run))*[ \t]+(-t|-dt|-td)[ \t]+[A-Za-z0-9_.-]+[ \t]*$")) return ((TMPD == "") ? "/tmp" : TMPD) "/.mktemp"
   return UNRES
 }
@@ -121,6 +130,58 @@ function brace_len(from,   q, ch, depth, mode) {
     if (ch == "'" || ch == "\"") { mode = ch; continue }
     if (ch == "{") depth++
     else if (ch == "}") { depth--; if (depth == 0) return q - from + 1 }
+  }
+  return 0
+}
+function paren_len(from,   q, ch, depth, mode) {
+  depth = 1; mode = ""
+  for (q = from; q <= N; q++) {
+    ch = substr(S, q, 1)
+    if (mode == "'") { if (ch == "'") mode = ""; continue }
+    if (mode == "\"") { if (ch == "\\") { q++; continue } if (ch == "\"") mode = ""; continue }
+    if (ch == "\\") { q++; continue }
+    if (ch == "'" || ch == "\"") { mode = ch; continue }
+    if (ch == "(") depth++
+    else if (ch == ")") { depth--; if (depth == 0) return q - from + 1 }
+  }
+  return 0
+}
+function fn_end(from,   q, ch, depth, cmdpos, w, e, j) {
+  # length (from FROM) up to and including the closing brace of a function body: braces count only as standalone words at COMMAND position
+  # (echo { and echo } are arguments), quotes and parameter/command substitutions skipped, a # comment runs to the next ;. 0 when unterminated.
+  depth = 1; cmdpos = 1
+  for (q = from; q <= N; q++) {
+    ch = substr(S, q, 1)
+    if (ch == " " || ch == "\t") continue
+    if (ch == ";" || ch == "&" || ch == "|" || ch == "(") { cmdpos = 1; continue }
+    if (ch == ")") continue
+    if (ch == "#") { while (q <= N && substr(S, q, 1) != ";") q++; cmdpos = 1; continue }
+    w = ""
+    while (q <= N) {
+      ch = substr(S, q, 1)
+      if (ch == "'") { e = index(substr(S, q + 1), "'"); if (e == 0) return 0; q += e + 1; w = w "q"; continue }
+      if (ch == "\"") {
+        q++
+        while (q <= N) {
+          ch = substr(S, q, 1)
+          if (ch == "\\") { q += 2; continue }
+          if (ch == "\"") break
+          if (ch == "$" && substr(S, q + 1, 1) == "(") { j = paren_len(q + 2); if (j == 0) return 0; q += j + 2; continue }
+          q++
+        }
+        if (q > N) return 0
+        q++; w = w "q"; continue
+      }
+      if (ch == "\\") { q += 2; w = w "x"; continue }
+      if (ch == "$" && substr(S, q + 1, 1) == "{") { j = brace_len(q + 2); if (j == 0) return 0; q += j + 2; w = w "x"; continue }
+      if (ch == "$" && substr(S, q + 1, 1) == "(") { j = paren_len(q + 2); if (j == 0) return 0; q += j + 2; w = w "x"; continue }
+      if (ch == " " || ch == "\t" || ch == ";" || ch == "&" || ch == "|" || ch == "(" || ch == ")") break
+      w = w ch; q++
+    }
+    q--
+    if (w == "{" && cmdpos) { depth++; continue }
+    if (w == "}" && cmdpos) { depth--; if (depth == 0) return q - from + 1; continue }
+    cmdpos = (w == "then" || w == "do" || w == "else" || w == "elif" || w == "if" || w == "while" || w == "until" || w == "!" || w == "time") ? 1 : 0
   }
   return 0
 }
@@ -206,7 +267,7 @@ function dqparse(   c, c2, sp) {
     if (c == "\"") { P++; return }
     if (c == "\\") {
       c2 = substr(S, P + 1, 1)
-      if (c2 == "\"" || c2 == "\\" || c2 == "$" || c2 == "\140") { wv = wv c2; wd = wd c2; P += 2 } else { wv = wv c; wd = wd c; P++ }
+      if (c2 == "\"" || c2 == "\\" || c2 == "$" || c2 == "\140") { wv = wv c2; wd = wd c2; P += 2 } else if (c2 == ";") { wv = wv UNRES; wd = wd c c2; P += 2 } else { wv = wv c; wd = wd c; P++ }
       continue
     }
     if (c == "$") { dollar(); continue }
@@ -229,7 +290,7 @@ function readword(   c, c2, e, lit, sp) {
     wany = 1
     if (c == "\\") {
       if (P == N) { wv = wv c; wd = wd c; P++; continue }
-      c2 = substr(S, P + 1, 1); wv = wv c2; wd = wd c2; wq = 1; P += 2; continue
+      c2 = substr(S, P + 1, 1); wv = wv ((c2 == ";") ? UNRES : c2); wd = wd c2; wq = 1; P += 2; continue
     }
     if (c == "'") {
       e = index(substr(S, P + 1), "'")
@@ -274,7 +335,7 @@ function assign(f, i,   nm) {
   if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[[]") { sub("[[].*$", "", nm); poisonvar(nm); return }
   if (nm ~ "^[A-Za-z_][A-Za-z0-9_]*[+]=") { sub("[+]=.*$", "", nm); poisonvar(nm); return }
   sub("=.*$", "", nm)
-  if (nm == "IFS") { ifs = 1; poison_all(); return }
+  if (nm == "IFS") { if (skipifs) return; ifs = 1; poison_all(); return }
   if (nm == "CDPATH") cdpath = 1
   setvar(nm, substr(CW[f, i], length(nm) + 2))
 }
@@ -295,6 +356,35 @@ function do_cd(f, i, k, term, inpipe_cmd,   j, w, tgt, have, rest, old, t1, t2) 
   # cd X || <something other than exit/return>: a failed cd would leave us elsewhere, so the cwd is unknown
   if (term == "||") { rest = substr(S, P + 2); sub("^[ \t]+", "", rest); if (rest !~ "^(exit|return)([ ;&|)]|$)") cwd = "" }
 }
+function sed_bad(t,   i, n, c, d, k) {
+  # 1 when the script has anything that could write or execute (w W e E, s///w s///e) or that it cannot read (unknown command char, UNRES in command position)
+  n = length(t); i = 1
+  while (i <= n) {
+    c = substr(t, i, 1)
+    if (c == " " || c == "\t" || c == ";" || c == "{" || c == "}") { i++; continue }
+    if (c ~ "[0-9$!,~+]") { i++; continue }
+    if (c == "/" || c == "\\") {
+      d = c
+      if (c == "\\") { i++; d = substr(t, i, 1) }
+      i++
+      while (i <= n && substr(t, i, 1) != d) { if (substr(t, i, 1) == "\\") i++; i++ }
+      i++
+      while (i <= n && substr(t, i, 1) ~ "[IM]") i++
+      continue
+    }
+    if (c == "s" || c == "y") {
+      d = substr(t, i + 1, 1); i += 2
+      for (k = 0; k < 2; k++) { while (i <= n && substr(t, i, 1) != d) { if (substr(t, i, 1) == "\\") i++; i++ }; i++ }
+      if (c == "s") while (i <= n && substr(t, i, 1) ~ "[gpiImM0-9]") i++
+      if (i <= n) { c = substr(t, i, 1); if (!(c == " " || c == "\t" || c == ";" || c == "}")) return 1 }
+      continue
+    }
+    if (c ~ "[dDpPnNgGhHxlqQz=]") { i++; continue }
+    if (c ~ "[aicrR:btT]") { while (i <= n && substr(t, i, 1) != ";") i++; continue }
+    return 1
+  }
+  return 0
+}
 function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx, scr, ffile) {
   opts = 1; inpl = 0; haveS = 0; nop = 0; nf = 0; scr = ""; ffile = 0
   for (j = i + 1; j <= k; j++) {
@@ -302,15 +392,15 @@ function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx, scr, ffile) {
     if (opts && substr(w, 1, 1) == "-" && w != "-") {
       if (w == "--") { opts = 0; continue }
       if (w ~ "^--in-place") { inpl = 1; continue }
-      if (w == "--expression") { haveS = 1; j++; scr = scr " " CW[f, j]; continue }
+      if (w == "--expression") { haveS = 1; j++; scr = scr ";" CW[f, j]; continue }
       if (w == "--file") { haveS = 1; ffile = 1; j++; continue }
-      if (w ~ "^--expression=") { haveS = 1; scr = scr " " w; continue }
+      if (w ~ "^--expression=") { haveS = 1; scr = scr ";" w; continue }
       if (w ~ "^--file=") { haveS = 1; ffile = 1; continue }
       if (w == "--line-length") { j++; continue }
       if (w ~ "^--") continue
       if (w == "-l") { j++; continue }
       if (w ~ "^-[a-zA-Z]*i") inpl = 1
-      else if (w ~ "^-[a-zA-Z]*e$") { haveS = 1; j++; scr = scr " " CW[f, j] }
+      else if (w ~ "^-[a-zA-Z]*e$") { haveS = 1; j++; scr = scr ";" CW[f, j] }
       else if (w ~ "^-[a-zA-Z]*f$") { haveS = 1; ffile = 1; j++ }
       continue
     }
@@ -319,7 +409,7 @@ function do_sed(f, i, k,   j, w, opts, inpl, haveS, nop, nf, idx, scr, ffile) {
   if (!inpl) return
   if (!haveS && nop >= 1) scr = CW[f, idx[1]]
   # sed script commands/flags that write or execute (s///w file, w file, e): not judged, so denied; -f script contents are unknown
-  if (ffile || scr ~ "(^|[^A-Za-z_\\\\])[weWE]([ \t;}]|$)") emit("SEDI", "(sed script with a w/e command or flag, or -f)")
+  if (ffile || sed_bad(scr)) emit("SEDI", "(sed script with a w/e command or flag, an unreadable script, or -f)")
   nf = 0
   for (j = ((haveS) ? 1 : 2); j <= nop; j++) { nf++; judge("SEDI", CD[f, idx[j]], CW[f, idx[j]], CB[f, idx[j]]) }
   if (nf == 0) emit("SEDI", "(no file operand)")
@@ -379,22 +469,28 @@ function call_fn(nm, f, i, k,   p, d) {
 function def_function(fn,   bs, j) {
   # P is just after the name (or after the parens): a brace body is registered (judged at each call); any other form is unknown => its call poisons everything
   while (P <= N && (ws(substr(S, P, 1)) || substr(S, P, 1) == ";")) P++
-  if (substr(S, P, 1) != "{") { FNdef[fn] = 1; FNunk[fn] = 1; FNbody[fn] = ""; return }
-  bs = P; j = brace_len(bs + 1)
+  if (substr(S, P, 1) != "{") { if (!(fn in FNdef)) nfn++; FNdef[fn] = 1; FNunk[fn] = 1; FNbody[fn] = ""; return }
+  bs = P; j = fn_end(bs + 1)
   if (j == 0) { emit("W", "(unterminated function body)"); abort = 1; return }
+  if (!(fn in FNdef)) nfn++
   FNdef[fn] = 1; FNunk[fn] = 0; FNbody[fn] = substr(S, bs + 1, j - 1)
   P = bs + 1 + j
 }
-function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, safe, first) {
+function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, safe, first, ext, t1, t2, r9) {
   i = 1
   for (;;) {
+    r9 = i
+    while (r9 <= k && is_assign(f, r9)) r9++
+    if (r9 <= k && CW[f, r9] == "read") skipifs = 1   # IFS= read -r line: the IFS lives for that one builtin
     while (i <= k && is_assign(f, i)) { assign(f, i); i++ }
+    skipifs = 0
     if (i > k) return
     w = CW[f, i]
     if (!CQ[f, i] && (w == "then" || w == "do" || w == "else" || w == "elif" || w == "if" || w == "while" || w == "until" || w == "!" || w == "{" || w == "}" || w == "time" || w == "coproc" || w == "function")) { if (w == "function") poison_all(); i++; continue }
     base = w; sub("^.*/", "", base)
     moved = 1
     if (base == "sudo" || base == "env" || base == "command" || base == "exec" || base == "nohup" || base == "timeout" || base == "nice" || base == "builtin") {
+      if (base != "command" && base != "builtin") ext = 1
       i++
       while (i <= k && substr(CW[f, i], 1, 1) == "-") {
         w = CW[f, i]
@@ -408,6 +504,7 @@ function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, sa
   }
   if (index(CW[f, i], UNRES) && index(CW[f, i], "/") == 0) {
     # a command word nobody can name ($n, $(echo f)): it may be ANY defined function or builtin — judge every body, then poison
+    if (nfn == 0) { cwd = ""; return }   # no function can be meant: only a builtin (cd) could move the shell
     for (nm in FNdef) if (!FNunk[nm] && !FNact[nm]) { FNact[nm] = 1; run_code(FNbody[nm]); FNact[nm] = 0 }
     poison_all()
     return
@@ -416,7 +513,13 @@ function process_cmd2(f, k, term, inpipe_cmd,   i, w, nm, base, j, moved, sk, sa
     for (j = i + 1; j <= k; j++) { if (substr(CW[f, j], 1, 1) == "-") continue; if (CW[f, j] != "") run_inline(CW[f, j]); break }
     return
   }
-  if (base in FNdef) { call_fn(base, f, i, k); return }
+  if (ext && (base == "cd" || base == "pushd" || base == "popd" || (base in FNdef))) return   # an external wrapper cannot run a builtin or a function
+  if (base in FNdef) {
+    t1 = substr(term, 1, 1); t2 = substr(term, 2, 1)
+    if (inpipe_cmd || (t1 == "|" && t2 != "|") || (t1 == "&" && t2 != "&")) { scope_in(); call_fn(base, f, i, k); scope_out() }
+    else call_fn(base, f, i, k)
+    return
+  }
   for (j = i; j <= k; j++) {
     nm = CW[f, j]; sub("^.*/", "", nm)
     if (nm == "bash" || nm == "sh" || nm == "zsh" || nm == "dash" || nm == "ksh") code_operand(f, j, k)
@@ -481,6 +584,7 @@ function array_body() {
     skipws()
     c9 = substr(S, P, 1)
     if (c9 == ")") { P++; return }
+    if (c9 == "#") { while (P <= N && substr(S, P, 1) != ";") P++; continue }
     if (c9 == ";" || c9 == "&" || c9 == "|" || c9 == "<" || c9 == ">" || c9 == "(") { P++; continue }
     readword()
   }
@@ -516,6 +620,7 @@ function parse_cmd(   f, k, c, c2, e, nxt, inpipe, q2) {
       break
     }
     if (c == ">" || c == "<") { redirect(c); continue }
+    if (c == "#") { while (P <= N && substr(S, P, 1) != ";") P++; continue }
     bd = 0
     readword()
     if (wany && !wq && wv ~ "^[0-9]+$" && (substr(S, P, 1) == ">" || substr(S, P, 1) == "<")) continue
@@ -576,7 +681,7 @@ function main(   n0, D, i, c) {
   TMPD = envget("TMPDIR")
   if (TMPD ~ "^/[^/]+/[^/]") TMPD = norm(TMPD); else TMPD = ""
   if (TMPD == HOMEV) TMPD = ""
-  fr = 0; sd = 0; pd = 0; pn = 0; jn = 0; BUDGET = 300000; abort = 0; quiet = 0; envpoison = 0; ifs = 0
+  fr = 0; sd = 0; pd = 0; pn = 0; jn = 0; BUDGET = 300000; abort = 0; quiet = 0; envpoison = 0; ifs = 0; skipifs = 0; nfn = 0
   cdpath = (envget("CDPATH") != "")
   parse_seq("")
   if (abort) emit("W", "(command too complex for the write scanner)")
