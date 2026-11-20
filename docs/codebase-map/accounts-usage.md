@@ -41,6 +41,23 @@ reads them transiently to query usage.
   it for life (else `claude --continue` finds no session). `resolveWorkspaceAccountId(pinned,
   known)` `:245` → `null` falls back to the default `~/.claude` login. Changing a
   repo's account only affects *new* workspaces.
+- **A child's account (#480, closes #477) — ONE resolver.** `resolveChildAccount`
+  (`src/shared/spawn-account.ts`, pure; `spawn-account.test.ts`) decides the pin of every NEW child:
+  explicit `orchestra spawn --account <id|label|default>` > the CALLER's pinned account (when it still
+  names a configured one) > the repo's account > default login. A caller on the default login or pinned
+  to a deleted account falls through to the repo's (unchanged behaviour); an unknown/ambiguous
+  `--account` is refused with nothing created. It is called ONCE, from `createWorkspace`
+  (`workspaces.ts`) before any worktree exists — via `CreateWorkspaceInput.account` (explicit) and
+  `.accountFrom` (the caller: `dispatchSpawnRequest` sets it from `from`, also for `--detached`; the
+  fork in `agent-sdk.ts` sets its source). Every child path funnels there: hooks `/spawn` (CLI),
+  the sandbox `spawn` rpc, pinned-Linear `--spawn` (agent: has `from`), accès mobile / sidebar clicks
+  (no caller → repo's account), fork. The first spawn into a repo just registered by `add-repo` needs no
+  special case: a new repo has no account, so the caller's wins. Restart / `--fresh` create no child.
+  Grep gate `scripts/check-spawn-account-single-resolver.mjs` (+ `src/main/spawn-account-wiring.test.ts`).
+  A first turn that fails with `Not logged in · Please run /login` gets ONE appended line from
+  `loginFailureHint` naming `orchestra migrate-account <id> <account>` + `orchestra restart <id>`.
+  Rig: `scripts/e2e-spawn-account-inherit.mjs [tree]` (real dispatch + store over the fake SDK seam,
+  scratch home; run it against an `origin/master` worktree for the must-FAIL arm).
 - **Scratch default:** scratch/orchestrator sessions have no repo to take an
   account from, so creation pins the one account flagged `scratchDefault: true`
   (`scratchDefaultAccountId(accounts)`, pure; `createScratchLikeWorkspace` in

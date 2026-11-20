@@ -641,6 +641,12 @@ export interface CreateWorkspaceInput {
    * against existing branches exactly like a rename, so a collision suffixes
    * rather than failing. */
   branch?: string;
+  /** #480: explicit Claude account for the new workspace (`orchestra spawn --account`: an account id or label, `default` = the default login).
+   *  Absent → {@link accountFrom}'s account, else the repo's. Resolved ONLY by `resolveChildAccount` (shared/spawn-account.ts). */
+  account?: string;
+  /** #480: the workspace whose account the child inherits — the spawning caller (set even for `--detached`, which skips only `parentId`) or the
+   *  fork's source. Never trusted from the renderer: only main-side callers set it. */
+  accountFrom?: string;
 }
 
 export interface RepoScripts {

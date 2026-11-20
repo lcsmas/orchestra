@@ -5783,6 +5783,7 @@ export async function sdkFork(
     branch: forkBranchName(title),
     ...(ws.parentId ? { parentId: ws.parentId } : {}),
     ...(ws.model ? { model: ws.model } : {}),
+    accountFrom: ws.id, // #480: the fork inherits its source's pin (resolveChildAccount)
   });
 
   const { forkSession } = await loadSdk();
