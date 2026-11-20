@@ -250,6 +250,28 @@ for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']
   allow(role, 'grep for the verb', bash('grep -rn "orchestra fanout deliver" src'));
   allow(role, 'another orchestra fanout-ish word', bash('orchestra fanout-deliver-notes'));
 }
+// #479: `fanout open` opens the PR at nomination — coordinator-only like deliver (the flag form `deliver --open-only` rides deliver's rule).
+const OPEN = 'orchestra fanout open --branch impl-x --into master --ticket 479';
+for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+  for (const [name, cmd] of [['plain', OPEN], ['after &&', `cd /r && ${OPEN}`], ['bash -c', `bash -c "${OPEN}"`], ['bare', 'orchestra fanout open'], ['bare + ;', 'orchestra fanout open; ls']] as const) {
+    deny(role, `fanout open ${name}`, bash(cmd), /fanout open opens the PR.*coordinator/);
+  }
+  deny(role, 'fanout deliver --open-only', bash(`${DELIVER.replace(' --review-verdict v.json --verified-head abc', '')} --open-only`), /fanout deliver opens and MERGES/);
+  allow(role, 'a comment MENTIONING fanout open', bash('gh issue comment 479 --body "the coordinator runs orchestra fanout open at nomination"'));
+  allow(role, 'another orchestra fanout-ish word', bash('orchestra fanout opener-notes'));
+}
+allow('coordinator', 'fanout open', bash(OPEN));
+allow('(none)', 'fanout open (no sentinel: inert)', bash(OPEN));
+test('#479 MUST-FAIL ARM: without the rule `fanout open` passes the installed command (and with it, every non-coordinator role is denied)', () => {
+  const noRule = ROLE_GUARD_SCRIPT.split('orchestra[[:space:]]+fanout[[:space:]]+open(').join('orchestra[[:space:]]+NOFANOUTOPEN(');
+  assert.notEqual(noRule, ROLE_GUARD_SCRIPT);
+  for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+    assert.equal(run(install(noRule, role, `no-${role}`), bash(OPEN)).code, 0, `${role}: the rule-less guard must let open through`);
+    const r = run(install(ROLE_GUARD_SCRIPT, role, `o-${role}`), bash(OPEN));
+    assert.equal(r.code, 2); assert.match(r.err, /coordinator/);
+  }
+});
+
 allow('coordinator', 'fanout deliver', bash(DELIVER));
 allow('coordinator', 'fanout deliver in a chain', bash(`cd /r && ${DELIVER}`));
 allow('coordinator', 'fanout deliver via bash -c', bash(`bash -c "${DELIVER}"`));

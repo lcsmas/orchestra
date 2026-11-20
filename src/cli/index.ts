@@ -36,6 +36,7 @@ import {
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import { runDeliver } from './fanout-deliver.ts';
+import { runOpenRoute } from './fanout-open.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
 import { pauseLineCoversReprise, renderRepriseStatus, type RepriseStatusView } from '../shared/pause-reprise-view.ts';
@@ -2434,6 +2435,14 @@ async function main(argv: string[]): Promise<void> {
 
     case 'fanout': {
       // #467 — `fanout deliver` (src/cli/fanout-deliver.ts): store-less gh; exit 0 merged · 2 refused · 1 could-not-check.
+      // #479 — `fanout open` / `deliver --open-only` (src/cli/fanout-open.ts): open or reuse the PR at nomination, never merges; same exits.
+      const o = await runOpenRoute(args);
+      if (o) {
+        if (o.error !== undefined) fail(o.error);
+        if (o.stdout) process.stdout.write(o.stdout);
+        if (o.exit !== 0) exitWith(o.exit);
+        return;
+      }
       if (args[0] === 'deliver') {
         const d = await runDeliver(args.slice(1));
         if (d.error !== undefined) fail(d.error);
