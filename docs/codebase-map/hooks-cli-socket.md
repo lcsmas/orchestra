@@ -364,7 +364,7 @@ forwards it — #467's `deliver` is intercepted in that case and goes to `runDel
   merged (an unknown upstream counts as not merged). **#506 — early gating**: `nominated|gated` with an open upstream is admitted only on
   its verified candidate (`upstreamBlocker`: upstream `nominated|gated`, head recorded, verdict not fail/changes-requested) and when the
   dependent recorded `builtOn[upstream]` (`state set <t> --built-on UP=<sha>[,…]`, `-` clears; keys ⊆ dependsOn) = that head — a
-  moved upstream refuses the dependent's next gate until it re-records. `fanout deliver` re-proves order + content at merge (git.md §deliver).
+  moved upstream refuses the dependent's next gate until it re-records; DROPPING a `builtOn` key under an unchanged pass/approve verdict is refused (void the verdict first). `fanout deliver` re-proves order + content at merge (git.md §deliver).
 - **One writer**: `updateState` = O_EXCL lock (stale after 15 s) + `writeStateAtomic` (validate, tmp + rename in the
   same dir: a reader sees the old or the new file, never a torn one).
 - **`resume` = 5 steps** (printed `1/5 … 5/5`): load → reconcile (`gatherReality`: `git fetch`, `git ls-remote`,

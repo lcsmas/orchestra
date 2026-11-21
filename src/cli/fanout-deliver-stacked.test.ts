@@ -201,18 +201,26 @@ test('#506 must-FAIL: the dependent\'s verified head does not sit on the upstrea
   assert.equal(good.result.verdict, 'merged', JSON.stringify(good.result));
 });
 
-test('#506: no state file / a ticket the state does not know → the pre-#506 store-less behaviour; mergedAccepted upstream is skipped; an unreadable state is could-not-check', async (t) => {
+test('#506 R1 fail closed: wrong --run / mistyped --ticket / no state at all are NOT a silent merge — exit 1 or a visible upstreamsChecked:false; mergedAccepted skipped; unreadable state is could-not-check', async (t) => {
   const r = rig(t);
   const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
   const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
-  // no state file at all
-  const none = await deliver(opts('dep', 'DEP', D), r.mkdeps());
-  assert.equal(none.result.verdict, 'merged', 'no state file ⇒ no upstream known ⇒ unchanged');
-  const r2 = rig(t);
-  const U2 = r2.branchWith('up', 'master', 'up.txt', 'u1\n');
-  const D2 = r2.branchWith('dep', 'up', 'dep.txt', 'd1\n');
-  r2.writeState(stateFor(U2, D2));
-  assert.equal((await deliver(opts('dep', 'OTHER', D2), r2.mkdeps())).result.verdict, 'merged', 'a ticket the state does not name ⇒ no upstreams');
+  r.writeState(stateFor(U, D)); // UP is NOT merged: a dependent delivered now must never merge
+  const typoRun = await deliver(opts('dep', 'DEP', D, { run: 'r-typo' }), r.mkdeps());
+  assert.deepEqual([typoRun.exit, typoRun.result.verdict, typoRun.result.reason], [1, 'unchecked', 'bad-state'], JSON.stringify(typoRun.result));
+  const typoTicket = await deliver(opts('dep', 'DEP-typo', D), r.mkdeps());
+  assert.deepEqual([typoTicket.exit, typoTicket.result.reason], [1, 'bad-state'], JSON.stringify(typoTicket.result));
+  assert.match(typoTicket.result.detail ?? '', /mistyped --ticket/);
+  assert.equal(r.merges().length, 0, 'neither typo merged the out-of-order dependent');
+  // no --run and nothing at the caller's own run (OPS vs LEAD run): legacy store-less, but VISIBLE
+  const own = await deliver(opts('dep', 'DEP', D, { run: undefined }), r.mkdeps({ ORCHESTRA_WS_ID: 'some-other-workspace' }));
+  assert.deepEqual([own.result.verdict, own.result.upstreamsChecked], ['merged', false], 'the JSON says the rule was NOT checked');
+  // a state that names the ticket reports upstreamsChecked:true
+  const r1 = rig(t);
+  const U1 = r1.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D1 = r1.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r1.writeState(stateFor(U1, D1));
+  assert.equal((await deliver(opts('up', 'UP', U1), r1.mkdeps())).result.upstreamsChecked, true);
   // mergedAccepted on the upstream: nothing checked for it
   const r3 = rig(t);
   const U3 = r3.branchWith('up', 'master', 'up.txt', 'u1\n');
@@ -229,6 +237,20 @@ test('#506: no state file / a ticket the state does not know → the pre-#506 st
   const bad = await deliver(opts('dep', 'DEP', D4), r4.mkdeps());
   assert.deepEqual([bad.exit, bad.result.verdict, bad.result.reason], [1, 'unchecked', 'bad-state'], JSON.stringify(bad.result));
   assert.equal(r4.merges().length, 0);
+});
+
+test('#506 R3: a recorded upstream PR that is not merged into the target is THE answer — an older merged PR of a reused branch name never stands in for it', async (t) => {
+  const r = rig(t);
+  const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.prs.push({ number: 5, branch: 'up', base: 'master', state: 'MERGED', head: 'f'.repeat(40) });
+  r.prs.push({ number: 9, branch: 'up', base: 'other-base', state: 'OPEN' }); // recorded PR: not on the target, so absent from `pr list --base master`
+  let s = stateFor(U, D);
+  s = applyTicketPatch(s, 'UP', { pr: 9 }, NOW);
+  r.writeState(s);
+  const out = await deliver(opts('dep', 'DEP', D), r.mkdeps());
+  assert.deepEqual([out.exit, out.result.reason], [2, 'upstream-not-merged'], JSON.stringify(out.result));
+  assert.equal(r.merges().length, 0);
 });
 
 test('#506: an upstream whose merge cannot be read (gh fails) is could-not-check (exit 1), never merged and never "no upstream"', async (t) => {
