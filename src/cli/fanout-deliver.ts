@@ -5,6 +5,14 @@
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  FanoutStateError,
+  readState,
+  resolveFanoutRun,
+  stateFile,
+} from '../shared/fanout-state.ts';
 import {
   classifyMergeFailure,
   combinedSuiteCommand,
@@ -23,6 +31,8 @@ import {
   type ReviewVerdict,
   type RollupItem,
   type SuiteSource,
+  type UpstreamFacts,
+  decideUpstreams,
 } from '../shared/fanout-deliver.ts';
 
 export interface GhResult {
@@ -56,18 +66,20 @@ export interface DeliverOpts {
   suiteCmd?: string;
   repo?: string;
   requireChecks: string[];
+  /** #506 — the fanout run whose state file names this ticket's upstreams (default: the caller's own run). */
+  run?: string;
 }
 
 export const DELIVER_USAGE =
   'usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]\n' +
-  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]…';
+  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>]';
 
 export type ParsedArgs = { ok: true; opts: DeliverOpts } | { ok: false; error: string };
 
 /** Strict argv parse: an unknown flag or a ref that could be read as a gh option / shell metacharacter is a usage error (exit 1). */
 export function parseDeliverArgs(args: string[]): ParsedArgs {
   const v: Record<string, string> = {};
-  const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check']);
+  const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check', '--run']);
   const required: string[] = [];
   let noReviewGate = false;
   for (let i = 0; i < args.length; i += 2) {
@@ -85,6 +97,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
   if (!SAFE_REF.test(v['--into'])) return { ok: false, error: `unsafe --into: ${v['--into']}` };
   if (v['--verified-head'] !== undefined && !/^[0-9a-f]{40}$/.test(v['--verified-head'])) return { ok: false, error: '--verified-head must be a full 40-hex sha' };
   if (v['--repo'] !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(v['--repo'])) return { ok: false, error: '--repo must be <owner>/<name>' };
+  if (v['--run'] !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v['--run'])) return { ok: false, error: '--run must be a plain run id' };
   const strategy = v['--strategy'] ?? 'merge';
   if (strategy !== 'merge' && strategy !== 'squash' && strategy !== 'rebase') return { ok: false, error: '--strategy must be merge, squash or rebase' };
   const secs = (flag: string, dflt: number): number | null => {
@@ -112,13 +125,14 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
       suiteCmd: v['--suite-cmd'],
       repo: v['--repo'],
       requireChecks: required,
+      run: v['--run'],
     },
   };
 }
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args';
+  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state';
   detail?: string;
   ticket: string;
   branch: string;
@@ -143,6 +157,34 @@ export interface DeliverDeps {
   readFile: (p: string) => string;
   /** Progress lines (stderr in production). */
   log: (s: string) => void;
+  /** #506 — the upstreams the state file names for `ticket` (none when there is no state / no such ticket). Absent = none. */
+  upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[];
+}
+
+/** One upstream of the ticket being delivered, as the fanout state records it. */
+export interface UpstreamRef {
+  id: string;
+  branch: string | null;
+  pr: number | null;
+  /** The upstream head the dependent was built on (state `builtOn[id]`), if recorded. */
+  builtOn: string | null;
+  /** state `mergedAccepted` set: the human override, nothing is checked. */
+  accepted: boolean;
+}
+
+/** Production reader: `<ORCHESTRA_HOME>/fanout/<run>/state.json`. No state file / no such ticket ⇒ no upstreams (the pre-#506 store-less behaviour);
+ *  an unreadable state throws (could-not-check, never "no upstreams"). */
+export function upstreamsFromState(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): UpstreamRef[] {
+  const { run } = resolveFanoutRun(opts.run, env);
+  if (!run) return [];
+  const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+  const state = readState(stateFile(home, run));
+  const t = state?.tickets[opts.ticket];
+  if (!state || !t) return [];
+  return t.dependsOn.map((id) => {
+    const u = state.tickets[id];
+    return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: t.builtOn[id] ?? null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
+  });
 }
 
 export const realDeps = (): DeliverDeps => ({
@@ -151,6 +193,7 @@ export const realDeps = (): DeliverDeps => ({
   now: () => Date.now(),
   readFile: (p) => fs.readFileSync(p, 'utf8'),
   log: (s) => process.stderr.write(`${s}\n`),
+  upstreams: (o) => upstreamsFromState(o),
 });
 
 class GhError extends Error {}
@@ -201,6 +244,54 @@ export async function readPrChecks(ghOk: (args: string[]) => Promise<string>, pr
   }
   const checks: DeliverCheck[] = rollup.map((it) => normaliseRollupItem(it, (u) => (u && stepsByUrl.has(u) ? (stepsByUrl.get(u) as number | null) : null)));
   return { view, checks };
+}
+
+/** #506 — read what GitHub says about each upstream and whether the dependent's verified head sits on it. Any unreadable fact throws (could-not-check, exit 1). */
+export async function gatherUpstreamFacts(
+  refs: UpstreamRef[], opts: Pick<DeliverOpts, 'into' | 'repo'>, verifiedHead: string,
+  gh: GhRunner, ghOk: (args: string[]) => Promise<string>,
+): Promise<UpstreamFacts[]> {
+  const api = async (rel: string): Promise<Record<string, unknown>> => {
+    const r = await gh(['api', `repos/${opts.repo ?? '{owner}/{repo}'}/${rel}`]);
+    if (r.code !== 0) throw new GhError(`gh api ${rel.split('?')[0]} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 300)}`);
+    return JSON.parse(r.stdout) as Record<string, unknown>;
+  };
+  const treeOf = async (sha: string): Promise<string> => {
+    const t = ((await api(`commits/${sha}`)).commit as { tree?: { sha?: string } } | undefined)?.tree?.sha;
+    if (!t) throw new GhError(`gh api commits/${sha.slice(0, 12)}: no tree in the answer`);
+    return t;
+  };
+  /** `base` is an ancestor of (or equal to) `head`. */
+  const contains = async (head: string, base: string): Promise<boolean> => {
+    const st = (await api(`compare/${base}...${head}`)).status;
+    if (typeof st !== 'string') throw new GhError(`gh api compare ${base.slice(0, 12)}...${head.slice(0, 12)}: no status in the answer`);
+    return st === 'ahead' || st === 'identical';
+  };
+  type PrRow = { number: number; state: 'OPEN' | 'MERGED' | 'CLOSED'; baseRefName: string; headRefOid: string; mergeCommit?: { oid?: string } | null };
+  const out: UpstreamFacts[] = [];
+  for (const u of refs) {
+    const base: UpstreamFacts = { id: u.id, accepted: u.accepted, builtOn: u.builtOn, pr: null, sameTree: null, dependentOnBuiltOn: null, dependentOnMerge: null };
+    if (u.accepted) { out.push(base); continue; }
+    const fields = 'number,state,baseRefName,headRefOid,mergeCommit';
+    let row: PrRow | undefined;
+    if (u.branch) {
+      const rows = JSON.parse(await ghOk(['pr', 'list', '--head', u.branch, '--base', opts.into, '--state', 'all', '--json', fields, '--limit', '10'])) as PrRow[];
+      row = rows.find((r) => r.state === 'MERGED') ?? rows[0];
+    } else if (u.pr) {
+      row = JSON.parse(await ghOk(['pr', 'view', String(u.pr), '--json', fields])) as PrRow;
+    } else {
+      throw new GhError(`upstream ${u.id}: the state records neither a branch nor a PR, so its merge cannot be read`);
+    }
+    base.pr = row ? { state: row.state, baseRefName: row.baseRefName, headRefOid: row.headRefOid, mergeCommit: row.mergeCommit?.oid ?? null } : null;
+    if (base.pr && base.pr.state === 'MERGED' && base.pr.baseRefName === opts.into && u.builtOn) {
+      const mergedHead = base.pr.headRefOid;
+      if (!(mergedHead.startsWith(u.builtOn) || u.builtOn.startsWith(mergedHead))) base.sameTree = (await treeOf(u.builtOn)) === (await treeOf(mergedHead));
+      base.dependentOnBuiltOn = await contains(verifiedHead, u.builtOn);
+      base.dependentOnMerge = base.dependentOnBuiltOn || !base.pr.mergeCommit ? false : await contains(verifiedHead, base.pr.mergeCommit);
+    }
+    out.push(base);
+  }
+  return out;
 }
 
 export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
@@ -259,6 +350,21 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   }
 
   try {
+    // 1b. #506 — order + content: every upstream merged, and this head still sits on the upstream content it was built on and gated against.
+    // Before the PR is opened and before any wait: a refusal never depends on CI, and a dependent that would merge out of order opens nothing.
+    let refs: UpstreamRef[];
+    try {
+      refs = deps.upstreams ? deps.upstreams({ ticket: opts.ticket, run: opts.run }) : [];
+    } catch (e) {
+      const bad = e instanceof FanoutStateError;
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state to find ${opts.ticket}'s upstreams: ${bad ? e.message : (e as Error).message}` }, reviewGated);
+    }
+    if (refs.length > 0) {
+      const facts = await gatherUpstreamFacts(refs, opts, verifiedHead, gh, ghOk);
+      const u = decideUpstreams(facts, opts.into);
+      if (!u.ok) return done({ verdict: 'refused', reason: u.reason, detail: u.detail, head: verifiedHead }, reviewGated);
+      deps.log(`upstreams ok: ${refs.map((r) => r.id).join(', ')}`);
+    }
     // 2. Open or reuse the PR.
     const listed = JSON.parse(
       await ghOk(['pr', 'list', '--head', opts.branch, '--base', opts.into, '--state', 'all', '--json', 'number,url,state,headRefOid', '--limit', '10']),
@@ -333,10 +439,13 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
 /** `orchestra help fanout` text for the deliver half (appended to #469's FANOUT_USAGE in help.ts). */
 export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]
                                 [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
-                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]…
+                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>]
 
 deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge with
 \`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
+Order (#506): a ticket whose upstreams the fanout state names (--run, default your own run) merges ONLY after each upstream
+merged into <target> (upstream-not-merged), and only if its verified head still sits on the upstream content it was built on
+and gated against (state builtOn; a fix round or refusal on the upstream since = upstream-changed: re-gate). Nominating and gating early is allowed; merging out of order is not.
 Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
 merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
 the verdict file, a head that is not the verified head, a conflict, a --require-check

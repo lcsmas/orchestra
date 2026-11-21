@@ -19,8 +19,10 @@ export interface TicketState {
   /** Head sha the verdict / nomination speaks about. */
   head: string | null;
   verdict: Verdict;
-  /** Upstream ticket ids: this ticket cannot be NOMINATED before each is merged. */
+  /** Upstream ticket ids: this ticket cannot be MERGED before each is merged, and is NOMINATED/GATED early only on an upstream's verified candidate (#506). */
   dependsOn: string[];
+  /** #506 — upstream id → the upstream head this ticket was built on (rebased onto) and gated against. `deliver` re-proves it at merge time. */
+  builtOn: Record<string, string>;
   /** Ref of the frozen interface a dependent may START against (ledger section, sha…). */
   frozenInterface: string | null;
   /** Why a `merged` ticket counts as merged although git/gh do not show it on the target (e.g. its PR landed in a stacked base that was later squash-merged). Explicit, human-written. */
@@ -42,9 +44,9 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'mergedAccepted', 'status', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). */
-export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
+export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
 export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number]>>;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -103,6 +105,17 @@ function depsOf(v: unknown): string[] {
   if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !SAFE_TICKET.test(d))) throw new FanoutStateError('dependsOn must be an array of ticket ids');
   return [...new Set(v as string[])];
 }
+function builtOnOf(v: unknown): Record<string, string> {
+  if (v === undefined || v === null) return {};
+  if (!isObj(v)) throw new FanoutStateError('builtOn must be an object {<upstream ticket>: <head sha>}');
+  const out: Record<string, string> = {};
+  for (const [k, h] of Object.entries(v)) {
+    if (!SAFE_TICKET.test(k)) throw new FanoutStateError(`builtOn: unsafe ticket id ${JSON.stringify(k)}`);
+    if (typeof h !== 'string' || !HEX_SHA.test(h)) throw new FanoutStateError(`builtOn[${k}] must be a 7-40 lowercase hex sha`);
+    out[k] = h;
+  }
+  return out;
+}
 function enumOf<T extends string>(v: unknown, all: readonly T[], name: string): T {
   if (typeof v !== 'string' || !(all as readonly string[]).includes(v)) throw new FanoutStateError(`${name} must be one of ${all.join('|')} (got ${JSON.stringify(v)})`);
   return v as T;
@@ -128,6 +141,7 @@ export function parseState(raw: unknown): FanoutState {
       head: checked(strOrNull(t.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)'),
       verdict: enumOf(t.verdict ?? 'none', VERDICTS, 'verdict'),
       dependsOn: depsOf(t.dependsOn),
+      builtOn: builtOnOf(t.builtOn),
       frozenInterface: strOrNull(t.frozenInterface, 'frozenInterface'),
       mergedAccepted: strOrNull(t.mergedAccepted, 'mergedAccepted'),
       status: enumOf(t.status ?? 'todo', TICKET_STATUSES, 'status'),
@@ -159,6 +173,47 @@ function assertAcyclic(state: FanoutState): void {
   for (const id of Object.keys(state.tickets)) visit(id, []);
 }
 
+const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+
+/**
+ * #506 — may dependent `dep` be NOMINATED/GATED while its (unmerged) upstream `up` is open? Only on the upstream's verified candidate:
+ * the upstream is nominated|gated with a recorded head and no failing verdict, and `dep` recorded the head it was built on = that head.
+ * `upHead` overrides the state's head (reconcile passes the remote tip when it has one). null = admitted.
+ */
+export function upstreamBlocker(state: FanoutState, dep: TicketState, up: string, upHead?: string | null): { kind: 'ineligible' | 'changed'; why: string } | null {
+  const u = state.tickets[up];
+  if (!u) return { kind: 'ineligible', why: `${up} is unknown to the state` };
+  if (u.status !== 'nominated' && u.status !== 'gated') return { kind: 'ineligible', why: `${up} is ${u.status} (it needs a nominated|gated candidate)` };
+  if (u.verdict === 'fail' || u.verdict === 'changes-requested') return { kind: 'ineligible', why: `${up}'s verdict is ${u.verdict}` };
+  const head = upHead ?? u.head;
+  if (!head) return { kind: 'ineligible', why: `${up} has no recorded head` };
+  const built = dep.builtOn[up];
+  if (!built) return { kind: 'ineligible', why: `no builtOn for ${up} (record the head it was built on: --built-on ${up}=<sha>)` };
+  if (!sameSha(built, head)) return { kind: 'changed', why: `built on ${up}@${built.slice(0, 8)} but ${up} is now at ${head.slice(0, 8)}` };
+  return null;
+}
+
+/** #506 — what a ticket's upstreams mean for ITS gate and merge, from the state alone (`fanout gate --ticket` prints it; `resume` classifies the same facts).
+ *  order: none (no unmerged upstream) | wait-upstream (stacked on a verified candidate: gate now, merge after it) | re-gate (the upstream moved since: verdict void) | blocked (an upstream is not an admissible candidate). */
+export interface StackView {
+  order: 'none' | 'wait-upstream' | 're-gate' | 'blocked';
+  upstreams: Array<{ id: string; state: 'merged' | 'candidate' | 'changed' | 'ineligible'; builtOn: string | null; head: string | null; why?: string }>;
+}
+export function stackView(state: FanoutState, id: string): StackView | null {
+  const t = state.tickets[id];
+  if (!t) return null;
+  const upstreams: StackView['upstreams'] = t.dependsOn.map((u) => {
+    const ut = state.tickets[u];
+    const head = ut?.head ?? null;
+    const builtOn = t.builtOn[u] ?? null;
+    if (upstreamMerged(state, u)) return { id: u, state: 'merged' as const, builtOn, head };
+    const b = upstreamBlocker(state, t, u);
+    return b ? { id: u, state: b.kind, builtOn, head, why: b.why } : { id: u, state: 'candidate' as const, builtOn, head };
+  });
+  const order = upstreams.some((u) => u.state === 'ineligible') ? 'blocked' : upstreams.some((u) => u.state === 'changed') ? 're-gate' : upstreams.some((u) => u.state === 'candidate') ? 'wait-upstream' : 'none';
+  return { order, upstreams };
+}
+
 /** Does `id` count as merged for the purpose of a dependent's rules? An unknown upstream is NOT merged. */
 function upstreamMerged(state: FanoutState, id: string): boolean {
   return state.tickets[id]?.status === 'merged';
@@ -172,13 +227,15 @@ export function unmergedUpstreams(state: FanoutState, id: string): string[] {
  * Rules in code:
  *  - unknown patch key refused;
  *  - a dependent may START (`started`) against a frozen interface, but is REFUSED `started` with an unmerged upstream and no frozenInterface;
- *  - `nominated` / `gated` / `merged` are REFUSED while any upstream is not merged (nominate-before-upstream-merged).
+ *  - `merged` is REFUSED while any upstream is not merged;
+ *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
+ *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
 export function applyTicketPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string): FanoutState {
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], frozenInterface: null, mergedAccepted: null, status: 'todo', updatedAt: now,
+    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
@@ -186,10 +243,12 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ('head' in patch) next.head = checked(strOrNull(patch.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)');
   if ('verdict' in patch) next.verdict = enumOf(patch.verdict, VERDICTS, 'verdict');
   if ('dependsOn' in patch) next.dependsOn = depsOf(patch.dependsOn);
+  if ('builtOn' in patch) next.builtOn = builtOnOf(patch.builtOn);
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
   if ('mergedAccepted' in patch) next.mergedAccepted = strOrNull(patch.mergedAccepted, 'mergedAccepted');
   if ('status' in patch) next.status = enumOf(patch.status, TICKET_STATUSES, 'status');
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
+  for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
   if (next.dependsOn.includes(id)) throw new FanoutStateError(`ticket ${id} cannot depend on itself`);
   const out: FanoutState = { ...state, tickets: { ...state.tickets, [id]: next }, updatedAt: now };
   assertAcyclic(out);
@@ -198,8 +257,12 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
     if (next.status === 'started' && !next.frozenInterface) {
       throw new FanoutStateError(`${id} cannot start: upstream ${open.join(', ')} not merged and no frozen interface to build against (set --frozen-interface)`);
     }
-    if (next.status === 'nominated' || next.status === 'gated' || next.status === 'merged') {
-      throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged yet — a dependent may START against a frozen interface but is not NOMINATED before its upstream is merged`);
+    if (next.status === 'merged') {
+      throw new FanoutStateError(`${id} cannot be merged: upstream ${open.join(', ')} not merged yet — a dependent merges only after its upstream`);
+    }
+    if (next.status === 'nominated' || next.status === 'gated') {
+      const why = open.map((u) => upstreamBlocker(out, next, u)).filter((b) => b !== null).map((b) => b.why);
+      if (why.length > 0) throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged and not an admissible candidate — ${why.join('; ')}`);
     }
   }
   if ((next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass' || next.verdict === 'approve') && !next.head) {
@@ -297,6 +360,7 @@ export type DivergenceKind =
   | 'pr-merged-other-base'
   | 'merged-at-ungated-head'
   | 'nominated-before-upstream-merged'
+  | 'upstream-changed'
   | 'reality-unreadable';
 
 export interface Divergence { ticket: string; kind: DivergenceKind; detail: string }
@@ -332,8 +396,6 @@ function ungatedMergeHead(t: TicketState, r: TicketReality | undefined, rm: bool
   const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
   return mergedHead && !sameSha(mergedHead, t.head) ? mergedHead : null;
 }
-
-const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
   const divergences: Divergence[] = [];
@@ -390,7 +452,20 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     }
     if ((t.status === 'nominated' || t.status === 'gated' || t.status === 'merged')) {
       const open = t.dependsOn.filter((d) => !effMerged(d));
-      if (open.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `${t.status} while upstream ${open.join(', ')} is not merged` });
+      if (t.status === 'merged' && open.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `merged while upstream ${open.join(', ')} is not merged` });
+      if (t.status !== 'merged') {
+        // #506: an open upstream is fine only on its verified candidate; the head read is the remote tip when there is one.
+        const bl = open.map((u) => ({ u, b: upstreamBlocker(state, t, u, reality[u]?.error ? null : reality[u]?.branchHead) })).filter((x) => x.b !== null);
+        const bad = bl.filter((x) => x.b!.kind === 'ineligible');
+        const moved = bl.filter((x) => x.b!.kind === 'changed');
+        if (bad.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `${t.status} while upstream ${bad.map((x) => x.u).join(', ')} is not merged and not an admissible candidate: ${bad.map((x) => x.b!.why).join('; ')}` });
+        if (moved.length) {
+          add({ ticket: id, kind: 'upstream-changed', detail: `${moved.map((x) => x.b!.why).join('; ')} — verdict ${t.verdict} is void: rebase onto the new head, \`state set ${id} --built-on …\`, re-gate` });
+          if (t.verdict !== 'none' || t.status === 'gated') {
+            writeBack.push({ ticket: id, seen: t.updatedAt, patch: { verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'upstream moved: verdict reset' });
+          }
+        }
+      }
     }
   }
 
@@ -408,7 +483,8 @@ function planTicket(id: string, t: TicketState, own: Divergence[], open: string[
   if (has('merged-at-ungated-head')) return { class: 'diverged', next: { action: 'investigate', detail: 'merged at a head the verdict did not cover: re-gate the merged tree on the target before releasing dependents' } };
   if (has('reality-merged-state-not')) return { class: 'diverged', next: { action: 'record-merged', detail: 'reality shows it merged: write it back (resume does), then release its dependents' } };
   if (has('state-merged-reality-not')) return { class: 'diverged', next: { action: 'investigate', detail: 'state claims merged, git/gh do not: dependents are NOT released; re-merge it or fix the state by hand' } };
-  if (has('nominated-before-upstream-merged')) return { class: 'diverged', next: { action: 'investigate', detail: `upstream ${open.join(', ')} is not merged: do not gate or merge this one` } };
+  if (has('upstream-changed')) return { class: 'diverged', next: { action: 're-gate', detail: 'the upstream moved after this one was built and gated on it: its verdict is void — rebase onto the new upstream head, record --built-on, gate again (deliver would refuse upstream-changed)' } };
+  if (has('nominated-before-upstream-merged')) return { class: 'diverged', next: { action: 'investigate', detail: `upstream ${open.join(', ')} is not merged and not an admissible candidate: do not gate or merge this one` } };
   if (has('pr-merged-other-base')) return { class: 'diverged', next: { action: 'investigate', detail: 'its PR merged into another branch, not the target: dependents stay blocked until it reaches the target' } };
   if (has('branch-gone')) return { class: 'diverged', next: { action: 'recreate-branch', detail: `branch ${t.branch} is gone from the remote: restore it from the worktree or restart the ticket` } };
   if (has('pr-closed-unmerged')) return { class: 'diverged', next: { action: 'investigate', detail: `PR #${t.pr} was closed unmerged: reopen or re-nominate` } };
@@ -420,13 +496,14 @@ function planTicket(id: string, t: TicketState, own: Divergence[], open: string[
     case 'dropped': return { class: 'dropped', next: { action: 'none', detail: 'dropped' } };
     case 'todo':
       if (open.length === 0) return { class: 'startable', next: { action: 'start', detail: t.dependsOn.length ? 'every upstream is merged' : 'no upstream' } };
-      if (t.frozenInterface) return { class: 'startable', next: { action: 'start-against-frozen-interface', detail: `build against ${t.frozenInterface}; do NOT nominate before ${open.join(', ')} is merged` } };
+      if (t.frozenInterface) return { class: 'startable', next: { action: 'start-against-frozen-interface', detail: `build against ${t.frozenInterface}; nominate only once ${open.join(', ')} has a verified candidate (nominated|gated) and you rebased onto its head` } };
       return { class: 'waiting', next: { action: 'wait-upstream', detail: `waiting for ${open.join(', ')} (no frozen interface to start against)` } };
     case 'started':
-      return { class: 'in-progress', next: { action: 'continue', detail: open.length ? `finish and self-gate; nomination is refused until ${open.join(', ')} is merged` : 'finish, self-gate, nominate' } };
+      return { class: 'in-progress', next: { action: 'continue', detail: open.length ? `finish and self-gate; nomination needs ${open.join(', ')} merged or nominated|gated (rebase onto its head, --built-on)` : 'finish, self-gate, nominate' } };
     case 'nominated':
-      return { class: 'awaiting-gate', next: { action: 'gate', detail: `gate head ${t.head?.slice(0, 8) ?? '(unrecorded)'} on the merge result` } };
+      return { class: 'awaiting-gate', next: { action: 'gate', detail: `gate head ${t.head?.slice(0, 8) ?? '(unrecorded)'} on the merge result${open.length ? ` (stacked on ${open.join(', ')}: merges only after it)` : ''}` } };
     case 'gated':
+      if ((t.verdict === 'pass' || t.verdict === 'approve') && open.length) return { class: 'awaiting-merge', next: { action: 'wait-upstream', detail: `verdict ${t.verdict} on ${t.head?.slice(0, 8) ?? '(unrecorded head)'}: deliver only after ${open.join(', ')} merged (deliver refuses an earlier merge, and a moved upstream voids the verdict)` } };
       if (t.verdict === 'pass' || t.verdict === 'approve') return { class: 'awaiting-merge', next: { action: 'merge', detail: `verdict ${t.verdict} on ${t.head?.slice(0, 8) ?? '(unrecorded head)'}: merge at that exact head` } };
       return { class: 'needs-fix', next: { action: 'fix-and-renominate', detail: `verdict ${t.verdict}: the implementer fixes, then re-nominates` } };
   }

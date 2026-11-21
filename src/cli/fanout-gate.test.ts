@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gatePr, parseGateArgs, runGate } from './fanout-gate.ts';
+import { gatePr, parseGateArgs, runGate, stackFromState } from './fanout-gate.ts';
+import { applyTicketPatch, newState, parseState, stackView, stateFile, writeStateAtomic } from '../shared/fanout-state.ts';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { GhResult } from './fanout-deliver.ts';
 
 const H = 'a'.repeat(40);
@@ -191,4 +195,50 @@ test('review A2 MINOR 4: a pinned name that never registers is NAMED in the deta
   assert.equal(r.result.ciGreenOnHead, false);
   assert.deepEqual(r.result.absentSuiteChecks, ['nope']);
   assert.match(r.result.detail!, /NOT on the head: nope[\s\S]*--require-check[\s\S]*verifier/);
+});
+
+// ── #506: `--ticket` reports the stack (order = what the dependent's verdict means) ─────────────────────────
+const T506 = '2026-11-21T10:00:00.000Z';
+function stackState(builtOn: string) {
+  let s = newState('r1', { now: T506 });
+  s = applyTicketPatch(s, 'UP', { branch: 'up', head: H, status: 'gated', verdict: 'pass' }, T506);
+  s = applyTicketPatch(s, 'DEP', { dependsOn: ['UP'], branch: 'feat', head: H2, builtOn: { UP: H }, status: 'gated', verdict: 'pass' }, T506);
+  // a stale builtOn cannot be written through `state set` (refused), only be what a moved upstream leaves behind: edit the document
+  return parseState({ ...s, tickets: { ...s.tickets, DEP: { ...s.tickets.DEP, builtOn: { UP: builtOn } } } });
+}
+const gateWith = async (state: ReturnType<typeof stackState> | null, ticket: string) => {
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
+  return gatePr({ ...opts, ticket, run: 'r1' }, { gh: x.gh, log: () => {}, sleep: async () => {}, stack: (o) => (state ? stackView(state, o.ticket) : null) });
+};
+
+test('#506 gate --ticket: a fresh stacked dependent reads wait-upstream (gate it now, merge after the upstream); a moved upstream reads re-gate, never ready', async () => {
+  const fresh = await gateWith(stackState(H), 'DEP');
+  assert.equal(fresh.exit, 0);
+  assert.equal(fresh.result.stack?.order, 'wait-upstream');
+  assert.deepEqual(fresh.result.stack?.upstreams.map((u) => [u.id, u.state]), [['UP', 'candidate']]);
+  assert.equal(fresh.result.fullSuite, 'ci', 'the CI answer is unchanged by the stack field');
+  const stale = await gateWith(stackState('c'.repeat(40)), 'DEP');
+  assert.equal(stale.result.stack?.order, 're-gate');
+  assert.equal(stale.result.stack?.upstreams[0].state, 'changed');
+  assert.equal((await gateWith(stackState(H), 'UP')).result.stack?.order, 'none');
+  assert.equal((await gateWith(stackState(H), 'ghost')).result.stack, null, 'unknown ticket ⇒ null, not an invented order');
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] })).result.stack, undefined, 'no --ticket ⇒ no stack field');
+});
+
+test('#506 gate --ticket: the production reader reads <ORCHESTRA_HOME>/fanout/<run>/state.json; no state ⇒ null; unreadable ⇒ throws (gate answers could-not-check)', (t) => {
+  const home = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'gate-506-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const env = { ORCHESTRA_HOME: home };
+  assert.equal(stackFromState({ ticket: 'DEP', run: 'r1' }, env), null);
+  writeStateAtomic(stateFile(home, 'r1'), stackState(H));
+  assert.equal(stackFromState({ ticket: 'DEP', run: 'r1' }, env)?.order, 'wait-upstream');
+  fs.writeFileSync(stateFile(home, 'r1'), '{nope');
+  assert.throws(() => stackFromState({ ticket: 'DEP', run: 'r1' }, env));
+});
+
+test('#506 gate argv: --ticket/--run parse; --run alone is a usage error', () => {
+  const base = ['--branch', 'b', '--into', 'main', '--head', H];
+  const p = parseGateArgs([...base, '--ticket', 'DEP', '--run', 'r1']);
+  assert.ok(p.ok && p.opts.ticket === 'DEP' && p.opts.run === 'r1');
+  assert.ok(!parseGateArgs([...base, '--run', 'r1']).ok);
 });

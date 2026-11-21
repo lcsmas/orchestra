@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  FanoutStateError, applyTicketPatch, applyWriteBack, newState, parseState, readState, reconcile, stateFile, updateState, writeStateAtomic,
+  FanoutStateError, applyTicketPatch, applyWriteBack, newState, parseState, readState, reconcile, stackView, stateFile, updateState, writeStateAtomic,
   type FanoutState, type Reality,
 } from './fanout-state.ts';
 
@@ -30,11 +30,12 @@ test('MUST-FAIL: a dependent cannot START with an unmerged upstream and no froze
   assert.throws(() => applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'started' }, T), /no frozen interface/);
 });
 
-test('MUST-FAIL: nominate / gate / merge is REFUSED before the upstream is merged', () => {
+test('MUST-FAIL: nominate / gate on an upstream with NO candidate (merely started) and merge before the upstream merged are REFUSED', () => {
   const s = base();
-  for (const status of ['nominated', 'gated', 'merged']) {
-    assert.throws(() => applyTicketPatch(s, 'B', { status }, T), /not merged yet/, status);
+  for (const status of ['nominated', 'gated']) {
+    assert.throws(() => applyTicketPatch(s, 'B', { status }, T), /not an admissible candidate — A is started/, status);
   }
+  assert.throws(() => applyTicketPatch(s, 'B', { status: 'merged' }, T), /cannot be merged: upstream A not merged yet/);
   assert.throws(() => applyTicketPatch(s, 'B', { status: 'nominated' }, T), FanoutStateError);
 });
 
@@ -303,4 +304,105 @@ test('mergedAccepted guard sees the NEW status: un-merging with the override sti
   assert.deepEqual([un.tickets.A.status, un.tickets.A.mergedAccepted], ['started', null]);
   const both = applyTicketPatch(withA('nominated'), 'A', { status: 'merged', mergedAccepted: 'why' }, T);
   assert.equal(both.tickets.A.mergedAccepted, 'why');
+});
+
+
+// ── #506: a dependent is nominated + gated on its upstream's verified candidate ──────────────────────────────
+
+const SHA_C = 'c'.repeat(40);
+/** A nominated (or gated) with head SHA_A; B depends on A, started. */
+function stacked(aStatus: 'nominated' | 'gated' = 'nominated', aExtra: Record<string, unknown> = {}): FanoutState {
+  let s = newState('r', { now: T });
+  s = applyTicketPatch(s, 'A', { branch: 'a', head: SHA_A, pr: 7, status: aStatus, ...aExtra }, T);
+  return applyTicketPatch(s, 'B', { dependsOn: ['A'], frozenInterface: 'fi', branch: 'b', head: SHA_B, pr: 8, status: 'started' }, T);
+}
+const openPr = (head: string) => ({ branchHead: head, mergedIntoTarget: false, pr: { state: 'OPEN' as const, headRefOid: head, baseRefName: 'master' } });
+
+test('#506 must-PASS: B is nominated, gated (pass) EARLY on A\'s candidate with builtOn = A\'s head; merged stays refused', () => {
+  for (const aStatus of ['nominated', 'gated'] as const) {
+    let s = stacked(aStatus, aStatus === 'gated' ? { verdict: 'pass' } : {});
+    s = applyTicketPatch(s, 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T);
+    s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass' }, T);
+    assert.deepEqual([s.tickets.B.status, s.tickets.B.verdict, s.tickets.B.builtOn], ['gated', 'pass', { A: SHA_A }]);
+    assert.throws(() => applyTicketPatch(s, 'B', { status: 'merged' }, T), /cannot be merged: upstream A not merged yet/, 'order: merged is still refused');
+    s = applyTicketPatch(s, 'A', { status: 'merged' }, T);
+    assert.equal(applyTicketPatch(s, 'B', { status: 'merged' }, T).tickets.B.status, 'merged');
+  }
+});
+
+test('#506 must-FAIL: early nominate/gate is refused without builtOn, with a stale builtOn, on a failing / todo / started / unknown upstream, and on a foreign builtOn key', () => {
+  const s = stacked();
+  assert.throws(() => applyTicketPatch(s, 'B', { status: 'nominated' }, T), /no builtOn for A/);
+  assert.throws(() => applyTicketPatch(s, 'B', { status: 'nominated', builtOn: { A: SHA_C } }, T), /built on A@cccccccc but A is now at aaaaaaaa/);
+  const moved = applyTicketPatch(applyTicketPatch(s, 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T), 'A', { head: SHA_C, verdict: 'none' }, T);
+  assert.throws(() => applyTicketPatch(moved, 'B', { status: 'gated', verdict: 'pass' }, T), /built on A@aaaaaaaa but A is now at cccccccc/, 'a fix round on A makes B\'s gate refused until B re-records');
+  assert.equal(applyTicketPatch(moved, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_C } }, T).tickets.B.status, 'gated', 'positive control: re-recorded');
+  for (const v of ['fail', 'changes-requested'] as const) {
+    const bad = stacked('gated', { verdict: v });
+    assert.throws(() => applyTicketPatch(bad, 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T), new RegExp(`A's verdict is ${v}`));
+  }
+  const started = applyTicketPatch(newState('r', { now: T }), 'A', { status: 'started', branch: 'a' }, T);
+  const sb = applyTicketPatch(started, 'B', { dependsOn: ['A'], head: SHA_B, frozenInterface: 'x' }, T);
+  assert.throws(() => applyTicketPatch(sb, 'B', { status: 'nominated', builtOn: {} }, T), /A is started/);
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: { Z: SHA_A } }, T), /builtOn names Z, which is not in dependsOn/);
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: { A: 'nothex' } }, T), /7-40 lowercase hex/);
+});
+
+test('#506 state document: builtOn round-trips; an older file without it parses as {}', () => {
+  const s = applyTicketPatch(stacked(), 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T);
+  assert.deepEqual(parseState(JSON.parse(JSON.stringify(s))).tickets.B.builtOn, { A: SHA_A });
+  const raw = JSON.parse(JSON.stringify(s));
+  delete raw.tickets.A.builtOn;
+  assert.deepEqual(parseState(raw).tickets.A.builtOn, {});
+});
+
+test('#506 resume: a fresh stacked B reads awaiting-merge/wait-upstream (no divergence); once A merged it reads merge', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
+  const plan = reconcile(s, { A: openPr(SHA_A), B: openPr(SHA_B) });
+  assert.deepEqual(plan.divergences, []);
+  assert.deepEqual([plan.tickets.B.class, plan.tickets.B.next.action], ['awaiting-merge', 'wait-upstream']);
+  const after = reconcile(applyTicketPatch(s, 'A', { status: 'merged' }, T), { A: mergedReality, B: openPr(SHA_B) });
+  assert.deepEqual([after.tickets.B.class, after.tickets.B.next.action], ['awaiting-merge', 'merge']);
+});
+
+test('#506 resume MUST-FAIL: upstream moved after B\'s PASS ⇒ B reads re-gate (never awaiting-merge), verdict void on write-back; re-recording clears it', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
+  // fix round on A, recorded by the coordinator: new head, verdict reset
+  const fixed = applyTicketPatch(s, 'A', { head: SHA_C, verdict: 'none', status: 'nominated' }, T);
+  const plan = reconcile(fixed, { A: openPr(SHA_C), B: openPr(SHA_B) });
+  assert.ok(plan.divergences.some((d) => d.ticket === 'B' && d.kind === 'upstream-changed'));
+  assert.deepEqual([plan.tickets.B.class, plan.tickets.B.next.action], ['diverged', 're-gate']);
+  const next = applyWriteBack(fixed, plan.writeBack, T);
+  assert.deepEqual([next.tickets.B.status, next.tickets.B.verdict], ['nominated', 'none']);
+  // the remote tip of A moved before the coordinator recorded it: still re-gate (reality's tip wins)
+  const onlyRemote = reconcile(s, { A: openPr(SHA_C), B: openPr(SHA_B) });
+  assert.equal(onlyRemote.tickets.B.next.action, 're-gate');
+  // positive control: B re-records the new upstream head ⇒ no upstream-changed
+  const healed = applyTicketPatch(next, 'B', { status: 'nominated', builtOn: { A: SHA_C } }, T);
+  assert.ok(!reconcile(healed, { A: openPr(SHA_C), B: openPr(SHA_B) }).divergences.some((d) => d.kind === 'upstream-changed'));
+});
+
+test('#506 resume: an upstream that is no candidate (dropped / failed after B was recorded) flags B; a MERGED B with an open upstream is still flagged', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T);
+  const failed = applyTicketPatch(s, 'A', { verdict: 'fail' }, T);
+  const p1 = reconcile(failed, { A: openPr(SHA_A), B: openPr(SHA_B) });
+  assert.ok(p1.divergences.some((d) => d.ticket === 'B' && d.kind === 'nominated-before-upstream-merged'));
+  assert.equal(p1.tickets.B.next.action, 'investigate');
+  const mergedB = parseState({ ...JSON.parse(JSON.stringify(s)), tickets: { ...JSON.parse(JSON.stringify(s)).tickets, B: { ...JSON.parse(JSON.stringify(s)).tickets.B, status: 'merged' } } });
+  assert.ok(reconcile(mergedB, { A: openPr(SHA_A), B: { branchHead: null, mergedIntoTarget: true } }).divergences.some((d) => d.ticket === 'B' && d.kind === 'nominated-before-upstream-merged'));
+});
+
+test('#506 stackView (what `fanout gate --ticket` prints): none | wait-upstream | re-gate | blocked', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  assert.equal(stackView(s, 'B')!.order, 'blocked', 'B has no builtOn yet');
+  s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
+  assert.deepEqual(stackView(s, 'B')!.upstreams.map((u) => [u.id, u.state]), [['A', 'candidate']]);
+  assert.equal(stackView(s, 'B')!.order, 'wait-upstream');
+  assert.equal(stackView(applyTicketPatch(s, 'A', { head: SHA_C }, T), 'B')!.order, 're-gate');
+  assert.equal(stackView(applyTicketPatch(s, 'A', { status: 'merged' }, T), 'B')!.order, 'none');
+  assert.equal(stackView(s, 'A')!.order, 'none');
+  assert.equal(stackView(s, 'ghost'), null);
 });

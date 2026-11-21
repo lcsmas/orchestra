@@ -39,13 +39,15 @@ export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string): {
 
 export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>]
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
-                                  [--depends-on a,b] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
+                                  [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
        orchestra fanout state show [--run <id>] [--json]
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
 
 The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one writer, atomic rewrite, unknown field refused).
   status   todo|started|nominated|gated|merged|dropped        verdict  none|pass|fail|approve|changes-requested
-  A dependent may START against a frozen interface; 'nominated'/'gated'/'merged' is REFUSED while an upstream is not merged.
+  A dependent may START against a frozen interface. While an upstream is not merged it may be 'nominated'/'gated' only on that upstream's
+  verified candidate (nominated|gated, head recorded, no failing verdict) with --built-on <upstream>=<head it was built on> = that head;
+  'merged' is REFUSED until every upstream is merged (fanout deliver re-proves order and content at merge time).
   resume   load → reconcile against git + gh → classify → next action per ticket → write back reality-ahead facts.
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
@@ -67,6 +69,17 @@ function parseArgs(args: string[], valueFlags: string[], boolFlags: string[]): P
       out.vals[a] = v;
       i++;
     } else out.pos.push(a);
+  }
+  return out;
+}
+
+/** `--built-on UP=<sha>[,UP2=<sha>]` → {UP: sha}. `-` (or empty) clears it. */
+function builtOnArg(v: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of v.split(',').map((x) => x.trim()).filter((x) => x && x !== '-')) {
+    const i = part.indexOf('=');
+    if (i < 1) throw new FanoutStateError(`--built-on expects <upstream>=<sha>[,…] (got ${JSON.stringify(part)})`);
+    out[part.slice(0, i)] = part.slice(i + 1);
   }
   return out;
 }
@@ -122,7 +135,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--frozen-interface', '--accept-merged', '--json'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--json'], []);
     const [ticket, ...extra] = p.pos;
     if (!ticket || extra.length) throw new FanoutStateError('usage: orchestra fanout state set <ticket> [--status s] [--branch b] …');
     const patch: Record<string, unknown> = {};
@@ -133,11 +146,11 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--json must be an object');
       Object.assign(patch, obj);
     }
-    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted' };
+    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--built-on': 'builtOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted' };
     for (const [flag, key] of Object.entries(flagToKey)) {
       const v = p.vals[flag];
       if (v === undefined) continue;
-      patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : v;
+      patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : key === 'builtOn' ? builtOnArg(v) : v;
     }
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
     const r = runOf(p, deps, 'write');
@@ -156,7 +169,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const file = stateFile(homeOf(deps.env), r.run);
     const s = loadOrFail(file);
     if (p.bools.has('--json')) return { code: 0, stdout: `${JSON.stringify(s, null, 2)}\n`, stderr: r.note };
-    const rows = Object.entries(s.tickets).map(([id, t]) => [id, t.status, t.verdict, t.branch ?? '-', t.pr ? `#${t.pr}` : '-', t.head?.slice(0, 8) ?? '-', t.dependsOn.join(',') || '-', t.frozenInterface ?? '-']);
+    const rows = Object.entries(s.tickets).map(([id, t]) => [id, t.status, t.verdict, t.branch ?? '-', t.pr ? `#${t.pr}` : '-', t.head?.slice(0, 8) ?? '-', t.dependsOn.map((d) => (t.builtOn[d] ? `${d}@${t.builtOn[d].slice(0, 8)}` : d)).join(',') || '-', t.frozenInterface ?? '-']);
     const head = ['ticket', 'status', 'verdict', 'branch', 'pr', 'head', 'dependsOn', 'frozen'];
     const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();

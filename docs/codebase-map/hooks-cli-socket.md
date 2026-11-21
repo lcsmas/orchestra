@@ -360,15 +360,21 @@ forwards it — #467's `deliver` is intercepted in that case and goes to `runDel
 - **Schema**: `FanoutState` (run, target, repo, tickets, updatedAt, reconciledAt) with per-ticket branch / pr /
   head / verdict / dependsOn / frozenInterface / status (`todo|started|nominated|gated|merged|dropped`).
   `parseState` REFUSES an unknown field (top level or ticket), a cycle, a bad enum. `applyTicketPatch` is the ONE
-  transition: a dependent may `started` only with a `frozenInterface`, and `nominated|gated|merged` is REFUSED while
-  any upstream is not merged (an unknown upstream counts as not merged).
+  transition: a dependent may `started` only with a `frozenInterface`; `merged` is REFUSED while any upstream is not
+  merged (an unknown upstream counts as not merged). **#506 — early gating**: `nominated|gated` with an open upstream is admitted only on
+  its verified candidate (`upstreamBlocker`: upstream `nominated|gated`, head recorded, verdict not fail/changes-requested) and when the
+  dependent recorded `builtOn[upstream]` (`state set <t> --built-on UP=<sha>[,…]`, `-` clears; keys ⊆ dependsOn) = that head — a
+  moved upstream refuses the dependent's next gate until it re-records. `fanout deliver` re-proves order + content at merge (git.md §deliver).
 - **One writer**: `updateState` = O_EXCL lock (stale after 15 s) + `writeStateAtomic` (validate, tmp + rename in the
   same dir: a reader sees the old or the new file, never a torn one).
 - **`resume` = 5 steps** (printed `1/5 … 5/5`): load → reconcile (`gatherReality`: `git fetch`, `git ls-remote`,
   `git merge-base --is-ancestor` vs `origin/<target>`, `gh pr view`) → classify → next action per ticket → write back.
   `reconcile` (pure) returns divergences (`state-merged-reality-not`, `reality-merged-state-not`, `head-moved`,
   `pr-head-moved`, `branch-gone`, `pr-closed-unmerged`, `pr-merged-other-base`, `merged-at-ungated-head`,
-  `nominated-before-upstream-merged`, `reality-unreadable`).
+  `nominated-before-upstream-merged` (a MERGED dependent with an open upstream, or a nominated|gated one whose upstream is no admissible candidate),
+  `upstream-changed` (#506: the upstream — remote tip first, else state head — moved since `builtOn`; class `diverged`, action `re-gate`, write-back
+  resets the dependent's verdict (gated → nominated); a fresh stacked PASS reads `awaiting-merge` / `wait-upstream`, never `merge` before the upstream merged),
+  `reality-unreadable`).
   Merged = a PR MERGED **into the target** (`gh pr view --json state,headRefOid,baseRefName`; a stacked PR merged into its
   upstream branch is not) OR a nominated tip contained in the target (squash-safe). `nominated|gated|pass` need a recorded head.
   `merged-at-ungated-head` (a gated/merged ticket whose pass/approve verdict covered another head than the merge) is NOT
