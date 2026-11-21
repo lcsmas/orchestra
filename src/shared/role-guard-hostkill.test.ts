@@ -49,7 +49,15 @@ const DENY = [
   "ps aux | grep jest | grep -v grep | awk '{print $2}' | while read pid; do kill -9 $pid; done",
   "for p in $(ps aux | grep jest | awk '{print $2}'); do kill -9 $p; done", "pids=$(ps aux | grep jest | awk '{print $2}'); kill -9 $pids",
   'pids=$(lsof -ti:3000); kill $pids', 'for p in $(lsof -ti:3000); do kill $p; done', 'kill -- -1', 'kill -9 -- -1', 'kill -s KILL -1', 'killall5 -9',
-  'echo hi\npkill -f jest', 'bash -c "\npkill -f jest\n"', 'sudo env X=1 pkill x', "ps aux | grep jest | awk '{print $2}' | xargs kill -9",
+  'echo hi\npkill -f jest', 'bash -c "\npkill -f jest\n"', 'sudo env X=1 pkill x',
+  // review round 2: a kill the quoted-body filter used to hide (closing line tail, odd quotes, other code carriers, $( ) bodies)
+  'echo "a\nb"; pkill -f jest', 'x="a\nb"; kill $(pgrep -f jest)', 'echo "a\nb" && echo "c" && pkill -f jest',
+  "echo '\"'\npkill -f jest", "grep -c '\"' f\npkill -f jest", "sed 's/\"//' f\npkill -f jest", '# a " comment\npkill -f jest', 'echo \\"\npkill -f jest',
+  'bash -lc "\npkill -f jest\n"', 'bash -ec "\npkill -f jest\n"', 'sh -xc "\npkill -f jest\n"', 'node -e "\nrequire(\'child_process\').execSync(\'pkill -f jest\')\n"',
+  'echo "$(\npkill -f jest\n)"', 'echo "x\n$(pkill -f jest)\ny"', 'echo "x $(\nkill $(pgrep -f jest)\n)"',
+  "gh issue comment 1 --body \"x $(\npkill -f jest\n)\"",
+  // a literal \n (turned into `;` by the hook) inside the pipeline
+  "pgrep -f jest | tr '\\n' ' ' | xargs kill", "pgrep -f jest | xargs -d '\\n' kill", "pgrep -f jest | sed 's/\\n/ /' | xargs kill", 'echo x | xargs -n 1 pkill', "ps aux | grep jest | awk '{print $2}' | xargs kill -9",
 ];
 const ALLOW = [
   'kill 1234', 'kill -9 1234', 'kill -- -1234', 'kill -TERM -- -$pgid', 'kill $!', 'kill $(cat "$TMPDIR/x.pid")', 'kill $JEST_PID',
@@ -60,6 +68,8 @@ const ALLOW = [
   'env CI=1 pnpm test skill', 'nice rg pkill src', 'sudo grep pkill /var/log/syslog', 'time grep -c killall f',
   'kill -1 1234', 'kill -1 $!', "kill -- -$(ps -o pgid= -p 1234 | tr -d ' ')", 'kill $(ps -o pid= -p 1234)', 'kill $(grep -h steps f)',
   'echo "$(pgrep -c jest) running"; kill 1234',
+  'git diff --name-only | xargs grep -n skill', 'xargs grep -l skill < files', 'echo x | xargs echo killall',
+  'grep -E "pkill|killall" src', 'rg -n "killall|pkill" docs', "grep -rn 'pkill\\|killall' src", 'time -p grep skill f',
   'gh issue comment 498 --body "see:\npkill -f jest\nkillall node is refused"', 'gh pr create --body "Summary\nskill now says X"', 'echo hi | xargs echo', 'pkillx', 'ls killall-notes',
   'gh issue comment 498 --body "never pkill -f or killall node host-wide"', 'git log --grep "refuse pkill -f"',
   'grep -rn pkill src', 'cat <<EOF\npkill -f jest\nEOF',
@@ -133,7 +143,7 @@ test('#498 every clause is load-bearing (mutate one alternative → its own case
 
 test('#498 wrapper table and option clauses are load-bearing', () => {
   for (const [from, to, cases] of [
-    ['-[ugp][[:space:]]+[^[:space:]]+[[:space:]]+|', '', ['sudo -u root pkill x']],
+    ['-[ug][[:space:]]+[^[:space:]]+[[:space:]]+|', '', ['sudo -u root pkill x']],
     ['(sudo|timeout|nice|setsid|ionice|stdbuf|nohup|env|exec|time|busybox)', '(NOPE)', ['nice pkill x', 'timeout -k 5 10 pkill x', 'setsid pkill x']],
   ] as const) {
     assert.ok(ROLE_GUARD_SCRIPT.includes(from), `anchor missing: ${from}`);
@@ -142,14 +152,35 @@ test('#498 wrapper table and option clauses are load-bearing', () => {
   }
 });
 
-test('#498 the quoted-body filter is load-bearing in BOTH directions (prose passes, `bash -c` bodies stay judged)', () => {
+test('#498 round-2 clauses are load-bearing: `\n` gap, xargs options, pipe-needs-space boundary', () => {
+  for (const [from, to, cases] of [
+    ['([^;&]|' + '\\'.repeat(2) + ';)*', '([^;&])*', ["pgrep -f jest | tr '\\n' ' ' | xargs kill", "pgrep -f jest | sed 's/\\n/ /' | xargs kill"]],
+    ['-[nPIdLsEa][[:space:]]+[^[:space:]]+[[:space:]]+|', '', ['echo x | xargs -n 1 pkill']],
+  ] as const) {
+    assert.ok(ROLE_GUARD_SCRIPT.includes(from), `anchor missing: ${from}`);
+    const w = install(ROLE_GUARD_SCRIPT.split(from).join(to), 'verifier', `mut-r2${from.length}`);
+    for (const c of cases) assert.equal(run(w, c).code, 0, `mutant survived on: ${c}`);
+  }
+  // inverse: with a bare `|` as a boundary a regex alternation inside quotes is a false positive
+  const bare = '[;&({]|\\|[[:space:]]';
+  assert.ok(ROLE_GUARD_SCRIPT.includes(bare));
+  const w = install(ROLE_GUARD_SCRIPT.split(bare).join('[;&|({]'), 'verifier', 'mut-pipe');
+  assert.equal(run(w, 'grep -E "pkill|killall" src').code, 2, 'the mutant must reproduce the false positive');
+  assert.equal(run(install(ROLE_GUARD_SCRIPT, 'verifier', 'pipe-ok'), 'grep -E "pkill|killall" src').code, 0);
+});
+
+test('#498 the quoted-body filter drops ONLY prose-carrier interiors, and is load-bearing in both directions', () => {
   const prose = 'gh issue comment 498 --body "see:\npkill -f jest\nx"';
-  const code = 'bash -c "\npkill -f jest\n"';
+  const hidden = ['echo "a\nb"; pkill -f jest', 'bash -lc "\npkill -f jest\n"', 'echo "x\n$(pkill -f jest)\ny"', "gh issue comment 1 --body \"x $(\npkill -f jest\n)\""];
   const noFilter = ROLE_GUARD_SCRIPT.replace('| awk "$awk_qbody" |', '| cat |');
   assert.notEqual(noFilter, ROLE_GUARD_SCRIPT);
-  const w = install(noFilter, 'verifier', 'noq');
-  assert.equal(run(w, prose).code, 2, 'without the filter the prose is a false positive (the instrument can fail)');
+  assert.equal(run(install(noFilter, 'verifier', 'noq'), prose).code, 2, 'without the filter the prose is a false positive (the instrument can fail)');
+  // mutant: ANY interior line is dropped (the round-1 behaviour) → real kills hide
+  const dropAll = ROLE_GUARD_SCRIPT.replace('else if (pr && !c) { }', 'else if (1) { }');
+  assert.notEqual(dropAll, ROLE_GUARD_SCRIPT);
+  const w = install(dropAll, 'verifier', 'dropall');
+  assert.ok(hidden.some((c) => run(w, c).code === 0), 'the drop-everything mutant must hide a kill');
   const ok = install(ROLE_GUARD_SCRIPT, 'verifier', 'q');
   assert.equal(run(ok, prose).code, 0);
-  assert.equal(run(ok, code).code, 2);
+  for (const c of hidden) assert.equal(run(ok, c).code, 2, c);
 });

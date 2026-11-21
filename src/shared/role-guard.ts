@@ -41,30 +41,33 @@ const FANOUT_ACCEPT_MERGED = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[
 // Denied: pkill/killall/skill/`fuser -k` behind a LISTED wrapper + its options (the verb is the first non-option word: `timeout 9 pnpm test skill` passes),
 // `kill -1` (broadcast), and `kill` fed by a pgrep/pidof/ps-pattern/lsof-port selection (`$(…)`, backticks, `| xargs kill`, a loop or variable hop).
 // Heuristic (not a sandbox): unlisted wrappers (doas, flock, ssh…), `./pkill`, `eval` are not seen. Judged on `cmdk` (quoted multi-line bodies dropped, AWK_QBODY).
-const BSTART = B.slice(0, B.indexOf(')[[:space:]]*([A-Za-z_]') + ')[[:space:]]*'.length);
+// A `|` is a boundary only when a space follows (a regex alternation `grep -E "a|pkill"` is a mention, `x | pkill` is a call).
+const BSTART = B.slice(0, B.indexOf(')[[:space:]]*([A-Za-z_]') + ')[[:space:]]*'.length).replace('[;&|({]', '[;&({]|\\|[[:space:]]');
 const KB = `${BSTART}([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*`;
 const KILL_END = `([[:space:];&|)"'\\\\]|$)`;
-const KILL_OPT = `(-[ugp][[:space:]]+[^[:space:]]+[[:space:]]+|-s[[:space:]]+[A-Za-z0-9]+[[:space:]]+|-[a-zA-Z]+[[:space:]]+[0-9.]+[smhd]?[[:space:]]+|-[^[:space:]]+[[:space:]]+)`;
+const KILL_OPT = `(-[ug][[:space:]]+[^[:space:]]+[[:space:]]+|-s[[:space:]]+[A-Za-z0-9]+[[:space:]]+|-[a-zA-Z]+[[:space:]]+[0-9.]+[smhd]?[[:space:]]+|-[^[:space:]]+[[:space:]]+)`;
 const KILL_WRAP = `((/[^[:space:]]*/)?(sudo|timeout|nice|setsid|ionice|stdbuf|nohup|env|exec|time|busybox)[[:space:]]+${KILL_OPT}*([0-9.]+[smhd]?[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*|command[[:space:]]+)*`;
 const KILL_BIN = `\\\\*["']?(/[^[:space:]]*/)?(pkill|killall5?|skill)`; // `\pkill`, `"pkill"` (the payload carries quotes/backslashes escaped)
+const XOPT = `(-[nPIdLsEa][[:space:]]+[^[:space:]]+[[:space:]]+|-[^[:space:]]+[[:space:]]+)`; // xargs options (with a value / bare)
+const GAP = `([^;&]|\\\\;)*`; // a literal `\n` in the command is turned into `;` by the hook: `tr '\n' ' ' | xargs kill`
 const KILL = `(/[^[:space:]]*/)?kill[[:space:]]+`;
 // a selection BY NAME / PATTERN / PORT; `ps -p N` (one pid) is not
 const KILL_SEL = `((pgrep|pidof)[[:space:]]|ps[[:space:]]+([^)\`;&]*[[:space:]])?(aux|ax|auxww|-e|-ef|-A|-C)([[:space:]]|$)|ps[[:space:]][^)\`;&]*\\|[[:space:]]*(grep|egrep|awk|rg)|lsof[[:space:]]+([^)\`;&|]*[[:space:]])?(-[a-zA-Z]*i|:[0-9]))`;
 /** The host-kill alternatives, exported so the probe can mutate each one. */
 export const HOST_KILL_CLAUSES = [
   `${KB}${KILL_WRAP}${KILL_BIN}${KILL_END}`,
-  `${B}xargs[[:space:]]+([^;&|]*[[:space:]])?(pkill|killall5?|skill)${KILL_END}`,
+  `${BSTART}xargs[[:space:]]+${XOPT}*(pkill|killall5?|skill)${KILL_END}`,
   `${KB}${KILL_WRAP}fuser[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*k`,
   `${KB}${KILL_WRAP}${KILL}(-[^[:space:]]+[[:space:]]+([A-Z0-9]+[[:space:]]+)?)*-1[[:space:]]*([;&|)"'\\\\]|$)`,
   `${KB}${KILL_WRAP}${KILL}[^;&|]*(\\$\\(|\`)[[:space:]]*(sudo[[:space:]]+)?${KILL_SEL}`,
   `(\\$\\(|\`)[[:space:]]*(sudo[[:space:]]+)?${KILL_SEL}.*${KB}${KILL_WRAP}${KILL}[^;&|]*\\$`,
-  `${KB}(sudo[[:space:]]+)?${KILL_SEL}[^;&]*\\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^;&|]*[[:space:]])?kill${KILL_END}`,
-  `${KB}(sudo[[:space:]]+)?${KILL_SEL}[^;&]*\\|[[:space:]]*while[^;]*;.*${KB}${KILL_WRAP}${KILL}[^;&|]*\\$`,
+  `${KB}(sudo[[:space:]]+)?${KILL_SEL}${GAP}\\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+(([^;&|]|\\\\;)*[[:space:]])?kill${KILL_END}`,
+  `${KB}(sudo[[:space:]]+)?${KILL_SEL}${GAP}\\|[[:space:]]*while[^;]*;.*${KB}${KILL_WRAP}${KILL}[^;&|]*\\$`,
 ];
 const HOST_KILL = HOST_KILL_CLAUSES.join('|');
 const HOST_KILL_WHY = "a host-wide kill by name/pattern (pkill / killall / kill $(pgrep …) / ps|grep|xargs kill) can hit OTHER agents' processes — kill only your own: `kill <pid>` of a pid you started (record it with `$!`), or your own process group `kill -- -<pgid>` (start it under `setsid`)";
-/** awk: drops the lines that sit INSIDE an open double-quoted multi-line string (an inline `--body "…\npkill…"` is prose), but never the body of `bash -c "…"` / `eval "…"` / `ssh h "…"` (code). Quotes arrive as `\"` in the payload. */
-const AWK_QBODY = String.raw`BEGIN{q=0;code=0} { line=$0; skip=(q && !code); s=line; n=gsub(/\\"/, "", s); if (n % 2 == 1) { if (!q) { q=1; code=(line ~ /(-c|eval)[ \t]+\\*"/ || line ~ /ssh[ \t]+[^ \t]+[ \t]+\\*"/) } else { q=0; code=0 } } if (!skip) print line }`;
+/** awk: drops ONLY the lines strictly inside an open double-quoted body that a PROSE flag opened (`--body "…`, `-m "…`, `--message`, `--notes`, `--title`, `--description`, `-b`) and that holds no `$(`/backtick (one anywhere ends the dropping); the opening line, and the closing line's TAIL after its quote (a kill can follow it), and every other quoted body — `bash -lc "…"`, `node -e "…"`, any unknown carrier — are KEPT (fail closed on kills). Quotes arrive as `\"` in the payload. */
+const AWK_QBODY = String.raw`BEGIN{q=0;pr=0} { line=$0; s=line; n=gsub(/\\"/, "", s); c=(line ~ /[$][(]|\140/); if (q) { if (n % 2 == 1) { if (pr && !c) { i=index(line, "\\\""); print substr(line, i + 2) } else print line; q=0; pr=0 } else if (pr && !c) { } else { print line; if (c) pr=0 } } else { print line; if (n % 2 == 1) { q=1; pr=(!c && line ~ /(--body|--message|--notes|--title|--description|-b|-m)[ \t=]+\\"[^"]*$/) } } }`;
 const FORCE_PUSH = `${B}${GIT}[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
 const BRANCH_D = `${B}${GIT}[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
 const WT_REMOVE = `${B}${GIT}[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
