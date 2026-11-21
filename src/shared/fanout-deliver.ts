@@ -290,9 +290,9 @@ export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
   const at = lines.findIndex((l) => /^['"]?on['"]?\s*:/.test(l));
   if (at < 0) return false;
   const rest = lines[at].replace(/^['"]?on['"]?\s*:/, '').trim();
-  const isPr = (t: string) => /^pull_request(_target)?$/.test(t);
+  const isPr = (t: string) => t === 'pull_request'; // pull_request_target runs the BASE branch's workflow on the base checkout: not the candidate's tests
   if (rest) {
-    if (rest.startsWith('{')) return /[{,]\s*['"]?pull_request(_target)?['"]?\s*:\s*(\{\s*\}|[,}])/.test(rest); // a flow map with ANY filter is unreadable here: false
+    if (rest.startsWith('{')) return /[{,]\s*['"]?pull_request['"]?\s*:\s*(\{\s*\}|[,}])/.test(rest); // a flow map with ANY filter is unreadable here: false
     return rest.replace(/^\[|\]$/g, '').split(',').map(unq).some(isPr);
   }
   const body: string[] = [];
@@ -306,7 +306,7 @@ export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
   const top = Math.min(...body.map(indent));
   const children = body.filter((l) => indent(l) === top);
   if (children.some((l) => isPr(unq(/^\s*-\s*(.*)$/.exec(l)?.[1] ?? '')))) return true; // list form: no filters possible
-  const idx = body.findIndex((l) => indent(l) === top && /^\s*['"]?pull_request(_target)?['"]?\s*:/.test(l));
+  const idx = body.findIndex((l) => indent(l) === top && /^\s*['"]?pull_request['"]?\s*:/.test(l));
   if (idx < 0) return false;
   const sub: string[] = [];
   for (const l of body.slice(idx + 1)) { if (indent(l) <= top) break; sub.push(l); }
@@ -323,11 +323,41 @@ export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
   if (keys.has('paths') || keys.has('paths-ignore')) return false;
   for (const k of keys.keys()) if (!['branches', 'branches-ignore', 'types'].includes(k)) return false; // an unknown key: not read the same way
   const br = val('branches'), ign = val('branches-ignore'), ty = val('types');
+  if ([br, ign].some((l) => l?.some((g) => g.startsWith('!')))) return false; // negated patterns: order-dependent, not read here
   if (br !== null && !br.some((g) => globRe(g).test(into))) return false;
   if (ign !== null && ign.some((g) => globRe(g).test(into))) return false;
   if (ty !== null && !ty.includes('synchronize')) return false;
   return true;
 }
+
+const TEST_CMD = /\b(jest|vitest|mocha|pytest|rspec|phpunit|go test|cargo test|(npm|pnpm|yarn|bun)( run)? test|nx (run-many|affected)\b.*\btest)\b/;
+/** Names (job `name:`, else id) of the jobs of a workflow whose steps run a test command: the checks that PROVE the suite ran. A reusable-workflow job (`uses:`) has no steps to read: not derived. */
+export function suiteJobsOf(yaml: string): string[] {
+  const lines = yaml.replace(/#.*$/gm, '').split('\n');
+  const at = lines.findIndex((l) => /^jobs\s*:\s*$/.test(l));
+  if (at < 0) return [];
+  const body: string[] = [];
+  for (const l of lines.slice(at + 1)) { if (l.trim() === '') continue; if (!/^\s/.test(l)) break; body.push(l); }
+  const indent = (l: string) => /^\s*/.exec(l)![0].length;
+  if (body.length === 0) return [];
+  const top = Math.min(...body.map(indent));
+  const out: string[] = [];
+  body.forEach((l, i) => {
+    const m = indent(l) === top ? /^\s*([\w.-]+)\s*:\s*$/.exec(l) : null;
+    if (!m) return;
+    const block: string[] = [];
+    for (const f of body.slice(i + 1)) { if (indent(f) <= top) break; block.push(f); }
+    if (!block.some((f) => !/^\s*(-\s*)?name\s*:/.test(f) && TEST_CMD.test(f))) return;
+    const own = Math.min(...block.map(indent));
+    const nm = block.map((f) => (indent(f) === own ? /^\s*name\s*:\s*(.+)$/.exec(f)?.[1] : undefined)).find((x) => x !== undefined);
+    const name = nm === undefined ? m[1] : unq(nm).split('${{')[0].trim();
+    if (name) out.push(name);
+  });
+  return out;
+}
+
+/** A check name is the suite job `n`: equal, a matrix leg `n (…)`, or the job under a caller workflow `… / n`. */
+export const suiteMatches = (checkName: string, n: string): boolean => checkName === n || checkName.startsWith(`${n} (`) || checkName.endsWith(` / ${n}`) || checkName.includes(` / ${n} (`);
 
 export type GateInput = {
   /** Workflow files of the TARGET branch (null = the listing could not be read). */
@@ -345,7 +375,7 @@ export type GateInput = {
 };
 
 export type GateAnswer = {
-  /** `pr-workflows` = the target has a pull_request workflow (or checks already run on the PR head); `none` = it has not; `unknown` = could not read. */
+  /** `pr-workflows` = the target has a workflow that provably runs for a PR into it (a check on the head alone is NOT PR CI); `none` = it has not; `unknown` = could not read. */
   repoCi: 'pr-workflows' | 'none' | 'unknown';
   /** CI state of the PR's CURRENT head — and only that head. */
   ci: 'no-pr' | 'none' | 'pending' | 'red' | 'zero-steps' | 'green';
@@ -357,40 +387,49 @@ export type GateAnswer = {
   fullSuite: 'ci' | 'verifier';
   /** The verifier may sign PASS on the CI side ONLY when true: PR CI exists, is green, on exactly `head`. Always false when fullSuite is `verifier`. */
   ciGreenOnHead: boolean;
-  /** Names of the checks on the PR head: confirm one of them runs the test suite (a lint-only CI is not the suite; pin it with --require-check). */
+  /** Names of the checks on the PR head. */
   ciChecks: string[];
+  /** The checks that PROVE the suite ran (all must be green): `--require-check` names (`pinned`) or the PR workflows' test jobs (`derived`); `none` ⇒ fullSuite is `verifier`. */
+  suiteChecks: string[];
+  suiteSource: 'pinned' | 'derived' | 'none';
   checklist: { skip: string[]; wait: string[]; keep: string[]; run: string[] };
   detail: string;
 };
 
-const KEEP = ['real entry-point drive of the changed flow', 'mutants of every changed clause', 'browser / UI drive for a user-facing surface', 'rigs the ticket names', 'anything the CI checks do not cover (a CI check that does not run the test suite is not the suite: run it, or pin the check with --require-check)'];
+const KEEP = ['real entry-point drive of the changed flow', 'mutants of every changed clause', 'browser / UI drive for a user-facing surface', 'rigs the ticket names', 'anything the CI checks do not cover'];
 
 /** Pure. Fail closed: every doubt (no workflow listing, no PR, a moved head, red/pending/zero-step CI) leaves the verifier NOT trusting CI. */
 export function decideGate(i: GateInput): GateAnswer {
   const prHead = i.pr?.headRefOid ?? null;
   const headMatches = prHead === i.head;
-  const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, i.requiredChecks ?? [], i.stable) : null;
-  const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' || verdict!.kind === 'missing' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const repoCi: GateAnswer['repoCi'] =
     i.workflows === null ? 'unknown'
     : i.workflows.some((w) => workflowRunsOnPr(w, i.into)) ? 'pr-workflows'
     : 'none'; // readable workflows with no provable PR trigger: a check on the head (push workflow, external status) is NOT PR CI
   const hasCi = repoCi === 'pr-workflows';
+  // The checks that PROVE the suite ran: pinned (--require-check) or derived from the PR workflows' test jobs. A green lint is not the suite.
+  const pinned = i.requiredChecks ?? [];
+  const derived = hasCi ? [...new Set(i.workflows!.filter((w) => workflowRunsOnPr(w, i.into)).flatMap(suiteJobsOf))] : [];
+  const suiteChecks = pinned.length > 0 ? pinned : derived;
+  const suiteSource: GateAnswer['suiteSource'] = pinned.length > 0 ? 'pinned' : derived.length > 0 ? 'derived' : 'none';
+  const required = suiteChecks.flatMap((n) => { const m = i.checks.filter((c) => suiteMatches(c.name, n)).map((c) => c.name); return m.length > 0 ? m : [n]; });
+  const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, required, i.stable) : null;
+  const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const h = i.head.slice(0, 12);
-  if (!hasCi) {
-    return {
-      repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [],
-      checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
-      detail: repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows: full suite stays on the verifier\'s seat',
-    };
-  }
+  const verifierSuite = (detail: string): GateAnswer => ({
+    repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [], suiteChecks: [], suiteSource,
+    checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
+    detail,
+  });
+  if (!hasCi) return verifierSuite(repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows: full suite stays on the verifier\'s seat');
+  if (suiteSource === 'none') return verifierSuite('PR CI exists but no check provably runs the test suite (no test job in the PR workflows, none pinned): pin it with --require-check <name> or keep the full suite on the verifier\'s seat');
   const ciGreenOnHead = ci === 'green' && headMatches;
   const why = !i.pr ? 'no PR open: `orchestra fanout open` first (CI runs while you gate)'
     : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
-    : ci === 'green' ? `CI green on ${h}` : `CI ${ci} on ${h}: do not sign PASS until green`;
+    : ci === 'green' ? `CI green on ${h}, suite check(s): ${suiteChecks.join(', ')}` : `CI ${ci} on ${h}: do not sign PASS until green`;
   return {
-    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name),
-    checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h} (re-run this verb after any push)`], keep: KEEP, run: [] },
+    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name), suiteChecks, suiteSource,
+    checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h}, suite check(s) ${suiteChecks.join(', ')} included (re-run this verb after any push)`], keep: KEEP, run: [] },
     detail: why,
   };
 }

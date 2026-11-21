@@ -171,9 +171,9 @@ test('#487 detectPackageManager: packageManager field wins over the lockfile; lo
 });
 
 // ---- #495 decideGate / workflowRunsOnPr ---------------------------------------------------------------------------------------------
-import { decideGate, workflowRunsOnPr, type DeliverCheck } from './fanout-deliver.ts';
+import { decideGate, suiteJobsOf, suiteMatches, workflowRunsOnPr, type DeliverCheck } from './fanout-deliver.ts';
 
-const PR_WF = 'name: ci\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n';
+const PR_WF = 'name: ci\non:\n  pull_request:\n    branches: [main]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: pnpm test\n';
 const PUSH_WF = 'name: release\non:\n  push:\n    tags: [v*]\n  workflow_dispatch:\njobs: {}\n';
 const GH: DeliverCheck = { name: 'ci', state: 'success', steps: 5 };
 const HEAD = 'a'.repeat(40);
@@ -183,7 +183,7 @@ test('workflowRunsOnPr: map, list and scalar forms are PR CI; push/dispatch-only
   assert.equal(workflowRunsOnPr(PR_WF), true);
   assert.equal(workflowRunsOnPr('on: [push, pull_request]\n'), true);
   assert.equal(workflowRunsOnPr('on: pull_request\n'), true);
-  assert.equal(workflowRunsOnPr('on:\n  pull_request_target:\n'), true);
+  assert.equal(workflowRunsOnPr('on:\n  pull_request_target:\n'), false, 'runs the BASE branch workflow, not the candidate');
   assert.equal(workflowRunsOnPr(PUSH_WF), false);
   assert.equal(workflowRunsOnPr('on:\n  push:\n  # pull_request:\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n'), false);
 });
@@ -264,4 +264,47 @@ test('review #495 MINOR: pull_request_review is not pull_request; a matrix `- pu
   assert.equal(workflowRunsOnPr('on: [push, pull_request_review]\n'), false, 'inline list form');
   assert.equal(workflowRunsOnPr('"on":\n  pull_request:\n'), true);
   assert.equal(workflowRunsOnPr('on:\n  - push\n  - pull_request\n'), true);
+});
+
+test('review A MAJOR: a green check that is not the suite never skips the suite — lint-only PR CI, a push check, a missing suite check', () => {
+  const LINT_WF = 'on:\n  pull_request:\njobs:\n  lint:\n    steps:\n      - run: pnpm run lint\n';
+  const lint: DeliverCheck = { name: 'lint', state: 'success', steps: 3 };
+  const g = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true });
+  assert.equal(g.fullSuite, 'verifier', 'a PR workflow with no test job: nothing proves the suite ran');
+  assert.equal(g.suiteSource, 'none');
+  assert.equal(g.ciGreenOnHead, false);
+  assert.match(g.detail, /--require-check/);
+  // test job derived, but only the lint check is on the head (the suite's workflow never registered / was not created): not green
+  const two = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true });
+  assert.equal(two.fullSuite, 'ci');
+  assert.deepEqual(two.suiteChecks, ['ci']);
+  assert.equal(two.ciGreenOnHead, false);
+  assert.equal(two.ci, 'pending');
+  // the suite check itself green ⇒ green; pinned name wins over the derived one
+  assert.equal(decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, GH], stable: true }).ciGreenOnHead, true);
+  const pin = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, { name: 'unit', state: 'success', steps: 4 }], stable: true, requiredChecks: ['unit'] });
+  assert.equal(pin.suiteSource, 'pinned');
+  assert.equal(pin.fullSuite, 'ci');
+  assert.equal(pin.ciGreenOnHead, true);
+  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true, requiredChecks: ['unit'] }).ciGreenOnHead, false, 'a pinned check that is absent is not green');
+  // a pinned check that ran 0 steps / was skipped is not green either
+  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'unit', state: 'neutral', steps: null }], stable: true, requiredChecks: ['unit'] }).ciGreenOnHead, false);
+});
+
+test('suiteJobsOf / suiteMatches: test jobs are derived by name or id; a reusable-workflow job and a lint job are not; matrix legs match', () => {
+  const wf = 'jobs:\n  build:\n    steps:\n      - run: pnpm build\n  unit:\n    name: Unit tests ${{ matrix.node }}\n    steps:\n      - run: |\n          npm ci\n          npx jest --ci\n  e2e:\n    uses: ./.github/workflows/e2e.yml\n  go:\n    steps:\n      - run: go test ./...\n  named:\n    name: Run tests\n    steps:\n      - run: echo hi\n';
+  assert.deepEqual(suiteJobsOf(wf), ['Unit tests', 'go']);
+  assert.equal(suiteMatches('Unit tests (18)', 'Unit tests'), true);
+  assert.equal(suiteMatches('ci / unit', 'unit'), true);
+  assert.equal(suiteMatches('lint', 'unit'), false);
+  assert.equal(suiteMatches('unit-extra', 'unit'), false);
+});
+
+test('review A MINOR: a negated branch pattern and pull_request_target fail closed', () => {
+  const wf = (b: string) => `on:\n  pull_request:\n    branches: ${b}\njobs: {}\n`;
+  assert.equal(workflowRunsOnPr(wf("['**', '!release/**']"), 'release/1'), false);
+  assert.equal(workflowRunsOnPr(wf("['**', '!release/**']"), 'main'), false, 'any negation: order-dependent, not read');
+  assert.equal(workflowRunsOnPr(wf("['**']"), 'release/1'), true);
+  assert.equal(workflowRunsOnPr('on:\n  pull_request_target:\n    branches: [main]\n', 'main'), false);
+  assert.equal(workflowRunsOnPr('on: [push, pull_request_target]\n'), false);
 });

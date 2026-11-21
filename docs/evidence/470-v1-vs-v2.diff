@@ -383,7 +383,7 @@
 +  mid-run costs one full cycle. Its review line is the §4 merge rule's verbatim sentence.
 +- **The full suite and the build run on the verifier's seat, once per candidate, unless the target has PR CI:**
 +  `orchestra fanout gate --branch <b> --into <target> --head <sha>` derives it (`fullSuite: ci` ⇒ skip what CI runs, wait for
-+  `ciGreenOnHead` — a CI check in `ciChecks` must run the tests; a moved head's CI is never accepted).
++  `ciGreenOnHead` — the suite check is derived or pinned with `--require-check`; a moved head's CI is never accepted).
 +- **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**
 +- **Self-gate BEFORE nominating — the implementer runs the adversarial checklist on their own candidate first**
 +  and answers in the nomination comment: for each headline claim, what observation would DIFFER on a broken
