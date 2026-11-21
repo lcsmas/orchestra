@@ -43,7 +43,7 @@ const green = { __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclus
 const opts = { branch: 'feat', into: 'main', head: H, requireChecks: [] as string[] };
 const run = async (f: Fake, head = H) => {
   const x = fake(f);
-  const r = await gatePr({ ...opts, head }, { gh: x.gh, log: () => {} });
+  const r = await gatePr({ ...opts, head }, { gh: x.gh, log: () => {}, sleep: async () => {} });
   return { ...r, calls: x.calls };
 };
 
@@ -91,7 +91,7 @@ test('gate is READ-ONLY: no gh call outside api / pr list|view / run view', asyn
 
 test('gate: could-not-check is exit 1, not a verdict (gh failing on the PR list)', async () => {
   const gh = async (a: string[]): Promise<GhResult> => (a[0] === 'api' ? { code: 1, stdout: '', stderr: '404' } : { code: 1, stdout: '', stderr: 'HTTP 502' });
-  const r = await gatePr(opts, { gh, log: () => {} });
+  const r = await gatePr(opts, { gh, log: () => {}, sleep: async () => {} });
   assert.equal(r.exit, 1);
   assert.equal(r.result.verdict, 'unchecked');
   assert.equal(r.result.fullSuite, undefined);
@@ -104,4 +104,28 @@ test('gate argv: --head must be a full sha, unknown flags and unsafe refs are us
   assert.equal(parseGateArgs(['--branch', '-x', '--into', 'main', '--head', H]).ok, false);
   assert.equal(parseGateArgs(['--branch', 'f', '--into', 'main', '--head', H]).ok, true);
   assert.equal((await runGate(['--branch', 'f'])).exit, 1);
+});
+
+test('review #495 MAJOR 1 through the CLI: a check that registers between the two reads ⇒ not green (fast lint, slow suite)', async () => {
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [] });
+  let views = 0;
+  const lint = { ...green, name: 'lint', detailsUrl: RUN };
+  const slow = { ...green, name: 'test', detailsUrl: RUN };
+  const gh = async (a: string[]): Promise<GhResult> => {
+    if (a[0] === 'pr' && a[1] === 'view') {
+      const checks = views++ === 0 ? [lint] : [lint, slow];
+      return { code: 0, stdout: JSON.stringify({ state: 'OPEN', baseRefName: 'main', headRefOid: H, mergeable: 'MERGEABLE', statusCheckRollup: checks }), stderr: '' };
+    }
+    return x.gh(a);
+  };
+  const r = await gatePr(opts, { gh, log: () => {}, sleep: async () => {} });
+  assert.equal(r.result.ciGreenOnHead, false);
+  assert.equal(r.result.ci, 'pending');
+  assert.deepEqual(r.result.ciChecks, ['lint', 'test'], 'the check names are listed so the verifier can see what CI covers');
+});
+
+test('review #495 MAJOR 2 through the CLI: a pull_request workflow filtered to another branch ⇒ the suite stays on the verifier', async () => {
+  const r = await run({ workflows: { 'ci.yml': 'on:\n  pull_request:\n    branches: [release]\njobs: {}\n' }, pr: { number: 7, head: H }, checks: [green] });
+  assert.equal(r.result.fullSuite, 'verifier');
+  assert.equal(r.result.repoCi, 'none');
 });

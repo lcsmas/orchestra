@@ -111,10 +111,10 @@ Two rules ride in every brief, verbatim:
 Coordinator-side rules:
 
 - **Freeze contested spec axes before dispatching** (a mid-flight ruling moves every tip); when one must change, state it as **behaviour-in-words**, version-stamp it, write it in the ledger. Rule on an axis only when you hold
-  its evidence; otherwise route the question to the evidence-holder.
+  its evidence; else route it to the evidence-holder.
 - **Sent ≠ received.** Act on a counterparty's final state only after their
-  explicit echo of it; their stale status line, not your outbox, tells you your answer never arrived.
-- **State-only acks** from message one. Evaluative glosses breed correction loops that carry zero state.
+  explicit echo; their stale status line tells you your answer never arrived.
+- **State-only acks** from message one; evaluative glosses carry zero state.
 - **Execution state lives in the state file, decisions in the ledger.**
   ¤orchestra fanout state init --target <branch>¤ once (own run), then
   ¤orchestra fanout state set <ticket> --status … --branch … --pr … --head …¤ as each fact
@@ -144,14 +144,13 @@ Gate rhythm:
   mid-run costs one full cycle. Its review line is the §4 merge rule's verbatim sentence.
 - **The full suite and the build run on the verifier's seat, once per candidate, unless the target has PR CI:**
   ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ skip what CI runs, wait for
-  ¤ciGreenOnHead¤; a moved head's CI is never accepted).
+  ¤ciGreenOnHead¤ — a CI check in ¤ciChecks¤ must run the tests; a moved head's CI is never accepted).
 - **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**
 - **Self-gate BEFORE nominating — the implementer runs the adversarial checklist on their own candidate first**
   and answers in the nomination comment: for each headline claim, what observation would DIFFER on a broken
   build; did the unfixed arm actually FAIL through the same rig; does any test assert the thing the ticket
   promises. No answers, no nomination. **Then a fresh-context PRE-REVIEW:** ONE in-process reviewer
-  subagent (Agent tool, not an ¤orchestra spawn¤) on its diff + the ticket, flagging only correctness and
-  ticket-promise gaps; BLOCKING/MAJOR fixed before nominating, the rest listed in the nomination.
+  subagent (Agent tool, not an ¤orchestra spawn¤) on its diff + the ticket, flagging only correctness/ticket-promise gaps; BLOCKING/MAJOR fixed before nominating, the rest listed in the nomination.
 - **Gate merge candidates, not pushes.** The verifier gates when the coordinator names a candidate ref.
   **Rebase onto current master BEFORE nominating**; a nominated ref's NAME is frozen.
 - **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's tree object byte-equals the
@@ -186,10 +185,12 @@ the Briefing section of ledger #N — pull it first".
 or ¤merged¤ is REFUSED ("upstream … not merged yet") — keep building, rebase and nominate
 after the upstream merges. An upstream changing the frozen interface posts one "what changed" line to its dependents.
 
-**The spawner names the child, at spawn** — ¤orchestra spawn --name <rôle>-<object>-<ticket>¤
+**The spawner names the child at spawn** — ¤orchestra spawn --name <rôle>-<object>-<ticket>¤
 (required; the ¤orchestra-spawn¤ skill and Orchestra ¤CONTEXT.md¤ **Nom d'espace**) — the prefix IS the
 role. The child never renames itself — you rename it when its scope grows (¤orchestra rename <ws-id> <name>¤);
 say in every brief "your name is set by your parent". A fleet nests under the coordinator; ¤--detached¤ is for one-offs.
+
+**Done when:** every brief names your literal workspace id and its file set, shared files marked as seams (§4).
 
 ## 2. Spawn the implementers
 
@@ -299,6 +300,8 @@ ticket of the state file). When your check contradicts a specific claim, run a s
 
 **A wave is closed only when the LEAD has itself gated and deleted the OPS workspace and ¤orchestra peers¤ greps ZERO wave workspaces (plus one grep for a workspace that must still exist); then close the ledger.**
 
+**Done when:** both commands print nothing, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
+
 → **Read ¤references/closeout-and-gates.md¤ before you delete a workspace whose ¤verify-landed¤ reads
 not-landed, and before you write a gate** (the three delete-gate traps with their measurements; falsifiable gates and visual claims).
 
@@ -310,7 +313,6 @@ One consolidated status: per subtask branch, verdict, what remains, plus the fle
 
 A verdict is worth the precision of the ask: name the property, the observation that would disprove it,
 and where to look — "verify this branch" yields "looks good"; every gate must print something different on a broken build.
-(Examples, and the strictest gate for visual claims: ¤references/closeout-and-gates.md¤.)
 
 ## Deep references — pull on demand
 
@@ -321,15 +323,14 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 - **references/fleet-bus.md** — read when a message does not arrive, or before ¤ask¤ / ¤gate¤ / ¤token¤ (§0c in full).
 - **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
 - **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
-- **references/traps.md** — the confident-wrong-answer catalogue (723 lines, ONE heading): read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
-- **references/prose.md** — read before writing any durable artifact (PR body, ticket, ledger comment, doc): banned filler, numbers over adjectives.
+- **references/traps.md** — the confident-wrong-answer catalogue: read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
+- **references/prose.md** — read before writing any durable artifact: banned filler, numbers over adjectives.
 - **references/working-with-agents.md** — read before briefing a fleet and before writing or accepting any close-out.
-- **references/meta-rules.md** — read when adding rules to this skill ("does it resolve to someone being sharp that day?").
+- **references/meta-rules.md** — read when adding rules to this skill.
 
 ## Which copy is this? Install and precedence (v2)
 
-- **This is the bundled v2**, rewritten into every worktree's ¤.claude/skills/verified-fanout/¤ on spawn (source
-  ¤src/shared/verified-fanout-skill.ts¤); a repo's own copy without the generated marker line is never overwritten.
-- **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only, ¤scripts/skill-precedence/measure-skill-precedence.mjs¤ — re-run after a CLI update).
+- **This is the bundled v2**, rewritten into every worktree's ¤.claude/skills/verified-fanout/¤ on spawn; a repo's own copy without the generated marker line is never overwritten.
+- **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only; ¤scripts/skill-precedence/measure-skill-precedence.mjs¤, re-run after a CLI update).
 - **VPS install:** an AppImage release containing this skill; no personal copy there ⇒ nothing shadows it.
 `.replaceAll('¤', '`');
