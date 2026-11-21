@@ -24,7 +24,7 @@ import { setTurnEndListener } from './handoff-seam.ts';
 import { createHandoffController, type HandoffReply } from './handoff-controller.ts';
 import { busFrameFor } from './handoff-bus.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
-import { HANDOFF_ERRORS, parseHandoffBound, resolveHandoffBound } from '../shared/handoff.ts';
+import { HANDOFF_ERRORS, composeBusFrame, parseHandoffBound, resolveHandoffBound } from '../shared/handoff.ts';
 import { workspaceRole, roleSpec, type RoleConfig } from '../shared/fleet-roles.ts';
 import { loadRoleConfig } from './fleet-roles-config.ts';
 
@@ -40,17 +40,20 @@ const retries = new Map<string, number>();
 
 const stillOwed = (id: string): boolean => readOwed(OWED_ROOT(), id) !== null && !!store.getWorkspace(id) && !store.getWorkspace(id)?.archived;
 
-/** #496: the opening + the bus frame READ NOW (every attempt, held or retried ones included): a verdict that landed after the handoff was accepted is in it. A bus that cannot be read ⇒ the opening alone. */
+/** #496: the opening + the bus frame READ NOW (every attempt, held or retried ones included): a verdict that landed after the handoff was accepted is in it.
+ *  A bus that cannot be read ⇒ a frame that orders the check of the own run (over-announces; never a bare opening that hides pending mail). */
 function withBusFrame(id: string, opening: string): string {
+  const ws = store.getWorkspace(id);
+  if (!ws) return opening;
+  const runId = resolveWaveRunId(ws);
   try {
-    const ws = store.getWorkspace(id);
     const db = getBus();
-    if (!ws || !db) return opening;
-    return `${opening}\n\n${busFrameFor(db, id, resolveWaveRunId(ws))}`;
+    if (db) return `${opening}\n\n${busFrameFor(db, id, runId)}`;
+    log.warn(`handoff: the bus is not open — the opening of ${id} orders a check of its own run`);
   } catch (e) {
-    log.warn(`handoff: the bus frame of ${id} could not be read — opening delivered without it`, e);
-    return opening;
+    log.warn(`handoff: the bus frame of ${id} could not be read — the opening orders a check of its own run`, e);
   }
+  return `${opening}\n\n${composeBusFrame({ runId, pendingRunIds: [runId] })}`;
 }
 
 /** The opening turn, behind Admission. The OWED MARKER on disk (handoff-owed.ts) is the truth: a held start is kept while owed — NOT "while asleep" (admission's default:
