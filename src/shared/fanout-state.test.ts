@@ -440,3 +440,13 @@ test('#506 R2: dropping builtOn under an unchanged PASS is refused (it would rea
   assert.deepEqual(voided.tickets.B.builtOn, {});
   assert.deepEqual(applyTicketPatch(s, 'B', { builtOn: { A: SHA_C } }, T).tickets.B.builtOn, { A: SHA_C }, 're-recording a head is not dropping');
 });
+
+test('#506 V3: an upstream with NO recorded head (hand-edited state) is ineligible everywhere — a refusal / blocked / divergence, never a TypeError', () => {
+  const raw = JSON.parse(JSON.stringify(applyTicketPatch(stacked('nominated'), 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T)));
+  raw.tickets.A.head = null; // parseState does not require a head for nominated|gated; the rules must still hold
+  const s = parseState(raw);
+  assert.throws(() => applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass' }, T), /A has no recorded head/);
+  assert.deepEqual([stackView(s, 'B')!.order, stackView(s, 'B')!.upstreams[0].state], ['blocked', 'ineligible']);
+  const plan = reconcile(s, { A: { branchHead: null, mergedIntoTarget: false }, B: openPr(SHA_B) });
+  assert.ok(plan.divergences.some((d) => d.ticket === 'B' && d.kind === 'nominated-before-upstream-merged' && /no recorded head/.test(d.detail)));
+});

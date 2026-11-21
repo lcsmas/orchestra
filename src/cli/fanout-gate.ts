@@ -143,7 +143,10 @@ ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist'
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
 
-export async function runGate(args: string[], deps: GateDeps = { ...realDeps(), stack: (o) => stackFromState(o) }): Promise<{ exit: number; stdout?: string; error?: string }> {
+/** Production deps: real gh + the state-file stack reader (a test drives `runGate` through THIS, so an unwired reader cannot pass). */
+export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o) });
+
+export async function runGate(args: string[], deps: GateDeps = realGateDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);
   if (!p.ok) return { exit: 1, error: p.error };
   const { exit, result } = await gatePr(p.opts, deps);

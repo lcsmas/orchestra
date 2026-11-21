@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gatePr, parseGateArgs, runGate, stackFromState } from './fanout-gate.ts';
+import { gatePr, parseGateArgs, realGateDeps, runGate, stackFromState } from './fanout-gate.ts';
 import { applyTicketPatch, newState, parseState, stackView, stateFile, writeStateAtomic } from '../shared/fanout-state.ts';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -241,4 +241,20 @@ test('#506 gate argv: --ticket/--run parse; --run alone is a usage error', () =>
   const p = parseGateArgs([...base, '--ticket', 'DEP', '--run', 'r1']);
   assert.ok(p.ok && p.opts.ticket === 'DEP' && p.opts.run === 'r1');
   assert.ok(!parseGateArgs([...base, '--run', 'r1']).ok);
+});
+
+test('#506 G05 production wiring: runGate through realGateDeps reads --ticket/--run from the state file (an unwired stack reader prints no stack)', async (t) => {
+  const home = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'gate-wire-506-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  writeStateAtomic(stateFile(home, 'r1'), stackState(H));
+  const saved = process.env.ORCHESTRA_HOME;
+  t.after(() => { if (saved === undefined) delete process.env.ORCHESTRA_HOME; else process.env.ORCHESTRA_HOME = saved; });
+  process.env.ORCHESTRA_HOME = home;
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
+  assert.equal(typeof realGateDeps().stack, 'function');
+  const out = await runGate(['--branch', 'feat', '--into', 'main', '--head', H, '--ticket', 'DEP', '--run', 'r1'], { ...realGateDeps(), gh: x.gh, sleep: async () => {}, log: () => {} });
+  assert.equal(out.exit, 0, out.error);
+  const j = JSON.parse(out.stdout ?? '{}');
+  assert.equal(j.stack?.order, 'wait-upstream');
+  assert.equal(j.stack?.upstreams[0].id, 'UP');
 });
