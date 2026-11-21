@@ -206,7 +206,7 @@ export function stackView(state: FanoutState, id: string): StackView | null {
     const ut = state.tickets[u];
     const head = ut?.head ?? null;
     const builtOn = t.builtOn[u] ?? null;
-    if (upstreamMerged(state, u)) return { id: u, state: 'merged' as const, builtOn, head };
+    if (upstreamMerged(state, u)) return builtOn && head && !sameSha(builtOn, head) ? { id: u, state: 'changed' as const, builtOn, head, why: `built on ${u}@${builtOn.slice(0, 8)} but ${u} merged at ${head.slice(0, 8)}` } : { id: u, state: 'merged' as const, builtOn, head };
     const b = upstreamBlocker(state, t, u);
     return b ? { id: u, state: b.kind, builtOn, head, why: b.why } : { id: u, state: 'candidate' as const, builtOn, head };
   });
@@ -459,6 +459,9 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
         const bad = bl.filter((x) => x.b!.kind === 'ineligible');
         const moved = bl.filter((x) => x.b!.kind === 'changed');
         if (bad.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `${t.status} while upstream ${bad.map((x) => x.u).join(', ')} is not merged and not an admissible candidate: ${bad.map((x) => x.b!.why).join('; ')}` });
+        // an upstream that MERGED at a head other than the one recorded in builtOn: re-gate unless the trees match (only `deliver` can tell) — no write-back, the dependent may already be re-gated
+        const movedMerged = t.dependsOn.filter((d) => effMerged(d) && t.builtOn[d]).map((d) => ({ d, h: reality[d]?.pr?.state === 'MERGED' ? reality[d]!.pr!.headRefOid : state.tickets[d]?.head ?? null })).filter((x) => x.h && !sameSha(t.builtOn[x.d], x.h!));
+        if (movedMerged.length) add({ ticket: id, kind: 'upstream-changed', detail: `${movedMerged.map((x) => `built on ${x.d}@${t.builtOn[x.d].slice(0, 8)} but ${x.d} merged at ${x.h!.slice(0, 8)}`).join('; ')} — re-gate (unless the trees match; deliver decides), then \`state set ${id} --built-on …\`` });
         if (moved.length) {
           add({ ticket: id, kind: 'upstream-changed', detail: `${moved.map((x) => x.b!.why).join('; ')} — verdict ${t.verdict} is void: rebase onto the new head, \`state set ${id} --built-on …\`, re-gate` });
           if (t.verdict !== 'none' || t.status === 'gated') {

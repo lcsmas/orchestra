@@ -267,3 +267,34 @@ test('#506 rebase-merge rewrote the upstream\'s shas: a dependent rebuilt on the
   const bad = await deliver(opts('dep', 'DEP', Dcut, { strategy: 'rebase' }), r2.mkdeps());
   assert.deepEqual([bad.exit, bad.result.reason], [2, 'upstream-changed'], JSON.stringify(bad.result));
 });
+
+test('#506 review: upstream fix round, merged; dependent rebuilt on the merged target but builtOn still the old head → merges (the head contains the merge commit)', async (t) => {
+  const r = rig(t);
+  const U1 = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.writeState(stateFor(U1, D));
+  r.g('checkout', '-q', 'up');
+  const U2 = r.commit('up.txt', 'u1 fixed\n', 'fix round');
+  r.push('up');
+  assert.equal((await deliver(opts('up', 'UP', U2), r.mkdeps())).result.verdict, 'merged');
+  const stale = await deliver(opts('dep', 'DEP', D), r.mkdeps());
+  assert.equal(stale.result.reason, 'upstream-changed');
+  const D2 = r.branchWith('dep', 'origin/master', 'dep.txt', 'd1\n'); // re-gated on the merged target; builtOn left at U1
+  const st = stateFor(U2, D2, U2);
+  r.writeState({ ...st, tickets: { ...st.tickets, DEP: { ...st.tickets.DEP, builtOn: { UP: U1 } } } }); // stale builtOn: what a re-gate without re-recording leaves
+  const out = await deliver(opts('dep', 'DEP', D2), r.mkdeps());
+  assert.equal(out.result.verdict, 'merged', JSON.stringify(out.result));
+});
+
+test('#506 review: the upstream PR is picked by its recorded number, not by an older merged PR of the same branch name', async (t) => {
+  const r = rig(t);
+  const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.prs.push({ number: 5, branch: 'up', base: 'master', state: 'MERGED', head: 'f'.repeat(40) }); // an old merged PR of a reused branch name
+  r.prs.push({ number: 9, branch: 'up', base: 'master', state: 'OPEN' });
+  let s = stateFor(U, D);
+  s = applyTicketPatch(s, 'UP', { pr: 9 }, NOW);
+  r.writeState(s);
+  const out = await deliver(opts('dep', 'DEP', D), r.mkdeps());
+  assert.deepEqual([out.exit, out.result.reason], [2, 'upstream-not-merged'], JSON.stringify(out.result));
+});

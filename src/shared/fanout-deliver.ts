@@ -79,15 +79,16 @@ const sameShaPrefix = (a: string, b: string): boolean => a.startsWith(b) || b.st
 export function decideUpstreams(facts: UpstreamFacts[], into: string): UpstreamDecision {
   for (const f of facts) {
     if (f.accepted) continue;
-    if (!f.pr) return { ok: false, reason: 'upstream-not-merged', detail: `upstream ${f.id}: no PR found, so it is not merged into ${into}` };
+    if (!f.pr) return { ok: false, reason: 'upstream-not-merged', detail: `upstream ${f.id}: no PR found, so it is not merged into ${into} (a dropped upstream: remove it from dependsOn)` };
     if (f.pr.state !== 'MERGED' || f.pr.baseRefName !== into) {
       return { ok: false, reason: 'upstream-not-merged', detail: `upstream ${f.id} is not merged into ${into} (its PR is ${f.pr.state} on ${f.pr.baseRefName}): a dependent merges only after its upstream` };
     }
     if (f.builtOn === null) continue; // built after the upstream merged: nothing is stacked, the merged-ness is the whole rule
+    if (f.dependentOnMerge === true) continue; // the head contains the upstream's merge commit: the merged content is under it whatever it was built on
     if (!sameShaPrefix(f.builtOn, f.pr.headRefOid) && f.sameTree !== true) {
-      return { ok: false, reason: 'upstream-changed', detail: `upstream ${f.id} merged at ${short(f.pr.headRefOid)} but this ticket was built and gated on ${short(f.builtOn)} (different content): its verdict is void — rebase onto the merged upstream, re-gate` };
+      return { ok: false, reason: 'upstream-changed', detail: `upstream ${f.id} merged at ${short(f.pr.headRefOid)} but this ticket was built and gated on ${short(f.builtOn)} (different content): its verdict is void — rebase onto the merged upstream, re-gate, then \`fanout state set <ticket> --built-on ${f.id}=<merged head>\`` };
     }
-    if (f.dependentOnBuiltOn !== true && f.dependentOnMerge !== true) {
+    if (f.dependentOnBuiltOn !== true) { // (dependentOnMerge === true already continued above)
       return { ok: false, reason: 'upstream-changed', detail: `the verified head does not sit on upstream ${f.id}: it contains neither ${short(f.builtOn)} (the head it was gated on) nor the upstream's merge commit — rebase and re-gate` };
     }
   }
