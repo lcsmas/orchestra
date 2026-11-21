@@ -270,12 +270,63 @@ export function combinedSuiteCommand(into: string, suiteCmd = suiteCommandFor(nu
 
 // ---- #495 — `orchestra fanout gate`: the verifier's checklist is DERIVED, not prose -------------------------------------------------
 
-/** True when a workflow file runs on pull requests (`on: pull_request` in the scalar, list or map form). A `workflow_dispatch`/`push`-only file is not PR CI. */
-export function workflowRunsOnPr(yaml: string): boolean {
-  const text = yaml.replace(/#.*$/gm, '');
-  if (/^on:\s*(\[[^\]]*)?['"]?pull_request(_target)?['"]?/m.test(text)) return true;
-  if (/^on:\s*\{[^}]*pull_request/m.test(text)) return true;
-  return /^\s*(-\s*)?['"]?pull_request(_target)?['"]?\s*(:|,|\]|$)/m.test(text);
+const globRe = (g: string): RegExp => new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*')}$`);
+const unq = (x: string): string => x.trim().replace(/^['"]|['"]$/g, '');
+/** `[a, b]` / `- a` items of a YAML list value, from the inline remainder and the following more-indented lines. */
+function listOf(rest: string, following: string[]): string[] {
+  const inline = rest.trim();
+  if (inline.startsWith('[')) return inline.replace(/^\[|\]\s*$/g, '').split(',').map(unq).filter(Boolean);
+  if (inline) return [unq(inline)];
+  return following.map((l) => /^\s*-\s*(.*)$/.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(unq);
+}
+
+/**
+ * True only when the workflow PROVABLY runs on a push to a PR into `into`: `on: pull_request` (scalar, list, block map or flow map) whose
+ * `branches` admit `into`, `branches-ignore` does not exclude it, `types` (when given) include `synchronize`, and no `paths` filter
+ * (a path-filtered run may not exist for this diff). Anything it cannot read the same way is FALSE: the verifier then keeps the suite (fail closed).
+ */
+export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
+  const lines = yaml.replace(/#.*$/gm, '').split('\n');
+  const at = lines.findIndex((l) => /^['"]?on['"]?\s*:/.test(l));
+  if (at < 0) return false;
+  const rest = lines[at].replace(/^['"]?on['"]?\s*:/, '').trim();
+  const isPr = (t: string) => /^pull_request(_target)?$/.test(t);
+  if (rest) {
+    if (rest.startsWith('{')) return /[{,]\s*['"]?pull_request(_target)?['"]?\s*:\s*(\{\s*\}|[,}])/.test(rest); // a flow map with ANY filter is unreadable here: false
+    return rest.replace(/^\[|\]$/g, '').split(',').map(unq).some(isPr);
+  }
+  const body: string[] = [];
+  for (const l of lines.slice(at + 1)) {
+    if (l.trim() === '') continue;
+    if (!/^\s/.test(l)) break; // next top-level key
+    body.push(l);
+  }
+  if (body.length === 0) return false;
+  const indent = (l: string) => /^\s*/.exec(l)![0].length;
+  const top = Math.min(...body.map(indent));
+  const children = body.filter((l) => indent(l) === top);
+  if (children.some((l) => isPr(unq(/^\s*-\s*(.*)$/.exec(l)?.[1] ?? '')))) return true; // list form: no filters possible
+  const idx = body.findIndex((l) => indent(l) === top && /^\s*['"]?pull_request(_target)?['"]?\s*:/.test(l));
+  if (idx < 0) return false;
+  const sub: string[] = [];
+  for (const l of body.slice(idx + 1)) { if (indent(l) <= top) break; sub.push(l); }
+  const subTop = sub.length ? Math.min(...sub.map(indent)) : 0;
+  const keys = new Map<string, { rest: string; following: string[] }>();
+  sub.forEach((l, i) => {
+    const m = indent(l) === subTop ? /^\s*([\w-]+)\s*:(.*)$/.exec(l) : null;
+    if (!m) return;
+    const following: string[] = [];
+    for (const f of sub.slice(i + 1)) { if (indent(f) <= subTop) break; following.push(f); }
+    keys.set(m[1], { rest: m[2], following });
+  });
+  const val = (k: string) => { const e = keys.get(k); return e ? listOf(e.rest, e.following) : null; };
+  if (keys.has('paths') || keys.has('paths-ignore')) return false;
+  for (const k of keys.keys()) if (!['branches', 'branches-ignore', 'types'].includes(k)) return false; // an unknown key: not read the same way
+  const br = val('branches'), ign = val('branches-ignore'), ty = val('types');
+  if (br !== null && !br.some((g) => globRe(g).test(into))) return false;
+  if (ign !== null && ign.some((g) => globRe(g).test(into))) return false;
+  if (ty !== null && !ty.includes('synchronize')) return false;
+  return true;
 }
 
 export type GateInput = {
@@ -287,11 +338,15 @@ export type GateInput = {
   head: string;
   checks: DeliverCheck[];
   requiredChecks?: string[];
+  /** The target branch (a workflow's `branches` filter must admit it). */
+  into?: string;
+  /** The check-name set is identical across two reads a few seconds apart (a late-registering check can't hide behind an early green). */
+  stable: boolean;
 };
 
 export type GateAnswer = {
   /** `pr-workflows` = the target has a pull_request workflow (or checks already run on the PR head); `none` = it has not; `unknown` = could not read. */
-  repoCi: 'pr-workflows' | 'checks-on-head' | 'none' | 'unknown';
+  repoCi: 'pr-workflows' | 'none' | 'unknown';
   /** CI state of the PR's CURRENT head — and only that head. */
   ci: 'no-pr' | 'none' | 'pending' | 'red' | 'zero-steps' | 'green';
   /** The PR head right now (null without a PR). */
@@ -302,29 +357,31 @@ export type GateAnswer = {
   fullSuite: 'ci' | 'verifier';
   /** The verifier may sign PASS on the CI side ONLY when true: PR CI exists, is green, on exactly `head`. Always false when fullSuite is `verifier`. */
   ciGreenOnHead: boolean;
+  /** Names of the checks on the PR head: confirm one of them runs the test suite (a lint-only CI is not the suite; pin it with --require-check). */
+  ciChecks: string[];
   checklist: { skip: string[]; wait: string[]; keep: string[]; run: string[] };
   detail: string;
 };
 
-const KEEP = ['real entry-point drive of the changed flow', 'mutants of every changed clause', 'browser / UI drive for a user-facing surface', 'rigs the ticket names', 'anything the CI checks do not cover'];
+const KEEP = ['real entry-point drive of the changed flow', 'mutants of every changed clause', 'browser / UI drive for a user-facing surface', 'rigs the ticket names', 'anything the CI checks do not cover (a CI check that does not run the test suite is not the suite: run it, or pin the check with --require-check)'];
 
 /** Pure. Fail closed: every doubt (no workflow listing, no PR, a moved head, red/pending/zero-step CI) leaves the verifier NOT trusting CI. */
 export function decideGate(i: GateInput): GateAnswer {
   const prHead = i.pr?.headRefOid ?? null;
   const headMatches = prHead === i.head;
-  const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, i.requiredChecks ?? [], true) : null;
+  const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, i.requiredChecks ?? [], i.stable) : null;
   const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' || verdict!.kind === 'missing' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const repoCi: GateAnswer['repoCi'] =
-    i.workflows === null ? (i.checks.length > 0 ? 'checks-on-head' : 'unknown')
-    : i.workflows.some(workflowRunsOnPr) ? 'pr-workflows'
-    : i.checks.length > 0 ? 'checks-on-head' : 'none';
-  const hasCi = repoCi === 'pr-workflows' || repoCi === 'checks-on-head';
+    i.workflows === null ? 'unknown'
+    : i.workflows.some((w) => workflowRunsOnPr(w, i.into)) ? 'pr-workflows'
+    : 'none'; // readable workflows with no provable PR trigger: a check on the head (push workflow, external status) is NOT PR CI
+  const hasCi = repoCi === 'pr-workflows';
   const h = i.head.slice(0, 12);
   if (!hasCi) {
     return {
-      repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false,
+      repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [],
       checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
-      detail: repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows and no check ran on the PR: full suite stays on the verifier\'s seat',
+      detail: repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows: full suite stays on the verifier\'s seat',
     };
   }
   const ciGreenOnHead = ci === 'green' && headMatches;
@@ -332,7 +389,7 @@ export function decideGate(i: GateInput): GateAnswer {
     : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
     : ci === 'green' ? `CI green on ${h}` : `CI ${ci} on ${h}: do not sign PASS until green`;
   return {
-    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead,
+    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name),
     checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h} (re-run this verb after any push)`], keep: KEEP, run: [] },
     detail: why,
   };

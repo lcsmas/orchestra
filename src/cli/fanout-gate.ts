@@ -12,6 +12,8 @@ export interface GateOpts {
   head: string;
   repo?: string;
   requireChecks: string[];
+  /** ms between the two check reads (default 5000). */
+  settleMs?: number;
 }
 
 export interface GateResult extends Partial<GateAnswer> {
@@ -70,7 +72,7 @@ async function targetWorkflows(opts: GateOpts, deps: Pick<DeliverDeps, 'gh'>): P
   return out;
 }
 
-export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log'>): Promise<{ exit: number; result: GateResult }> {
+export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log' | 'sleep'>): Promise<{ exit: number; result: GateResult }> {
   const base = { branch: opts.branch, into: opts.into, head: opts.head };
   const bad = (reason: 'gh-failed' | 'bad-args', detail: string) => ({ exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked' as const, reason, detail, ...base } });
   if (!SAFE_REF.test(opts.into) || !SAFE_REF.test(opts.branch)) return bad('bad-args', 'unsafe --into/--branch');
@@ -84,9 +86,18 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
     const workflows = await targetWorkflows(opts, deps);
     const open = JSON.parse(await ghOk(['pr', 'list', '--head', opts.branch, '--base', opts.into, '--state', 'open', '--json', 'number,headRefOid', '--limit', '5'])) as { number: number; headRefOid: string }[];
     const pr = open[0] ?? null;
-    const snap = pr ? await readPrChecks(ghOk, String(pr.number), new Map()) : null;
+    const cache = new Map<string, number>();
+    let snap = pr ? await readPrChecks(ghOk, String(pr.number), cache) : null;
+    let stable = true;
+    if (snap) {
+      // Two reads apart: a fast job registered before the slow suite's workflow must not read as the whole CI (deliver has the same two-poll rule).
+      const first = JSON.stringify(snap.checks.map((c) => c.name).sort());
+      await deps.sleep(opts.settleMs ?? 5000);
+      snap = await readPrChecks(ghOk, String(pr!.number), cache);
+      stable = JSON.stringify(snap.checks.map((c) => c.name).sort()) === first;
+    }
     const answer = decideGate({
-      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks,
+      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable,
     });
     if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — repo CI is judged from the checks on the PR head only');
     return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}) } };
@@ -98,13 +109,13 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
 export const GATE_HELP = `${GATE_USAGE}
 
 gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the target has PR CI
-(a pull_request workflow on <target>, or checks already on the PR) and whether it is green on exactly
+(a pull_request workflow on <target> that provably runs for a PR into it: no paths filter, branches admit <target>, types include synchronize) and whether it is green on exactly
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
-ciGreenOnHead:true, keep the checklist's keep list. Without it (or unreadable): fullSuite:"verifier".
+ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list; ciChecks names the checks: one must run the tests (--require-check pins it). Without it (or unreadable): fullSuite:"verifier".
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
 
-export async function runGate(args: string[], deps: Pick<DeliverDeps, 'gh' | 'log'> = realDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
+export async function runGate(args: string[], deps: Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> = realDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);
   if (!p.ok) return { exit: 1, error: p.error };
   const { exit, result } = await gatePr(p.opts, deps);

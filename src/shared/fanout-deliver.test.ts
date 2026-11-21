@@ -189,7 +189,7 @@ test('workflowRunsOnPr: map, list and scalar forms are PR CI; push/dispatch-only
 });
 
 test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suite is the CI\'s, the checklist waits on it', () => {
-  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH] });
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true });
   assert.equal(g.repoCi, 'pr-workflows');
   assert.equal(g.fullSuite, 'ci');
   assert.equal(g.ciGreenOnHead, true);
@@ -199,18 +199,18 @@ test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suit
 });
 
 test('decideGate must-FAIL: no PR CI ⇒ the full suite STAYS on the verifier', () => {
-  const g = decideGate({ workflows: [PUSH_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [] });
+  const g = decideGate({ workflows: [PUSH_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true });
   assert.equal(g.repoCi, 'none');
   assert.equal(g.fullSuite, 'verifier');
   assert.equal(g.ciGreenOnHead, false);
   assert.ok(g.checklist.run.some((s) => /full test suite/.test(s)));
   assert.equal(g.checklist.skip.length, 0);
   // no workflows dir at all
-  assert.equal(decideGate({ workflows: [], pr: null, head: HEAD, checks: [] }).fullSuite, 'verifier');
+  assert.equal(decideGate({ workflows: [], pr: null, head: HEAD, checks: [], stable: true }).fullSuite, 'verifier');
 });
 
 test('decideGate must-FAIL: the PR head moved ⇒ the CI-green of the OLD head is not accepted', () => {
-  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: OLD }, head: HEAD, checks: [GH] });
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: OLD }, head: HEAD, checks: [GH], stable: true });
   assert.equal(g.ci, 'green');
   assert.equal(g.headMatches, false);
   assert.equal(g.ciGreenOnHead, false);
@@ -218,16 +218,50 @@ test('decideGate must-FAIL: the PR head moved ⇒ the CI-green of the OLD head i
 });
 
 test('decideGate: pending / red / zero-step / no-PR CI is never green-on-head; unreadable workflows fail closed to the verifier', () => {
-  const at = (checks: DeliverCheck[], pr: { headRefOid: string } | null = { headRefOid: HEAD }) => decideGate({ workflows: [PR_WF], pr, head: HEAD, checks });
+  const at = (checks: DeliverCheck[], pr: { headRefOid: string } | null = { headRefOid: HEAD }) => decideGate({ workflows: [PR_WF], pr, head: HEAD, checks, stable: true });
   assert.equal(at([{ ...GH, state: 'pending', steps: null }]).ciGreenOnHead, false);
   assert.equal(at([{ ...GH, state: 'failure', steps: null }]).ci, 'red');
   assert.equal(at([{ ...GH, steps: 0 }]).ci, 'zero-steps');
   assert.equal(at([]).ciGreenOnHead, false);
   assert.equal(at([GH], null).ci, 'no-pr');
   assert.equal(at([GH], null).ciGreenOnHead, false);
-  const unknown = decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [] });
+  const unknown = decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true });
   assert.equal(unknown.fullSuite, 'verifier');
   assert.equal(unknown.repoCi, 'unknown');
-  // workflows unreadable BUT a check ran on the PR head ⇒ CI exists
-  assert.equal(decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [GH] }).fullSuite, 'ci');
+  // unreadable workflows: a check on the head proves nothing about the suite (could be lint, a push workflow, an external status) ⇒ verifier
+  assert.equal(decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true }).fullSuite, 'verifier');
+});
+
+test('review #495 MAJOR 1: a check set that changed between two reads is not green (a fast lint must not stand for the whole CI)', () => {
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }], stable: false });
+  assert.equal(g.ciGreenOnHead, false);
+  assert.equal(g.ci, 'pending');
+});
+
+test('review #495 MAJOR 2: a workflow that cannot run for a PR into the target is not PR CI; a check on the head alone is not either', () => {
+  const wf = (pr: string) => `on:\n  pull_request:\n${pr}jobs: {}\n`;
+  assert.equal(workflowRunsOnPr(wf('    branches: [release]\n'), 'main'), false, 'branches exclude the target');
+  assert.equal(workflowRunsOnPr(wf('    branches: [release]\n'), 'release'), true);
+  assert.equal(workflowRunsOnPr(wf('    branches:\n      - main\n      - \'release/**\'\n'), 'release/1.2'), true, 'glob in a block list');
+  assert.equal(workflowRunsOnPr(wf('    branches-ignore: [main]\n'), 'main'), false);
+  assert.equal(workflowRunsOnPr(wf('    types: [closed]\n'), 'main'), false, 'closed-only never runs on a push');
+  assert.equal(workflowRunsOnPr(wf('    types: [opened, synchronize]\n'), 'main'), true);
+  assert.equal(workflowRunsOnPr(wf('    paths: [docs/**]\n'), 'main'), false, 'a path-filtered run may not exist for this diff');
+  assert.equal(workflowRunsOnPr(wf('    surprise: 1\n'), 'main'), false, 'an unread key fails closed');
+  assert.equal(workflowRunsOnPr('on: { pull_request: { branches: [main] } }\n'), false, 'a filtered flow map is unreadable: fail closed');
+  assert.equal(workflowRunsOnPr('on: { push: {}, pull_request: {} }\n'), true);
+  // a push workflow + an external status on the head is NOT PR CI
+  const g = decideGate({ workflows: ['on: push\njobs: {}\n'], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH, { name: 'codecov', state: 'success', steps: null }], stable: true });
+  assert.equal(g.fullSuite, 'verifier');
+  assert.equal(g.repoCi, 'none');
+});
+
+test('review #495 MINOR: pull_request_review is not pull_request; a matrix `- pull_request` line is not a trigger; the quoted "on" key is read', () => {
+  assert.equal(workflowRunsOnPr('on:\n  pull_request_review:\n    types: [submitted]\n'), false);
+  assert.equal(workflowRunsOnPr('on:\n  pull_request_review_comment:\n'), false);
+  assert.equal(workflowRunsOnPr('on:\n  push:\njobs:\n  t:\n    strategy:\n      matrix:\n        ev:\n          - pull_request\n'), false);
+  assert.equal(workflowRunsOnPr('on:\n  - pull_request_review\n'), false, 'list form');
+  assert.equal(workflowRunsOnPr('on: [push, pull_request_review]\n'), false, 'inline list form');
+  assert.equal(workflowRunsOnPr('"on":\n  pull_request:\n'), true);
+  assert.equal(workflowRunsOnPr('on:\n  - push\n  - pull_request\n'), true);
 });
