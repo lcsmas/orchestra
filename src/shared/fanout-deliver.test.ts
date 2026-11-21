@@ -189,7 +189,7 @@ test('workflowRunsOnPr: map, list and scalar forms are PR CI; push/dispatch-only
 });
 
 test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suite is the CI\'s, the checklist waits on it', () => {
-  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true });
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.repoCi, 'pr-workflows');
   assert.equal(g.fullSuite, 'ci');
   assert.equal(g.ciGreenOnHead, true);
@@ -199,18 +199,18 @@ test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suit
 });
 
 test('decideGate must-FAIL: no PR CI ⇒ the full suite STAYS on the verifier', () => {
-  const g = decideGate({ workflows: [PUSH_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true });
+  const g = decideGate({ workflows: [PUSH_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.repoCi, 'none');
   assert.equal(g.fullSuite, 'verifier');
   assert.equal(g.ciGreenOnHead, false);
   assert.ok(g.checklist.run.some((s) => /full test suite/.test(s)));
   assert.equal(g.checklist.skip.length, 0);
   // no workflows dir at all
-  assert.equal(decideGate({ workflows: [], pr: null, head: HEAD, checks: [], stable: true }).fullSuite, 'verifier');
+  assert.equal(decideGate({ workflows: [], pr: null, head: HEAD, checks: [], stable: true, prFiles: ['src/a.ts'] }).fullSuite, 'verifier');
 });
 
 test('decideGate must-FAIL: the PR head moved ⇒ the CI-green of the OLD head is not accepted', () => {
-  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: OLD }, head: HEAD, checks: [GH], stable: true });
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: OLD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.ci, 'green');
   assert.equal(g.headMatches, false);
   assert.equal(g.ciGreenOnHead, false);
@@ -218,22 +218,22 @@ test('decideGate must-FAIL: the PR head moved ⇒ the CI-green of the OLD head i
 });
 
 test('decideGate: pending / red / zero-step / no-PR CI is never green-on-head; unreadable workflows fail closed to the verifier', () => {
-  const at = (checks: DeliverCheck[], pr: { headRefOid: string } | null = { headRefOid: HEAD }) => decideGate({ workflows: [PR_WF], pr, head: HEAD, checks, stable: true });
+  const at = (checks: DeliverCheck[], pr: { headRefOid: string } | null = { headRefOid: HEAD }) => decideGate({ workflows: [PR_WF], pr, head: HEAD, checks, stable: true, prFiles: ['src/a.ts'] });
   assert.equal(at([{ ...GH, state: 'pending', steps: null }]).ciGreenOnHead, false);
   assert.equal(at([{ ...GH, state: 'failure', steps: null }]).ci, 'red');
   assert.equal(at([{ ...GH, steps: 0 }]).ci, 'zero-steps');
   assert.equal(at([]).ciGreenOnHead, false);
   assert.equal(at([GH], null).ci, 'no-pr');
   assert.equal(at([GH], null).ciGreenOnHead, false);
-  const unknown = decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true });
+  const unknown = decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(unknown.fullSuite, 'verifier');
   assert.equal(unknown.repoCi, 'unknown');
   // unreadable workflows: a check on the head proves nothing about the suite (could be lint, a push workflow, an external status) ⇒ verifier
-  assert.equal(decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true }).fullSuite, 'verifier');
+  assert.equal(decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] }).fullSuite, 'verifier');
 });
 
 test('review #495 MAJOR 1: a check set that changed between two reads is not green (a fast lint must not stand for the whole CI)', () => {
-  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }], stable: false });
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }], stable: false, prFiles: ['src/a.ts'] });
   assert.equal(g.ciGreenOnHead, false);
   assert.equal(g.ci, 'pending');
 });
@@ -251,7 +251,7 @@ test('review #495 MAJOR 2: a workflow that cannot run for a PR into the target i
   assert.equal(workflowRunsOnPr('on: { pull_request: { branches: [main] } }\n'), false, 'a filtered flow map is unreadable: fail closed');
   assert.equal(workflowRunsOnPr('on: { push: {}, pull_request: {} }\n'), true);
   // a push workflow + an external status on the head is NOT PR CI
-  const g = decideGate({ workflows: ['on: push\njobs: {}\n'], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH, { name: 'codecov', state: 'success', steps: null }], stable: true });
+  const g = decideGate({ workflows: ['on: push\njobs: {}\n'], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH, { name: 'codecov', state: 'success', steps: null }], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.fullSuite, 'verifier');
   assert.equal(g.repoCi, 'none');
 });
@@ -269,26 +269,26 @@ test('review #495 MINOR: pull_request_review is not pull_request; a matrix `- pu
 test('review A MAJOR: a green check that is not the suite never skips the suite — lint-only PR CI, a push check, a missing suite check', () => {
   const LINT_WF = 'on:\n  pull_request:\njobs:\n  lint:\n    steps:\n      - run: pnpm run lint\n';
   const lint: DeliverCheck = { name: 'lint', state: 'success', steps: 3 };
-  const g = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true });
+  const g = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.fullSuite, 'verifier', 'a PR workflow with no test job: nothing proves the suite ran');
   assert.equal(g.suiteSource, 'none');
   assert.equal(g.ciGreenOnHead, false);
   assert.match(g.detail, /--require-check/);
   // test job derived, but only the lint check is on the head (the suite's workflow never registered / was not created): not green
-  const two = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true });
+  const two = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(two.fullSuite, 'ci');
   assert.deepEqual(two.suiteChecks, ['ci']);
   assert.equal(two.ciGreenOnHead, false);
   assert.equal(two.ci, 'pending');
   // the suite check itself green ⇒ green; pinned name wins over the derived one
-  assert.equal(decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, GH], stable: true }).ciGreenOnHead, true);
-  const pin = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, { name: 'unit', state: 'success', steps: 4 }], stable: true, requiredChecks: ['unit'] });
+  assert.equal(decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, GH], stable: true, prFiles: ['src/a.ts'] }).ciGreenOnHead, true);
+  const pin = decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint, { name: 'unit', state: 'success', steps: 4 }], stable: true, prFiles: ['src/a.ts'], requiredChecks: ['unit'] });
   assert.equal(pin.suiteSource, 'pinned');
   assert.equal(pin.fullSuite, 'ci');
   assert.equal(pin.ciGreenOnHead, true);
-  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true, requiredChecks: ['unit'] }).ciGreenOnHead, false, 'a pinned check that is absent is not green');
+  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [lint], stable: true, prFiles: ['src/a.ts'], requiredChecks: ['unit'] }).ciGreenOnHead, false, 'a pinned check that is absent is not green');
   // a pinned check that ran 0 steps / was skipped is not green either
-  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'unit', state: 'neutral', steps: null }], stable: true, requiredChecks: ['unit'] }).ciGreenOnHead, false);
+  assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'unit', state: 'neutral', steps: null }], stable: true, prFiles: ['src/a.ts'], requiredChecks: ['unit'] }).ciGreenOnHead, false);
 });
 
 test('suiteJobsOf / suiteMatches: test jobs are derived by name or id; a reusable-workflow job and a lint job are not; matrix legs match; callers need a full-name pin', () => {
@@ -317,13 +317,13 @@ test('review A2 MINOR 1: only a run: value that EXECUTES a test command derives 
 test('verifier (b): a test job in a NON-PR workflow is not a suite check of the PR CI', () => {
   const LINT_PR = 'on:\n  pull_request:\njobs:\n  lint:\n    steps:\n      - run: pnpm run lint\n';
   const NIGHTLY = 'on:\n  schedule:\n    - cron: "0 3 * * *"\njobs:\n  nightly:\n    steps:\n      - run: pnpm test\n';
-  const g = decideGate({ workflows: [LINT_PR, NIGHTLY], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }, { name: 'nightly', state: 'success', steps: 3 }], stable: true });
+  const g = decideGate({ workflows: [LINT_PR, NIGHTLY], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }, { name: 'nightly', state: 'success', steps: 3 }], stable: true, prFiles: ['src/a.ts'] });
   assert.equal(g.suiteSource, 'none');
   assert.equal(g.fullSuite, 'verifier');
 });
 
 test('review A2 MINOR 2/4 (pure): a PR touching .github/ and an absent suite check are named', () => {
-  const base = { workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true } as const;
+  const base = { workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true, prFiles: ['src/a.ts'] } as const;
   assert.equal(decideGate({ ...base, checks: [GH], prFiles: ['.github/workflows/ci.yml'] }).fullSuite, 'verifier');
   assert.equal(decideGate({ ...base, checks: [GH], prFiles: ['src/a.ts'] }).fullSuite, 'ci');
   const abs = decideGate({ ...base, checks: [{ name: 'lint', state: 'success', steps: 3 }] });
@@ -339,4 +339,50 @@ test('review A MINOR: a negated branch pattern and pull_request_target fail clos
   assert.equal(workflowRunsOnPr(wf("['**']"), 'release/1'), true);
   assert.equal(workflowRunsOnPr('on:\n  pull_request_target:\n    branches: [main]\n', 'main'), false);
   assert.equal(workflowRunsOnPr('on: [push, pull_request_target]\n'), false);
+});
+
+test('pre-review MAJOR 1: a command that merely MENTIONS a runner, or runs it without running tests, is not the suite', () => {
+  const step = (cmd: string) => `jobs:\n  t:\n    steps:\n      - run: ${cmd}\n`;
+  for (const cmd of ['pnpm test:lint', 'pnpm run test:e2e', 'pip install pytest', 'npm install -g jest', 'pnpm test --passWithNoTests', 'npx jest --listTests', 'pytest --collect-only', 'cd x && echo pnpm test', 'echo pnpm test']) {
+    assert.deepEqual(suiteJobsOf(step(cmd)), [], cmd);
+  }
+  // controls (must-PASS): the plain invocations derive, also behind a setup && chain and with ordinary flags
+  for (const cmd of ['pnpm test', 'pnpm run test', 'npm test -- --ci', 'npx jest --ci --coverage', 'pytest -q tests/', 'go test ./...', 'cargo test --workspace', 'pnpm install && pnpm test', 'yarn test']) {
+    assert.deepEqual(suiteJobsOf(step(cmd)), ['t'], cmd);
+  }
+});
+
+test('pre-review MAJOR 2: a masked or continued test command is not the suite (|| true / || : / || echo / pipe / set +e / ; true / a continuation line)', () => {
+  const one = (cmd: string) => `jobs:\n  t:\n    steps:\n      - run: ${cmd}\n`;
+  for (const cmd of ['pnpm test || :', 'pnpm test || echo ignored', 'pnpm test | tee out.log', 'set +e; pnpm test', 'pnpm test; true', 'pnpm test &', 'pnpm test && echo ok || true', 'pnpm test && sleep 1 &']) assert.deepEqual(suiteJobsOf(one(cmd)), [], cmd);
+  const lit = (body: string) => `jobs:\n  t:\n    steps:\n      - run: |\n${body}`;
+  assert.deepEqual(suiteJobsOf(lit('          pnpm test \\\n            || true\n')), [], 'a `\\` continuation carries the || true');
+  assert.deepEqual(suiteJobsOf(lit('          set +e\n          pnpm test\n')), [], 'set +e on its own line masks the later test: the whole step is out');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: >\n          pnpm test\n          || true\n'), [], 'a folded scalar is ONE command');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: pnpm test\n          --ci\n'), ['t'], 'a plain multi-line scalar continues the same command (control)');
+  assert.deepEqual(suiteJobsOf(lit('          pnpm install\n          pnpm test\n')), ['t'], 'control: two literal lines');
+});
+
+test('pre-review MINOR: if: and continue-on-error are read PER STEP; an unrelated step\'s continue-on-error does not drop the job', () => {
+  const j = (stepLines: string, jobLines = '') => `jobs:\n  t:\n${jobLines}    steps:\n${stepLines}`;
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n        if: false\n')), []);
+  assert.deepEqual(suiteJobsOf(j("      - run: pnpm test\n        if: github.event_name != 'pull_request'\n")), []);
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n        if: always()\n')), ['t'], 'control: a benign condition');
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n        continue-on-error: "true"\n')), []);
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n      - uses: actions/upload-artifact@v4\n        continue-on-error: true\n')), ['t'], 'scoped to its own step');
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n', "    if: github.ref == 'refs/heads/main'\n")), [], 'a conditional job');
+  assert.deepEqual(suiteJobsOf(j('      - run: pnpm test\n', '    continue-on-error: true\n')), []);
+});
+
+test('pre-review MINOR: a pinned name is EXACT like deliver (a matrix leg satisfies a derived name only); an unread file list fails closed', () => {
+  assert.equal(suiteMatches('test (18)', 'test', true), false);
+  assert.equal(suiteMatches('test (18)', 'test', false), true);
+  const base = { workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true, prFiles: ['src/a.ts'] } as const;
+  const legs: DeliverCheck[] = [{ name: 'test (18)', state: 'success', steps: 4 }];
+  assert.equal(decideGate({ ...base, checks: legs, requiredChecks: ['test'] }).ciGreenOnHead, false, 'pinned `test` vs only `test (18)`: deliver would say missing');
+  assert.deepEqual(decideGate({ ...base, checks: legs, requiredChecks: ['test'] }).absentSuiteChecks, ['test']);
+  const noFiles = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true, checks: [GH] });
+  assert.equal(noFiles.fullSuite, 'verifier');
+  assert.match(noFiles.detail, /file list was not read/);
+  assert.equal(decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true, checks: [GH], prFiles: null }).fullSuite, 'verifier');
 });
