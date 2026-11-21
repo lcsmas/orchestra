@@ -33,6 +33,7 @@ import {
   verbRunConfirmReprise,
   type RunPauseDeps,
   unknownRunRefusalMessage,
+  unknownRunReadRefusalMessage,
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import { runDeliver } from './fanout-deliver.ts';
@@ -1729,8 +1730,10 @@ async function main(argv: string[]): Promise<void> {
         fail(`orchestra check: --limit must be a positive integer, got ${JSON.stringify(lim.value)}`);
       }
       const id = busIdentityOrFail({ run: run.value, as: as.value });
-      const { db, bus } = await openBusForVerb();
+      const { db, bus, runExists } = await openBusForVerb();
       try {
+        // #496 — a run id with no row reads as an EMPTY batch (== "nothing pending"): refuse it, naming the run a plain `check` reads.
+        if (!runExists(db, id.runId)) fail(unknownRunReadRefusalMessage(id.runId, resolveRunId(undefined, liveEnv())));
         // `check` is a read (plus the reader's OWN ack) — not a coordinator
         // mutation, so it is never fenced (#128): no generation, switch off.
         // `--markdown` opts IN to the human render; JSON is the default because

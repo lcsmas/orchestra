@@ -100,6 +100,21 @@ export function unknownRunRefusalMessage(runId: string): string {
 }
 
 /**
+ * #496 — the refusal a `check` prints when `--run` names a run with NO row in `runs`. Reading a non-run used to succeed with an EMPTY batch
+ * (count 0), indistinguishable from "nothing pending": a fresh context that polled a run NAME copied from its handoff summary never saw
+ * the verdict sitting in the real run. `ownRunId` = the run a plain `check` reads (the remedy), when known.
+ */
+export function unknownRunReadRefusalMessage(runId: string, ownRunId?: string | null): string {
+  return (
+    `orchestra check: refused — run ${JSON.stringify(runId)} has no row in the bus 'runs' table (a run NAME or a stale id, not a run id), ` +
+    `so reading it would report "nothing pending" while mail waits in the real run.\n` +
+    (ownRunId && ownRunId !== runId
+      ? `  fix: your run id is ${ownRunId} — run 'orchestra check' (it reads that run) or 'orchestra check --run ${ownRunId}'.`
+      : `  fix: run 'orchestra check' with no --run (it reads your own run), or pass a run id printed by 'orchestra bus-status'.`)
+  );
+}
+
+/**
  * #437 — the refusal when a send / ask / gate names a run that is CLOSED (its coordinator was archived or deleted).
  * Names the run, says nothing was written (refused, not parked), and what the sender can do. Keyed here so the verbs
  * and their tests read one string.

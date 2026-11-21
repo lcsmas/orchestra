@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  HANDOFF_SUMMARY_MAX_CHARS, HandoffTurnCounter, composeDroppedNotice, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError,
+  HANDOFF_SUMMARY_MAX_CHARS, HandoffTurnCounter, composeBusFrame, composeDroppedNotice, composeNudge, composeOpeningTurn, decideHandoffRun, handoffSummaryError,
   parseHandoffBound, resolveHandoffBound, validateHandoffSummary,
 } from './handoff.ts';
 
@@ -169,4 +169,13 @@ test('m4: nudge and opening frame warn that background runs are stopped with the
   const n = composeDroppedNotice('its context already ended another way');
   assert.match(n, /did NOT run \(its context already ended another way\)/);
   assert.match(n, /Run `orchestra handoff --summary-file <path>` again/);
+});
+
+test('#496 composeBusFrame names the real run id; pending runs become ordered `check --run` lines (sorted, deduped); none pending ⇒ no order', () => {
+  const none = composeBusFrame({ runId: 'run-A', pendingRunIds: [] });
+  assert.match(none, /Your run id is run-A/);
+  assert.doesNotMatch(none, /PENDING|^orchestra check --run/m);
+  const some = composeBusFrame({ runId: 'run-A', pendingRunIds: ['run-B', 'run-A', 'run-B'] });
+  assert.match(some, /PENDING/);
+  assert.deepEqual(some.split('\n').filter((l) => l.startsWith('orchestra check --run ')), ['orchestra check --run run-A', 'orchestra check --run run-B']);
 });
