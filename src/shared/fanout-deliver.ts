@@ -99,6 +99,39 @@ export type Decision =
 
 const short = (s: string): string => s.slice(0, 12);
 
+/** #495 — the ONE reading of "is this PR's CI green" (deliver merges on it, `fanout gate` tells the verifier it may skip the full suite on it). */
+export type CiVerdict =
+  | { kind: 'none' }
+  | { kind: 'red'; detail: string }
+  | { kind: 'missing'; names: string[] }
+  | { kind: 'pending'; detail: string }
+  | { kind: 'unstable'; detail: string }
+  | { kind: 'zero-steps'; detail: string }
+  | { kind: 'green' };
+
+export function ciVerdict(checks: DeliverCheck[], required: string[], stable: boolean): CiVerdict {
+  if (checks.length === 0) return { kind: 'none' };
+  const failed = checks.filter((c) => c.state === 'failure');
+  if (failed.length > 0) return { kind: 'red', detail: `red: ${failed.map((c) => c.name).join(', ')}` };
+  const missing = required.filter((n) => !checks.some((c) => c.name === n));
+  if (missing.length > 0) return { kind: 'missing', names: missing };
+  const pending = checks.filter((c) => c.state === 'pending');
+  if (pending.length > 0) return { kind: 'pending', detail: `${pending.length}/${checks.length} check(s) pending` };
+  if (!stable) return { kind: 'unstable', detail: 'the check set changed since the last poll — confirming it is complete' };
+  // All terminal and none red. Green needs ≥1 SUCCESS check, and an Actions check that passed must have run ≥1 step.
+  const succeeded = checks.filter((c) => c.state === 'success');
+  const empty = succeeded.filter((c) => c.steps === 0);
+  if (empty.length > 0) return { kind: 'zero-steps', detail: `green with 0 steps: ${empty.map((c) => c.name).join(', ')}` };
+  // A REQUIRED check must have actually run: skipped/neutral is "ran nothing", the green this rule exists to refuse.
+  const notRun = checks.filter((c) => required.includes(c.name) && c.state !== 'success');
+  if (notRun.length > 0) return { kind: 'zero-steps', detail: `required check(s) skipped/neutral, never ran: ${notRun.map((c) => c.name).join(', ')}` };
+  // Without --require-check, green needs ≥1 check with COUNTED steps: an external status / non-Actions check (steps null) alone proves nothing ran.
+  if (required.length === 0 && !succeeded.some((c) => c.steps !== null && c.steps > 0)) {
+    return { kind: 'zero-steps', detail: 'no Actions check with counted steps passed (all skipped/neutral/external) — name external CI with --require-check' };
+  }
+  return { kind: 'green' };
+}
+
 /** The decision. Order matters: cheap/permanent refusals first, then the head, then CI. A refusal never depends on a wait. */
 export function decideDelivery(i: DecideInput): Decision {
   const { pr, checks, verdict } = i;
@@ -137,32 +170,23 @@ export function decideDelivery(i: DecideInput): Decision {
   }
   if (pr.mergeable === 'CONFLICTING') return { action: 'refuse', reason: 'merge-conflict', detail: 'the PR conflicts with its base' };
 
-  if (checks.length === 0) {
-    if (i.waitedMs < i.noChecksGraceMs) return { action: 'wait', why: 'no checks registered yet' };
-    return { action: 'refuse', reason: 'no-checks', detail: `0 checks on ${short(pr.headRefOid)} after ${Math.round(i.waitedMs / 1000)}s — a PR with no CI is not green` };
-  }
-  const failed = checks.filter((c) => c.state === 'failure');
-  if (failed.length > 0) return { action: 'refuse', reason: 'ci-red', detail: `red: ${failed.map((c) => c.name).join(', ')}` };
-  const missing = (i.requiredChecks ?? []).filter((n) => !checks.some((c) => c.name === n));
-  if (missing.length > 0) {
-    if (i.waitedMs < i.noChecksGraceMs) return { action: 'wait', why: `required check(s) not registered: ${missing.join(', ')}` };
-    return { action: 'refuse', reason: 'no-checks', detail: `required check(s) never registered: ${missing.join(', ')}` };
-  }
-  const pending = checks.filter((c) => c.state === 'pending');
-  if (pending.length > 0) return { action: 'wait', why: `${pending.length}/${checks.length} check(s) pending` };
-  if (!i.stable) return { action: 'wait', why: 'the check set changed since the last poll — confirming it is complete' };
-
-  // All terminal and none red. Green needs ≥1 SUCCESS check, and an Actions check that passed must have run ≥1 step.
-  const succeeded = checks.filter((c) => c.state === 'success');
-  const empty = succeeded.filter((c) => c.steps === 0);
-  if (empty.length > 0) return { action: 'refuse', reason: 'zero-steps', detail: `green with 0 steps: ${empty.map((c) => c.name).join(', ')}` };
-  // A REQUIRED check must have actually run: skipped/neutral is "ran nothing", the green this rule exists to refuse.
-  const required = i.requiredChecks ?? [];
-  const notRun = checks.filter((c) => required.includes(c.name) && c.state !== 'success');
-  if (notRun.length > 0) return { action: 'refuse', reason: 'zero-steps', detail: `required check(s) skipped/neutral, never ran: ${notRun.map((c) => c.name).join(', ')}` };
-  // Without --require-check, green needs ≥1 check with COUNTED steps: an external status / non-Actions check (steps null) alone proves nothing ran.
-  if (required.length === 0 && !succeeded.some((c) => c.steps !== null && c.steps > 0)) {
-    return { action: 'refuse', reason: 'zero-steps', detail: 'no Actions check with counted steps passed (all skipped/neutral/external) — name external CI with --require-check' };
+  const c = ciVerdict(checks, i.requiredChecks ?? [], i.stable);
+  switch (c.kind) {
+    case 'none':
+      if (i.waitedMs < i.noChecksGraceMs) return { action: 'wait', why: 'no checks registered yet' };
+      return { action: 'refuse', reason: 'no-checks', detail: `0 checks on ${short(pr.headRefOid)} after ${Math.round(i.waitedMs / 1000)}s — a PR with no CI is not green` };
+    case 'red':
+      return { action: 'refuse', reason: 'ci-red', detail: c.detail };
+    case 'missing':
+      if (i.waitedMs < i.noChecksGraceMs) return { action: 'wait', why: `required check(s) not registered: ${c.names.join(', ')}` };
+      return { action: 'refuse', reason: 'no-checks', detail: `required check(s) never registered: ${c.names.join(', ')}` };
+    case 'pending':
+    case 'unstable':
+      return { action: 'wait', why: c.detail };
+    case 'zero-steps':
+      return { action: 'refuse', reason: 'zero-steps', detail: c.detail };
+    case 'green':
+      break;
   }
   return { action: 'merge', head: i.verifiedHead };
 }
@@ -242,4 +266,74 @@ export function suiteCommandFor(pm: PackageManager | null): string {
 export function combinedSuiteCommand(into: string, suiteCmd = suiteCommandFor(null)): string {
   if (!SAFE_REF.test(into)) throw new Error(`unsafe target ref: ${into}`);
   return `git fetch origin ${into} && git checkout --detach origin/${into} && git rev-list --count HEAD..origin/${into} && ${suiteCmd}`;
+}
+
+// ---- #495 — `orchestra fanout gate`: the verifier's checklist is DERIVED, not prose -------------------------------------------------
+
+/** True when a workflow file runs on pull requests (`on: pull_request` in the scalar, list or map form). A `workflow_dispatch`/`push`-only file is not PR CI. */
+export function workflowRunsOnPr(yaml: string): boolean {
+  const text = yaml.replace(/#.*$/gm, '');
+  if (/^on:\s*(\[[^\]]*)?['"]?pull_request(_target)?['"]?/m.test(text)) return true;
+  if (/^on:\s*\{[^}]*pull_request/m.test(text)) return true;
+  return /^\s*(-\s*)?['"]?pull_request(_target)?['"]?\s*(:|,|\]|$)/m.test(text);
+}
+
+export type GateInput = {
+  /** Workflow files of the TARGET branch (null = the listing could not be read). */
+  workflows: string[] | null;
+  /** The open PR `<branch> → <target>` (null = none opened yet). */
+  pr: { headRefOid: string } | null;
+  /** The head the verifier checked out and verifies. Full 40-hex. */
+  head: string;
+  checks: DeliverCheck[];
+  requiredChecks?: string[];
+};
+
+export type GateAnswer = {
+  /** `pr-workflows` = the target has a pull_request workflow (or checks already run on the PR head); `none` = it has not; `unknown` = could not read. */
+  repoCi: 'pr-workflows' | 'checks-on-head' | 'none' | 'unknown';
+  /** CI state of the PR's CURRENT head — and only that head. */
+  ci: 'no-pr' | 'none' | 'pending' | 'red' | 'zero-steps' | 'green';
+  /** The PR head right now (null without a PR). */
+  prHead: string | null;
+  /** true ⇒ the CI answer above is about the head the verifier verifies. false ⇒ a CI-green of another head is NOT accepted. */
+  headMatches: boolean;
+  /** WHO runs the full test suite: `ci` (the verifier does not) / `verifier` (its seat — no PR CI to trust, or could not tell). */
+  fullSuite: 'ci' | 'verifier';
+  /** The verifier may sign PASS on the CI side ONLY when true: PR CI exists, is green, on exactly `head`. Always false when fullSuite is `verifier`. */
+  ciGreenOnHead: boolean;
+  checklist: { skip: string[]; wait: string[]; keep: string[]; run: string[] };
+  detail: string;
+};
+
+const KEEP = ['real entry-point drive of the changed flow', 'mutants of every changed clause', 'browser / UI drive for a user-facing surface', 'rigs the ticket names', 'anything the CI checks do not cover'];
+
+/** Pure. Fail closed: every doubt (no workflow listing, no PR, a moved head, red/pending/zero-step CI) leaves the verifier NOT trusting CI. */
+export function decideGate(i: GateInput): GateAnswer {
+  const prHead = i.pr?.headRefOid ?? null;
+  const headMatches = prHead === i.head;
+  const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, i.requiredChecks ?? [], true) : null;
+  const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' || verdict!.kind === 'missing' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
+  const repoCi: GateAnswer['repoCi'] =
+    i.workflows === null ? (i.checks.length > 0 ? 'checks-on-head' : 'unknown')
+    : i.workflows.some(workflowRunsOnPr) ? 'pr-workflows'
+    : i.checks.length > 0 ? 'checks-on-head' : 'none';
+  const hasCi = repoCi === 'pr-workflows' || repoCi === 'checks-on-head';
+  const h = i.head.slice(0, 12);
+  if (!hasCi) {
+    return {
+      repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false,
+      checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
+      detail: repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows and no check ran on the PR: full suite stays on the verifier\'s seat',
+    };
+  }
+  const ciGreenOnHead = ci === 'green' && headMatches;
+  const why = !i.pr ? 'no PR open: `orchestra fanout open` first (CI runs while you gate)'
+    : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
+    : ci === 'green' ? `CI green on ${h}` : `CI ${ci} on ${h}: do not sign PASS until green`;
+  return {
+    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead,
+    checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h} (re-run this verb after any push)`], keep: KEEP, run: [] },
+    detail: why,
+  };
 }

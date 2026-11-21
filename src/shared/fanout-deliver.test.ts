@@ -169,3 +169,65 @@ test('#487 detectPackageManager: packageManager field wins over the lockfile; lo
   assert.equal(detectPackageManager('{"name":"x"}', ['package.json', 'README.md']), null);
   assert.deepEqual(['pnpm', 'yarn', 'npm', 'bun', null].map((m) => suiteCommandFor(m as never)), ['pnpm run test', 'yarn test', 'npm test', 'bun run test', 'npm test']);
 });
+
+// ---- #495 decideGate / workflowRunsOnPr ---------------------------------------------------------------------------------------------
+import { decideGate, workflowRunsOnPr, type DeliverCheck } from './fanout-deliver.ts';
+
+const PR_WF = 'name: ci\non:\n  pull_request:\n    branches: [main]\njobs:\n  t:\n    runs-on: ubuntu-latest\n';
+const PUSH_WF = 'name: release\non:\n  push:\n    tags: [v*]\n  workflow_dispatch:\njobs: {}\n';
+const GH: DeliverCheck = { name: 'ci', state: 'success', steps: 5 };
+const HEAD = 'a'.repeat(40);
+const OLD = 'c'.repeat(40);
+
+test('workflowRunsOnPr: map, list and scalar forms are PR CI; push/dispatch-only and a commented trigger are not', () => {
+  assert.equal(workflowRunsOnPr(PR_WF), true);
+  assert.equal(workflowRunsOnPr('on: [push, pull_request]\n'), true);
+  assert.equal(workflowRunsOnPr('on: pull_request\n'), true);
+  assert.equal(workflowRunsOnPr('on:\n  pull_request_target:\n'), true);
+  assert.equal(workflowRunsOnPr(PUSH_WF), false);
+  assert.equal(workflowRunsOnPr('on:\n  push:\n  # pull_request:\njobs:\n  a:\n    if: github.event_name == \'pull_request\'\n'), false);
+});
+
+test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suite is the CI\'s, the checklist waits on it', () => {
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH] });
+  assert.equal(g.repoCi, 'pr-workflows');
+  assert.equal(g.fullSuite, 'ci');
+  assert.equal(g.ciGreenOnHead, true);
+  assert.ok(g.checklist.skip.some((s) => /full test suite/.test(s)));
+  assert.equal(g.checklist.run.length, 0);
+  assert.ok(g.checklist.keep.some((k) => /mutants/.test(k)) && g.checklist.keep.some((k) => /entry-point/.test(k)));
+});
+
+test('decideGate must-FAIL: no PR CI ⇒ the full suite STAYS on the verifier', () => {
+  const g = decideGate({ workflows: [PUSH_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [] });
+  assert.equal(g.repoCi, 'none');
+  assert.equal(g.fullSuite, 'verifier');
+  assert.equal(g.ciGreenOnHead, false);
+  assert.ok(g.checklist.run.some((s) => /full test suite/.test(s)));
+  assert.equal(g.checklist.skip.length, 0);
+  // no workflows dir at all
+  assert.equal(decideGate({ workflows: [], pr: null, head: HEAD, checks: [] }).fullSuite, 'verifier');
+});
+
+test('decideGate must-FAIL: the PR head moved ⇒ the CI-green of the OLD head is not accepted', () => {
+  const g = decideGate({ workflows: [PR_WF], pr: { headRefOid: OLD }, head: HEAD, checks: [GH] });
+  assert.equal(g.ci, 'green');
+  assert.equal(g.headMatches, false);
+  assert.equal(g.ciGreenOnHead, false);
+  assert.match(g.detail, /another head is not accepted/);
+});
+
+test('decideGate: pending / red / zero-step / no-PR CI is never green-on-head; unreadable workflows fail closed to the verifier', () => {
+  const at = (checks: DeliverCheck[], pr: { headRefOid: string } | null = { headRefOid: HEAD }) => decideGate({ workflows: [PR_WF], pr, head: HEAD, checks });
+  assert.equal(at([{ ...GH, state: 'pending', steps: null }]).ciGreenOnHead, false);
+  assert.equal(at([{ ...GH, state: 'failure', steps: null }]).ci, 'red');
+  assert.equal(at([{ ...GH, steps: 0 }]).ci, 'zero-steps');
+  assert.equal(at([]).ciGreenOnHead, false);
+  assert.equal(at([GH], null).ci, 'no-pr');
+  assert.equal(at([GH], null).ciGreenOnHead, false);
+  const unknown = decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [] });
+  assert.equal(unknown.fullSuite, 'verifier');
+  assert.equal(unknown.repoCi, 'unknown');
+  // workflows unreadable BUT a check ran on the PR head ⇒ CI exists
+  assert.equal(decideGate({ workflows: null, pr: { headRefOid: HEAD }, head: HEAD, checks: [GH] }).fullSuite, 'ci');
+});

@@ -176,6 +176,33 @@ export async function suiteCommandForTarget(opts: Pick<DeliverOpts, 'into' | 're
   return { cmd: suiteCommandFor(null), source: 'fallback' };
 }
 
+/** One snapshot of a PR: its state/head and its checks, an Actions check's step count read from the run (cached once terminal). Shared by `deliver` and `fanout gate` (#495). */
+export async function readPrChecks(ghOk: (args: string[]) => Promise<string>, prId: string, stepCache: Map<string, number>): Promise<{ view: PrSnapshot; checks: DeliverCheck[] }> {
+  const view = JSON.parse(
+    await ghOk(['pr', 'view', prId, '--json', 'state,baseRefName,headRefOid,mergeable,statusCheckRollup']),
+  ) as PrSnapshot & { statusCheckRollup?: RollupItem[] };
+  const rollup = view.statusCheckRollup ?? [];
+  const stepsByUrl = new Map<string, number | null>();
+  for (const it of rollup) {
+    const url = it.detailsUrl ?? it.targetUrl;
+    const job = parseActionsJobUrl(url);
+    if (!url || !job || (it.conclusion ?? '').toUpperCase() !== 'SUCCESS' || stepsByUrl.has(url)) continue;
+    const key = `${job.run}/${job.job ?? ''}`;
+    let n = stepCache.get(key);
+    if (n === undefined) {
+      // Fail closed: an Actions job whose steps cannot be read is could-not-check, never "no steps to worry about".
+      const jobs = JSON.parse(await ghOk(['run', 'view', job.run, '--json', 'jobs'])) as { jobs?: { databaseId?: number; steps?: { name?: string; conclusion?: string }[] }[] };
+      const mine = (jobs.jobs ?? []).filter((j) => job.job === null || String(j.databaseId) === job.job);
+      if (mine.length === 0) throw new GhError(`gh run view ${job.run}: job ${job.job} not found`);
+      n = mine.reduce((a, j) => a + (j.steps ?? []).filter((s) => (s.conclusion ?? '').toLowerCase() === 'success' && isUserStep(s.name)).length, 0);
+      stepCache.set(key, n);
+    }
+    stepsByUrl.set(url, n);
+  }
+  const checks: DeliverCheck[] = rollup.map((it) => normaliseRollupItem(it, (u) => (u && stepsByUrl.has(u) ? (stepsByUrl.get(u) as number | null) : null)));
+  return { view, checks };
+}
+
 export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
   const out = await deliverGated(opts, deps);
   if (out.result.combinedSuite === undefined) return out;
@@ -260,28 +287,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     const t0 = deps.now();
     let prevNames: string | null = null;
     for (;;) {
-      const view = JSON.parse(
-        await ghOk(['pr', 'view', prId, '--json', 'state,baseRefName,headRefOid,mergeable,statusCheckRollup']),
-      ) as PrSnapshot & { statusCheckRollup?: RollupItem[] };
-      const rollup = view.statusCheckRollup ?? [];
-      const stepsByUrl = new Map<string, number | null>();
-      for (const it of rollup) {
-        const url = it.detailsUrl ?? it.targetUrl;
-        const job = parseActionsJobUrl(url);
-        if (!url || !job || (it.conclusion ?? '').toUpperCase() !== 'SUCCESS' || stepsByUrl.has(url)) continue;
-        const key = `${job.run}/${job.job ?? ''}`;
-        let n = stepCache.get(key);
-        if (n === undefined) {
-          // Fail closed: an Actions job whose steps cannot be read is could-not-check, never "no steps to worry about".
-          const jobs = JSON.parse(await ghOk(['run', 'view', job.run, '--json', 'jobs'])) as { jobs?: { databaseId?: number; steps?: { name?: string; conclusion?: string }[] }[] };
-          const mine = (jobs.jobs ?? []).filter((j) => job.job === null || String(j.databaseId) === job.job);
-          if (mine.length === 0) throw new GhError(`gh run view ${job.run}: job ${job.job} not found`);
-          n = mine.reduce((a, j) => a + (j.steps ?? []).filter((s) => (s.conclusion ?? '').toLowerCase() === 'success' && isUserStep(s.name)).length, 0);
-          stepCache.set(key, n);
-        }
-        stepsByUrl.set(url, n);
-      }
-      const checks: DeliverCheck[] = rollup.map((it) => normaliseRollupItem(it, (u) => (u && stepsByUrl.has(u) ? (stepsByUrl.get(u) as number | null) : null)));
+      const { view, checks } = await readPrChecks(ghOk, prId, stepCache);
       const names = JSON.stringify(checks.map((c) => c.name).sort());
       const stable = names === prevNames;
       prevNames = names;
