@@ -7,7 +7,9 @@
 //   2. refuse on BLOCKING > 0 or MAJOR > 0 in the review verdict file;
 //   3. refuse when the PR head != the verified head — and the merge call itself carries that head
 //      (`gh pr merge --match-head-commit`), so check and act are ONE call, never check-then-act;
-//   4. after N merges the coordinator runs the combined suite on the target (`combinedSuiteCommand`).
+//   4. after N merges the coordinator runs the combined suite on the target (`combinedSuiteCommand`);
+//   5. (#506) a dependent merges only after every upstream merged, and only on the upstream content it was built on and gated against
+//      (`decideUpstreams`): a dependent may be nominated and gated EARLY, but never merges stale or out of order.
 
 /** Exit codes of the verb — the 0/2/1 split of `verify-landed`: a refusal is an ANSWER, could-not-check is not. */
 export const DELIVER_EXIT = { merged: 0, refused: 2, unchecked: 1 } as const;
@@ -44,6 +46,52 @@ export function parseReviewVerdict(raw: string): ParsedVerdict {
     ok: true,
     verdict: { round: o.round as number, blocking: o.blocking as number, major: o.major as number, minor: o.minor as number, head: o.head },
   };
+}
+
+/** #506 — what GitHub + git say about ONE upstream of the dependent being delivered (the CLI gathers it, this module only judges it). */
+export interface UpstreamFacts {
+  id: string;
+  /** `mergedAccepted` in the state: a human said it counts as merged (e.g. landed in a stacked base) — nothing is checked for it. */
+  accepted: boolean;
+  /** The upstream head the dependent was built on and gated against (state `builtOn`); null = built after the upstream merged (nothing stacked). */
+  builtOn: string | null;
+  /** The upstream's PR as GitHub reports it now; null = no PR found for it. */
+  pr: { state: 'OPEN' | 'MERGED' | 'CLOSED'; baseRefName: string; headRefOid: string; mergeCommit: string | null } | null;
+  /** tree(builtOn) == tree(the head the upstream PR merged at). null = not computed (the shas are equal, or there is no builtOn). */
+  sameTree: boolean | null;
+  /** The dependent's verified head contains `builtOn` (stacked on it) / the upstream's merge commit (rebased onto the target after the merge). */
+  dependentOnBuiltOn: boolean | null;
+  dependentOnMerge: boolean | null;
+}
+
+export type UpstreamDecision =
+  | { ok: true }
+  | { ok: false; reason: 'upstream-not-merged' | 'upstream-changed'; detail: string };
+
+const sameShaPrefix = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+
+/**
+ * #506 — the order + content rule, pure. Per upstream: (1) it must be MERGED into `into` (else `upstream-not-merged`: a dependent never
+ * merges first); (2) when the dependent recorded the upstream head it was built on, the upstream must have merged THAT content — same head, or
+ * same tree (a rebase-merge rewrites the target's shas, never the PR head) — else the dependent's verdict is void (`upstream-changed`); (3) the
+ * dependent's verified head must sit on it: contain the built-on head, or contain the upstream's merge commit.
+ */
+export function decideUpstreams(facts: UpstreamFacts[], into: string): UpstreamDecision {
+  for (const f of facts) {
+    if (f.accepted) continue;
+    if (!f.pr) return { ok: false, reason: 'upstream-not-merged', detail: `upstream ${f.id}: no PR found, so it is not merged into ${into}` };
+    if (f.pr.state !== 'MERGED' || f.pr.baseRefName !== into) {
+      return { ok: false, reason: 'upstream-not-merged', detail: `upstream ${f.id} is not merged into ${into} (its PR is ${f.pr.state} on ${f.pr.baseRefName}): a dependent merges only after its upstream` };
+    }
+    if (f.builtOn === null) continue; // built after the upstream merged: nothing is stacked, the merged-ness is the whole rule
+    if (!sameShaPrefix(f.builtOn, f.pr.headRefOid) && f.sameTree !== true) {
+      return { ok: false, reason: 'upstream-changed', detail: `upstream ${f.id} merged at ${short(f.pr.headRefOid)} but this ticket was built and gated on ${short(f.builtOn)} (different content): its verdict is void — rebase onto the merged upstream, re-gate` };
+    }
+    if (f.dependentOnBuiltOn !== true && f.dependentOnMerge !== true) {
+      return { ok: false, reason: 'upstream-changed', detail: `the verified head does not sit on upstream ${f.id}: it contains neither ${short(f.builtOn)} (the head it was gated on) nor the upstream's merge commit — rebase and re-gate` };
+    }
+  }
+  return { ok: true };
 }
 
 /** One check on the PR head. `steps` = job step count when known (GitHub Actions job), `null` = not countable (external status). */
@@ -89,7 +137,9 @@ export type RefuseReason =
   | 'merge-conflict'
   | 'no-checks'
   | 'zero-steps'
-  | 'ci-red';
+  | 'ci-red'
+  | 'upstream-not-merged'
+  | 'upstream-changed';
 
 export type Decision =
   | { action: 'already-merged' }

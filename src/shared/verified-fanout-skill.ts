@@ -123,7 +123,6 @@ Coordinator-side rules:
   reports and every destructive order, never a ticket's status/branch/PR/head.
 - **Edit a ledger table row with ¤scripts/ledger-set¤, never ad-hoc ¤str.replace¤**: ¤ledger-set [--add-row] REPO ISSUE SECTION KEY ROW¤ (refuses on absent/duplicate key or a body changed since its read).
 - **The ledger carries the ¤ledger¤ label** (open ledgers = live fleets; ¤fleet-status¤ lists by it); its header names ONE writer per section (LEAD: Decisions, OPS: the rest) and the escalation criteria.
-- **Gate the dependent branch of a stack LAST.**
 
 ## 0b. Budget: messages and gates
 
@@ -180,10 +179,8 @@ goal, files/areas, definition of done, ledger pointer. The COMMON CONTRACT (the 
 pings with ¤worker_done --cap "$(orchestra token)"¤", "outward actions — merge, master push, release, PR — stay with the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
 the Briefing section of ledger #N — pull it first".
 
-**A dependent track starts at dispatch, not at its upstream's merge.** Freeze the shared interface in the ledger; the dependent builds against a stub. ¤orchestra fanout state set <ticket> --depends-on
-<upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤; ¤nominated¤, ¤gated¤
-or ¤merged¤ is REFUSED ("upstream … not merged yet") — keep building, rebase and nominate
-after the upstream merges. An upstream changing the frozen interface posts one "what changed" line to its dependents.
+**A dependent track starts at dispatch and is gated on its upstream's candidate, not its merge.** Freeze the interface in the ledger; it builds against a stub. ¤orchestra fanout state set <ticket> --depends-on
+<upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤. Once the upstream has a verified candidate, rebase on its head, ¤--built-on <upstream>=<head>¤, nominate: ¤fanout gate --ticket <id>¤ / ¤resume¤ say wait or re-gate; ¤deliver¤ enforces order and content. An upstream changing the frozen interface posts one "what changed" line to its dependents.
 
 **The spawner names the child at spawn** — ¤orchestra spawn --name <rôle>-<object>-<ticket>¤
 (required; the ¤orchestra-spawn¤ skill and Orchestra ¤CONTEXT.md¤ **Nom d'espace**) — the prefix IS the

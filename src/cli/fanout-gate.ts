@@ -2,6 +2,9 @@
 // READ-ONLY (gh `api`/`pr list|view`/`run view`, never a write), store-less, open to every role. The decision is pure (decideGate in
 // src/shared/fanout-deliver.ts, sharing deliver's `ciVerdict`); this file is the gh I/O. `deliver` stays the merge authority and re-checks at merge.
 
+import os from 'node:os';
+import path from 'node:path';
+import { readState, resolveFanoutRun, stackView, stateFile, type StackView } from '../shared/fanout-state.ts';
 import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/fanout-deliver.ts';
 import { readPrChecks, realDeps, type DeliverDeps } from './fanout-deliver.ts';
 
@@ -12,6 +15,9 @@ export interface GateOpts {
   head: string;
   repo?: string;
   requireChecks: string[];
+  /** #506 — the ticket (and its fanout run) whose upstreams the answer reports as `stack`. */
+  ticket?: string;
+  run?: string;
   /** ms between the two check reads (default 5000). */
   settleMs?: number;
 }
@@ -25,16 +31,18 @@ export interface GateResult extends Partial<GateAnswer> {
   /** The head asked about (echoed): a CI answer is only ever about THIS head. */
   head: string;
   pr?: number;
+  /** #506 — present when `--ticket` was given: null = the state has no such ticket (or no state); else the ticket's upstream situation. */
+  stack?: StackView | null;
 }
 
-export const GATE_USAGE = 'usage: orchestra fanout gate --branch <b> --into <target> --head <sha> [--repo <owner/name>] [--require-check <name>]…';
+export const GATE_USAGE = 'usage: orchestra fanout gate --branch <b> --into <target> --head <sha> [--repo <owner/name>] [--require-check <name>]… [--ticket <id> [--run <id>]]';
 
 export type ParsedGate = { ok: true; opts: GateOpts } | { ok: false; error: string };
 
 export function parseGateArgs(args: string[]): ParsedGate {
   const v: Record<string, string> = {};
   const required: string[] = [];
-  const known = new Set(['--branch', '--into', '--head', '--repo', '--require-check']);
+  const known = new Set(['--branch', '--into', '--head', '--repo', '--require-check', '--ticket', '--run']);
   for (let i = 0; i < args.length; i += 2) {
     const k = args[i];
     if (!known.has(k)) return { ok: false, error: `unknown argument: ${k}\n${GATE_USAGE}` };
@@ -48,7 +56,8 @@ export function parseGateArgs(args: string[]): ParsedGate {
   if (!SAFE_REF.test(v['--into'])) return { ok: false, error: `unsafe --into: ${v['--into']}` };
   if (!/^[0-9a-f]{40}$/.test(v['--head'])) return { ok: false, error: '--head must be a full 40-hex sha' };
   if (v['--repo'] !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(v['--repo'])) return { ok: false, error: '--repo must be <owner>/<name>' };
-  return { ok: true, opts: { branch: v['--branch'], into: v['--into'], head: v['--head'], repo: v['--repo'], requireChecks: required } };
+  if (v['--run'] !== undefined && v['--ticket'] === undefined) return { ok: false, error: '--run only applies with --ticket' };
+  return { ok: true, opts: { branch: v['--branch'], into: v['--into'], head: v['--head'], repo: v['--repo'], requireChecks: required, ticket: v['--ticket'], run: v['--run'] } };
 }
 
 /** The TARGET branch's workflow files (contents read from GitHub, never this checkout). `[]` = the repo has none (404); `null` = could not read. */
@@ -72,7 +81,18 @@ async function targetWorkflows(opts: GateOpts, deps: Pick<DeliverDeps, 'gh'>): P
   return out;
 }
 
-export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log' | 'sleep'>): Promise<{ exit: number; result: GateResult }> {
+/** Production reader of `--ticket`'s stack from `<ORCHESTRA_HOME>/fanout/<run>/state.json`; null = no state / no such ticket. An unreadable state throws. */
+export function stackFromState(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): StackView | null {
+  const { run } = resolveFanoutRun(opts.run, env);
+  if (!run) return null;
+  const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+  const state = readState(stateFile(home, run));
+  return state ? stackView(state, opts.ticket) : null;
+}
+
+export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & { stack?: (o: { ticket: string; run?: string }) => StackView | null };
+
+export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: number; result: GateResult }> {
   const base = { branch: opts.branch, into: opts.into, head: opts.head };
   const bad = (reason: 'gh-failed' | 'bad-args', detail: string) => ({ exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked' as const, reason, detail, ...base } });
   if (!SAFE_REF.test(opts.into) || !SAFE_REF.test(opts.branch)) return bad('bad-args', 'unsafe --into/--branch');
@@ -101,11 +121,13 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
       snap = await readPrChecks(ghOk, String(pr!.number), cache);
       stable = JSON.stringify(snap.checks.map((c) => c.name).sort()) === first;
     }
+    let stack: StackView | null | undefined;
+    if (opts.ticket !== undefined) stack = deps.stack ? deps.stack({ ticket: opts.ticket, run: opts.run }) : null;
     const answer = decideGate({
       workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles,
     });
     if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — fullSuite stays on the verifier');
-    return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}) } };
+    return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}) } };
   } catch (e) {
     return bad('gh-failed', e instanceof Error ? e.message : String(e));
   }
@@ -117,10 +139,11 @@ gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the 
 (a pull_request workflow on <target> that provably runs for a PR into it: no paths filter, branches admit <target>, no ! pattern, types include synchronize; pull_request_target is not) and whether it is green on exactly
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
 ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. NOT detected: a PR that changes what the test command runs (package.json scripts, runner config) — pin the check and review that diff. Without PR CI (or unreadable workflows): fullSuite:"verifier".
+--ticket <id> [--run <id>] adds \`stack\` (#506, from the fanout state): order none | wait-upstream (stacked on a verified upstream candidate: gate it now, \`deliver\` merges only after the upstream) | re-gate (the upstream moved since this ticket was built on it: its verdict is void) | blocked (an upstream is no admissible candidate), plus one row per upstream.
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
 
-export async function runGate(args: string[], deps: Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> = realDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
+export async function runGate(args: string[], deps: GateDeps = { ...realDeps(), stack: (o) => stackFromState(o) }): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);
   if (!p.ok) return { exit: 1, error: p.error };
   const { exit, result } = await gatePr(p.opts, deps);

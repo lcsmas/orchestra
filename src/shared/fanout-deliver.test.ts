@@ -171,6 +171,7 @@ test('#487 detectPackageManager: packageManager field wins over the lockfile; lo
 });
 
 // ---- #495 decideGate / workflowRunsOnPr ---------------------------------------------------------------------------------------------
+import { decideUpstreams, type UpstreamFacts } from './fanout-deliver.ts';
 import { decideGate, suiteJobsOf, suiteMatches, workflowRunsOnPr, type DeliverCheck } from './fanout-deliver.ts';
 
 const PR_WF = 'name: ci\non:\n  pull_request:\n    branches: [main]\njobs:\n  ci:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: pnpm test\n';
@@ -460,4 +461,34 @@ test('follow-up r2 MINOR 3: --dry / --dry=json / --graph / --pass-with-no-tests 
   const one = (cmd: string) => `jobs:\n  t:\n    steps:\n      - run: ${cmd}\n`;
   for (const cmd of ['turbo run test --dry', 'turbo run test --dry=json', 'turbo test --graph', 'npx jest --pass-with-no-tests', 'vitest run --pass-with-no-tests']) assert.deepEqual(suiteJobsOf(one(cmd)), [], cmd);
   assert.deepEqual(suiteJobsOf(one('turbo run test')), ['t'], 'control');
+});
+
+// ── #506 decideUpstreams: one arm per clause ─────────────────────────────────────────────────────────────────
+const UH = 'a'.repeat(40);
+const merged = (o: Partial<NonNullable<UpstreamFacts['pr']>> = {}): UpstreamFacts['pr'] => ({ state: 'MERGED', baseRefName: 'master', headRefOid: UH, mergeCommit: 'e'.repeat(40), ...o });
+const fact = (o: Partial<UpstreamFacts> = {}): UpstreamFacts => ({ id: 'UP', accepted: false, builtOn: UH, pr: merged(), sameTree: null, dependentOnBuiltOn: true, dependentOnMerge: false, ...o });
+
+test('#506 decideUpstreams must-PASS: merged at the built-on head and contained; none; accepted; built after the merge (no builtOn)', () => {
+  assert.deepEqual(decideUpstreams([fact()], 'master'), { ok: true });
+  assert.deepEqual(decideUpstreams([], 'master'), { ok: true });
+  assert.deepEqual(decideUpstreams([fact({ accepted: true, pr: null })], 'master'), { ok: true });
+  assert.deepEqual(decideUpstreams([fact({ builtOn: null, dependentOnBuiltOn: null })], 'master'), { ok: true });
+  assert.deepEqual(decideUpstreams([fact({ builtOn: UH.slice(0, 10) })], 'master'), { ok: true }, 'a short recorded sha compares by prefix');
+  assert.deepEqual(decideUpstreams([fact({ pr: merged({ headRefOid: 'b'.repeat(40) }), sameTree: true })], 'master'), { ok: true }, 'different sha, same tree');
+  assert.deepEqual(decideUpstreams([fact({ dependentOnBuiltOn: false, dependentOnMerge: true })], 'master'), { ok: true }, 'rebased onto the merged target');
+});
+
+test('#506 decideUpstreams must-FAIL: each clause refuses with its reason', () => {
+  const r = (f: UpstreamFacts[]) => decideUpstreams(f, 'master');
+  const no = (f: UpstreamFacts[], reason: string, re: RegExp) => { const x = r(f); assert.ok(!x.ok && x.reason === reason && re.test(x.detail), JSON.stringify(x)); };
+  no([fact({ pr: null })], 'upstream-not-merged', /no PR found/);
+  no([fact({ pr: merged({ state: 'OPEN' }) })], 'upstream-not-merged', /OPEN/);
+  no([fact({ pr: merged({ state: 'CLOSED' }) })], 'upstream-not-merged', /CLOSED/);
+  no([fact({ pr: merged({ baseRefName: 'up-branch' }) })], 'upstream-not-merged', /up-branch/);
+  no([fact({ pr: merged({ headRefOid: 'b'.repeat(40) }), sameTree: false })], 'upstream-changed', /different content/);
+  no([fact({ pr: merged({ headRefOid: 'b'.repeat(40) }), sameTree: null })], 'upstream-changed', /different content/);
+  no([fact({ dependentOnBuiltOn: false, dependentOnMerge: false })], 'upstream-changed', /does not sit on upstream UP/);
+  no([fact({ dependentOnBuiltOn: null, dependentOnMerge: null })], 'upstream-changed', /does not sit on/);
+  no([fact(), fact({ id: 'UP2', pr: merged({ state: 'OPEN' }) })], 'upstream-not-merged', /UP2/);
+  no([fact({ accepted: true }), fact({ id: 'UP2', builtOn: UH, pr: merged({ headRefOid: 'c'.repeat(40) }), sameTree: false })], 'upstream-changed', /UP2/);
 });

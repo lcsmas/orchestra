@@ -37,7 +37,7 @@ test('init → set → show, flags and --json both work; unknown flag / field re
   // must-FAIL arms: the writer refuses
   assert.match(set(d, 'A', '--colour', 'red').stderr, /unknown flag --colour/);
   assert.match(set(d, 'A', '--json', '{"colour":1}').stderr, /unknown field "colour"/);
-  assert.match(set(d, 'B', '--status', 'nominated').stderr, /not merged yet/);
+  assert.match(set(d, 'B', '--status', 'nominated').stderr, /not an admissible candidate/);
   assert.equal(set(d, 'B', '--status', 'nominated').code, 1);
   assert.match(set(d, 'C', '--depends-on', 'A', '--status', 'started').stderr, /no frozen interface/);
   assert.match(runFanout(['state', 'show', '--run', '../x'], d).stderr, /unsafe run id/);
@@ -153,7 +153,7 @@ test('built CLI: `orchestra fanout` is dispatched, exits 2 on divergence and 1 o
   assert.equal(cli('state', 'set', 'A', '--run', 'r1', '--status', 'started').status, 0);
   const bad = cli('state', 'set', 'B', '--run', 'r1', '--depends-on', 'A', '--status', 'nominated');
   assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /not merged yet/);
+  assert.match(bad.stderr, /not an admissible candidate/);
   assert.equal(cli('state', 'show', '--run', 'r1').status, 0);
 });
 
@@ -275,4 +275,20 @@ test('#486 built CLI: the parent-run note reaches stderr on rc 0 AND rc 2; a bar
   const res = cli('resume', '--no-fetch', '--no-write');
   assert.equal(res.status, 2, res.stderr);
   assert.match(res.stderr, NOTE);
+});
+
+test('#506 --built-on: flag parses UP=sha[,UP2=sha]; early nominate needs it and is refused when stale; `-` clears; show prints it', (t) => {
+  const d = deps(mkHome(t), noRunner);
+  const HA = 'a'.repeat(40);
+  assert.equal(runFanout(['state', 'init', '--run', 'r1'], d).code, 0);
+  assert.equal(set(d, 'A', '--status', 'nominated', '--branch', 'a', '--head', HA).code, 0);
+  assert.equal(set(d, 'B', '--depends-on', 'A', '--frozen-interface', 'x', '--status', 'started', '--branch', 'b').code, 0);
+  assert.match(set(d, 'B', '--status', 'nominated', '--head', 'b'.repeat(40)).stderr, /no builtOn for A/);
+  assert.match(set(d, 'B', '--status', 'nominated', '--head', 'b'.repeat(40), '--built-on', `A=${'c'.repeat(40)}`).stderr, /now at aaaaaaaa/);
+  assert.match(set(d, 'B', '--built-on', 'A').stderr, /--built-on expects <upstream>=<sha>/);
+  assert.equal(set(d, 'B', '--status', 'nominated', '--head', 'b'.repeat(40), '--built-on', `A=${HA}`).code, 0);
+  assert.match(runFanout(['state', 'show', '--run', 'r1'], d).stdout, /A@aaaaaaaa/);
+  assert.match(set(d, 'B', '--status', 'merged').stderr, /cannot be merged: upstream A not merged yet/);
+  assert.equal(set(d, 'B', '--status', 'started', '--built-on', '-').code, 0);
+  assert.deepEqual(JSON.parse(runFanout(['state', 'show', '--run', 'r1', '--json'], d).stdout).tickets.B.builtOn, {});
 });
