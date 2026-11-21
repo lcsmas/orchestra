@@ -2821,6 +2821,8 @@ returning null for an unknown run) and fails with `unknownRunRefusalMessage`
 (`src/cli/bus-verbs.ts`), which **names the remedy**: `orchestra restart` to
 re-derive the anchor, or correct/unset `$ORCHESTRA_RUN_ID` / pass `--run`.
 
+**#496: `check --run <no runs row>` is refused too** (`unknownRunReadRefusalMessage`, same `runExists`): a read of a non-run used to return an empty batch = "nothing pending" (a handoff summary's run NAME hid a verdict for 23 min). The handoff opening now names the real run id + pending runs — `session-keeper.md` § Bus frame; rig `src/cli/handoff-verdict-interleave.test.ts`.
+
 **#433: there is no `default` sentinel any more** (it was exempted here, `id.runId !== DEFAULT_RUN_ID`). A send naming
 no run (no `--run`, no `$ORCHESTRA_RUN_ID`) is refused before any bus opens with `NO_RUN_MESSAGE`
 (`resolveRunId` / `busIdentityOrFail`, `src/cli/bus-verbs.ts` / `index.ts`); `--run default` is just a run with no row and

@@ -22,6 +22,7 @@ import { deliverRelance } from './relance-host.ts';
 import { clearOwed, listOwed, readOwed, writeOwed } from './handoff-owed.ts';
 import { setTurnEndListener } from './handoff-seam.ts';
 import { createHandoffController, type HandoffReply } from './handoff-controller.ts';
+import { busFrameFor } from './handoff-bus.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { HANDOFF_ERRORS, parseHandoffBound, resolveHandoffBound } from '../shared/handoff.ts';
 import { workspaceRole, roleSpec, type RoleConfig } from '../shared/fleet-roles.ts';
@@ -39,6 +40,19 @@ const retries = new Map<string, number>();
 
 const stillOwed = (id: string): boolean => readOwed(OWED_ROOT(), id) !== null && !!store.getWorkspace(id) && !store.getWorkspace(id)?.archived;
 
+/** #496: the opening + the bus frame READ NOW (every attempt, held or retried ones included): a verdict that landed after the handoff was accepted is in it. A bus that cannot be read ⇒ the opening alone. */
+function withBusFrame(id: string, opening: string): string {
+  try {
+    const ws = store.getWorkspace(id);
+    const db = getBus();
+    if (!ws || !db) return opening;
+    return `${opening}\n\n${busFrameFor(db, id, resolveWaveRunId(ws))}`;
+  } catch (e) {
+    log.warn(`handoff: the bus frame of ${id} could not be read — opening delivered without it`, e);
+    return opening;
+  }
+}
+
 /** The opening turn, behind Admission. The OWED MARKER on disk (handoff-owed.ts) is the truth: a held start is kept while owed — NOT "while asleep" (admission's default:
  *  peer mail that starts the vierge session first would make the release drop the summary; it then lands as the next turn of the live session) — and a failed one is retried
  *  (bounded) and re-delivered at app start. Cleared only once delivered. */
@@ -46,7 +60,7 @@ async function deliverOpening(id: string, text: string, fromRetry = false): Prom
   if (!fromRetry && active.has(id)) return 'held';
   active.add(id);
   const r = await deliverRelance(
-    id, text, 'handoff',
+    id, withBusFrame(id, text), 'handoff',
     async () => {
       const again = await deliverOpening(id, text, true);
       if (again === 'failed') reportAdmissionFailure(id, 'handoff: the held opening turn could not be delivered — it stays owed (summary under <ORCHESTRA_HOME>/handoff/' + id + '/)');

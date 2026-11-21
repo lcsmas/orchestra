@@ -98,6 +98,18 @@ export function composeOpeningTurn(input: { summary: string; turns?: number; sav
   );
 }
 
+/** #496: the host-written bus frame appended to the opening turn AT DELIVERY (not at acceptance): the REAL run id (a summary may name the run by a label, and `check --run <label>` reads
+ *  nothing) + every run that holds mail still un-acked for this agent, so a verdict that landed during the handoff is the first thing the fresh context sees. */
+export function composeBusFrame(input: { runId: string; pendingRunIds: readonly string[] }): string {
+  const pending = [...new Set(input.pendingRunIds)].sort();
+  const head = `[Orchestra bus] Your run id is ${input.runId} — use THIS id for \`orchestra check --run\` (never a name copied from a summary; a plain \`orchestra check\` reads it). Wait for a verdict or a report with \`orchestra check\`, never by counting ledger comments from a baseline.`;
+  if (pending.length === 0) return head;
+  return (
+    `${head}\nMail for you is PENDING (not acked) — run these BEFORE anything else, then \`orchestra ack <lot>\` each lot you acted on:\n` +
+    pending.map((r) => `orchestra check --run ${r}`).join('\n')
+  );
+}
+
 /** m4: the agent was told "end your turn" but its handoff will not run — it keeps its context and must say so again if it still wants one. */
 export function composeDroppedNotice(why: string): string {
   return `[Orchestra] Your scheduled \`orchestra handoff\` did NOT run (${why}) — this context is unchanged and nothing was ended. Run \`orchestra handoff --summary-file <path>\` again, and end your turn, if you still want to hand off.`;

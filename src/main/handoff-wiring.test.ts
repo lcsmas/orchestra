@@ -21,7 +21,7 @@ test('the route is served by hooks-server and the CLI verb posts to it with the 
 test('the clear is restart --fresh\'s path (sdkRestart fresh: coordinator generation bumped), never a kill; the start goes through the Relance delivery behind Admission', () => {
   const host = read('handoff-host.ts');
   assert.match(host, /await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\)/);
-  assert.match(host, /deliverRelance\(\s*id, text, 'handoff'/);
+  assert.match(host, /deliverRelance\(\s*id, withBusFrame\(id, text\), 'handoff'/, 'every delivery attempt carries the bus frame read at that moment (#496)');
   assert.doesNotMatch(host, /killKeeper|sdkStop|removeWorkspace|git /, 'a handoff never kills a keeper, deletes, or touches git');
   assert.doesNotMatch(host, /origin:\s*'human'/);
 });
@@ -73,4 +73,11 @@ test('m1/m2: the owed marker is cleared ONLY on a delivered opening, an app-star
   assert.match(host, /setTimeout\(resumeOwedOpenings, 30_000\)/);
   assert.match(host, /await sdkRestart\(id, \{ fresh: true, trigger: 'cli' \}\);\n\s*await clearBusRunStale\(id\);/);
   assert.match(host, /turnInFlight: \(id\) => sdkPauseActivity\(id\)\?\.turnRunning \?\? false/);
+});
+
+test('#496 the bus frame is read at DELIVERY (every attempt), from the live bus and the wave run — never baked into the owed marker', () => {
+  const host = read('handoff-host.ts');
+  assert.match(host, /busFrameFor\(db, id, resolveWaveRunId\(ws\)\)/);
+  assert.match(host, /function withBusFrame[\s\S]*catch[\s\S]*return opening;/, 'an unreadable bus delivers the opening alone');
+  assert.doesNotMatch(host.slice(host.indexOf('owe: ('), host.indexOf('owe: (') + 160), /busFrame/, 'the owed marker keeps the bare opening');
 });
