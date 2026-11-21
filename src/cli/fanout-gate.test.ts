@@ -6,7 +6,7 @@ import type { GhResult } from './fanout-deliver.ts';
 const H = 'a'.repeat(40);
 const H2 = 'b'.repeat(40);
 const RUN = 'https://github.com/o/r/actions/runs/900/job/901';
-const PR_WF = 'on:\n  pull_request:\njobs: {}\n';
+const PR_WF = 'on:\n  pull_request:\njobs:\n  ci:\n    steps:\n      - run: pnpm test\n';
 
 interface Fake {
   /** Workflow files of the target: name → content; null = the contents API fails (500); undefined dir = 404. */
@@ -128,4 +128,17 @@ test('review #495 MAJOR 2 through the CLI: a pull_request workflow filtered to a
   const r = await run({ workflows: { 'ci.yml': 'on:\n  pull_request:\n    branches: [release]\njobs: {}\n' }, pr: { number: 7, head: H }, checks: [green] });
   assert.equal(r.result.fullSuite, 'verifier');
   assert.equal(r.result.repoCi, 'none');
+});
+
+test('review A MAJOR through the CLI: lint-only PR CI green on the head ⇒ the suite stays on the verifier; --require-check pins the suite check', async () => {
+  const LINT_WF = 'on:\n  pull_request:\njobs:\n  lint:\n    steps:\n      - run: pnpm run lint\n';
+  const r = await run({ workflows: { 'ci.yml': LINT_WF }, pr: { number: 7, head: H }, checks: [{ ...green, name: 'lint' }] });
+  assert.equal(r.result.fullSuite, 'verifier');
+  assert.equal(r.result.ciGreenOnHead, false);
+  const x = fake({ workflows: { 'ci.yml': LINT_WF }, pr: { number: 7, head: H }, checks: [{ ...green, name: 'unit' }] });
+  const pinned = await gatePr({ ...opts, requireChecks: ['unit'] }, { gh: x.gh, log: () => {}, sleep: async () => {} });
+  assert.equal(pinned.result.fullSuite, 'ci');
+  assert.equal(pinned.result.ciGreenOnHead, true);
+  assert.deepEqual(pinned.result.suiteChecks, ['unit']);
+  assert.equal(pinned.result.suiteSource, 'pinned');
 });

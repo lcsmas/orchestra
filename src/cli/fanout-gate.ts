@@ -109,9 +109,9 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
 export const GATE_HELP = `${GATE_USAGE}
 
 gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the target has PR CI
-(a pull_request workflow on <target> that provably runs for a PR into it: no paths filter, branches admit <target>, types include synchronize) and whether it is green on exactly
+(a pull_request workflow on <target> that provably runs for a PR into it: no paths filter, branches admit <target>, no ! pattern, types include synchronize; pull_request_target is not) and whether it is green on exactly
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
-ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list; ciChecks names the checks: one must run the tests (--require-check pins it). Without it (or unreadable): fullSuite:"verifier".
+ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none ⇒ fullSuite:"verifier". Without it (or unreadable): fullSuite:"verifier".
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
 
