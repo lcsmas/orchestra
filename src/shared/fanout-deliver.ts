@@ -286,7 +286,7 @@ function listOf(rest: string, following: string[]): string[] {
  * (a path-filtered run may not exist for this diff). Anything it cannot read the same way is FALSE: the verifier then keeps the suite (fail closed).
  */
 export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
-  const lines = yaml.replace(/#.*$/gm, '').split('\n');
+  const lines = yaml.replace(/\r/g, '').replace(/#.*$/gm, '').split('\n');
   const at = lines.findIndex((l) => /^['"]?on['"]?\s*:/.test(l));
   if (at < 0) return false;
   const rest = lines[at].replace(/^['"]?on['"]?\s*:/, '').trim();
@@ -347,9 +347,21 @@ const STRICT_TEST = new RegExp(
   ].join('|') + `)${ARGS}$`,
 );
 /** Flags / sub-commands under which the runner lists, collects, or passes WITHOUT running tests (a deny-list: a flag not named here still derives). */
-const NO_RUN_FLAG = /(^| )(--passWithNoTests|--listTests|--list-tests|--collect-only|--co|--help|-h|--version|--dry-run|--no-run|--findRelatedTests|--changedSince|--if-present|--fixtures|--setup-plan|--showConfig|--clearCache|-list|--list)\b|\b(vitest|jest|pytest) list\b/;
+const NO_RUN_FLAG = /(^| )(--passWithNoTests|--listTests|--list-tests|--collect-only|--co|--help|-h|--version|--dry-run|--no-run|--findRelatedTests|--changedSince|--if-present|--fixtures|--setup-plan|--showConfig|--clearCache|-list|--list|--dry|--graph|--pass-with-no-tests)\b|\b(vitest|jest|pytest) list\b/;
 /** A command whose failure can be masked or whose control flow is not a plain `a && b`: pipes (no pipefail), `||`, `;`, `set +e`, backgrounding. */
 const MASKED = /\||;|\bset\s+\+e\b|(?<!&)&(?!&)/;
+/** Drops a YAML comment (`#` at the line start or after whitespace, OUTSIDE quotes): `echo "#" || true` keeps its `|| true`. */
+function stripComment(line: string): string {
+  let q = '';
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) { if (ch === q) q = ''; } else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i);
+  }
+  return line;
+}
+/** Shell control flow / heredocs on a run line: the runner line may sit in a branch, a never-called function or a heredoc body — the step is not read. */
+const SHELL_FLOW = /^(?:if|then|else|elif|fi|case|esac|for|while|until|do|done|function)(?:\s|$|;)|^[{}](?:\s|$)|^[\w-]+\s*\(\)|<</;
 /** `2>&1`, `> out`, `>> out` redirections do not change the exit status: dropped before the checks. */
 const stripRedirects = (c: string): string => c.replace(/\s+\d?>>?\s*(?:&\d|[^\s;|&<>]+)/g, '');
 const isSuiteCommand = (raw: string): boolean => {
@@ -396,8 +408,8 @@ const YAML_INDIRECTION = /<<\s*:|:\s+[&*][\w-]+|^\s*-\s+[&*][\w-]+/;
  * under the default shell. A job it cannot read that way is NOT derived (fail closed: the verifier keeps the suite, or pins the check). A reusable-workflow job (`uses:`) has no steps.
  */
 export function suiteJobsOf(yaml: string): string[] {
-  const lines = yaml.replace(/\r/g, '').replace(/#.*$/gm, '').split('\n');
-  if (lines.some((l) => /^\s*shell\s*:\s*(?!bash\s*$)\S/.test(l))) return []; // a non-default shell (no -e, pwsh, python…) changes what a failure means
+  const lines = yaml.replace(/\r/g, '').split('\n').map(stripComment);
+  if (lines.some((l) => /^\s*(?:-\s+)?shell\s*:\s*(?!bash\s*$)\S/.test(l))) return []; // a non-default shell (no -e, pwsh, python…) changes what a failure means
   const at = lines.findIndex((l) => /^jobs\s*:\s*$/.test(l));
   if (at < 0) return [];
   const body: string[] = [];
@@ -435,6 +447,7 @@ export function suiteJobsOf(yaml: string): string[] {
       if (sIf !== undefined && !BENIGN_IF.test(unq(sIf))) return false;
       if (coe !== undefined && truthyCoe(unq(coe))) return false;
       const cmds = runCommands(st, keyIndent, keys.get('run'));
+      if (cmds.some((c) => SHELL_FLOW.test(c))) return false;
       if (cmds.some((c) => /\bset\s+\+e\b/.test(c))) return false; // `set +e` turns every later failure of the step into a pass
       return cmds.some(isSuiteCommand);
     });

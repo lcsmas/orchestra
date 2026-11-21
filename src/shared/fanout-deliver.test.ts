@@ -433,3 +433,31 @@ test('follow-up MINOR 2: recall on the reviewer\'s 78 common test commands is pi
   assert.equal(RECALL_CMDS.length, 78);
   assert.ok(derived >= 66, `${derived}/78 derived (master's textual reader: 54, the strict reader before this fix: 31)`);
 });
+
+test('follow-up r2 MINOR 1: CRLF workflows keep their trigger filters (paths / branches / types / list form) — through workflowRunsOnPr AND decideGate', () => {
+  const crlf = (y: string) => y.replace(/\n/g, '\r\n');
+  assert.equal(workflowRunsOnPr(crlf('on:\n  pull_request:\n    paths: [docs/**]\njobs: {}\n'), 'main'), false);
+  assert.equal(workflowRunsOnPr(crlf('on:\n  pull_request:\n    branches: [develop]\njobs: {}\n'), 'main'), false);
+  assert.equal(workflowRunsOnPr(crlf('on:\n  pull_request:\n    types: [opened]\njobs: {}\n'), 'main'), false);
+  assert.equal(workflowRunsOnPr(crlf('on:\n  - pull_request\njobs: {}\n'), 'main'), true, 'list form');
+  const PATHS_WF = 'on:\n  pull_request:\n    paths: [docs/**]\njobs:\n  ci:\n    steps:\n      - run: pnpm test\n';
+  const g = decideGate({ workflows: [crlf(PATHS_WF)], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] });
+  assert.equal(g.fullSuite, 'verifier', 'a path-filtered CRLF workflow is not PR CI (LF already said so)');
+  assert.equal(g.repoCi, 'none');
+});
+
+test('follow-up r2 MINOR 2: a dash-first shell:, shell control flow / heredoc around the runner, and a quoted # that hides a `|| true` do not derive', () => {
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - shell: bash {0}\n        run: |\n          pnpm test\n          echo done\n'), [], 'dash-first shell: bash {0}');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: |\n          if [ -n "$X" ]; then\n            pnpm test\n          fi\n'), [], 'runner inside an if');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: |\n          run_tests() {\n            pnpm test\n          }\n'), [], 'a function body never called');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: |\n          cat <<EOF\n          pnpm test\n          EOF\n'), [], 'heredoc body');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: pnpm test && echo "a # b" || true\n'), [], 'a # inside quotes is not a comment: the || true stays');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: pnpm test # the suite\n'), ['t'], 'control: a real trailing comment is stripped');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - shell: bash\n        run: pnpm test\n'), ['t'], 'control: dash-first shell: bash');
+});
+
+test('follow-up r2 MINOR 3: --dry / --dry=json / --graph / --pass-with-no-tests do not derive', () => {
+  const one = (cmd: string) => `jobs:\n  t:\n    steps:\n      - run: ${cmd}\n`;
+  for (const cmd of ['turbo run test --dry', 'turbo run test --dry=json', 'turbo test --graph', 'npx jest --pass-with-no-tests', 'vitest run --pass-with-no-tests']) assert.deepEqual(suiteJobsOf(one(cmd)), [], cmd);
+  assert.deepEqual(suiteJobsOf(one('turbo run test')), ['t'], 'control');
+});
