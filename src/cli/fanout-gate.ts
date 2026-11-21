@@ -89,7 +89,11 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
     const cache = new Map<string, number>();
     let snap = pr ? await readPrChecks(ghOk, String(pr.number), cache) : null;
     let stable = true;
-    const prFiles = pr ? (await ghOk(['pr', 'diff', String(pr.number), '--name-only'])).split('\n').map((f) => f.trim()).filter(Boolean) : null;
+    // A diff gh cannot produce (HTTP 406, > 300 files) is NOT 'no .github edits': null ⇒ decideGate answers fullSuite:"verifier".
+    let prFiles: string[] | null = null;
+    if (pr) {
+      try { prFiles = (await ghOk(['pr', 'diff', String(pr.number), '--name-only'])).split('\n').map((f) => f.trim()).filter(Boolean); } catch (e) { deps.log(`gate: PR file list unread (${(e as Error).message.slice(0, 120)})`); }
+    }
     if (snap) {
       // Two reads apart: a fast job registered before the slow suite's workflow must not read as the whole CI (deliver has the same two-poll rule).
       const first = JSON.stringify(snap.checks.map((c) => c.name).sort());

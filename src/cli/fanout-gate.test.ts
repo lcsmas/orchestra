@@ -170,12 +170,19 @@ test('review A2 MINOR 2: a PR that edits .github/ is judged by ITS workflows, no
   assert.match(r.result.detail!, /edits \.github\//);
   // control: a source-only diff stays on CI
   assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: ['src/a.ts', 'docs/x.md'] })).result.fullSuite, 'ci');
-  // an unreadable diff is could-not-check, never "no workflow edits"
+  // an unreadable diff (HTTP 406, > 300 files) is NOT 'no .github edits': the answer is the verifier's checklist, with a reason (review of the follow-up, MINOR 3)
   const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
-  const gh = async (a: string[]): Promise<GhResult> => (a[0] === 'pr' && a[1] === 'diff' ? { code: 1, stdout: '', stderr: 'HTTP 502' } : x.gh(a));
+  const gh = async (a: string[]): Promise<GhResult> => (a[0] === 'pr' && a[1] === 'diff' ? { code: 1, stdout: '', stderr: 'HTTP 406: the diff exceeded the maximum number of files (300)' } : x.gh(a));
   const bad = await gatePr(opts, { gh, log: () => {}, sleep: async () => {} });
-  assert.equal(bad.exit, 1);
-  assert.equal(bad.result.fullSuite, undefined);
+  assert.equal(bad.exit, 0);
+  assert.equal(bad.result.verdict, 'gate');
+  assert.equal(bad.result.fullSuite, 'verifier');
+  assert.equal(bad.result.ciGreenOnHead, false);
+  assert.match(bad.result.detail!, /file list was not read/);
+  // git-quoted / ./-prefixed paths and an EMPTY list are not "no edits" either
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: ['"./.github/workflows/t\\303\\251st.yml"'] })).result.fullSuite, 'verifier');
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: ['./.github/workflows/ci.yml'] })).result.fullSuite, 'verifier');
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: [] })).result.fullSuite, 'verifier');
 });
 
 test('review A2 MINOR 4: a pinned name that never registers is NAMED in the detail with the fallback, not a silent pending', async () => {
