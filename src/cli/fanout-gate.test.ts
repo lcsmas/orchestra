@@ -14,6 +14,8 @@ interface Fake {
   pr?: { number: number; head: string } | null;
   checks?: Record<string, unknown>[];
   steps?: number;
+  /** Files the PR changes (`pr diff --name-only`). Default: one source file. */
+  files?: string[];
 }
 function fake(o: Fake) {
   const calls: string[][] = [];
@@ -30,6 +32,7 @@ function fake(o: Fake) {
       return ok(JSON.stringify(Object.keys(o.workflows).map((name) => ({ name, type: 'file' }))));
     }
     if (a === 'pr' && b === 'list') return ok(JSON.stringify(o.pr ? [{ number: o.pr.number, headRefOid: o.pr.head }] : []));
+    if (a === 'pr' && b === 'diff') return ok((o.files ?? ['src/a.ts']).join('\n') + '\n');
     if (a === 'pr' && b === 'view') return ok(JSON.stringify({ state: 'OPEN', baseRefName: 'main', headRefOid: o.pr!.head, mergeable: 'MERGEABLE', statusCheckRollup: o.checks ?? [] }));
     if (a === 'run' && b === 'view') {
       const n = o.steps ?? 4;
@@ -84,9 +87,9 @@ test('gate: a green check with 0 workflow steps, a pending check and an unreadab
   assert.equal(unreadable.result.fullSuite, 'verifier');
 });
 
-test('gate is READ-ONLY: no gh call outside api / pr list|view / run view', async () => {
+test('gate is READ-ONLY: no gh call outside api / pr list|view|diff / run view', async () => {
   const r = await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
-  for (const c of r.calls) assert.ok(c[0] === 'api' || (c[0] === 'pr' && ['list', 'view'].includes(c[1])) || (c[0] === 'run' && c[1] === 'view'), c.join(' '));
+  for (const c of r.calls) assert.ok(c[0] === 'api' || (c[0] === 'pr' && ['list', 'view', 'diff'].includes(c[1])) || (c[0] === 'run' && c[1] === 'view'), c.join(' '));
 });
 
 test('gate: could-not-check is exit 1, not a verdict (gh failing on the PR list)', async () => {
@@ -141,4 +144,44 @@ test('review A MAJOR through the CLI: lint-only PR CI green on the head ⇒ the 
   assert.equal(pinned.result.ciGreenOnHead, true);
   assert.deepEqual(pinned.result.suiteChecks, ['unit']);
   assert.equal(pinned.result.suiteSource, 'pinned');
+});
+
+test('verifier (a): two-read stability — a check that registers between the reads makes the CI not green even with the suite check green', async () => {
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [] });
+  let views = 0;
+  const gh = async (a: string[]): Promise<GhResult> => {
+    if (a[0] === 'pr' && a[1] === 'view') {
+      const checks = views++ === 0 ? [green] : [green, { ...green, name: 'docs' }];
+      return { code: 0, stdout: JSON.stringify({ state: 'OPEN', baseRefName: 'main', headRefOid: H, mergeable: 'MERGEABLE', statusCheckRollup: checks }), stderr: '' };
+    }
+    return x.gh(a);
+  };
+  const r = await gatePr(opts, { gh, log: () => {}, sleep: async () => {} });
+  assert.equal(r.result.ciGreenOnHead, false);
+  assert.equal(r.result.ci, 'pending');
+  // control: the same set on both reads is green
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] })).result.ciGreenOnHead, true);
+});
+
+test('review A2 MINOR 2: a PR that edits .github/ is judged by ITS workflows, not the target\'s ⇒ the suite stays on the verifier', async () => {
+  const r = await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: ['src/a.ts', '.github/workflows/ci.yml'] });
+  assert.equal(r.result.fullSuite, 'verifier');
+  assert.equal(r.result.ciGreenOnHead, false);
+  assert.match(r.result.detail!, /edits \.github\//);
+  // control: a source-only diff stays on CI
+  assert.equal((await run({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green], files: ['src/a.ts', 'docs/x.md'] })).result.fullSuite, 'ci');
+  // an unreadable diff is could-not-check, never "no workflow edits"
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
+  const gh = async (a: string[]): Promise<GhResult> => (a[0] === 'pr' && a[1] === 'diff' ? { code: 1, stdout: '', stderr: 'HTTP 502' } : x.gh(a));
+  const bad = await gatePr(opts, { gh, log: () => {}, sleep: async () => {} });
+  assert.equal(bad.exit, 1);
+  assert.equal(bad.result.fullSuite, undefined);
+});
+
+test('review A2 MINOR 4: a pinned name that never registers is NAMED in the detail with the fallback, not a silent pending', async () => {
+  const x = fake({ workflows: { 'ci.yml': PR_WF }, pr: { number: 7, head: H }, checks: [green] });
+  const r = await gatePr({ ...opts, requireChecks: ['nope'] }, { gh: x.gh, log: () => {}, sleep: async () => {} });
+  assert.equal(r.result.ciGreenOnHead, false);
+  assert.deepEqual(r.result.absentSuiteChecks, ['nope']);
+  assert.match(r.result.detail!, /NOT on the head: nope[\s\S]*--require-check[\s\S]*verifier/);
 });

@@ -291,13 +291,45 @@ test('review A MAJOR: a green check that is not the suite never skips the suite 
   assert.equal(decideGate({ workflows: [LINT_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'unit', state: 'neutral', steps: null }], stable: true, requiredChecks: ['unit'] }).ciGreenOnHead, false);
 });
 
-test('suiteJobsOf / suiteMatches: test jobs are derived by name or id; a reusable-workflow job and a lint job are not; matrix legs match', () => {
+test('suiteJobsOf / suiteMatches: test jobs are derived by name or id; a reusable-workflow job and a lint job are not; matrix legs match; callers need a full-name pin', () => {
   const wf = 'jobs:\n  build:\n    steps:\n      - run: pnpm build\n  unit:\n    name: Unit tests ${{ matrix.node }}\n    steps:\n      - run: |\n          npm ci\n          npx jest --ci\n  e2e:\n    uses: ./.github/workflows/e2e.yml\n  go:\n    steps:\n      - run: go test ./...\n  named:\n    name: Run tests\n    steps:\n      - run: echo hi\n';
   assert.deepEqual(suiteJobsOf(wf), ['Unit tests', 'go']);
   assert.equal(suiteMatches('Unit tests (18)', 'Unit tests'), true);
-  assert.equal(suiteMatches('ci / unit', 'unit'), true);
+  assert.equal(suiteMatches('ci / unit', 'unit'), false, 'review A2 MINOR 3: a caller prefix is NOT the pinned name (deliver pins exact)');
+  assert.equal(suiteMatches('ci / unit', 'ci / unit'), true, 'the full caller name pinned');
   assert.equal(suiteMatches('lint', 'unit'), false);
   assert.equal(suiteMatches('unit-extra', 'unit'), false);
+});
+
+test('review A2 MINOR 1: only a run: value that EXECUTES a test command derives the suite — not echo, with:, a name:, `|| true`, continue-on-error', () => {
+  const job = (body: string) => `jobs:\n  lint:\n${body}`;
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: echo "pnpm test later"\n')), []);
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: pnpm test || true\n')), []);
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: pnpm test; true\n')), []);
+  assert.deepEqual(suiteJobsOf(job('    continue-on-error: true\n    steps:\n      - run: pnpm test\n')), []);
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: pnpm test\n        continue-on-error: true\n')), []);
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - uses: some/action\n        with:\n          cmd: pnpm test\n')), [], 'with: text is not a run');
+  assert.deepEqual(suiteJobsOf(job('    name: pnpm test\n    steps:\n      - run: echo hi\n')), [], 'verifier (c): a name: line is not a command');
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: |\n          echo start\n          pnpm test\n')), ['lint'], 'a block scalar still derives');
+  assert.deepEqual(suiteJobsOf(job('    steps:\n      - run: pnpm test\n')), ['lint'], 'control: the plain test step derives');
+});
+
+test('verifier (b): a test job in a NON-PR workflow is not a suite check of the PR CI', () => {
+  const LINT_PR = 'on:\n  pull_request:\njobs:\n  lint:\n    steps:\n      - run: pnpm run lint\n';
+  const NIGHTLY = 'on:\n  schedule:\n    - cron: "0 3 * * *"\njobs:\n  nightly:\n    steps:\n      - run: pnpm test\n';
+  const g = decideGate({ workflows: [LINT_PR, NIGHTLY], pr: { headRefOid: HEAD }, head: HEAD, checks: [{ name: 'lint', state: 'success', steps: 3 }, { name: 'nightly', state: 'success', steps: 3 }], stable: true });
+  assert.equal(g.suiteSource, 'none');
+  assert.equal(g.fullSuite, 'verifier');
+});
+
+test('review A2 MINOR 2/4 (pure): a PR touching .github/ and an absent suite check are named', () => {
+  const base = { workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true } as const;
+  assert.equal(decideGate({ ...base, checks: [GH], prFiles: ['.github/workflows/ci.yml'] }).fullSuite, 'verifier');
+  assert.equal(decideGate({ ...base, checks: [GH], prFiles: ['src/a.ts'] }).fullSuite, 'ci');
+  const abs = decideGate({ ...base, checks: [{ name: 'lint', state: 'success', steps: 3 }] });
+  assert.deepEqual(abs.absentSuiteChecks, ['ci']);
+  assert.match(abs.detail, /NOT on the head: ci/);
+  assert.deepEqual(decideGate({ ...base, checks: [GH] }).absentSuiteChecks, []);
 });
 
 test('review A MINOR: a negated branch pattern and pull_request_target fail closed', () => {
