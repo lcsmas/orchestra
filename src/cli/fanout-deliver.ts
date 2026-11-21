@@ -146,6 +146,8 @@ export interface DeliverResult {
   reviewGated: boolean;
   /** Run this on the target after the merges (the verb never runs a repo suite). Present when the PR is on the target. */
   combinedSuite?: string;
+  /** #506 — true: the state named this ticket and its upstreams (maybe none) were checked; false: NO state was consulted (none found, no --run), so order/content were NOT checked. Absent: refused before the check. */
+  upstreamsChecked?: boolean;
   /** #487 — where `combinedSuite`'s test command came from: --suite-cmd, package.json packageManager, a lockfile on the target, or the npm fallback. */
   combinedSuiteSource?: SuiteSource;
 }
@@ -158,7 +160,7 @@ export interface DeliverDeps {
   /** Progress lines (stderr in production). */
   log: (s: string) => void;
   /** #506 — the upstreams the state file names for `ticket` (none when there is no state / no such ticket). Absent = none. */
-  upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[];
+  upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[] | null;
 }
 
 /** One upstream of the ticket being delivered, as the fanout state records it. */
@@ -172,15 +174,20 @@ export interface UpstreamRef {
   accepted: boolean;
 }
 
-/** Production reader: `<ORCHESTRA_HOME>/fanout/<run>/state.json`. No state file / no such ticket ⇒ no upstreams (the pre-#506 store-less behaviour);
- *  an unreadable state throws (could-not-check, never "no upstreams"). */
-export function upstreamsFromState(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): UpstreamRef[] {
+/** Production reader: `<ORCHESTRA_HOME>/fanout/<run>/state.json`. FAILS CLOSED (throws ⇒ could-not-check, exit 1) on an explicit `--run` with no state, a
+ *  ticket the existing state does not name, or an unreadable state; null = no state consulted at all (no --run, none at the caller's own run): the
+ *  pre-#506 store-less delivery, reported as `upstreamsChecked:false`. */
+export function upstreamsFromState(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): UpstreamRef[] | null {
   const { run } = resolveFanoutRun(opts.run, env);
-  if (!run) return [];
+  if (!run) return null;
   const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
   const state = readState(stateFile(home, run));
-  const t = state?.tickets[opts.ticket];
-  if (!state || !t) return [];
+  if (!state) {
+    if (opts.run) throw new FanoutStateError(`no fanout state for --run ${opts.run} (${stateFile(home, run)}): a wrong run id would skip the order rule`);
+    return null;
+  }
+  const t = state.tickets[opts.ticket];
+  if (!t) throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run} (known: ${Object.keys(state.tickets).slice(0, 12).join(', ') || 'none'}): a mistyped --ticket would skip the order rule`);
   return t.dependsOn.map((id) => {
     const u = state.tickets[id];
     return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: t.builtOn[id] ?? null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
@@ -274,11 +281,12 @@ export async function gatherUpstreamFacts(
     if (u.accepted) { out.push(base); continue; }
     const fields = 'number,state,baseRefName,headRefOid,mergeCommit';
     let row: PrRow | undefined;
-    if (u.branch) {
-      const rows = JSON.parse(await ghOk(['pr', 'list', '--head', u.branch, '--base', opts.into, '--state', 'all', '--json', fields, '--limit', '10'])) as PrRow[];
-      row = rows.find((r) => r.number === u.pr) ?? rows.find((r) => r.state === 'MERGED') ?? rows[0];
-    } else if (u.pr) {
+    if (u.pr) {
+      // The recorded PR is THE upstream PR (fail closed): never a look-alike picked by branch name — its own base/state decide.
       row = JSON.parse(await ghOk(['pr', 'view', String(u.pr), '--json', fields])) as PrRow;
+    } else if (u.branch) {
+      const rows = JSON.parse(await ghOk(['pr', 'list', '--head', u.branch, '--base', opts.into, '--state', 'all', '--json', fields, '--limit', '10'])) as PrRow[];
+      row = rows.find((r) => r.state === 'MERGED') ?? rows[0];
     } else {
       throw new GhError(`upstream ${u.id}: the state records neither a branch nor a PR, so its merge cannot be read`);
     }
@@ -304,8 +312,9 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
 
 async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
   const base = { ticket: opts.ticket, branch: opts.branch, into: opts.into };
+  let upstreamsChecked: boolean | undefined;
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
-    const full: DeliverResult = { ...result, ...base, reviewGated };
+    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}) };
     if (result.verdict === 'merged' || result.verdict === 'already-merged') full.combinedSuite = combinedSuiteCommand(opts.into, opts.suiteCmd);
     const exit = full.verdict === 'refused' ? DELIVER_EXIT.refused : full.verdict === 'unchecked' ? DELIVER_EXIT.unchecked : DELIVER_EXIT.merged;
     return { exit, result: full };
@@ -354,7 +363,9 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     // Before the PR is opened and before any wait: a refusal never depends on CI, and a dependent that would merge out of order opens nothing.
     let refs: UpstreamRef[];
     try {
-      refs = deps.upstreams ? deps.upstreams({ ticket: opts.ticket, run: opts.run }) : [];
+      const got = deps.upstreams ? deps.upstreams({ ticket: opts.ticket, run: opts.run }) : null;
+      upstreamsChecked = got !== null;
+      refs = got ?? [];
     } catch (e) {
       const bad = e instanceof FanoutStateError;
       return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state to find ${opts.ticket}'s upstreams: ${bad ? e.message : (e as Error).message}` }, reviewGated);
@@ -364,8 +375,8 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       const u = decideUpstreams(facts, opts.into);
       if (!u.ok) return done({ verdict: 'refused', reason: u.reason, detail: u.detail, head: verifiedHead }, reviewGated);
       deps.log(`upstreams ok: ${refs.map((r) => r.id).join(', ')}`);
-    } else {
-      deps.log(`upstreams: none known for ${opts.ticket} (no fanout state, or the ticket is not in it) — order/content NOT checked`);
+    } else if (!upstreamsChecked) {
+      deps.log(`upstreams: no fanout state consulted for ${opts.ticket} (no --run, none at your own run) — order/content NOT checked (upstreamsChecked:false)`);
     }
     // 2. Open or reuse the PR.
     const listed = JSON.parse(

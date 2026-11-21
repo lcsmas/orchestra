@@ -417,9 +417,20 @@ test('#506 review: an upstream that MERGED at another head than builtOn reads re
   assert.deepEqual([plan.tickets.B.class, plan.tickets.B.next.action], ['diverged', 're-gate']);
   assert.deepEqual(plan.writeBack.filter((w) => w.ticket === 'B'), [], 'no verdict reset: the dependent may already be re-gated');
   assert.equal(stackView(done, 'B')!.order, 're-gate');
-  const healed = applyTicketPatch(done, 'B', { builtOn: { A: SHA_C } }, T);
+  const healed = applyTicketPatch(done, 'B', { builtOn: { A: SHA_C } }, T); // re-recording a head (not dropping it) is allowed: deliver re-proves against the real merge
   assert.equal(reconcile(healed, { A: merged2, B: openPr(SHA_B) }).tickets.B.next.action, 'merge');
   assert.equal(stackView(healed, 'B')!.order, 'none');
   const same = applyTicketPatch(s, 'A', { status: 'merged' }, T);
   assert.equal(reconcile(same, { A: mergedReality, B: openPr(SHA_B) }).tickets.B.next.action, 'merge', 'positive control: merged at the built-on head');
+});
+
+test('#506 R2: dropping builtOn under an unchanged PASS is refused (it would read as built-after-merge and skip the content check); allowed once the verdict is voided', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
+  s = applyTicketPatch(s, 'A', { status: 'merged' }, T);
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: {} }, T), /cannot drop builtOn A while its pass verdict stands/);
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: null }, T), /cannot drop builtOn A/);
+  const voided = applyTicketPatch(s, 'B', { builtOn: {}, verdict: 'none', status: 'nominated' }, T);
+  assert.deepEqual(voided.tickets.B.builtOn, {});
+  assert.deepEqual(applyTicketPatch(s, 'B', { builtOn: { A: SHA_C } }, T).tickets.B.builtOn, { A: SHA_C }, 're-recording a head is not dropping');
 });
