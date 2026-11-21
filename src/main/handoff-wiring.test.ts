@@ -77,7 +77,7 @@ test('m1/m2: the owed marker is cleared ONLY on a delivered opening, an app-star
 
 test('#496 the bus frame is read at DELIVERY (every attempt), from the live bus and the wave run — never baked into the owed marker', () => {
   const host = read('handoff-host.ts');
-  assert.match(host, /busFrameFor\(db, id, resolveWaveRunId\(ws\)\)/);
-  assert.match(host, /function withBusFrame[\s\S]*catch[\s\S]*return opening;/, 'an unreadable bus delivers the opening alone');
+  assert.match(host, /const runId = resolveWaveRunId\(ws\);[\s\S]*busFrameFor\(db, id, runId\)/);
+  assert.match(host, /function withBusFrame[\s\S]*catch[\s\S]*composeBusFrame\(\{ runId, pendingRunIds: \[runId\] \}\)/, 'an unreadable bus orders a check of the own run, never a bare opening');
   assert.doesNotMatch(host.slice(host.indexOf('owe: ('), host.indexOf('owe: (') + 160), /busFrame/, 'the owed marker keeps the bare opening');
 });
