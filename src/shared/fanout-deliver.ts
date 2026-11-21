@@ -329,24 +329,41 @@ export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
   return true;
 }
 
-const TEST_CMD = /\b(jest|vitest|mocha|pytest|rspec|phpunit|go test|cargo test|(npm|pnpm|yarn|bun)( run)? test|nx (run-many|affected)\b.*\btest)\b/;
-/** The `run:` values of a job block (inline, or the lines of a `|` / `>` block scalar) — NOT `name:`, `with:` or `echo` text. */
-function runCommands(block: string[]): string[] {
+/** A segment that RUNS a test suite: the whole segment is a known runner invocation — `pnpm test` / `jest …`, never `pnpm test:lint`, `pip install pytest`, `echo pnpm test` — with no flag that lists/collects/passes without running. */
+const STRICT_TEST = /^(?:(?:npm|pnpm|yarn|bun)(?: run)? test|(?:(?:npx|pnpm exec|yarn|bunx) )?(?:jest|vitest(?: run)?|mocha|pytest|rspec|phpunit)|go test|cargo test)(?: [^;|&<>$`()]*)?$/;
+const NO_RUN_FLAG = /(^| )(--passWithNoTests|--listTests|--list-tests|--collect-only|--co|--help|-h|--version|--dry-run|--no-run|--findRelatedTests|--changedSince)\b/;
+/** A command whose failure can be masked or whose control flow is not a plain `a && b`: pipes (no pipefail), `||`, `;`, `set +e`, backgrounding. */
+const MASKED = /\||;|\bset\s+\+e\b|(?<!&)&(?!&)/;
+const isSuiteCommand = (c: string): boolean => !MASKED.test(c) && c.split('&&').map((x) => x.trim()).some((seg) => STRICT_TEST.test(seg) && !NO_RUN_FLAG.test(seg));
+
+/** The `run:` command strings of a step: `\`-continued, `>`-folded and plain multi-line scalars are joined (a continuation line is part of the SAME command). */
+function runCommands(step: string[]): string[] {
   const out: string[] = [];
   const ind = (l: string) => /^\s*/.exec(l)![0].length;
-  block.forEach((l, i) => {
+  step.forEach((l, i) => {
     const m = /^\s*(?:-\s*)?run\s*:\s*(.*)$/.exec(l);
     if (!m) return;
-    if (/^[|>][+-]?\d*$/.test(m[1].trim())) {
-      for (const f of block.slice(i + 1)) { if (f.trim() !== '' && ind(f) <= ind(l)) break; out.push(f.trim()); }
-    } else out.push(unq(m[1]));
+    const keyIndent = (/^\s*-\s/.test(l) ? ind(l) + 2 : ind(l));
+    const cont: string[] = [];
+    for (const f of step.slice(i + 1)) { if (f.trim() !== '' && ind(f) < keyIndent + 1) break; cont.push(f.trim()); }
+    const head = m[1].trim();
+    if (/^\|[+-]?\d*$/.test(head)) {
+      // literal block: one command per line, a trailing `\` joins the next
+      let cur = '';
+      for (const c of cont) { if (c === '' && cur === '') continue; cur += (cur ? ' ' : '') + c; if (!c.endsWith('\\')) { out.push(cur); cur = ''; } }
+      if (cur) out.push(cur);
+    } else out.push([unq(head.replace(/^>[+-]?\d*$/, '')), ...cont].join(' ').trim());
   });
-  return out;
+  return out.filter(Boolean);
 }
-/** A command line that RUNS the suite: a test command, not an echo of one, not neutralised (`|| true`, `; true`). */
-const isTestCommand = (c: string): boolean => TEST_CMD.test(c) && !/^(echo|printf)\b/.test(c) && !/\|\|\s*(true|:|exit 0)\b|;\s*(true|exit 0)\s*$/.test(c);
+const BENIGN_IF = /^(always\(\)|success\(\)|true|\$\{\{\s*(always\(\)|success\(\))\s*\}\})$/;
+const truthyCoe = (v: string): boolean => !/^(false|'false'|"false")$/.test(v.trim());
 
-/** Names (job `name:`, else id) of the jobs of a workflow whose steps run a test command: the checks that PROVE the suite ran. A reusable-workflow job (`uses:`) has no steps to read: not derived. */
+/**
+ * Names (job `name:`, else id) of the jobs of a workflow with a STEP that provably runs the test suite: a `run:` that is a plain runner
+ * invocation (STRICT_TEST), unmasked (no `|| true`, pipe, `;`, `set +e`), on a step and job that are not conditional (`if:`) or `continue-on-error`.
+ * A job it cannot read that way is NOT derived (fail closed: the verifier keeps the suite, or pins the check). A reusable-workflow job (`uses:`) has no steps.
+ */
 export function suiteJobsOf(yaml: string): string[] {
   const lines = yaml.replace(/#.*$/gm, '').split('\n');
   const at = lines.findIndex((l) => /^jobs\s*:\s*$/.test(l));
@@ -362,18 +379,39 @@ export function suiteJobsOf(yaml: string): string[] {
     if (!m) return;
     const block: string[] = [];
     for (const f of body.slice(i + 1)) { if (indent(f) <= top) break; block.push(f); }
-    if (block.some((f) => /^\s*(-\s*)?continue-on-error\s*:\s*(true|\$\{\{)/i.test(f))) return; // a job that cannot fail proves nothing
-    if (!runCommands(block).some(isTestCommand)) return;
+    if (block.length === 0) return;
     const own = Math.min(...block.map(indent));
-    const nm = block.map((f) => (indent(f) === own ? /^\s*name\s*:\s*(.+)$/.exec(f)?.[1] : undefined)).find((x) => x !== undefined);
+    const jobKey = (k: string) => block.map((f) => (indent(f) === own ? new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`).exec(f)?.[1] : undefined)).find((x) => x !== undefined);
+    const jobIf = jobKey('if');
+    if ((jobIf !== undefined && !BENIGN_IF.test(unq(jobIf))) || (jobKey('continue-on-error') !== undefined && truthyCoe(unq(jobKey('continue-on-error')!)))) return;
+    const si = block.findIndex((f) => indent(f) === own && /^\s*steps\s*:\s*$/.test(f));
+    if (si < 0) return;
+    const stepsBody: string[] = [];
+    for (const f of block.slice(si + 1)) { if (f.trim() !== '' && indent(f) <= own) break; stepsBody.push(f); }
+    const dashes = stepsBody.filter((f) => /^\s*-\s/.test(f)).map(indent);
+    if (dashes.length === 0) return;
+    const itemIndent = Math.min(...dashes);
+    const steps: string[][] = [];
+    for (const f of stepsBody) { if (indent(f) === itemIndent && /^\s*-\s/.test(f)) steps.push([f]); else if (steps.length) steps[steps.length - 1].push(f); }
+    const proves = steps.some((st) => {
+      const key = (k: string) => st.map((f) => new RegExp(`^\\s*(?:-\\s*)?${k}\\s*:\\s*(.*)$`).exec(f)?.[1]).find((x) => x !== undefined);
+      const sIf = key('if'); const coe = key('continue-on-error');
+      if (sIf !== undefined && !BENIGN_IF.test(unq(sIf))) return false;
+      if (coe !== undefined && truthyCoe(unq(coe))) return false;
+      const cmds = runCommands(st);
+      if (cmds.some((c) => /\bset\s+\+e\b/.test(c))) return false; // `set +e` turns every later failure of the step into a pass
+      return cmds.some(isSuiteCommand);
+    });
+    if (!proves) return;
+    const nm = jobKey('name');
     const name = nm === undefined ? m[1] : unq(nm).split('${{')[0].trim();
     if (name) out.push(name);
   });
   return out;
 }
 
-/** A check name is the suite check `n`: EXACTLY (as `deliver --require-check` pins it) or a matrix leg `n (…)`. A reusable-workflow check (`caller / job`) is pinned by its full name. */
-export const suiteMatches = (checkName: string, n: string): boolean => checkName === n || checkName.startsWith(`${n} (`);
+/** A check name is the suite check `n`: EXACTLY, or — for a DERIVED name only — a matrix leg `n (…)`. A PINNED name is exact (`deliver --require-check` is); a reusable-workflow check is pinned by its full name (`ci / test`). */
+export const suiteMatches = (checkName: string, n: string, exactOnly = false): boolean => checkName === n || (!exactOnly && checkName.startsWith(`${n} (`));
 
 export type GateInput = {
   /** Workflow files of the TARGET branch (null = the listing could not be read). */
@@ -386,7 +424,7 @@ export type GateInput = {
   requiredChecks?: string[];
   /** The target branch (a workflow's `branches` filter must admit it). */
   into?: string;
-  /** Files the PR changes (null = unread): a PR that edits `.github/` runs ITS OWN workflows, not the target's the gate read. */
+  /** Files the PR changes (undefined/null = unread ⇒ fail closed): a PR that edits `.github/` runs ITS OWN workflows, not the target's the gate read. */
   prFiles?: string[] | null;
   /** The check-name set is identical across two reads a few seconds apart (a late-registering check can't hide behind an early green). */
   stable: boolean;
@@ -432,7 +470,8 @@ export function decideGate(i: GateInput): GateAnswer {
   const derived = hasCi ? [...new Set(i.workflows!.filter((w) => workflowRunsOnPr(w, i.into)).flatMap(suiteJobsOf))] : [];
   const suiteChecks = pinned.length > 0 ? pinned : derived;
   const suiteSource: GateAnswer['suiteSource'] = pinned.length > 0 ? 'pinned' : derived.length > 0 ? 'derived' : 'none';
-  const required = suiteChecks.flatMap((n) => { const m = i.checks.filter((c) => suiteMatches(c.name, n)).map((c) => c.name); return m.length > 0 ? m : [n]; });
+  const exact = pinned.length > 0;
+  const required = suiteChecks.flatMap((n) => { const m = i.checks.filter((c) => suiteMatches(c.name, n, exact)).map((c) => c.name); return m.length > 0 ? m : [n]; });
   const verdict: CiVerdict | null = i.pr ? ciVerdict(i.checks, required, i.stable) : null;
   const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const h = i.head.slice(0, 12);
@@ -442,10 +481,11 @@ export function decideGate(i: GateInput): GateAnswer {
     detail,
   });
   if (!hasCi) return verifierSuite(repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows: full suite stays on the verifier\'s seat');
+  if (i.pr && (i.prFiles === undefined || i.prFiles === null)) return verifierSuite('the PR\'s file list was not read: cannot rule out an edit of .github/ — the full suite stays on the verifier\'s seat');
   if ((i.prFiles ?? []).some((f) => f.startsWith('.github/'))) return verifierSuite('the PR edits .github/: its CI runs the CANDIDATE\'s workflows, not the target\'s the gate read — the full suite stays on the verifier\'s seat');
   if (suiteSource === 'none') return verifierSuite('PR CI exists but no check provably runs the test suite (no test job in the PR workflows, none pinned): pin it with --require-check <name> or keep the full suite on the verifier\'s seat');
   const ciGreenOnHead = ci === 'green' && headMatches;
-  const absent = i.pr ? suiteChecks.filter((n) => !i.checks.some((c) => suiteMatches(c.name, n))) : [];
+  const absent = i.pr ? suiteChecks.filter((n) => !i.checks.some((c) => suiteMatches(c.name, n, exact))) : [];
   const why = !i.pr ? 'no PR open: `orchestra fanout open` first (CI runs while you gate)'
     : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
     : ci === 'green' ? `CI green on ${h}, suite check(s): ${suiteChecks.join(', ')}` : `CI ${ci} on ${h}: do not sign PASS until green${absent.length > 0 ? `; suite check(s) NOT on the head: ${absent.join(', ')} — if they never register (typo, a matrix name), pin the exact name with --require-check or run the suite on the verifier\'s seat` : ''}`;
