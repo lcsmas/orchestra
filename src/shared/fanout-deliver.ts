@@ -329,76 +329,112 @@ export function workflowRunsOnPr(yaml: string, into = 'main'): boolean {
   return true;
 }
 
-/** A segment that RUNS a test suite: the whole segment is a known runner invocation — `pnpm test` / `jest …`, never `pnpm test:lint`, `pip install pytest`, `echo pnpm test` — with no flag that lists/collects/passes without running. */
-const STRICT_TEST = /^(?:(?:npm|pnpm|yarn|bun)(?: run)? test|(?:(?:npx|pnpm exec|yarn|bunx) )?(?:jest|vitest(?: run)?|mocha|pytest|rspec|phpunit)|go test|cargo test)(?: [^;|&<>$`()]*)?$/;
-const NO_RUN_FLAG = /(^| )(--passWithNoTests|--listTests|--list-tests|--collect-only|--co|--help|-h|--version|--dry-run|--no-run|--findRelatedTests|--changedSince)\b/;
+/**
+ * A segment that RUNS a test suite: the WHOLE segment is a known runner invocation — `pnpm test`, `jest …`, `python -m pytest`, `bundle exec rspec`,
+ * `nx run-many -t test`, optionally behind `VAR=x` env assignments — never `pnpm test:lint`, `pip install pytest`, `echo pnpm test`.
+ * Args may carry `${{ … }}` / `$VAR`, never a command substitution. Not matched (pin-only): `make test`, `tox`, `mvn`, anything it does not name.
+ */
+const ARGS = '(?: [^;|&<>`()]*)?';
+const SCRIPT = '(?:test(?::(?:ci|unit|all|cov|coverage|integration))?)';
+const STRICT_TEST = new RegExp(
+  '^(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s;|&<>`()]*\\s+)*(?:xvfb-run(?: -a)? )?(?:' + [
+    `(?:npm|pnpm|yarn|bun)(?: run)? ${SCRIPT}`,
+    `pnpm(?: (?:-r|--recursive|(?:--filter|-F)[= ]\\S+))+(?: run)? ${SCRIPT}`,
+    '(?:(?:poetry|uv|pipenv|pdm|hatch) run |bundle exec |python3? -m |npx |pnpm exec |yarn |bunx |(?:\\./)?vendor/bin/)?(?:jest|vitest(?: run)?|mocha|pytest|rspec|phpunit)',
+    '(?:(?:npx|pnpm) )?nx (?:run-many|affected)(?: [^;|&<>`()]*)? (?:-t|--targets?)[ =]test',
+    '(?:(?:npx|pnpm) )?(?:nx|turbo(?: run)?) test',
+    'go test', 'cargo test', 'dotnet test', 'php artisan test', 'node --test', 'deno test', '(?:\\./)?gradlew test',
+  ].join('|') + `)${ARGS}$`,
+);
+/** Flags / sub-commands under which the runner lists, collects, or passes WITHOUT running tests (a deny-list: a flag not named here still derives). */
+const NO_RUN_FLAG = /(^| )(--passWithNoTests|--listTests|--list-tests|--collect-only|--co|--help|-h|--version|--dry-run|--no-run|--findRelatedTests|--changedSince|--if-present|--fixtures|--setup-plan|--showConfig|--clearCache|-list|--list)\b|\b(vitest|jest|pytest) list\b/;
 /** A command whose failure can be masked or whose control flow is not a plain `a && b`: pipes (no pipefail), `||`, `;`, `set +e`, backgrounding. */
 const MASKED = /\||;|\bset\s+\+e\b|(?<!&)&(?!&)/;
-const isSuiteCommand = (c: string): boolean => !MASKED.test(c) && c.split('&&').map((x) => x.trim()).some((seg) => STRICT_TEST.test(seg) && !NO_RUN_FLAG.test(seg));
+/** `2>&1`, `> out`, `>> out` redirections do not change the exit status: dropped before the checks. */
+const stripRedirects = (c: string): string => c.replace(/\s+\d?>>?\s*(?:&\d|[^\s;|&<>]+)/g, '');
+const isSuiteCommand = (raw: string): boolean => {
+  const c = stripRedirects(raw);
+  return !MASKED.test(c) && c.split('&&').map((x) => x.trim()).some((seg) => STRICT_TEST.test(seg) && !NO_RUN_FLAG.test(seg));
+};
+
+const indentOf = (l: string): number => /^\s*/.exec(l)![0].length;
+/** The keys of ONE step at the step-key indent (the first one sits after the dash): a `run:` under `with:` or a nested map is NOT a step key. */
+function stepKeys(st: string[]): { keyIndent: number; keys: Map<string, { rest: string; idx: number }> } {
+  const first = /^(\s*-\s+)(.*)$/.exec(st[0]);
+  const rest = st.slice(1).filter((f) => f.trim() !== '');
+  const keyIndent = first ? first[1].length : rest.length ? Math.min(...rest.map(indentOf)) : 0;
+  const keys = new Map<string, { rest: string; idx: number }>();
+  const put = (line: string, idx: number) => { const m = /^\s*([\w-]+)\s*:\s*(.*)$/.exec(line); if (m && !keys.has(m[1])) keys.set(m[1], { rest: m[2], idx }); };
+  if (first) put(first[2], 0);
+  st.forEach((f, i) => { if (i > 0 && indentOf(f) === keyIndent) put(f, i); });
+  return { keyIndent, keys };
+}
 
 /** The `run:` command strings of a step: `\`-continued, `>`-folded and plain multi-line scalars are joined (a continuation line is part of the SAME command). */
-function runCommands(step: string[]): string[] {
+function runCommands(st: string[], keyIndent: number, run: { rest: string; idx: number } | undefined): string[] {
+  if (!run) return [];
+  const cont: string[] = [];
+  for (const f of st.slice(run.idx + 1)) { if (f.trim() !== '' && indentOf(f) <= keyIndent) break; cont.push(f.trim()); }
+  const head = run.rest.trim();
   const out: string[] = [];
-  const ind = (l: string) => /^\s*/.exec(l)![0].length;
-  step.forEach((l, i) => {
-    const m = /^\s*(?:-\s*)?run\s*:\s*(.*)$/.exec(l);
-    if (!m) return;
-    const keyIndent = (/^\s*-\s/.test(l) ? ind(l) + 2 : ind(l));
-    const cont: string[] = [];
-    for (const f of step.slice(i + 1)) { if (f.trim() !== '' && ind(f) < keyIndent + 1) break; cont.push(f.trim()); }
-    const head = m[1].trim();
-    if (/^\|[+-]?\d*$/.test(head)) {
-      // literal block: one command per line, a trailing `\` joins the next
-      let cur = '';
-      for (const c of cont) { if (c === '' && cur === '') continue; cur += (cur ? ' ' : '') + c; if (!c.endsWith('\\')) { out.push(cur); cur = ''; } }
-      if (cur) out.push(cur);
-    } else out.push([unq(head.replace(/^>[+-]?\d*$/, '')), ...cont].join(' ').trim());
-  });
+  if (/^\|[+-]?\d*$/.test(head)) {
+    // literal block: one command per line, a trailing `\` joins the next
+    let cur = '';
+    for (const c of cont) { if (c === '' && cur === '') continue; cur += (cur ? ' ' : '') + c; if (!c.endsWith('\\')) { out.push(cur); cur = ''; } }
+    if (cur) out.push(cur);
+  } else out.push([unq(head.replace(/^>[+-]?\d*$/, '')), ...cont].join(' ').trim());
   return out.filter(Boolean);
 }
 const BENIGN_IF = /^(always\(\)|success\(\)|true|\$\{\{\s*(always\(\)|success\(\))\s*\}\})$/;
 const truthyCoe = (v: string): boolean => !/^(false|'false'|"false")$/.test(v.trim());
+/** YAML anchors / aliases / merge keys can smuggle `continue-on-error`, `if:` or a `run:` into a step from elsewhere: a job using any is not read. */
+const YAML_INDIRECTION = /<<\s*:|:\s+[&*][\w-]+|^\s*-\s+[&*][\w-]+/;
 
 /**
- * Names (job `name:`, else id) of the jobs of a workflow with a STEP that provably runs the test suite: a `run:` that is a plain runner
- * invocation (STRICT_TEST), unmasked (no `|| true`, pipe, `;`, `set +e`), on a step and job that are not conditional (`if:`) or `continue-on-error`.
- * A job it cannot read that way is NOT derived (fail closed: the verifier keeps the suite, or pins the check). A reusable-workflow job (`uses:`) has no steps.
+ * Names (job `name:`, else id) of the jobs of a workflow with a STEP that provably runs the test suite: a `run:` (at the step-key indent) that is a plain
+ * runner invocation (STRICT_TEST), unmasked (no `|| true`, pipe, `;`, `set +e`), on a step and job that are not conditional (`if:`) or `continue-on-error`,
+ * under the default shell. A job it cannot read that way is NOT derived (fail closed: the verifier keeps the suite, or pins the check). A reusable-workflow job (`uses:`) has no steps.
  */
 export function suiteJobsOf(yaml: string): string[] {
-  const lines = yaml.replace(/#.*$/gm, '').split('\n');
+  const lines = yaml.replace(/\r/g, '').replace(/#.*$/gm, '').split('\n');
+  if (lines.some((l) => /^\s*shell\s*:\s*(?!bash\s*$)\S/.test(l))) return []; // a non-default shell (no -e, pwsh, python…) changes what a failure means
   const at = lines.findIndex((l) => /^jobs\s*:\s*$/.test(l));
   if (at < 0) return [];
   const body: string[] = [];
   for (const l of lines.slice(at + 1)) { if (l.trim() === '') continue; if (!/^\s/.test(l)) break; body.push(l); }
-  const indent = (l: string) => /^\s*/.exec(l)![0].length;
   if (body.length === 0) return [];
-  const top = Math.min(...body.map(indent));
+  const top = Math.min(...body.map(indentOf));
   const out: string[] = [];
   body.forEach((l, i) => {
-    const m = indent(l) === top ? /^\s*([\w.-]+)\s*:\s*$/.exec(l) : null;
+    const m = indentOf(l) === top ? /^\s*([\w.-]+)\s*:\s*$/.exec(l) : null;
     if (!m) return;
     const block: string[] = [];
-    for (const f of body.slice(i + 1)) { if (indent(f) <= top) break; block.push(f); }
-    if (block.length === 0) return;
-    const own = Math.min(...block.map(indent));
-    const jobKey = (k: string) => block.map((f) => (indent(f) === own ? new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`).exec(f)?.[1] : undefined)).find((x) => x !== undefined);
+    for (const f of body.slice(i + 1)) { if (indentOf(f) <= top) break; block.push(f); }
+    if (block.length === 0 || block.some((f) => YAML_INDIRECTION.test(f))) return;
+    const own = Math.min(...block.map(indentOf));
+    const jobKey = (k: string) => block.map((f) => (indentOf(f) === own ? new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`).exec(f)?.[1] : undefined)).find((x) => x !== undefined);
     const jobIf = jobKey('if');
     if ((jobIf !== undefined && !BENIGN_IF.test(unq(jobIf))) || (jobKey('continue-on-error') !== undefined && truthyCoe(unq(jobKey('continue-on-error')!)))) return;
-    const si = block.findIndex((f) => indent(f) === own && /^\s*steps\s*:\s*$/.test(f));
+    const si = block.findIndex((f) => indentOf(f) === own && /^\s*steps\s*:\s*$/.test(f));
     if (si < 0) return;
+    // steps: the dashes may sit at the SAME indent as `steps:` (GitHub's starter layout) or deeper; the list ends at the next non-dash key at `own` or shallower
     const stepsBody: string[] = [];
-    for (const f of block.slice(si + 1)) { if (f.trim() !== '' && indent(f) <= own) break; stepsBody.push(f); }
-    const dashes = stepsBody.filter((f) => /^\s*-\s/.test(f)).map(indent);
+    for (const f of block.slice(si + 1)) {
+      if (f.trim() === '') continue;
+      if (indentOf(f) < own || (indentOf(f) === own && !/^\s*-(\s|$)/.test(f))) break;
+      stepsBody.push(f);
+    }
+    const dashes = stepsBody.filter((f) => /^\s*-(\s|$)/.test(f)).map(indentOf);
     if (dashes.length === 0) return;
     const itemIndent = Math.min(...dashes);
     const steps: string[][] = [];
-    for (const f of stepsBody) { if (indent(f) === itemIndent && /^\s*-\s/.test(f)) steps.push([f]); else if (steps.length) steps[steps.length - 1].push(f); }
+    for (const f of stepsBody) { if (indentOf(f) === itemIndent && /^\s*-(\s|$)/.test(f)) steps.push([f]); else if (steps.length) steps[steps.length - 1].push(f); }
     const proves = steps.some((st) => {
-      const key = (k: string) => st.map((f) => new RegExp(`^\\s*(?:-\\s*)?${k}\\s*:\\s*(.*)$`).exec(f)?.[1]).find((x) => x !== undefined);
-      const sIf = key('if'); const coe = key('continue-on-error');
+      const { keyIndent, keys } = stepKeys(st);
+      const sIf = keys.get('if')?.rest; const coe = keys.get('continue-on-error')?.rest;
       if (sIf !== undefined && !BENIGN_IF.test(unq(sIf))) return false;
       if (coe !== undefined && truthyCoe(unq(coe))) return false;
-      const cmds = runCommands(st);
+      const cmds = runCommands(st, keyIndent, keys.get('run'));
       if (cmds.some((c) => /\bset\s+\+e\b/.test(c))) return false; // `set +e` turns every later failure of the step into a pass
       return cmds.some(isSuiteCommand);
     });
@@ -481,8 +517,8 @@ export function decideGate(i: GateInput): GateAnswer {
     detail,
   });
   if (!hasCi) return verifierSuite(repoCi === 'none' ? 'the target has no PR CI: the full suite stays on the verifier\'s seat' : 'could not read the target\'s workflows: full suite stays on the verifier\'s seat');
-  if (i.pr && (i.prFiles === undefined || i.prFiles === null)) return verifierSuite('the PR\'s file list was not read: cannot rule out an edit of .github/ — the full suite stays on the verifier\'s seat');
-  if ((i.prFiles ?? []).some((f) => f.startsWith('.github/'))) return verifierSuite('the PR edits .github/: its CI runs the CANDIDATE\'s workflows, not the target\'s the gate read — the full suite stays on the verifier\'s seat');
+  if (i.pr && (i.prFiles === undefined || i.prFiles === null || i.prFiles.length === 0)) return verifierSuite('the PR\'s file list was not read: cannot rule out an edit of .github/ — the full suite stays on the verifier\'s seat');
+  if ((i.prFiles ?? []).some((f) => f.replace(/^"|"$/g, '').replace(/^\.\//, '').startsWith('.github/'))) return verifierSuite('the PR edits .github/: its CI runs the CANDIDATE\'s workflows, not the target\'s the gate read — the full suite stays on the verifier\'s seat');
   if (suiteSource === 'none') return verifierSuite('PR CI exists but no check provably runs the test suite (no test job in the PR workflows, none pinned): pin it with --require-check <name> or keep the full suite on the verifier\'s seat');
   const ciGreenOnHead = ci === 'green' && headMatches;
   const absent = i.pr ? suiteChecks.filter((n) => !i.checks.some((c) => suiteMatches(c.name, n, exact))) : [];

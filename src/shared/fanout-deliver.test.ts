@@ -386,3 +386,50 @@ test('pre-review MINOR: a pinned name is EXACT like deliver (a matrix leg satisf
   assert.match(noFiles.detail, /file list was not read/);
   assert.equal(decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, stable: true, checks: [GH], prFiles: null }).fullSuite, 'verifier');
 });
+
+test('follow-up MAJOR: the commonest layouts derive — dashes at the `steps:` indent (GitHub\'s starter) and CRLF files; the PR-trigger reader reads CRLF too', () => {
+  const starter = 'name: CI\non:\n  pull_request:\n    branches: [ main ]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n    - uses: actions/checkout@v4\n    - run: npm ci\n    - run: npm test\n';
+  assert.deepEqual(suiteJobsOf(starter), ['build'], 'dash at the steps: indent');
+  assert.equal(workflowRunsOnPr(starter, 'main'), true);
+  assert.deepEqual(suiteJobsOf(starter.replace(/\n/g, '\r\n')), ['build'], 'CRLF');
+  assert.equal(workflowRunsOnPr(starter.replace(/\n/g, '\r\n'), 'main'), true, 'CRLF trigger');
+  // the job key right after a same-indent steps list must END the list (not be read as a step)
+  assert.deepEqual(suiteJobsOf('jobs:\n  a:\n    steps:\n    - run: echo hi\n    timeout-minutes: 5\n  b:\n    steps:\n      - run: pnpm test\n'), ['b']);
+  // a job key AFTER a same-indent steps list ends the list: its nested `continue-on-error` is not the last step's
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n    - run: pnpm test\n    env:\n      continue-on-error: true\n'), ['t']);
+  // control: deeper dashes still work
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: pnpm test\n'), ['t']);
+});
+
+test('follow-up MINOR 1: --if-present, anchors/merge keys/aliases, a run: that is not a step key, a non-default shell, and the other no-run flags do not derive', () => {
+  const one = (cmd: string) => `jobs:\n  t:\n    steps:\n      - run: ${cmd}\n`;
+  for (const cmd of ['npm test --if-present', 'npm run test --if-present', 'go test -list .', 'pytest --fixtures', 'pytest --setup-plan', 'jest --showConfig', 'jest --clearCache', 'vitest list', 'pnpm test --changedSince=main']) assert.deepEqual(suiteJobsOf(one(cmd)), [], cmd);
+  assert.deepEqual(suiteJobsOf('x-noerr: &noerr\n  continue-on-error: true\njobs:\n  t:\n    steps:\n      - run: pnpm test\n        <<: *noerr\n'), [], 'a merge key can carry continue-on-error');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    <<: *flaky\n    steps:\n      - run: pnpm test\n'), [], 'a job merge key');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - uses: some/action\n        with:\n          run: pnpm test\n'), [], 'run: under with: is not a step key');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: |\n          pnpm test\n          echo done\n        shell: bash {0}\n'), [], 'shell bash {0} has no -e');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    defaults:\n      run:\n        shell: pwsh\n    steps:\n      - run: pnpm test\n'), [], 'defaults.run.shell');
+  assert.deepEqual(suiteJobsOf('jobs:\n  t:\n    steps:\n      - run: pnpm test\n        shell: bash\n'), ['t'], 'control: shell: bash is the default family');
+});
+
+/** The reviewer's command set (probe2): recall of `suiteJobsOf` on common real test commands. NOT = pin-only by design (the gate says `--require-check`). */
+const RECALL_CMDS: ReadonlyArray<readonly [string, boolean]> = [
+  ['pnpm test', true], ['npm test', true], ['npm ci && npm test', true], ['yarn test', true], ['yarn run test', true], ['pnpm run test', true], ['npm run test', true], ['pnpm test -- --coverage', true], ['npm test -- --ci --coverage', true],
+  ['pnpm run test:ci', true], ['npm run test:unit', true], ['pnpm test:unit', true], ['yarn test:ci', true], ['npm run test:coverage', true], ['pnpm -r test', true], ['pnpm -r run test', true], ['pnpm --filter api test', true], ['yarn workspaces foreach run test', false],
+  ['npx jest', true], ['npx jest --ci', true], ['jest --ci --coverage', true], ['npx vitest run', true], ['vitest run', true], ['pnpm exec vitest run', true],
+  ['pytest', true], ['pytest -q tests/', true], ['python -m pytest', true], ['python -m pytest -q', true], ['poetry run pytest', true], ['uv run pytest', true], ['pipenv run pytest', true], ['tox', false], ['nox', false],
+  ['bundle exec rspec', true], ['rspec', true], ['vendor/bin/phpunit', true], ['./vendor/bin/phpunit', true], ['php artisan test', true], ['composer test', false], ['go test ./...', true], ['go test -race ./...', true], ['cargo test', true], ['cargo test --all', true],
+  ['./gradlew test', true], ['mvn test', false], ['mvn -B verify', false], ['dotnet test', true], ['make test', false], ['make check', false], ['npm test --silent', true], ['pnpm test --filter=x', true],
+  ['CI=true pnpm test', true], ['NODE_ENV=test npm test', true], ['xvfb-run pnpm test', true], ['cd app && pnpm test', true], ['pnpm test --shard=${{ matrix.shard }}/4', true], ['pnpm test ${{ matrix.args }}', true], ['npm test 2>&1', true], ['pnpm test > out.txt', true], ['pnpm test --reporter=junit --outputFile=r.xml', true],
+  ['turbo run test', true], ['npx nx run-many -t test', true], ['npx nx affected -t test', true], ['nx test api', true], ['pnpm turbo test', true], ['pnpm nx test', true], ['node --test', true], ['node --test --experimental-strip-types "src/**/*.test.ts"', true],
+  ['npx playwright test', false], ['pnpm exec playwright test', false], ['npx cypress run', false], ['pnpm test:e2e', false], ['deno test', true], ['bun test', true], ['pnpm test -- --run', true],
+  ['pnpm run build && pnpm test', true], ['pnpm install --frozen-lockfile && pnpm test', true], ['pnpm lint && pnpm test', true],
+];
+test('follow-up MINOR 2: recall on the reviewer\'s 78 common test commands is pinned command by command (the pin-only ones named)', () => {
+  const wf = (cmd: string) => `name: ci\non: pull_request\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: ${cmd}\n`;
+  const wrong = RECALL_CMDS.filter(([c, want]) => (suiteJobsOf(wf(c)).length > 0) !== want).map(([c]) => c);
+  assert.deepEqual(wrong, []);
+  const derived = RECALL_CMDS.filter(([c]) => suiteJobsOf(wf(c)).length > 0).length;
+  assert.equal(RECALL_CMDS.length, 78);
+  assert.ok(derived >= 66, `${derived}/78 derived (master's textual reader: 54, the strict reader before this fix: 31)`);
+});
