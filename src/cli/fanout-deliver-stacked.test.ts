@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { deliver, upstreamsFromState, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
+import { deliver, parseDeliverArgs, realDeps, runDeliver, upstreamsFromState, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
 import { applyTicketPatch, newState, stateFile, writeStateAtomic, type FanoutState } from '../shared/fanout-state.ts';
 
 const NOW = '2026-11-21T10:00:00.000Z';
@@ -319,4 +319,40 @@ test('#506 review: the upstream PR is picked by its recorded number, not by an o
   r.writeState(s);
   const out = await deliver(opts('dep', 'DEP', D), r.mkdeps());
   assert.deepEqual([out.exit, out.result.reason], [2, 'upstream-not-merged'], JSON.stringify(out.result));
+});
+
+test('#506 V1 production wiring: parseDeliverArgs --run → realDeps().upstreams → state file → refusal / merge (a dropped flag or an unwired reader cannot pass)', async (t) => {
+  const r = rig(t);
+  const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.writeState(stateFor(U, D));
+  const keys = ['ORCHESTRA_HOME', 'ORCHESTRA_WS_ID', 'ORCHESTRA_WS_ID_IDENTITY', 'ORCHESTRA_RUN_ID'] as const;
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  t.after(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+  process.env.ORCHESTRA_HOME = r.home;
+  delete process.env.ORCHESTRA_WS_ID; delete process.env.ORCHESTRA_WS_ID_IDENTITY; delete process.env.ORCHESTRA_RUN_ID;
+  const argv = (branch: string, ticket: string, head: string) => ['--branch', branch, '--into', 'master', '--ticket', ticket, '--no-review-gate', '--verified-head', head, '--run', 'r1', '--no-checks-grace', '0'];
+  const parsed = parseDeliverArgs(argv('dep', 'DEP', D));
+  assert.ok(parsed.ok && parsed.opts.run === 'r1', '--run survives the parse');
+  const prod = (): DeliverDeps => ({ ...realDeps(), gh: r.gh, sleep: async () => {}, now: () => 0, log: () => {} });
+  assert.equal(typeof prod().upstreams, 'function', 'realDeps wires the state reader');
+  const out = await runDeliver(argv('dep', 'DEP', D), prod());
+  const j = JSON.parse(out.stdout ?? '{}');
+  assert.deepEqual([out.exit, j.verdict, j.reason], [2, 'refused', 'upstream-not-merged'], out.stdout);
+  assert.equal(r.merges().length, 0);
+  assert.equal(JSON.parse((await runDeliver(argv('up', 'UP', U), prod())).stdout ?? '{}').upstreamsChecked, true);
+  const after = JSON.parse((await runDeliver(argv('dep', 'DEP', D), prod())).stdout ?? '{}');
+  assert.deepEqual([after.verdict, after.upstreamsChecked], ['merged', true], JSON.stringify(after));
+});
+
+test('#506 V3: an upstream whose merged PR reports no head is could-not-check (exit 1), not a TypeError out of deliver', async (t) => {
+  const r = rig(t);
+  const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.writeState(stateFor(U, D));
+  assert.equal((await deliver(opts('up', 'UP', U), r.mkdeps())).result.verdict, 'merged');
+  const strip: DeliverDeps = { ...r.mkdeps(), gh: async (a) => { const x = await r.gh(a); return a[0] === 'pr' && a[1] === 'list' && a.includes('up') ? { ...x, stdout: x.stdout.replace(/"headRefOid":"[0-9a-f]+"/g, '"headRefOid":null') } : x; } };
+  const out = await deliver(opts('dep', 'DEP', D), strip);
+  assert.deepEqual([out.exit, out.result.verdict, out.result.reason], [1, 'unchecked', 'gh-failed'], JSON.stringify(out.result));
+  assert.match(out.result.detail ?? '', /no head for its merged PR/);
 });

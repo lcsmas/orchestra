@@ -293,6 +293,7 @@ export async function gatherUpstreamFacts(
     base.pr = row ? { state: row.state, baseRefName: row.baseRefName, headRefOid: row.headRefOid, mergeCommit: row.mergeCommit?.oid ?? null } : null;
     if (base.pr && base.pr.state === 'MERGED' && base.pr.baseRefName === opts.into && u.builtOn) {
       const mergedHead = base.pr.headRefOid;
+      if (typeof mergedHead !== 'string' || !mergedHead) throw new GhError(`upstream ${u.id}: GitHub reported no head for its merged PR`);
       if (!(mergedHead.startsWith(u.builtOn) || u.builtOn.startsWith(mergedHead))) base.sameTree = (await treeOf(u.builtOn)) === (await treeOf(mergedHead));
       base.dependentOnBuiltOn = await contains(verifiedHead, u.builtOn);
       base.dependentOnMerge = base.pr.mergeCommit ? await contains(verifiedHead, base.pr.mergeCommit) : false;
