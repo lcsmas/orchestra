@@ -428,7 +428,13 @@ test('#506 R2: dropping builtOn under an unchanged PASS is refused (it would rea
   let s = stacked('gated', { verdict: 'pass' });
   s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
   s = applyTicketPatch(s, 'A', { status: 'merged' }, T);
-  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: {} }, T), /cannot drop builtOn A while its pass verdict stands/);
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: {} }, T), /cannot drop builtOn A while the resulting pass verdict stands/);
+  // D1: whatever the PREVIOUS verdict — a swap pass→approve, or void-then-pass in ONE patch, also leaves a PASS without builtOn
+  assert.throws(() => applyTicketPatch(s, 'B', { builtOn: {}, verdict: 'approve' }, T), /cannot drop builtOn A while the resulting approve verdict stands/);
+  const none = applyTicketPatch(s, 'B', { verdict: 'none', status: 'nominated' }, T);
+  assert.throws(() => applyTicketPatch(none, 'B', { builtOn: {}, verdict: 'pass', status: 'gated' }, T), /cannot drop builtOn A while the resulting pass verdict stands/);
+  assert.throws(() => applyTicketPatch(none, 'B', { builtOn: {}, verdict: 'approve' }, T), /cannot drop builtOn A/);
+  assert.deepEqual(applyTicketPatch(none, 'B', { builtOn: {} }, T).tickets.B.builtOn, {}, 'dropping with the verdict at none is the void step');
   assert.throws(() => applyTicketPatch(s, 'B', { builtOn: null }, T), /cannot drop builtOn A/);
   const voided = applyTicketPatch(s, 'B', { builtOn: {}, verdict: 'none', status: 'nominated' }, T);
   assert.deepEqual(voided.tickets.B.builtOn, {});

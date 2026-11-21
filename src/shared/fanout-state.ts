@@ -249,10 +249,10 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ('status' in patch) next.status = enumOf(patch.status, TICKET_STATUSES, 'status');
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
-  // #506 review R2: dropping builtOn under an UNCHANGED PASS would make the verdict read as "built after the upstream merged" (deliver skips the content check).
-  if ((next.verdict === 'pass' || next.verdict === 'approve') && next.verdict === prev.verdict) {
+  // #506 review R2/D1: a patch that drops builtOn and LEAVES a pass/approve verdict (kept, swapped pass↔approve, or set in the same patch) would make it read as "built after the upstream merged" (deliver skips the content check).
+  if (next.verdict === 'pass' || next.verdict === 'approve') {
     const dropped = Object.keys(prev.builtOn).filter((k) => !(k in next.builtOn));
-    if (dropped.length) throw new FanoutStateError(`${id}: cannot drop builtOn ${dropped.join(', ')} while its ${next.verdict} verdict stands — void it first (--verdict none --status nominated), re-gate, then record`);
+    if (dropped.length) throw new FanoutStateError(`${id}: cannot drop builtOn ${dropped.join(', ')} while the resulting ${next.verdict} verdict stands — void it first (--verdict none --status nominated), re-gate, then record`);
   }
   if (next.dependsOn.includes(id)) throw new FanoutStateError(`ticket ${id} cannot depend on itself`);
   const out: FanoutState = { ...state, tickets: { ...state.tickets, [id]: next }, updatedAt: now };

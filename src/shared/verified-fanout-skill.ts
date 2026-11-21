@@ -179,8 +179,8 @@ goal, files/areas, definition of done, ledger pointer. The COMMON CONTRACT (the 
 pings with ¤worker_done --cap "$(orchestra token)"¤", "outward actions — merge, master push, release, PR — stay with the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
 the Briefing section of ledger #N — pull it first".
 
-**A dependent track starts at dispatch and is gated on its upstream's candidate, not its merge.** Freeze the interface in the ledger; it builds against a stub. ¤orchestra fanout state set <ticket> --depends-on
-<upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤. Once the upstream has a verified candidate, rebase on its head, ¤--built-on <upstream>=<head>¤, nominate: ¤fanout gate --ticket <id>¤ / ¤resume¤ say wait or re-gate; ¤deliver¤ enforces order and content. An upstream changing the frozen interface posts one "what changed" line to its dependents.
+**A dependent track starts at dispatch and is gated on its upstream's candidate, not merge.** Freeze the interface in the ledger; it builds on a stub. ¤orchestra fanout state set <ticket> --depends-on
+<upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤. Once the upstream has a verified candidate, rebase on it, ¤--built-on <upstream>=<head>¤, nominate: ¤fanout gate --ticket <id>¤ / ¤resume¤ say wait or re-gate; ¤deliver¤ enforces order and content. An upstream changing the frozen interface posts one "what changed" line to its dependents.
 
 **The spawner names the child at spawn** — ¤orchestra spawn --name <rôle>-<object>-<ticket>¤
 (required; the ¤orchestra-spawn¤ skill and Orchestra ¤CONTEXT.md¤ **Nom d'espace**) — the prefix IS the
@@ -244,7 +244,7 @@ follow-up branch, every other finding is ¤noted¤.*
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
 ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
---verified-head <sha>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
+--verified-head <sha> --run <id>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
 ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤); ¤--no-review-gate¤
 is the explicit ungated merge (¤reviewGated:false¤), never your default. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
 ¤ci-red¤, ¤no-checks¤, ¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a
