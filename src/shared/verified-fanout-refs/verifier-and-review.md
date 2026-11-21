@@ -12,7 +12,9 @@ One more agent whose only job is verification. Its brief:
   or new push, re-fetch and re-checkout; a gater sitting on its old detached
   commit gates an orphan and reports green about the wrong tree (stranded
   two gaters in one wave).
-- Run the real gate: typecheck, test suite, an actual build — and for any
+- Run the real gate: typecheck, test suite (not the full one when `orchestra
+  fanout gate --branch <b> --into <target> --head <sha>` says `fullSuite: ci`: CI
+  runs it, you wait for `ciGreenOnHead`), an actual build — and for any
   user-facing surface, drive the changed flow end-to-end; build+tests alone
   pass a broken UI.
 - Run the FULL gate checklist from the ledger per candidate — one report per

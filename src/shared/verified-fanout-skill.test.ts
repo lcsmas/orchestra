@@ -148,6 +148,8 @@ export const RULE_PINS: ReadonlyArray<readonly [id: string, enforcedBy: string, 
   ['deliver: always pass --review-verdict (else refused no-verdict)', '#473 no-verdict', /ALWAYS pass `--review-verdict`: without it `deliver` refuses \(`no-verdict`\); `--no-review-gate`\s+is the explicit ungated merge/],
   ['deliver exit 1 = could not check, not a refusal', '#467 exit codes', /Exit 1 \(`timeout`,\s+`gh-failed`, `merge-failed`, `bad-verdict`, `no-verified-head`\) is "could not check"/],
   ['deliver + state init|set: coordinator only (guarded)', '#473 role guard', /`orchestra fanout deliver\|open` and `fanout state init\|set` to every role but the\s+coordinator \(`state show` and `resume` stay open\)/],
+  ['verifier skips the full suite when the target has PR CI (derived, head-bound)', '#495 fanout gate', /`orchestra fanout gate --branch <b> --into <target> --head <sha>` derives it \(`fullSuite: ci`[\s\S]*a moved head's CI is never accepted/],
+  ['implementer self-gate + every fix round: no full suite', '#497 skill rule', /An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite/],
   ['one PR per ticket', '#467 fanout deliver', /one PR per\s+ticket: it opens or reuses/],
   ['combined suite after N merges', '#467 deliver combinedSuite', /`deliver` prints `combinedSuite`/],
   ['final report = worker_done --cap', 'host capability (#160)', /ONLY on its `worker_done` \(#160\)/],
@@ -555,4 +557,44 @@ test('the REAL installOrchestraHooks lands the skill + files in a fresh worktree
   });
   const r = JSON.parse(out.trim().split('\n').pop() ?? '{}');
   assert.deepEqual(r, { ok: true, nameIsVerifiedFanout: true, absentBefore: true, landed: true, filesLanded: true, ledgerSetExecutable: true, siblingsKept: true, rewrittenOnUpgrade: true, stampedInstallIsNoop: true, ownSkillKept: true, errorShapes: { dangling_symlink: true, skill_md_is_dir: true, file_at_skill_dir: true }, errorShapesKeepHooks: true });
+});
+
+// ---- #495/#497: the §0b full-suite rules conflict with nothing -------------------------------------------------------------------------
+/** The text of one `## ` section (heading line included) up to the next `## ` heading. */
+const sectionOf = (text: string, heading: RegExp): string => {
+  const m = heading.exec(text);
+  assert.ok(m, `section ${heading} exists`);
+  const rest = text.slice(m.index + m[0].length);
+  const next = rest.search(/\n## /);
+  return m[0] + (next === -1 ? rest : rest.slice(0, next));
+};
+/** Every bullet of §0b that mentions "the full suite" / "full suite" — each must be one of the two rules (a bullet that says the verifier runs it must carry the CI exception; one about the implementer must say never). */
+export const fullSuiteConflicts = (text: string): string[] => {
+  const b = sectionOf(text, /\n## 0b\. Budget: messages and gates\n/);
+  const bullets = b.split(/\n(?=- )/).filter((x) => /full suite/i.test(x));
+  const probs: string[] = [];
+  if (bullets.length !== 2) probs.push(`expected exactly 2 bullets naming the full suite in §0b, found ${bullets.length}`);
+  for (const x of bullets) {
+    const verifier = /verifier's seat/.test(x);
+    const implementer = /implementer's self-gate/.test(x);
+    if (verifier && !/fanout gate/.test(x)) probs.push('a bullet puts the full suite on the verifier without the `fanout gate` exception');
+    if (implementer && !/never the full suite/.test(x)) probs.push('a bullet about the implementer self-gate does not forbid the full suite');
+    if (verifier && implementer) probs.push('one bullet mixes the verifier and implementer suite rules');
+  }
+  return probs;
+};
+
+test('#495/#497: §0b has exactly the two full-suite rules and they do not contradict (verifier: per fanout gate; implementer: never)', () => {
+  assert.deepEqual(fullSuiteConflicts(VERIFIED_FANOUT_SKILL), []);
+  // must-FAIL: the pre-#495 bullet (verifier always runs it) and an implementer bullet allowing it are both seen
+  const old = VERIFIED_FANOUT_SKILL.replace(/- \*\*The full suite and the build run on the verifier's seat[\s\S]*?\n- \*\*An implementer/, "- **The full suite and the build run on the verifier's seat, once per candidate**; an implementer's self-gate is the typecheck.\n- **An implementer");
+  assert.ok(fullSuiteConflicts(old).length > 0, 'the old unconditional verifier rule is seen');
+  const allowed = VERIFIED_FANOUT_SKILL.replace('; never the full suite (CI runs the rest)', ' and the full suite');
+  assert.ok(fullSuiteConflicts(allowed).some((p) => /does not forbid/.test(p)), 'an implementer bullet that allows the suite is seen');
+});
+
+test('#495: the verifier brief (§3) and the references point at `fanout gate` rather than restating the derivation', () => {
+  assert.match(sectionOf(VERIFIED_FANOUT_SKILL, /\n## 3\. Spawn the verifier\n/), /tests \(§0b\)/);
+  assert.match(refText('verifier-and-review.md'), /fullSuite: ci/);
+  assert.match(refText('budget-and-gates.md'), /unless the target has PR CI/);
 });

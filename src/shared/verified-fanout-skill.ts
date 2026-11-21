@@ -142,8 +142,10 @@ Gate rhythm:
 
 - **Write the full gate checklist into the ledger before the first gate** — each axis discovered
   mid-run costs one full cycle. Its review line is the §4 merge rule's verbatim sentence.
-- **The full suite and the build run on the verifier's seat, once per candidate**; an implementer's
-  self-gate is the typecheck, its diff's test files and its own rig arms.
+- **The full suite and the build run on the verifier's seat, once per candidate, unless the target has PR CI:**
+  ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ skip what CI runs, wait for
+  ¤ciGreenOnHead¤; a moved head's CI is never accepted).
+- **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**
 - **Self-gate BEFORE nominating — the implementer runs the adversarial checklist on their own candidate first**
   and answers in the nomination comment: for each headline claim, what observation would DIFFER on a broken
   build; did the unfixed arm actually FAIL through the same rig; does any test assert the thing the ticket
@@ -189,8 +191,6 @@ after the upstream merges. An upstream changing the frozen interface posts one "
 role. The child never renames itself — you rename it when its scope grows (¤orchestra rename <ws-id> <name>¤);
 say in every brief "your name is set by your parent". A fleet nests under the coordinator; ¤--detached¤ is for one-offs.
 
-**Done when:** every brief names your literal workspace id and its file set, shared files marked as seams (§4).
-
 ## 2. Spawn the implementers
 
 One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per subtask (flags: ¤orchestra-spawn¤
@@ -203,7 +203,7 @@ One agent whose only job is verification. Its brief:
 - ¤pnpm install¤ (or the repo's equivalent) once — this worktree is the fleet's only fully-installed environment.
 - Per branch named by the coordinator: ¤git fetch origin <branch> && git checkout --detach FETCH_HEAD¤.
   **A detached HEAD never follows the ref** — after any rebase or new push, re-fetch and re-checkout, or you gate an orphan.
-- Run the real gate: typecheck, tests, an actual build — and for a user-facing surface, drive the changed flow end-to-end.
+- Run the real gate: typecheck, tests (§0b), an actual build — and for a user-facing surface, drive the changed flow end-to-end.
 - Run the FULL gate checklist from the ledger per candidate — one report per candidate, AS A LEDGER COMMENT
   in the §0b format, PASS/FAIL **with the exact failing output or observed behaviour**, plus an explicit NOT
   VERIFIED list; then ping. Failures route back to the implementer; the verifier's hands stay off the code (the role guard: scratch only).
@@ -223,8 +223,6 @@ ledger comment with a per-finding measured/argued label, and dies. **It reports 
 that touch correctness or a ticket promise — never NITs.**
 
 **Severity scale** (BLOCKING / MAJOR / MINOR / NIT — the §4 merge rule keys on it; a red CI is the candidate's only if the same check is green on the base head): ¤references/verifier-and-review.md¤, read when you grade a finding.
-
-(Why review must be fresh, not the verifier: ¤references/verifier-and-review.md¤ — read when you doubt who should review.)
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
 only): the implementer's pre-review + the verifier's delta gate suffice. Any production-code line → spawned
@@ -300,8 +298,6 @@ rather than inheriting it from the agent's first report (¤orchestra fanout resu
 ticket of the state file). When your check contradicts a specific claim, run a second check with a different reference before speaking.
 
 **A wave is closed only when the LEAD has itself gated and deleted the OPS workspace and ¤orchestra peers¤ greps ZERO wave workspaces (plus one grep for a workspace that must still exist); then close the ledger.**
-
-**Done when:** both commands print nothing, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
 
 → **Read ¤references/closeout-and-gates.md¤ before you delete a workspace whose ¤verify-landed¤ reads
 not-landed, and before you write a gate** (the three delete-gate traps with their measurements; falsifiable gates and visual claims).

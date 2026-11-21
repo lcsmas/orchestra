@@ -59,10 +59,14 @@ Gate rhythm:
   each axis discovered mid-run costs one full cycle. Its review line is the §4
   merge rule's verbatim sentence, copied whole.
 - **The full suite and the build run on the verifier's seat, once per
-  candidate.** An implementer's self-gate is the typecheck, the test files its
+  candidate — unless the target has PR CI** (`orchestra fanout gate` derives it;
+  the verifier then waits for CI green on its head). An implementer's self-gate,
+  in the first round AND every fix round, is the typecheck, the test files its
   diff touches and its own rig arms; a red run is reported with the failing
   test names. N full suites share one host (measured, ledger orchestra#423:
-  load 17–20, timing failures in files no diff touched, six runs for one green).
+  load 17–20, timing failures in files no diff touched, six runs for one green;
+  a vague that re-ran a 15-min suite locally per candidate and per fix round,
+  beside a CI running the same one, lost ~130 min, `orchestra#495`/`#497`).
 - **Self-gate BEFORE nominating — the implementer runs the adversarial
   checklist on their own candidate first.** Six of six first submissions
   across two waves arrived all-green with every green NON-LOAD-BEARING

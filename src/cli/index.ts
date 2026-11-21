@@ -37,6 +37,7 @@ import {
   type BusVerbCtx,
 } from './bus-verbs.ts';
 import { runDeliver } from './fanout-deliver.ts';
+import { runGate } from './fanout-gate.ts';
 import { runOpenRoute } from './fanout-open.ts';
 import { gatherRunStatus, renderRunStatus } from './run-status.ts';
 import { parseAutoHeld } from '../shared/pause-auto.ts';
@@ -2444,6 +2445,13 @@ async function main(argv: string[]): Promise<void> {
         if (o.error !== undefined) fail(o.error);
         if (o.stdout) process.stdout.write(o.stdout);
         if (o.exit !== 0) exitWith(o.exit);
+        return;
+      }
+      if (args[0] === 'gate') { // #495 — read-only: is the target's PR CI green on the verified head (the verifier's derived checklist)
+        const g = await runGate(args.slice(1));
+        if (g.error !== undefined) fail(g.error);
+        if (g.stdout) process.stdout.write(g.stdout);
+        if (g.exit !== 0) exitWith(g.exit);
         return;
       }
       if (args[0] === 'deliver') {
