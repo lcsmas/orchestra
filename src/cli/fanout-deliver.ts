@@ -276,7 +276,7 @@ export async function gatherUpstreamFacts(
     let row: PrRow | undefined;
     if (u.branch) {
       const rows = JSON.parse(await ghOk(['pr', 'list', '--head', u.branch, '--base', opts.into, '--state', 'all', '--json', fields, '--limit', '10'])) as PrRow[];
-      row = rows.find((r) => r.state === 'MERGED') ?? rows[0];
+      row = rows.find((r) => r.number === u.pr) ?? rows.find((r) => r.state === 'MERGED') ?? rows[0];
     } else if (u.pr) {
       row = JSON.parse(await ghOk(['pr', 'view', String(u.pr), '--json', fields])) as PrRow;
     } else {
@@ -287,7 +287,7 @@ export async function gatherUpstreamFacts(
       const mergedHead = base.pr.headRefOid;
       if (!(mergedHead.startsWith(u.builtOn) || u.builtOn.startsWith(mergedHead))) base.sameTree = (await treeOf(u.builtOn)) === (await treeOf(mergedHead));
       base.dependentOnBuiltOn = await contains(verifiedHead, u.builtOn);
-      base.dependentOnMerge = base.dependentOnBuiltOn || !base.pr.mergeCommit ? false : await contains(verifiedHead, base.pr.mergeCommit);
+      base.dependentOnMerge = base.pr.mergeCommit ? await contains(verifiedHead, base.pr.mergeCommit) : false;
     }
     out.push(base);
   }
@@ -364,6 +364,8 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       const u = decideUpstreams(facts, opts.into);
       if (!u.ok) return done({ verdict: 'refused', reason: u.reason, detail: u.detail, head: verifiedHead }, reviewGated);
       deps.log(`upstreams ok: ${refs.map((r) => r.id).join(', ')}`);
+    } else {
+      deps.log(`upstreams: none known for ${opts.ticket} (no fanout state, or the ticket is not in it) — order/content NOT checked`);
     }
     // 2. Open or reuse the PR.
     const listed = JSON.parse(

@@ -492,3 +492,10 @@ test('#506 decideUpstreams must-FAIL: each clause refuses with its reason', () =
   no([fact(), fact({ id: 'UP2', pr: merged({ state: 'OPEN' }) })], 'upstream-not-merged', /UP2/);
   no([fact({ accepted: true }), fact({ id: 'UP2', builtOn: UH, pr: merged({ headRefOid: 'c'.repeat(40) }), sameTree: false })], 'upstream-changed', /UP2/);
 });
+
+test('#506 decideUpstreams (review): a head that contains the upstream\'s MERGE commit passes even when builtOn is a pre-fix-round head; without it the same facts refuse', () => {
+  const f = { pr: merged({ headRefOid: 'b'.repeat(40) }), sameTree: false, dependentOnBuiltOn: false };
+  assert.deepEqual(decideUpstreams([fact({ ...f, dependentOnMerge: true })], 'master'), { ok: true });
+  const x = decideUpstreams([fact({ ...f, dependentOnMerge: false })], 'master');
+  assert.ok(!x.ok && x.reason === 'upstream-changed' && /--built-on UP=/.test(x.detail));
+});

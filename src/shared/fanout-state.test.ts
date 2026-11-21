@@ -406,3 +406,20 @@ test('#506 stackView (what `fanout gate --ticket` prints): none | wait-upstream 
   assert.equal(stackView(s, 'A')!.order, 'none');
   assert.equal(stackView(s, 'ghost'), null);
 });
+
+test('#506 review: an upstream that MERGED at another head than builtOn reads re-gate on resume (never merge) and `changed` in stackView; matching head stays clean', () => {
+  let s = stacked('gated', { verdict: 'pass' });
+  s = applyTicketPatch(s, 'B', { status: 'gated', verdict: 'pass', builtOn: { A: SHA_A } }, T);
+  const done = applyTicketPatch(applyTicketPatch(s, 'A', { head: SHA_C }, T), 'A', { status: 'merged' }, T); // fix round H2 merged
+  const merged2 = { branchHead: SHA_C, mergedIntoTarget: true, pr: { state: 'MERGED' as const, headRefOid: SHA_C, baseRefName: 'master' } };
+  const plan = reconcile(done, { A: merged2, B: openPr(SHA_B) });
+  assert.ok(plan.divergences.some((d) => d.ticket === 'B' && d.kind === 'upstream-changed'));
+  assert.deepEqual([plan.tickets.B.class, plan.tickets.B.next.action], ['diverged', 're-gate']);
+  assert.deepEqual(plan.writeBack.filter((w) => w.ticket === 'B'), [], 'no verdict reset: the dependent may already be re-gated');
+  assert.equal(stackView(done, 'B')!.order, 're-gate');
+  const healed = applyTicketPatch(done, 'B', { builtOn: { A: SHA_C } }, T);
+  assert.equal(reconcile(healed, { A: merged2, B: openPr(SHA_B) }).tickets.B.next.action, 'merge');
+  assert.equal(stackView(healed, 'B')!.order, 'none');
+  const same = applyTicketPatch(s, 'A', { status: 'merged' }, T);
+  assert.equal(reconcile(same, { A: mergedReality, B: openPr(SHA_B) }).tickets.B.next.action, 'merge', 'positive control: merged at the built-on head');
+});
