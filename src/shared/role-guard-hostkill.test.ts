@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_SCRIPT, ROLE_SENTINEL_FILE } from './role-guard.ts';
+import { HOOK_ROLE_GUARD_CMD, HOST_KILL_CLAUSES, ROLE_GUARD_SCRIPT, ROLE_SENTINEL_FILE } from './role-guard.ts';
 import { FLEET_ROLES } from './fleet-roles.ts';
 import { mkHomeScratch } from './home-scratch.ts';
 
@@ -34,6 +34,7 @@ function run(w: string, command: string) {
   });
   return { code: r.status, err: r.stderr };
 }
+const sq = (x: string) => x.replace(/'/g, `'\\''`);
 const stubCalls = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8') : '');
 
 const DENY = [
@@ -44,13 +45,22 @@ const DENY = [
   'for p in $(pgrep -f jest); do kill $p; done', 'pids=$(pgrep -f jest); kill -9 $pids', 'pgrep -f jest | while read p; do kill $p; done',
   'sudo -u root pkill x', 'timeout -k 5 10 pkill x', 'timeout -s KILL 10 pkill x', 'nice pkill x', 'setsid pkill x', 'ionice -c3 pkill x',
   'nohup setsid pkill x', '/usr/bin/env pkill x', '\\pkill x', '"pkill" -f x', 'busybox killall node', 'skill -9 node', 'fuser -k 3000/tcp',
-  'kill $(lsof -ti:3000)', 'lsof -t :3000 | xargs kill', 'kill -9 -1', "ps aux | grep jest | awk '{print $2}' | xargs kill -9",
+  'kill $(lsof -ti:3000)', 'lsof -t :3000 | xargs kill', 'kill -9 -1',
+  "ps aux | grep jest | grep -v grep | awk '{print $2}' | while read pid; do kill -9 $pid; done",
+  "for p in $(ps aux | grep jest | awk '{print $2}'); do kill -9 $p; done", "pids=$(ps aux | grep jest | awk '{print $2}'); kill -9 $pids",
+  'pids=$(lsof -ti:3000); kill $pids', 'for p in $(lsof -ti:3000); do kill $p; done', 'kill -- -1', 'kill -9 -- -1', 'kill -s KILL -1', 'killall5 -9',
+  'echo hi\npkill -f jest', 'bash -c "\npkill -f jest\n"', 'sudo env X=1 pkill x', "ps aux | grep jest | awk '{print $2}' | xargs kill -9",
 ];
 const ALLOW = [
   'kill 1234', 'kill -9 1234', 'kill -- -1234', 'kill -TERM -- -$pgid', 'kill $!', 'kill $(cat "$TMPDIR/x.pid")', 'kill $JEST_PID',
   'pgrep -f jest', 'ps aux | grep jest', 'kill $pid || echo "still alive: $(ps -p $pid -o pid=)"', 'pgrep -f jest; kill 1234',
   'gh issue comment 1 --body "avoid xargs pkill"', 'git log --grep "use xargs pkill"', 'grep -rn "xargs killall" src', 'echo "run skill later"',
-  'kill -- -$(cat "$TMPDIR/pgid")', 'kill -9 -1234', 'echo hi | xargs echo', 'pkillx', 'ls killall-notes',
+  'kill -- -$(cat "$TMPDIR/pgid")', 'kill -9 -1234',
+  'command -v pkill', 'command -v killall >/dev/null && echo ok', 'timeout 600 pnpm run test -- skill', 'timeout 20 grep -rn skill docs/',
+  'env CI=1 pnpm test skill', 'nice rg pkill src', 'sudo grep pkill /var/log/syslog', 'time grep -c killall f',
+  'kill -1 1234', 'kill -1 $!', "kill -- -$(ps -o pgid= -p 1234 | tr -d ' ')", 'kill $(ps -o pid= -p 1234)', 'kill $(grep -h steps f)',
+  'echo "$(pgrep -c jest) running"; kill 1234',
+  'gh issue comment 498 --body "see:\npkill -f jest\nkillall node is refused"', 'gh pr create --body "Summary\nskill now says X"', 'echo hi | xargs echo', 'pkillx', 'ls killall-notes',
   'gh issue comment 498 --body "never pkill -f or killall node host-wide"', 'git log --grep "refuse pkill -f"',
   'grep -rn pkill src', 'cat <<EOF\npkill -f jest\nEOF',
 ];
@@ -85,7 +95,7 @@ test("#498 a scratch `cd` does not lift the kill rule (this module's own rule, n
 });
 
 test('#498 MUST-FAIL ARM: without the rule the denied calls pass — and the hook still kills nothing (it never executes the command)', () => {
-  const noRule = ROLE_GUARD_SCRIPT.split('(pkill|killall|skill)').join('(NOPKILL|NOKILLALL|NOSKILL)').split('(pgrep|pidof)').join('(NOPGREP|NOPIDOF)'); // every pkill/killall alternative gone
+  const noRule = HOST_KILL_CLAUSES.reduce((acc, c, i) => acc.split(sq(c)).join(`NEVERMATCH${i}`), ROLE_GUARD_SCRIPT); // the whole rule gone
   assert.notEqual(noRule, ROLE_GUARD_SCRIPT);
   const w = install(noRule, 'verifier', 'norule');
   const canary = path.join(root, 'canary');
@@ -98,24 +108,48 @@ test('#498 MUST-FAIL ARM: without the rule the denied calls pass — and the hoo
   assert.equal(stubCalls(), '');
 });
 
-test('#498 each clause is load-bearing: mutating one alternative lets its own cases through', () => {
-  const clauses: Array<[string, string, string[]]> = [
-    ['pkill|killall|skill', '(pkill|killall|skill)', ['pkill -f jest', 'killall node']],
-    ['xargs pkill', 'xargs[[:space:]]+([^;&|]*[[:space:]])?(pkill', ['echo jest | xargs pkill -f']],
-    ['fuser -k', 'fuser[[:space:]]', ['fuser -k 3000/tcp']],
-    ['kill -1', '-1([[:space:];&|)', ['kill -9 -1']],
-    ['kill $(pgrep)', '[^)`]*(pgrep|pidof|ps|lsof)[[:space:]]', ['kill $(pgrep -f jest)', 'kill `pgrep -f jest`', 'kill -9 $(lsof -ti:3000)']],
-    ['var/loop hop', '(pgrep|pidof)[[:space:]].*', ['pids=$(pgrep -f jest); kill -9 $pids', 'for p in $(pgrep -f jest); do kill $p; done']],
-    ['pgrep | xargs kill', '\\|[[:space:]]*(sudo[[:space:]]+)?xargs', ['pgrep -f jest | xargs kill', 'pgrep jest | sudo xargs kill']],
-    ['pgrep | while', '\\|[[:space:]]*while', ['pgrep -f jest | while read p; do kill $p; done']],
-    ['wrapper options', '(/[^[:space:]]*/)?(sudo|timeout|nice', ['sudo -u root pkill x', 'timeout -k 5 10 pkill x', 'nice pkill x']],
-  ];
-  for (const [name, anchor, cases] of clauses) {
-    assert.ok(ROLE_GUARD_SCRIPT.includes(anchor), `${name}: anchor missing`);
-    const mut = ROLE_GUARD_SCRIPT.split(anchor).join(anchor.replace(/pkill|killall|skill|xargs|pgrep|fuser|while|-1|sudo|nice|pidof|lsof|timeout/g, 'NOPE'));
-    assert.notEqual(mut, ROLE_GUARD_SCRIPT);
-    const w = install(mut, 'verifier', `mut-${name.length}`);
-    for (const c of cases) assert.equal(run(w, c).code, 0, `${name}: mutant survived on ${c}`);
-  }
+// Each alternative of the rule is load-bearing: replace ONLY it by a never-matching regex, and ITS cases must now pass (baseline denies them).
+const CLAUSE_CASES: string[][] = [
+  ['pkill -f jest', 'killall node', 'skill -9 node', 'sudo -u root pkill x', '\\pkill x'],
+  ['echo jest | xargs pkill -f'],
+  ['fuser -k 3000/tcp'],
+  ['kill -9 -1', 'kill -- -1'],
+  ['kill $(pgrep -f jest)', 'kill -9 $(lsof -ti:3000)', "kill -9 $(ps aux | grep jest | awk '{print $2}')"],
+  ['pids=$(pgrep -f jest); kill -9 $pids', "for p in $(ps aux | grep jest | awk '{print $2}'); do kill -9 $p; done"],
+  ['pgrep -f jest | xargs kill', 'pgrep jest | sudo xargs kill', "ps aux | grep jest | awk '{print $2}' | xargs kill -9"],
+  ["ps aux | grep jest | grep -v grep | awk '{print $2}' | while read pid; do kill -9 $pid; done"],
+];
+test('#498 every clause is load-bearing (mutate one alternative → its own cases pass)', () => {
+  assert.equal(HOST_KILL_CLAUSES.length, CLAUSE_CASES.length);
+  HOST_KILL_CLAUSES.forEach((clause, i) => {
+    assert.ok(ROLE_GUARD_SCRIPT.includes(sq(clause)), `clause ${i}: not found verbatim in the script`);
+    const w = install(ROLE_GUARD_SCRIPT.split(sq(clause)).join(`NEVERMATCH${i}`), 'verifier', `mut-c${i}`);
+    for (const c of CLAUSE_CASES[i]) assert.equal(run(w, c).code, 0, `clause ${i} mutant survived on: ${c}`);
+    const base = install(ROLE_GUARD_SCRIPT, 'verifier', `base-c${i}`);
+    for (const c of CLAUSE_CASES[i]) assert.equal(run(base, c).code, 2, `clause ${i} baseline must deny: ${c}`);
+  });
   assert.equal(stubCalls(), '');
+});
+
+test('#498 wrapper table and option clauses are load-bearing', () => {
+  for (const [from, to, cases] of [
+    ['-[ugp][[:space:]]+[^[:space:]]+[[:space:]]+|', '', ['sudo -u root pkill x']],
+    ['(sudo|timeout|nice|setsid|ionice|stdbuf|nohup|env|exec|time|busybox)', '(NOPE)', ['nice pkill x', 'timeout -k 5 10 pkill x', 'setsid pkill x']],
+  ] as const) {
+    assert.ok(ROLE_GUARD_SCRIPT.includes(from), `anchor missing: ${from}`);
+    const w = install(ROLE_GUARD_SCRIPT.split(from).join(to), 'verifier', `mut-w${from.length}`);
+    for (const c of cases) assert.equal(run(w, c).code, 0, `mutant survived on: ${c}`);
+  }
+});
+
+test('#498 the quoted-body filter is load-bearing in BOTH directions (prose passes, `bash -c` bodies stay judged)', () => {
+  const prose = 'gh issue comment 498 --body "see:\npkill -f jest\nx"';
+  const code = 'bash -c "\npkill -f jest\n"';
+  const noFilter = ROLE_GUARD_SCRIPT.replace('| awk "$awk_qbody" |', '| cat |');
+  assert.notEqual(noFilter, ROLE_GUARD_SCRIPT);
+  const w = install(noFilter, 'verifier', 'noq');
+  assert.equal(run(w, prose).code, 2, 'without the filter the prose is a false positive (the instrument can fail)');
+  const ok = install(ROLE_GUARD_SCRIPT, 'verifier', 'q');
+  assert.equal(run(ok, prose).code, 0);
+  assert.equal(run(ok, code).code, 2);
 });

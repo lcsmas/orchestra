@@ -38,22 +38,33 @@ const FANOUT_STATE_INIT = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:sp
 // #476: a scribe's `state set` may not override a merge claim: `--accept-merged`, or `--json` (any payload can carry `mergedAccepted`, even piped in) — `.*`, not `[^;&|]*`, so `--note "a; b"` cannot hide the flag.
 const FANOUT_ACCEPT_MERGED = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+set[[:space:]].*(--accept-merged|--json|mergedAccepted)`;
 // #498: a host-wide kill by name/pattern reaches OTHER agents' processes (a verifier's `pkill -f jest` did). Own pid / pgid (`kill 123`, `kill -- -123`) pass.
-// Denied: pkill/killall/skill/`fuser -k` (behind any wrapper + its options), `kill -1`, and `kill` fed by a pgrep/pidof/ps/lsof selection
-// (`$(…)`, backticks, `| xargs kill`, a loop or variable hop after a `$(pgrep …)`). Boundary-anchored: a quoted mention passes.
+// Denied: pkill/killall/skill/`fuser -k` behind a LISTED wrapper + its options (the verb is the first non-option word: `timeout 9 pnpm test skill` passes),
+// `kill -1` (broadcast), and `kill` fed by a pgrep/pidof/ps-pattern/lsof-port selection (`$(…)`, backticks, `| xargs kill`, a loop or variable hop).
+// Heuristic (not a sandbox): unlisted wrappers (doas, flock, ssh…), `./pkill`, `eval` are not seen. Judged on `cmdk` (quoted multi-line bodies dropped, AWK_QBODY).
+const BSTART = B.slice(0, B.indexOf(')[[:space:]]*([A-Za-z_]') + ')[[:space:]]*'.length);
+const KB = `${BSTART}([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*`;
 const KILL_END = `([[:space:];&|)"'\\\\]|$)`;
-const KILL_WRAP = `((/[^[:space:]]*/)?(sudo|timeout|nice|setsid|ionice|stdbuf|nohup|env|command|exec|time|busybox)[[:space:]]+([^;&|"']*[[:space:]])?)?`;
-const KILL_BIN = `\\\\*["']?(/[^[:space:]]*/)?(pkill|killall|skill)`; // `\pkill`, `"pkill"` (the payload carries quotes/backslashes escaped)
-const KILL_SEL = `(pgrep|pidof|ps|lsof)`;
-const HOST_KILL = [
-  `${B}${KILL_WRAP}${KILL_BIN}${KILL_END}`,
-  `${B}xargs[[:space:]]+([^;&|]*[[:space:]])?(pkill|killall|skill)${KILL_END}`,
-  `${B}${KILL_WRAP}fuser[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*k`,
-  `${B}${KILL_WRAP}(/[^[:space:]]*/)?kill[[:space:]]+(-[A-Za-z0-9]+[[:space:]]+)*-1${KILL_END}`,
-  `${B}${KILL_WRAP}(/[^[:space:]]*/)?kill[[:space:]]+[^;&|]*(\\$\\(|\`)[^)\`]*${KILL_SEL}[[:space:]]`,
-  `(\\$\\(|\`)[^)\`]*(pgrep|pidof)[[:space:]].*${B}${KILL_WRAP}(/[^[:space:]]*/)?kill[[:space:]]`,
-  `${B}${KILL_SEL}[[:space:]][^;&]*\\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^;&|]*[[:space:]])?kill${KILL_END}`,
-  `${B}(pgrep|pidof)[[:space:]][^;&]*\\|[[:space:]]*while[^;]*;.*${B}${KILL_WRAP}(/[^[:space:]]*/)?kill[[:space:]]`,
-].join('|');
+const KILL_OPT = `(-[ugp][[:space:]]+[^[:space:]]+[[:space:]]+|-s[[:space:]]+[A-Za-z0-9]+[[:space:]]+|-[a-zA-Z]+[[:space:]]+[0-9.]+[smhd]?[[:space:]]+|-[^[:space:]]+[[:space:]]+)`;
+const KILL_WRAP = `((/[^[:space:]]*/)?(sudo|timeout|nice|setsid|ionice|stdbuf|nohup|env|exec|time|busybox)[[:space:]]+${KILL_OPT}*([0-9.]+[smhd]?[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*|command[[:space:]]+)*`;
+const KILL_BIN = `\\\\*["']?(/[^[:space:]]*/)?(pkill|killall5?|skill)`; // `\pkill`, `"pkill"` (the payload carries quotes/backslashes escaped)
+const KILL = `(/[^[:space:]]*/)?kill[[:space:]]+`;
+// a selection BY NAME / PATTERN / PORT; `ps -p N` (one pid) is not
+const KILL_SEL = `((pgrep|pidof)[[:space:]]|ps[[:space:]]+([^)\`;&]*[[:space:]])?(aux|ax|auxww|-e|-ef|-A|-C)([[:space:]]|$)|ps[[:space:]][^)\`;&]*\\|[[:space:]]*(grep|egrep|awk|rg)|lsof[[:space:]]+([^)\`;&|]*[[:space:]])?(-[a-zA-Z]*i|:[0-9]))`;
+/** The host-kill alternatives, exported so the probe can mutate each one. */
+export const HOST_KILL_CLAUSES = [
+  `${KB}${KILL_WRAP}${KILL_BIN}${KILL_END}`,
+  `${B}xargs[[:space:]]+([^;&|]*[[:space:]])?(pkill|killall5?|skill)${KILL_END}`,
+  `${KB}${KILL_WRAP}fuser[[:space:]]+([^;&|]*[[:space:]])?-[a-zA-Z]*k`,
+  `${KB}${KILL_WRAP}${KILL}(-[^[:space:]]+[[:space:]]+([A-Z0-9]+[[:space:]]+)?)*-1[[:space:]]*([;&|)"'\\\\]|$)`,
+  `${KB}${KILL_WRAP}${KILL}[^;&|]*(\\$\\(|\`)[[:space:]]*(sudo[[:space:]]+)?${KILL_SEL}`,
+  `(\\$\\(|\`)[[:space:]]*(sudo[[:space:]]+)?${KILL_SEL}.*${KB}${KILL_WRAP}${KILL}[^;&|]*\\$`,
+  `${KB}(sudo[[:space:]]+)?${KILL_SEL}[^;&]*\\|[[:space:]]*(sudo[[:space:]]+)?xargs[[:space:]]+([^;&|]*[[:space:]])?kill${KILL_END}`,
+  `${KB}(sudo[[:space:]]+)?${KILL_SEL}[^;&]*\\|[[:space:]]*while[^;]*;.*${KB}${KILL_WRAP}${KILL}[^;&|]*\\$`,
+];
+const HOST_KILL = HOST_KILL_CLAUSES.join('|');
+const HOST_KILL_WHY = "a host-wide kill by name/pattern (pkill / killall / kill $(pgrep …) / ps|grep|xargs kill) can hit OTHER agents' processes — kill only your own: `kill <pid>` of a pid you started (record it with `$!`), or your own process group `kill -- -<pgid>` (start it under `setsid`)";
+/** awk: drops the lines that sit INSIDE an open double-quoted multi-line string (an inline `--body "…\npkill…"` is prose), but never the body of `bash -c "…"` / `eval "…"` / `ssh h "…"` (code). Quotes arrive as `\"` in the payload. */
+const AWK_QBODY = String.raw`BEGIN{q=0;code=0} { line=$0; skip=(q && !code); s=line; n=gsub(/\\"/, "", s); if (n % 2 == 1) { if (!q) { q=1; code=(line ~ /(-c|eval)[ \t]+\\*"/ || line ~ /ssh[ \t]+[^ \t]+[ \t]+\\*"/) } else { q=0; code=0 } } if (!skip) print line }`;
 const FORCE_PUSH = `${B}${GIT}[[:space:]]+${G}push[[:space:]][^;&|]*(--force|--delete|[[:space:]]-f([[:space:]]|$)|[[:space:]]\\+[^[:space:]]+)`;
 const BRANCH_D = `${B}${GIT}[[:space:]]+${G}branch[[:space:]]+([^;&|]*[[:space:]])?-D([[:space:]]|$)`;
 const WT_REMOVE = `${B}${GIT}[[:space:]]+${G}worktree[[:space:]]+remove([[:space:]]|$)`;
@@ -99,14 +110,13 @@ const NO_STATE_WRITE: Rule = { re: FANOUT_STATE_WRITE, why: "orchestra fanout st
 const NO_STATE_INIT: Rule = { re: FANOUT_STATE_INIT, why: "orchestra fanout state init creates the coordinator's state file — report to the coordinator; a scribe may relay state set only" };
 const NO_ACCEPT_MERGED: Rule = { re: FANOUT_ACCEPT_MERGED, why: "a scribe's state set carries no --accept-merged / --json / mergedAccepted (they override a merge claim) — pass plain flags (--status --branch --pr --head), or report to the coordinator" };
 const NO_PROTECT: Rule = { re: PROTECT_RE, why: "the role guard's own wiring (.orchestra/role, role-guard.sh, .claude/settings*.json) is never written by a fleet role" };
-const NO_HOST_KILL: Rule = { re: HOST_KILL, why: "a host-wide kill by name/pattern (pkill / killall / kill $(pgrep …) / ps|grep|xargs kill) can hit OTHER agents' processes — kill only your own: `kill <pid>` of a pid you started (record it with `$!`), or your own process group `kill -- -<pgid>` (start it under `setsid`)" };
 const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace belongs to the coordinator that owns it' };
 
 /** Rules this module adds on top of the role table's `bashDeny` (the table is the frozen #465 interface; the ticket's classes are ours). */
 function extraRules(role: FleetRole): Rule[] {
-  if (role === 'coordinator') return [NO_PROTECT, NO_HOST_KILL];
-  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_DELETE, NO_PROTECT, NO_HOST_KILL]; // #476: a scribe relays the coordinator's `state set` lines
-  return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_WRITE, NO_DELETE, NO_PROTECT, NO_HOST_KILL];
+  if (role === 'coordinator') return [NO_PROTECT];
+  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_DELETE, NO_PROTECT]; // #476: a scribe relays the coordinator's `state set` lines
+  return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_WRITE, NO_DELETE, NO_PROTECT];
 }
 
 const WHY_TABLE = 'a command the fleet-roles table denies this role (push of the target branch / commit-class git act)';
@@ -206,8 +216,14 @@ awk_prog="$(cat <<'AWK'
 ${AWK_HEREDOC}
 AWK
 )"
+awk_qbody="$(cat <<'AWK3'
+${AWK_QBODY}
+AWK3
+)"
 cmd="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g' | grep -oE '"command": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"command": *"//; s/"$//; s/\\\\[rt]/ /g' | sed 's/\\\\n/\\n/g' | awk "$awk_prog" | tr '\\n' ';')"
+cmdk="$(printf '%s' "$input" | sed -E 's/"(transcript_path|cwd)": *"[^"]*"//g' | grep -oE '"command": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"command": *"//; s/"$//; s/\\\\[rt]/ /g' | sed 's/\\\\n/\\n/g' | awk "$awk_prog" | awk "$awk_qbody" | tr '\\n' ';')"
 [ -n "$cmd" ] || exit 0
+if printf '%s' "$cmdk" | grep -qE -- '${sq(HOST_KILL)}'; then deny "${HOST_KILL_WHY.replace(/["$`\\]/g, '\\$&')}"; fi
 cwd="$(printf '%s' "$input" | grep -oE '"cwd": *"[^"]*"' | head -1 | sed -E 's/^"cwd": *"//; s/"$//')"
 awk_writes="$(cat <<'AWK2'
 ${AWK_WRITES}
