@@ -89,6 +89,7 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
     const cache = new Map<string, number>();
     let snap = pr ? await readPrChecks(ghOk, String(pr.number), cache) : null;
     let stable = true;
+    const prFiles = pr ? (await ghOk(['pr', 'diff', String(pr.number), '--name-only'])).split('\n').map((f) => f.trim()).filter(Boolean) : null;
     if (snap) {
       // Two reads apart: a fast job registered before the slow suite's workflow must not read as the whole CI (deliver has the same two-poll rule).
       const first = JSON.stringify(snap.checks.map((c) => c.name).sort());
@@ -97,9 +98,9 @@ export async function gatePr(opts: GateOpts, deps: Pick<DeliverDeps, 'gh' | 'log
       stable = JSON.stringify(snap.checks.map((c) => c.name).sort()) === first;
     }
     const answer = decideGate({
-      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable,
+      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles,
     });
-    if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — repo CI is judged from the checks on the PR head only');
+    if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — fullSuite stays on the verifier');
     return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}) } };
   } catch (e) {
     return bad('gh-failed', e instanceof Error ? e.message : String(e));
@@ -111,7 +112,7 @@ export const GATE_HELP = `${GATE_USAGE}
 gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the target has PR CI
 (a pull_request workflow on <target> that provably runs for a PR into it: no paths filter, branches admit <target>, no ! pattern, types include synchronize; pull_request_target is not) and whether it is green on exactly
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
-ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none ⇒ fullSuite:"verifier". Without it (or unreadable): fullSuite:"verifier".
+ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. Without PR CI (or unreadable workflows): fullSuite:"verifier".
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
 

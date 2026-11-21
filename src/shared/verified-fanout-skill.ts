@@ -33,7 +33,7 @@ reports green. You are the **coordinator**: you split, brief, relay, and
 enforce the gate — implementation belongs to the fleet.
 
 > **v2.** A rule code enforces is ONE line: rule, verb or guard, what to do on a refusal.
-> Situational detail lives in ¤references/¤, each pointer saying WHEN. Which copy: the last section.
+> Situational detail lives in ¤references/¤, each pointer saying WHEN.
 
 ## Roles are typed — the name is the role (v2)
 
@@ -169,7 +169,7 @@ Every run is all-ON (six switches; mail cannot be switched off). Mail: ¤orchest
 send each other ¤status¤ and ¤ask¤ only. **Only a real task assignment is ¤--type dispatch¤: it mints a
 capability and SUPERSEDES the recipient's previous one** — orders, pings and FYIs are ¤status¤; the one final
 report of a dispatched task is ¤worker_done --cap¤ (§0b). A worker sends gate failures, decision asks and ONE
-final report, nothing per phase. On a ¤lot pending¤ wake, run EXACTLY the ¤orchestra check --run <id>¤ lines it names, then ack each lot.
+final report, nothing per phase. On a ¤lot pending¤ wake, run EXACTLY the ¤orchestra check --run <id>¤ lines it names, then ack each lot. A coordinator waits for a verdict with ¤orchestra check --run <your run id>¤, never by counting ledger comments.
 
 → **Read ¤references/fleet-bus.md¤ when a message does not arrive, before ¤orchestra ask¤ / ¤gate¤ / ¤token¤, or on a ¤=OFF¤ notice line.**
 
@@ -303,7 +303,7 @@ ticket of the state file). When your check contradicts a specific claim, run a s
 **Done when:** both commands print nothing, every deliverable file resolves on the integration tip, and each agent's name still describes what it does.
 
 → **Read ¤references/closeout-and-gates.md¤ before you delete a workspace whose ¤verify-landed¤ reads
-not-landed, and before you write a gate** (the three delete-gate traps with their measurements; falsifiable gates and visual claims).
+not-landed, and before you write a gate** (delete-gate traps; falsifiable gates, visual claims).
 
 ## 6. Report
 
@@ -316,11 +316,11 @@ and where to look — "verify this branch" yields "looks good"; every gate must 
 
 ## Deep references — pull on demand
 
-These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's four are byte-identical to v1 (frozen tag ¤verified-fanout-v1-prose¤).
+These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's four are byte-identical to v1.
 
-- **references/lead-ops-tiers.md** — read when you are the LEAD or the OPS of a vague (§0a in full).
+- **references/lead-ops-tiers.md** — read when you are the LEAD or the OPS of a vague.
 - **references/budget-and-gates.md** — read before the first gate (§0/§0b grounds, delta re-gates, coverage gaps).
-- **references/fleet-bus.md** — read when a message does not arrive, or before ¤ask¤ / ¤gate¤ / ¤token¤ (§0c in full).
+- **references/fleet-bus.md** — read when a message does not arrive, or before ¤ask¤ / ¤gate¤ / ¤token¤.
 - **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
 - **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
 - **references/traps.md** — the confident-wrong-answer catalogue: read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
