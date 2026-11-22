@@ -234,6 +234,40 @@ A defect found after its candidate merged, attributed to the ticket or merge
 that introduced it.
 _Avoid_: regression, bug (too broad)
 
+### Boucle
+
+**Boucle** (loop):
+The process `orchestra fanout run` that leads a vague ticket by ticket, in code,
+with no model reading its own history. It keeps nothing in memory between two
+steps: the run's state file is the truth, so killing and relaunching it loses
+nothing. Settled with the user 2026-11-20.
+_Avoid_: coordinator, orchestrator (a Boucle is not an agent; both are ambiguous)
+
+**Exception**:
+A point where the Boucle cannot go on by rule, so it calls the Gestionnaire.
+Never ends in a question to a human.
+_Avoid_: error, escalation (that goes to a coordinator about someone else)
+
+**Gestionnaire** (handler):
+The single-use worker with a fresh, small context that the Boucle spawns for one
+Exception; it answers with a decision the Boucle validates and applies.
+_Avoid_: arbiter, coordinator, orchestrator
+
+**Parqué** (parked):
+A ticket the run leaves aside with a reason. Final for that run and never a wait:
+the run ends without it, and its dependents are parked too. Not `dropped`
+(abandoned for good). A later run can take it back after a human `override`.
+_Avoid_: bloqué (that is the state of a dependent of a parked ticket), en attente, dropped
+
+**Round de correction** (fix round):
+One cycle of review then fix on the same ticket.
+_Avoid_: iteration, retry
+
+**Défaut à relire** (default to review):
+A reversible decision the Gestionnaire applied in place of a human, written with
+its reason and how to undo it, and listed in the run's closing report.
+_Avoid_: assumption, guess
+
 ### Workspaces
 
 **Agent view**:
