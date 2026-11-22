@@ -29,6 +29,24 @@ const IGNORED = /(?:^|\/)(?:node_modules|dist|build|coverage|\.git)\//;
 /** Discovered names go into an agent's prompt: only plain path / script-name characters survive (a newline or shell text in a tracked file name is dropped, never quoted). */
 export const SAFE_NAME = /^[\w@./:+-]{1,120}$/;
 
+/** A spec's package root: the path before its first test-ish segment (`apps/api/test/x.e2e-spec.ts` → `apps/api`), so a monorepo's packages share the cap instead of the alphabet picking one. */
+const rootOf = (p: string): string => {
+  const parts = p.split('/').slice(0, -1);
+  const i = parts.findIndex((seg) => /^(?:test|tests|__tests__|e2e|integration|integration-tests?|src)$/i.test(seg));
+  return (i < 0 ? parts : parts.slice(0, i)).join('/');
+};
+/** Round-robin over the package roots (sorted), `cap` entries: one per package first, then a second from each… Deterministic. */
+export function spreadByRoot(sorted: string[], cap: number): string[] {
+  const groups = new Map<string, string[]>();
+  for (const f of sorted) { const k = rootOf(f); groups.set(k, [...(groups.get(k) ?? []), f]); }
+  const queues = [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0])).map((e) => e[1]);
+  const out: string[] = [];
+  for (let round = 0; out.length < cap && queues.some((q) => q.length > round); round++) {
+    for (const q of queues) if (q[round] !== undefined && out.length < cap) out.push(q[round]);
+  }
+  return out.sort();
+}
+
 const baseNoExt = (p: string): string => (p.split('/').pop() ?? p).replace(/\.[cm]?[jt]sx?$|\.py$/i, '');
 
 /** `scripts` of a package.json text; a missing/invalid file or a non-string value is ignored (a discovery never throws). */
@@ -51,7 +69,7 @@ export function discoverHarness(facts: RepoFacts): DiscoveredHarness | null {
     .map(([name, cmd]) => ({ name, run: `${packageManager} run ${name}`, cmd }))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(({ name, run }) => ({ name, run }));
-  const specs = files.filter((f) => SPEC_BY_NAME.test(f) || SPEC_BY_DIR.test(f)).slice(0, MAX_SPECS);
+  const specs = spreadByRoot(files.filter((f) => SPEC_BY_NAME.test(f) || SPEC_BY_DIR.test(f)), MAX_SPECS);
   const fixtures = files.filter((f) => FIXTURE_NAME.test(baseNoExt(f)) && !specs.includes(f)).slice(0, MAX_FIXTURES);
   return scripts.length || specs.length || fixtures.length ? { scripts, specs, fixtures, packageManager } : null;
 }
@@ -81,9 +99,18 @@ export function harnessBriefLines(h: ResolvedHarness, target: string): string[] 
       h.found.specs.length ? `existing specs ${h.found.specs.join(', ')}` : '',
       h.found.fixtures.length ? `app-boot fixture ${h.found.fixtures.join(', ')}` : '',
     ].filter(Boolean).join('; ')}`;
+  const imp = `Import the harness as it stands on ${target}; never copy, edit or re-implement it (it is not hashed: a change to it is the candidate's). ${RUN_CMD_NOTE}`;
+  if (h.source === 'declared') {
+    return [
+      `${named}.`,
+      `Every frozen test MUST (a) boot the FULL application module through that harness, exactly as the repo's existing integration specs do — never a hand-assembled module or a cherry-picked provider list (it passes alone and fails once tickets compose on ${target}); (b) open its OWN execution context per test — its own DB connection / query runner / transaction, created in that test's setup and released in its teardown: never share one across tests, never reuse one the app already released.`,
+      imp,
+    ];
+  }
+  // FOUND by a name match only: a requirement the repo may not be able to meet (docker / transport / browser-only specs, no app module) is conditional, never a hard MUST
   return [
     `${named}.`,
-    `Every frozen test MUST (a) boot the FULL application module through that harness, exactly as the repo's existing integration specs do — never a hand-assembled module or a cherry-picked provider list (it passes alone and fails once tickets compose on ${target}); (b) open its OWN execution context per test — its own DB connection / query runner / transaction, created in that test's setup and released in its teardown: never share one across tests, never reuse one the app already released.`,
-    `Import the harness as it stands on ${target}; never copy, edit or re-implement it (it is not hashed: a change to it is the candidate's). ${RUN_CMD_NOTE}`,
+    `READ them first. IF they boot the application module (a Nest / Express / … app module, a DB connection), then every frozen test MUST (a) boot the FULL application module the same way — never a hand-assembled module or a cherry-picked provider list (it passes alone and fails once tickets compose on ${target}); (b) open its OWN execution context per test — its own DB connection / query runner / transaction, created in that test's setup and released in its teardown: never share one across tests, never reuse one the app already released. IF they do NOT boot an application module (docker, transport, browser-only tests), this does not apply: keep the tests self-contained as above and say so in your worker_done.`,
+    imp,
   ];
 }

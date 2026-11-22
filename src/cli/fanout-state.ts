@@ -67,7 +67,8 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
   --harness <ref>  (#538) the repo's own INTEGRATION test entry (a path and/or the command that runs it, one line ≤ 300 chars): each \`accept-\` writer's brief names it and requires every
            frozen test to boot the FULL app module through it and open its OWN execution context per test (no shared DB connection / query runner / transaction). Not declared ⇒ discovery
            on origin/<target>: root package.json scripts e2e|integration|int (test:e2e…), specs *.e2e-spec.* / *.e2e|integration|int.test.* / files under e2e|integration/, an app-boot
-           fixture (test-app, create-app, app.fixture, e2e-setup…); none found ⇒ the brief says so and keeps the self-contained wording. Read at each writer SPAWN (a writer already spawned keeps its brief).
+           fixture (test-app, create-app, app.fixture, e2e-setup…); none found ⇒ the brief says so and keeps the self-contained wording. Read at each writer SPAWN (a writer already spawned keeps its brief). A found harness is conditional wording ("if they boot the app module…"), only a declared one is a hard requirement.
+           A state that DECLARES a harness is refused by a build older than #538 (unknown field): declare it only when the CLI and the app are the same build.
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
   Findings (#514): --finding records a verifier/review finding (id=severity) on the ticket it was raised on; a recorded severity is never re-graded.

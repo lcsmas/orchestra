@@ -9,7 +9,7 @@ import path from 'node:path';
 import { FanoutStateError, harnessOf, newState, parseState, setHarness, stateFile, applyTicketPatch } from './fanout-state.ts';
 import { acceptorBrief } from './fanout-acceptance.ts';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from './fanout-acceptance-host.ts';
-import { discoverHarness, harnessBriefLines, packageScripts, resolveHarness, type RepoFacts } from './fanout-harness.ts';
+import { discoverHarness, harnessBriefLines, packageScripts, resolveHarness, spreadByRoot, type RepoFacts } from './fanout-harness.ts';
 import { readRepoFacts } from './fanout-harness-facts.ts';
 
 const NOW = '2026-11-22T10:00:00.000Z';
@@ -106,10 +106,24 @@ test('brief: a DECLARED harness is named and both requirements are carried (full
   assert.match(b, /do NOT read any implementer branch/, 'the blind-writer rule is untouched');
 });
 
-test('brief: a DISCOVERED harness says it was found, names scripts / specs / fixture, and asks the writer to read it first', () => {
+test('brief: a DISCOVERED harness says it was found and is CONDITIONAL (a name match is not a MUST): read first, IF they boot the app module…; the self-contained line stays', () => {
   const b = brief(resolveHarness(null, NEST));
   assert.match(b, /FOUND by Orchestra on master, not declared — read it before you rely on it\): script `pnpm run test:e2e`; existing specs test\/app\.e2e-spec\.ts, test\/orders\.e2e-spec\.ts; app-boot fixture test\/utils\/create-test-app\.ts\./);
+  assert.match(b, /READ them first\. IF they boot the application module/);
+  assert.match(b, /then every frozen test MUST \(a\) boot the FULL application module the same way/);
   assert.match(b, /OWN execution context per test/);
+  assert.match(b, /IF they do NOT boot an application module \(docker, transport, browser-only tests\), this does not apply: keep the tests self-contained as above/);
+  assert.ok(b.includes(SELF_CONTAINED), 'the self-contained line is kept: a FOUND harness may not apply');
+  assert.doesNotMatch(b, /Every frozen test MUST/, 'the unconditional MUST is for a DECLARED harness only');
+  assert.match(brief(resolveHarness('make e2e', null)), /Every frozen test MUST \(a\) boot the FULL application module through that harness/);
+});
+
+test('discovery: a monorepo — one spec per package first (round-robin over package roots), deterministic, capped', () => {
+  const files = ['apps/aaa/test/1.e2e-spec.ts', 'apps/aaa/test/2.e2e-spec.ts', 'apps/aaa/test/3.e2e-spec.ts', 'apps/aaa/test/4.e2e-spec.ts', 'apps/api/test/app.e2e-spec.ts', 'libs/x/e2e/y.e2e-spec.ts'];
+  const d = discoverHarness({ files, packageJson: null })!;
+  assert.deepEqual(d.specs, ['apps/aaa/test/1.e2e-spec.ts', 'apps/aaa/test/2.e2e-spec.ts', 'apps/api/test/app.e2e-spec.ts', 'libs/x/e2e/y.e2e-spec.ts']);
+  assert.deepEqual(spreadByRoot(['a/test/1.spec.ts'], 4), ['a/test/1.spec.ts']);
+  assert.deepEqual(spreadByRoot([], 4), []);
 });
 
 test('brief: no harness → the old wording byte-identical + ONE line saying so; harness absent (undefined) → exactly the old brief', () => {

@@ -76,10 +76,10 @@ const withAccept = (t: TicketState, f: Partial<AcceptFlow>): AcceptFlow => ({ ac
 
 /** The writer's brief: the spec + the ticket ONLY — never an implementer branch (the writer must derive the tests from the spec, not from the code).
  *  #538: `harness` (declared | discovered | none — fanout-harness.ts) adds the repo's integration harness + its two requirements (full-module boot, per-test execution context);
- *  absent or `none` keeps the self-contained wording byte-identical (none adds ONE line saying so). */
+ *  absent or `none` keeps the self-contained wording byte-identical (none adds ONE line saying so); only a DECLARED harness replaces it (a FOUND one is conditional, the wording stays). */
 export function acceptorBrief(o: { run: string; ticket: string; spec: string; repo: string | null; target: string; harness?: ResolvedHarness | null }): string {
   const h = o.harness ?? null;
-  const withHarness = h !== null && h.source !== 'none';
+  const withHarness = h !== null && h.source === 'declared'; // a FOUND harness is conditional (fanout-harness.ts): the self-contained wording stays
   return [
     `You write the frozen ACCEPTANCE TESTS of ticket ${o.ticket} (vague run ${o.run}). Orchestra spawned you; you never see the implementer's code, and nobody waits for you: the implementer starts at dispatch.`,
     `Spec: ${o.spec}  (read the spec and the ticket ${o.ticket} — nothing else: do NOT read any implementer branch or PR for this ticket).`,
