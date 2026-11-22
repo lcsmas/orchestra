@@ -152,17 +152,32 @@ export function acceptanceHash(files: Record<string, string>, run: string): stri
   return crypto.createHash('sha256').update(lines).digest('hex');
 }
 
-/** Direct-runner argv prefixes a frozen command may start with (executed WITHOUT a shell). A package launcher (`npx`, `pnpm exec`, `yarn exec`) may only precede one of them. */
-const RUNNER_PREFIXES: string[][] = [
-  ['node'], ['tsx'], ['vitest'], ['vitest', 'run'], ['jest'], ['mocha'], ['pytest'], ['python', '-m', 'pytest'], ['python3', '-m', 'pytest'],
-  ['python', '-m', 'unittest'], ['python3', '-m', 'unittest'], ['deno', 'test'], ['bun', 'test'], ['ruby'], ['rspec'],
+/** One allowlisted runner: its argv prefix (executed WITHOUT a shell) and the INERT flags it may carry (whole-token regexes; anything else is refused —
+ *  a flag can load a candidate-owned module/config (`--require`, `--env-file`, `--experimental-config-file`, `--test-reporter=./x`, `--preload`, `-pPLUGIN`…) or make
+ *  nothing run (`--check`, `--test-name-pattern <frozen path>`, `--test-shard=2/2`), so flags are an allowlist, not a deny list). A package launcher (`npx`, `pnpm exec`,
+ *  `yarn exec`) may only precede one of them. */
+const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
+  { prefix: ['node'], flags: [/^--test$/, /^--test-reporter=(spec|tap|dot|junit|lcov)$/, /^--test-timeout=\d{1,7}$/, /^--test-concurrency=\d{1,3}$/, /^--test-force-exit$/, /^--no-warnings$/, /^--trace-warnings$/] },
+  { prefix: ['tsx'], flags: [] },
+  { prefix: ['vitest'], flags: [/^--reporter=(default|dot|verbose|tap|tap-flat|json|junit)$/, /^--bail=\d{1,3}$/, /^--no-color$/] },
+  { prefix: ['vitest', 'run'], flags: [/^--reporter=(default|dot|verbose|tap|tap-flat|json|junit)$/, /^--bail=\d{1,3}$/, /^--no-color$/] },
+  { prefix: ['jest'], flags: [/^--ci$/, /^--runInBand$/, /^--bail$/, /^--silent$/] },
+  { prefix: ['mocha'], flags: [/^--reporter=(spec|dot|tap|min|list|json)$/, /^--bail$/, /^--timeout=\d{1,7}$/, /^--exit$/] },
+  { prefix: ['pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
+  { prefix: ['python', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
+  { prefix: ['python3', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
+  { prefix: ['python', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
+  { prefix: ['python3', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
+  { prefix: ['deno', 'test'], flags: [/^-q$/, /^--quiet$/, /^-A$/, /^--no-check$/] },
+  { prefix: ['bun', 'test'], flags: [/^--bail$/, /^--timeout=\d{1,7}$/] },
+  { prefix: ['ruby'], flags: [] },
+  { prefix: ['rspec'], flags: [/^--fail-fast$/, /^--format=(progress|documentation)$/] },
 ];
-/** Flags that load code from a file the candidate owns (or run inline code): never part of a frozen command. */
-const CODE_LOADING_FLAG = /^--?(e|eval|p|print|r|require|import|loader|experimental-loader|env-file|c|config|configLoader|setup|setupFiles|setup-files|globalSetup|preset|plugin|plugins|rootDir|root)(=|$)/;
+
 /**
- * The frozen command as an argv, or throws. It must be a DIRECT runner call (no shell, no indirection through `npm run`/`make`/`sh`/`env`): runner allowlist,
- * no shell metacharacter, flags only in `--flag=value` form (never a code-loading one), every non-flag argument EXACTLY a frozen path, at least one.
- * Residue NOT checked: a runner config file or a non-frozen helper the test imports is still the candidate's.
+ * The frozen command as an argv, or throws. It must be a DIRECT runner call (no shell, no indirection through `npm run`/`make`/`sh`/`env`): an allowlisted runner,
+ * no shell metacharacter, only that runner's INERT flags (RUNNERS), every non-flag argument EXACTLY a frozen path, at least one.
+ * Residue NOT checked: a runner config file (vitest.config.*, jest.config.*, .mocharc, deno.json…) or a non-frozen helper the test imports is still the candidate's.
  */
 export function parseRunArgv(run: string, paths: string[]): string[] {
   const why = (m: string): never => { throw new FanoutStateError(`the run command ${JSON.stringify(run)} is not a direct runner call on the frozen files: ${m} — e.g. \`node --test ${paths[0] ?? '<frozen file>'}\``); };
@@ -170,12 +185,12 @@ export function parseRunArgv(run: string, paths: string[]): string[] {
   if (/["'\\$`;&|<>(){}*?!#~[\]]/.test(run)) why('no shell metacharacters, quotes, comments or globs (it is executed without a shell)');
   const tokens = run.trim().split(/ +/).filter(Boolean);
   const inner = tokens[0] === 'npx' ? tokens.slice(1) : (tokens[0] === 'pnpm' || tokens[0] === 'yarn') && tokens[1] === 'exec' ? tokens.slice(2) : tokens;
-  const prefix = [...RUNNER_PREFIXES].sort((a, b) => b.length - a.length).find((pre) => pre.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
-  if (!prefix) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNER_PREFIXES.map((p) => p[0]))].join(', ')}, optionally behind npx / pnpm exec / yarn exec) — not npm, make, sh, env, a script`);
+  const runner = [...RUNNERS].sort((a, b) => b.prefix.length - a.prefix.length).find((r) => r.prefix.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
+  if (!runner) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNERS.map((r) => r.prefix[0]))].join(', ')}, optionally behind npx / pnpm exec / yarn exec) — not npm, make, sh, env, a script`);
   let named = 0;
-  for (const t of inner.slice(prefix!.length)) {
-    if (t.startsWith('-')) { if (CODE_LOADING_FLAG.test(t)) why(`flag ${t} loads or runs code outside the frozen files`); continue; }
-    if (!paths.includes(t)) why(`argument ${JSON.stringify(t)} is not a frozen file (flags take the --flag=value form)`);
+  for (const t of inner.slice(runner!.prefix.length)) {
+    if (t.startsWith('-')) { if (!runner!.flags.some((re) => re.test(t))) why(`flag ${t} is not on ${runner!.prefix.join(' ')}'s inert-flag allowlist (a flag can load code from, or stop running, the frozen files)`); continue; }
+    if (!paths.includes(t)) why(`argument ${JSON.stringify(t)} is not a frozen file`);
     named++;
   }
   if (named === 0) why('it names none of the frozen files');
