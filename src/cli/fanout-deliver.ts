@@ -459,7 +459,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       let files;
       try { files = await rereadFrozenAtHead(got.acceptance, verifiedHead, opts.repo, deps.gh); } catch (e) { return done({ verdict: 'unchecked', reason: 'gh-failed', detail: e instanceof Error ? e.message : String(e) }, reviewGated); }
       const bad = files.filter((f) => f.status !== 'same');
-      if (bad.length) return done({ verdict: 'refused', reason: 'frozen-test-changed', detail: `frozen test file(s) at ${verifiedHead.slice(0, 12)} differ from the frozen bytes: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`, head: verifiedHead }, reviewGated);
+      if (bad.length) return done({ verdict: 'refused', reason: bad.every((f) => f.config) ? 'frozen-config-changed' : 'frozen-test-changed', detail: `frozen test file(s)${bad.some((f) => f.config) ? ' / runner config' : ''} at ${verifiedHead.slice(0, 12)} differ from the frozen bytes: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`, head: verifiedHead }, reviewGated);
       acceptanceChecked = true;
       deps.log(`acceptance ok: ${files.length} frozen file(s) byte-identical at ${verifiedHead.slice(0, 12)}, receipt for hash ${got.acceptance.hash.slice(0, 12)}`);
     } else if (got.phase === 'pending' || got.phase === 'unspecified') {

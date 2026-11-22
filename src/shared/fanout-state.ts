@@ -19,6 +19,8 @@ export interface Acceptance {
   hash: string;
   /** Targeted test command, run with cwd = the candidate checkout. */
   run: string;
+  /** #542 — the runner config the command names (`jest --config <path>`): its path and the sha256 of its bytes at the TARGET tip when frozen. Part of `hash`; the gate refuses a candidate whose copy differs. Absent = the command names none. */
+  config?: { path: string; sha256: string };
   source: { branch: string | null; head: string };
   frozenAt: string;
   /** `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
@@ -289,8 +291,8 @@ export function assertAcceptancePath(p: unknown): string {
   return p;
 }
 /** sha256 of the sorted `path\0sha\n` lines then one `run\0<run>\n` line — the ticket's frozen identity: the files AND the command that runs them (a receipt gated under another command is stale). */
-export function acceptanceHash(files: Record<string, string>, run: string): string {
-  const lines = Object.keys(files).sort().map((k) => `${k}\0${files[k]}\n`).join('') + `run\0${run}\n`;
+export function acceptanceHash(files: Record<string, string>, run: string, config?: { path: string; sha256: string } | null): string {
+  const lines = Object.keys(files).sort().map((k) => `${k}\0${files[k]}\n`).join('') + `run\0${run}\n` + (config ? `config\0${config.path}\0${config.sha256}\n` : ''); // #542: no config => the pre-#542 bytes, every old hash unchanged
   return crypto.createHash('sha256').update(lines).digest('hex');
 }
 
@@ -298,12 +300,12 @@ export function acceptanceHash(files: Record<string, string>, run: string): stri
  *  a flag can load a candidate-owned module/config (`--require`, `--env-file`, `--experimental-config-file`, `--test-reporter=./x`, `--preload`, `-pPLUGIN`…) or make
  *  nothing run (`--check`, `--test-name-pattern <frozen path>`, `--test-shard=2/2`), so flags are an allowlist, not a deny list). NO package launcher (`npx`, `pnpm exec`,
  *  `yarn exec`: they resolve the runner in the candidate's tree); `python -I -m` only (-I: the checkout is not put first on sys.path). */
-const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
+const RUNNERS: Array<{ prefix: string[]; flags: RegExp[]; /** #542: accepts ONE `--config <path>` / `--config=<path>` naming a tracked repo file (jest only) */ config?: true }> = [
   { prefix: ['node'], flags: [/^--test$/, /^--test-reporter=(spec|tap|dot|junit|lcov)$/, /^--test-timeout=\d{1,7}$/, /^--test-concurrency=\d{1,3}$/, /^--test-force-exit$/, /^--no-warnings$/, /^--trace-warnings$/] },
   { prefix: ['tsx'], flags: [] },
   { prefix: ['vitest'], flags: [/^--reporter=(default|dot|verbose|tap|tap-flat|json|junit)$/, /^--bail=\d{1,3}$/, /^--no-color$/] },
   { prefix: ['vitest', 'run'], flags: [/^--reporter=(default|dot|verbose|tap|tap-flat|json|junit)$/, /^--bail=\d{1,3}$/, /^--no-color$/] },
-  { prefix: ['jest'], flags: [/^--ci$/, /^--runInBand$/, /^--bail$/, /^--silent$/] },
+  { prefix: ['jest'], flags: [/^--ci$/, /^--runInBand$/, /^--bail$/, /^--silent$/], config: true },
   { prefix: ['mocha'], flags: [/^--reporter=(spec|dot|tap|min|list|json)$/, /^--bail$/, /^--timeout=\d{1,7}$/, /^--exit$/] },
   { prefix: ['pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
   { prefix: ['python', '-I', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
@@ -316,12 +318,20 @@ const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
   { prefix: ['rspec'], flags: [/^--fail-fast$/, /^--format=(progress|documentation)$/] },
 ];
 
+/** #542 — a runner config path a frozen command may name: repo-relative POSIX, plain characters only (no `..` / absolute / leading `-` / glob / backslash). Tracked-ness is a git fact, checked at freeze and at the gate. */
+export function assertConfigPath(p: unknown): string {
+  assertAcceptancePath(p);
+  if (!/^[A-Za-z0-9._@+/-]+$/.test(p as string)) throw new FanoutStateError(`unsafe runner config path ${JSON.stringify(p)} (letters, digits and . _ @ + - / only)`);
+  return p as string;
+}
+
 /**
  * The frozen command as an argv, or throws. It must be a DIRECT runner call (no shell, no indirection through `npm run`/`make`/`sh`/`env`): an allowlisted runner,
  * no shell metacharacter, only that runner's INERT flags (RUNNERS), every non-flag argument EXACTLY a frozen path, at least one.
- * Residue NOT checked: argv[0] and anything on its search path (PATH, the checkout's module/import path, a runner config file, a helper the test imports) are resolved in the candidate's tree.
+ * #542: `jest` alone may also carry ONE `--config <path>` / `--config=<path>` (`config` = that path, for the caller to prove tracked + hash); a second one, a missing value or an unsafe path is refused.
+ * Residue NOT checked: argv[0] and anything on its search path (PATH, the checkout's module/import path, a helper the test imports, what the config itself imports) are resolved in the candidate's tree.
  */
-export function parseRunArgv(run: string, paths: string[]): string[] {
+export function parseRunSpec(run: string, paths: string[]): { argv: string[]; config: string | null } {
   const why = (m: string): never => { throw new FanoutStateError(`the run command ${JSON.stringify(run)} is not a direct runner call on the frozen files: ${m} — e.g. \`node --test ${paths[0] ?? '<frozen file>'}\``); };
   if (/[^\x20-\x7e]/.test(run)) why('printable ASCII on one line only');
   if (/["'\\$`;&|<>(){}*?!#~[\]]/.test(run)) why('no shell metacharacters, quotes, comments or globs (it is executed without a shell)');
@@ -330,20 +340,41 @@ export function parseRunArgv(run: string, paths: string[]): string[] {
   const runner = [...RUNNERS].sort((a, b) => b.prefix.length - a.prefix.length).find((r) => r.prefix.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
   if (!runner) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNERS.map((r) => r.prefix[0]))].join(', ')}) called DIRECTLY — no npx / pnpm exec / yarn exec launcher, not npm, make, sh, env, a script`);
   let named = 0;
-  for (const t of inner.slice(runner!.prefix.length)) {
+  let config: string | null = null;
+  const args = inner.slice(runner!.prefix.length);
+  const takeConfig = (v: string | undefined): void => {
+    if (config !== null) why('--config given twice');
+    if (v === undefined || v === '' || v.startsWith('-')) why('--config needs a value (a repo-relative path of a TRACKED file)');
+    try { config = assertConfigPath(v); } catch (e) { why((e as Error).message); }
+  };
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (runner!.config && t === '--config') { takeConfig(args[++i]); continue; }
+    if (runner!.config && t.startsWith('--config=')) { takeConfig(t.slice('--config='.length)); continue; }
     if (t.startsWith('-')) { if (!runner!.flags.some((re) => re.test(t))) why(`flag ${t} is not on ${runner!.prefix.join(' ')}'s inert-flag allowlist (a flag can load code from, or stop running, the frozen files)`); continue; }
     if (!paths.includes(t)) why(`argument ${JSON.stringify(t)} is not a frozen file`);
     named++;
   }
   if (named === 0) why('it names none of the frozen files');
-  return tokens;
+  if (config !== null && paths.includes(config)) why('the --config file is also a frozen test (the config is recorded from the target tip, a frozen file from the writer: the gate could never pass)');
+  return { argv: tokens, config };
+}
+export function parseRunArgv(run: string, paths: string[]): string[] { return parseRunSpec(run, paths).argv; }
+/** #542 — the runner config path `run` names (null = none); throws like `parseRunArgv`. */
+export function runConfigOf(run: string, paths: string[]): string | null { return parseRunSpec(run, paths).config; }
+/** #542 — the stored `config` must be exactly what `run` names: present iff the command names one, same path, a sha256. */
+export function assertConfigMatchesRun(run: string, paths: string[], config: { path: string; sha256: string } | null | undefined, where: string): void {
+  const named = runConfigOf(run, paths);
+  if (named === null) { if (config) throw new FanoutStateError(`${where}: acceptance.config is recorded but the command names no --config`); return; }
+  if (!config || config.path !== named) throw new FanoutStateError(`${where}: the command names --config ${named} but no matching acceptance.config (path + sha256) is recorded`);
+  if (!SHA256.test(config.sha256)) throw new FanoutStateError(`${where}: acceptance.config.sha256 must be a 64-hex sha256`);
 }
 export const sha256Hex = (b: Buffer | string): string => crypto.createHash('sha256').update(b).digest('hex');
 
 function acceptanceOf(v: unknown, where: string): Acceptance | null {
   if (v === undefined || v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: acceptance must be an object or null`);
-  refuseUnknown(v, new Set(['files', 'hash', 'run', 'source', 'frozenAt', 'amendments']), `${where} acceptance`);
+  refuseUnknown(v, new Set(['files', 'hash', 'run', 'config', 'source', 'frozenAt', 'amendments']), `${where} acceptance`);
   if (!isObj(v.files) || Object.keys(v.files).length === 0) throw new FanoutStateError(`${where}: acceptance.files must be a non-empty {path: sha256}`);
   const files: Record<string, string> = {};
   for (const [k, h] of Object.entries(v.files)) {
@@ -352,8 +383,15 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
     files[k] = h;
   }
   if (typeof v.run !== 'string' || !v.run.trim() || v.run.length > 2000 || /[\r\n\0]/.test(v.run)) throw new FanoutStateError(`${where}: acceptance.run must be a single-line command`);
-  if (typeof v.hash !== 'string' || v.hash !== acceptanceHash(files, v.run)) throw new FanoutStateError(`${where}: acceptance.hash does not match its files + command (hand-edited state?)`);
-  parseRunArgv(v.run, Object.keys(files));
+  let config: Acceptance['config'];
+  if (v.config !== undefined && v.config !== null) {
+    if (!isObj(v.config)) throw new FanoutStateError(`${where}: acceptance.config must be an object`);
+    refuseUnknown(v.config, new Set(['path', 'sha256']), `${where} acceptance.config`);
+    if (typeof v.config.sha256 !== 'string' || !SHA256.test(v.config.sha256)) throw new FanoutStateError(`${where}: acceptance.config.sha256 must be a 64-hex sha256`);
+    config = { path: assertConfigPath(v.config.path), sha256: v.config.sha256 };
+  }
+  if (typeof v.hash !== 'string' || v.hash !== acceptanceHash(files, v.run, config)) throw new FanoutStateError(`${where}: acceptance.hash does not match its files + command (hand-edited state?)`);
+  assertConfigMatchesRun(v.run, Object.keys(files), config, where);
   if (!isObj(v.source)) throw new FanoutStateError(`${where}: acceptance.source missing`);
   refuseUnknown(v.source, new Set(['branch', 'head']), `${where} acceptance.source`);
   const head = checked(strOrNull(v.source.head, 'acceptance.source.head'), HEX_SHA, 'acceptance.source.head');
@@ -369,7 +407,7 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
     if (a.runAfter !== undefined && (typeof a.runAfter !== 'string' || !a.runAfter.trim() || /[\r\n\0]/.test(a.runAfter))) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].runAfter must be a single-line command`);
     return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, bodySha256: a.bodySha256 as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(a.runAfter !== undefined ? { runAfter: a.runAfter as string } : {}) };
   });
-  return { files, hash: v.hash, run: v.run, source: { branch, head }, frozenAt: v.frozenAt, amendments };
+  return { files, hash: v.hash, run: v.run, ...(config ? { config } : {}), source: { branch, head }, frozenAt: v.frozenAt, amendments };
 }
 
 /** Parse + validate a whole state document. Unknown field (top level or per ticket) is REFUSED; so is a dependency cycle. */

@@ -57,6 +57,8 @@
     "test:fanout-followup-mutants": "node scripts/e2e-fanout-followup.mjs --mutants",
     "test:fanout-acceptance": "node scripts/e2e-fanout-acceptance-mutants.mjs",
     "test:fanout-acceptance-mutants": "node scripts/e2e-fanout-acceptance-mutants.mjs --mutants",
+    "test:fanout-jest-config": "pnpm run build:cli && node scripts/e2e-fanout-jest-config.mjs",
+    "test:fanout-jest-config-mutants": "pnpm run build:cli && node scripts/e2e-fanout-jest-config.mjs --mutants",
     "test:fanout-tree-verdict": "node scripts/e2e-fanout-tree-verdict.mjs",
     "test:fanout-tree-verdict-mutants": "node scripts/e2e-fanout-tree-verdict.mjs --mutants",
     "test:acceptance-forced": "node scripts/e2e-fanout-acceptance-forced.mjs",

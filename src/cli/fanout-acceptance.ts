@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  FanoutStateError, SAFE_BRANCH, parseRunArgv, readState, resolveFanoutRun, sha256Hex, stateFile, updateState,
+  FanoutStateError, SAFE_BRANCH, parseRunArgv, readState, runConfigOf, resolveFanoutRun, sha256Hex, stateFile, updateState,
   type Acceptance, type FanoutState, type TicketState,
 } from '../shared/fanout-state.ts';
 import {
@@ -42,6 +42,11 @@ and recorded in the ticket's fanout state with the targeted command (--run-cmd, 
           (no npm run / make / sh -c / env / ; & | $ # quotes). The command is part of the frozen hash. NOT checked (residue): argv[0] and anything on its search
           path — PATH, the checkout's module/import path, a runner config file (vitest.config.*, .mocharc, deno.json…), a helper the test imports — are resolved in the
           candidate's tree: keep the frozen tests self-contained (the one helper they may import is the repo's integration harness, #538 — NOT hashed either) and review changes to such files.
+          ONE exception, #542: \`jest --config <path> <frozen files>\` (also \`--config=<path>\`; jest only, once, no other config-loading flag). <path> is repo-relative (no
+          absolute / \`..\` / glob) and must be a regular file TRACKED at the tip of origin/<target> (checked at freeze and amend; untracked, writer-branch-only, symlink or
+          behind a symlinked directory ⇒ refused, exit 2). Its sha256 is recorded in the ticket and in the frozen hash; the gate REFUSES (frozen-config-changed, exit 2, the
+          command never run) a candidate whose config is not byte-identical to that, and deliver re-reads it at the PR head. A config that must legitimately change is
+          re-recorded by the coordinator with \`amend\` (a ledger decision; amend re-reads the config from the target tip). What the config itself imports stays residue.
   amend   coordinator only; --decision = a GitHub ledger comment URL whose body (read through gh, fail closed) quotes --spec-sentence (≥ 12 chars,
           whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision comment (repo + id,
           however the URL is spelled, leading zeros included) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
@@ -104,6 +109,27 @@ export function readFrozen(paths: string[], from: string, cwd: string, runner: R
     files[p] = sha256Hex(Buffer.from(blob.stdout, 'utf8'));
   }
   return { files, source: { branch, head }, repo, modes };
+}
+
+// ── #542: the runner config a `jest --config <path>` command names ────────────────────────────────────────
+
+/** The config's sha256 as committed at the TARGET tip (`origin/<target>`, else the local `<target>`): the baseline every candidate branches from. Refused (exit 2) when it is not a
+ *  regular file TRACKED there (untracked, absent, a symlink / directory / submodule, or behind a symlinked directory: git lists no such path). Unreadable tip ⇒ could-not-check (1). */
+export function readRunnerConfig(runner: Runner, repo: string, target: string, cfgPath: string): { path: string; sha256: string } {
+  let tip = '';
+  let ref = '';
+  for (const c of [`origin/${target}`, target]) {
+    const r = runner('git', ['rev-parse', '--verify', '-q', `${c}^{commit}`], repo);
+    if (r.code === 0 && /^[0-9a-f]{40}$/.test(r.stdout.trim())) { tip = r.stdout.trim(); ref = c; break; }
+  }
+  if (!tip) throw new FanoutStateError(`--run-cmd names --config ${cfgPath}: cannot inspect the target tip (neither origin/${target} nor ${target} resolves in ${repo}) — fetch it first`);
+  const mode = treeModes(runner('git', ['ls-tree', '-r', '-z', '--full-tree', tip, '--', cfgPath], repo).stdout).get(cfgPath);
+  if (!mode) throw new Refusal(`the runner config ${cfgPath} is not a file tracked at the tip of ${ref} (${tip.slice(0, 12)}): --config must name a file committed in the target repo`);
+  if (!REGULAR_MODES.has(mode)) throw new Refusal(`the runner config ${cfgPath} is not a regular file at ${ref} (mode ${mode}); a symlink / submodule cannot be a config`);
+  const blob = runner('git', ['show', `${tip}:${cfgPath}`], repo);
+  if (blob.code !== 0) throw new FanoutStateError(`git show ${tip.slice(0, 12)}:${cfgPath}: exit ${blob.code}`);
+  if (blob.stdout.includes('\uFFFD')) throw new FanoutStateError(`${cfgPath}: not valid UTF-8 text (the byte re-read cannot be exact) — a runner config must be a text file`);
+  return { path: cfgPath, sha256: sha256Hex(Buffer.from(blob.stdout, 'utf8')) };
 }
 
 // ── #515: publish to the ONE shared branch acceptance/<run> ───────────────────────────────────────────────
@@ -181,17 +207,19 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     if (caller !== r.run && caller !== had?.accept?.acceptor?.id) throw new Refusal(`${ticket}: only its test writer${had?.accept?.acceptor?.id ? ` (${had.accept.acceptor.id})` : ' (none recorded in this run)'} or the run's coordinator (${r.run}) may freeze it, not ${caller}`);
     if (had?.acceptance) throw new Refusal(`${ticket}: acceptance tests are already frozen (hash ${had.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
     if (had?.accept?.waived) throw new Refusal(`${ticket}: acceptance is waived (${had.accept.waived.decision}) — nothing to freeze`);
+    const cfgPath = runConfigOf(run, paths); // #542: also validates the command BEFORE anything is published
     const frozen = readFrozen(paths, p.vals['--from'] ?? '.', deps.cwd, deps.runner);
+    const config = cfgPath ? readRunnerConfig(deps.runner, frozen.repo, st0.target, cfgPath) : undefined;
     // #515: a ticket registered with a spec has its tests PUBLISHED to the one shared branch acceptance/<run>; the recorded source is that published commit.
     const forced = !!had?.spec;
     const source = forced ? publishFrozen(deps.runner, frozen, { run: r.run, ticket, paths }) : frozen.source;
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
-      return freezeInto(cur, ticket, { files: frozen.files, run, source, now: deps.now() });
+      return freezeInto(cur, ticket, { files: frozen.files, run, ...(config ? { config } : {}), source, now: deps.now() });
     });
     const a = next.tickets[ticket].acceptance!;
     const hostCalls: HostCall[] | undefined = forced ? [{ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, ...(caller ? { from: caller } : {}) } }] : undefined;
-    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\` lists the tickets\n`}`, stderr: r.note, ...(hostCalls ? { hostCalls } : {}) };
+    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${a.config ? `runner config ${a.config.path} recorded (sha256 ${a.config.sha256.slice(0, 12)}): a candidate whose copy differs is refused at the gate\n` : ''}${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\` lists the tickets\n`}`, stderr: r.note, ...(hostCalls ? { hostCalls } : {}) };
   }
   if (verb === 'waive') {
     const p = parseArgs(rest, ['--run', '--decision', '--reason'], []);
@@ -267,11 +295,13 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     const frozen = readFrozen(paths, from, deps.cwd, deps.runner);
     const newRun = p.vals['--run-cmd']?.trim();
     if (p.vals['--run-cmd'] !== undefined && (!newRun || newRun.length > 2000 || /[\r\n\0]/.test(newRun))) throw new FanoutStateError('--run-cmd must be a single-line command (≤ 2000 chars)');
+    const cfgPath = runConfigOf(newRun ?? cur.acceptance.run, paths);
+    const config = cfgPath ? readRunnerConfig(deps.runner, frozen.repo, st0.target, cfgPath) : undefined; // an amend re-records the config's bytes from the target tip
     let hashes: { before: string; after: string } | null = null;
     updateState(file, (c) => {
       if (!c) throw new FanoutStateError(`no state at ${file}`);
       try {
-        const n = amendInto(c, ticket, { files: frozen.files, decision, specSentence: normaliseSentence(sentence), bodySha256: sha256Hex(Buffer.from(body, 'utf8')), source: frozen.source, ...(newRun ? { run: newRun } : {}), now: deps.now() });
+        const n = amendInto(c, ticket, { files: frozen.files, decision, specSentence: normaliseSentence(sentence), bodySha256: sha256Hex(Buffer.from(body, 'utf8')), source: frozen.source, ...(newRun ? { run: newRun } : {}), ...(config ? { config } : {}), now: deps.now() });
         const am = n.tickets[ticket].acceptance!.amendments.at(-1)!;
         hashes = { before: am.hashBefore, after: am.hashAfter };
         return n;
@@ -297,6 +327,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     const lines = [
       `${ticket}: frozen hash=${a.hash.slice(0, 12)} (${Object.keys(a.files).length} file(s)) at ${a.frozenAt}`,
       `  run:    ${a.run}`,
+      ...(a.config ? [`  config: ${a.config.sha256.slice(0, 12)}  ${a.config.path}  (not a frozen test: the gate refuses a candidate whose copy differs)`] : []),
       `  source: ${a.source.branch ?? '-'}@${a.source.head.slice(0, 12)}`,
       ...Object.entries(a.files).map(([f, h]) => `  ${h.slice(0, 12)}  ${f}`),
       `  amendments: ${a.amendments.length}`,
@@ -362,6 +393,16 @@ export const realCheckoutIo: CheckoutIo = {
   },
 };
 
+/** #542 — the runner config the frozen command names, in the candidate checkout: a regular tracked file at HEAD whose worktree bytes AND blob at HEAD are the ones recorded at freeze. */
+function configStatus(io: CheckoutIo, root: string, cfg: { path: string; sha256: string }): FileStatus {
+  const mode = treeModes(io.git(['ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', cfg.path], root).stdout).get(cfg.path);
+  const bytes = REGULAR_MODES.has(mode ?? '') ? io.readFile(path.join(root, cfg.path)) : null;
+  if (bytes === null) return { path: cfg.path, status: 'missing', config: true };
+  const blob = io.git(['show', `HEAD:${cfg.path}`], root);
+  const atHead = blob.code === 0 && !blob.stdout.includes('\uFFFD') && sha256Hex(Buffer.from(blob.stdout, 'utf8')) === cfg.sha256;
+  return { path: cfg.path, status: sha256Hex(bytes) === cfg.sha256 && atHead ? 'same' : 'changed', config: true };
+}
+
 /** The acceptance clause of `fanout gate`: `--cwd` required, its HEAD = `--head`, tracked files clean, every frozen file byte-identical (and a regular
  *  file at HEAD), then the frozen command runs there. The command only runs once the bytes are proven. */
 export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; head: string; ticket?: string; log?: (s: string) => void }, io: CheckoutIo = realCheckoutIo): GateAcceptance {
@@ -371,6 +412,7 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
   let cwdTree: string | null = null;
   let dirty: string[] = [];
   let files: FileStatus[] = [];
+  let config: FileStatus | undefined;
   if (cwd) {
     const top = io.git(['rev-parse', '--show-toplevel'], cwd);
     const hd = io.git(['rev-parse', 'HEAD'], cwd);
@@ -391,10 +433,11 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
         const atHead = blob.code === 0 && !blob.stdout.includes('\uFFFD') && sha256Hex(Buffer.from(blob.stdout, 'utf8')) === acc.files[p];
         return { path: p, status: sha256Hex(bytes) === acc.files[p] && atHead ? 'same' as const : 'changed' as const };
       });
+      if (acc.config) config = configStatus(io, root, acc.config); // #542
     }
   }
   return decideGateAcceptance(acc, {
-    cwdGiven: !!cwd, cwdHead, head: o.head, dirty, files, cwdTree, ...(o.ticket ? { ticket: o.ticket } : {}),
+    cwdGiven: !!cwd, cwdHead, head: o.head, dirty, files, ...(config ? { config } : {}), cwdTree, ...(o.ticket ? { ticket: o.ticket } : {}),
     run: () => { const r = io.run(parseRunArgv(acc.run, Object.keys(acc.files)), root!); if (r.exit !== 0 && r.tail) o.log?.(`frozen tests (${acc.run}) exit ${r.exit}:\n${r.tail}`); return { cmd: acc.run, exit: r.exit }; },
   });
 }
@@ -417,6 +460,12 @@ export async function rereadFrozenAtHead(
       throw new Error(`gh api contents/${p}@${head.slice(0, 12)} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 300)}`);
     }
     out.push({ path: p, status: !r.stdout.includes('�') && sha256Hex(Buffer.from(r.stdout, 'utf8')) === want ? 'same' : 'changed' });
+  }
+  if (acc.config) { // #542: the runner config at the PR head must still be the bytes recorded at freeze
+    const p = acc.config.path;
+    const r = await gh(['api', '-H', 'Accept: application/vnd.github.raw+json', `${base}/${p.split('/').map(encodeURIComponent).join('/')}?ref=${head}`]);
+    if (r.code !== 0 && !/404|Not Found/i.test(r.stderr)) throw new Error(`gh api contents/${p}@${head.slice(0, 12)} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 300)}`);
+    out.push({ path: p, config: true, status: r.code !== 0 ? 'missing' : !r.stdout.includes('�') && sha256Hex(Buffer.from(r.stdout, 'utf8')) === acc.config.sha256 ? 'same' : 'changed' });
   }
   return out;
 }

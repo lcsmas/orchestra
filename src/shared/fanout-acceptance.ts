@@ -5,6 +5,7 @@ import {
   acceptanceHash,
   assertAcceptancePath,
   blankTicket,
+  assertConfigMatchesRun,
   parseRunArgv,
   type AcceptFlow,
   type Acceptance,
@@ -15,17 +16,19 @@ import { harnessBriefLines, type ResolvedHarness } from './fanout-harness.ts';
 
 export const MIN_SPEC_SENTENCE = 12;
 
-export type AcceptanceReason = 'frozen-test-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale-checkout';
-export type DeliverAcceptanceReason = 'frozen-test-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale';
+export type AcceptanceReason = 'frozen-test-changed' | 'frozen-config-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale-checkout';
+export type DeliverAcceptanceReason = 'frozen-test-changed' | 'frozen-config-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale';
 
 /** The gate's proof for ONE head. #512: it is keyed on CONTENT — `tree` (git tree of `head`) and `ticket` bind it to what was run; both optional so an older receipt (head-only) still parses and stays head-keyed. */
 export interface Receipt { head: string; hash: string; ok: boolean; tree?: string; ticket?: string }
-export interface FileStatus { path: string; status: 'same' | 'changed' | 'missing' }
+export interface FileStatus { path: string; status: 'same' | 'changed' | 'missing'; /** #542: this entry is the command's runner config, not a frozen test */ config?: true }
 /** What `fanout gate` prints under `acceptance` (frozen interface, #511). */
 export interface GateAcceptance {
   ok: boolean;
   hash: string;
   files: FileStatus[];
+  /** #542: the runner config the command names, read in the candidate checkout against the sha256 recorded at freeze (absent = the command names none) */
+  config?: FileStatus;
   ran: { cmd: string; exit: number } | null;
   receipt: Receipt;
   reason?: AcceptanceReason;
@@ -159,13 +162,14 @@ export function openWait(state: FanoutState, id: string, boundSec: number, nowMs
 /** Record the frozen set on `id` (creating the ticket, like `state set`). Refused when one is already frozen: that is an amend. */
 export function freezeInto(
   state: FanoutState, id: string,
-  f: { files: Record<string, string>; run: string; source: Acceptance['source']; now: string },
+  f: { files: Record<string, string>; run: string; config?: Acceptance['config']; source: Acceptance['source']; now: string },
 ): FanoutState {
   const cur = ticketOf(state, id);
   if (cur?.acceptance) throw new FanoutStateError(`${id}: acceptance tests are already frozen (hash ${cur.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
   parseRunArgv(f.run, Object.keys(f.files));
-  const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run), run: f.run, source: f.source, frozenAt: f.now, amendments: [] };
+  assertConfigMatchesRun(f.run, Object.keys(f.files), f.config, id);
+  const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run, f.config), run: f.run, ...(f.config ? { config: f.config } : {}), source: f.source, frozenAt: f.now, amendments: [] };
   const base: TicketState = cur ?? blankTicket(f.now);
   return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, ...(base.accept?.wait ? { accept: { ...base.accept, wait: null } } : {}), updatedAt: f.now } }, updatedAt: f.now };
 }
@@ -173,21 +177,23 @@ export function freezeInto(
 /** Replace the frozen set (D3): appends `{at, decision, specSentence, hashBefore, hashAfter}`. A no-op amend is refused. */
 export function amendInto(
   state: FanoutState, id: string,
-  a: { files: Record<string, string>; decision: string; specSentence: string; bodySha256: string; source: Acceptance['source']; run?: string; now: string },
+  a: { files: Record<string, string>; decision: string; specSentence: string; bodySha256: string; source: Acceptance['source']; run?: string; config?: Acceptance['config']; now: string },
 ): FanoutState {
   const cur = ticketOf(state, id);
   if (!cur) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   const acc = cur.acceptance;
   if (!acc) throw new FanoutStateError(`${id}: no frozen acceptance tests to amend — freeze first (\`orchestra fanout acceptance freeze\`)`);
   const run = a.run ?? acc.run;
-  const hashAfter = acceptanceHash(a.files, run);
+  assertConfigMatchesRun(run, Object.keys(a.files), a.config, id); // #542: an amend re-records the runner config's bytes from the target tip (a changed config is accepted HERE, under a decision)
+  const hashAfter = acceptanceHash(a.files, run, a.config);
   if (hashAfter === acc.hash) throw new FanoutStateError(`${id}: the amendment changes nothing (same files, same command: hash ${acc.hash.slice(0, 12)})`);
   // one decision = one comment, however its URL is spelled (issues/pull, case, number): keyed on lower-cased repo + NUMERIC comment id (`-0900` ≡ `-900`)
   const key = (u: string): string => { const m = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(decisionApiPath(u) ?? ''); return m ? `${m[1].toLowerCase()}#${Number(m[2])}` : u.toLowerCase(); };
   if (acc.amendments.some((m) => key(m.decision) === key(a.decision))) throw new FanoutStateError(`${id}: this decision already authorised an amendment (${a.decision}) — one decision, one amendment: record a new ledger decision`);
   parseRunArgv(run, Object.keys(a.files));
+  const { config: _oldConfig, ...accRest } = acc; // the amended set carries ITS config (or none), never the old one
   const next: Acceptance = {
-    ...acc, files: a.files, hash: hashAfter, run, source: a.source,
+    ...accRest, files: a.files, hash: hashAfter, run, ...(a.config ? { config: a.config } : {}), source: a.source,
     amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, bodySha256: a.bodySha256, hashBefore: acc.hash, hashAfter, ...(run !== acc.run ? { runAfter: run } : {}) }],
   };
   return { ...state, tickets: { ...state.tickets, [id]: { ...cur, acceptance: next, updatedAt: a.now } }, updatedAt: a.now };
@@ -213,19 +219,24 @@ export function decideGateAcceptance(acc: Acceptance, facts: {
   cwdGiven: boolean; cwdHead: string | null; head: string; dirty: string[]; files: FileStatus[]; run: () => { cmd: string; exit: number };
   /** #512 — tree of the checkout's HEAD (null = unread) and the ticket the gate was asked about: both go into the receipt. */
   cwdTree?: string | null; ticket?: string;
+  /** #542 — the runner config the frozen command names, read in the checkout against the sha256 recorded at freeze (absent = the command names none). */
+  config?: FileStatus;
 }): GateAcceptance {
   const receipt = (ok: boolean): Receipt => ({ head: facts.head, hash: acc.hash, ok, ...(facts.cwdTree ? { tree: facts.cwdTree } : {}), ...(facts.ticket ? { ticket: facts.ticket } : {}) });
   const refuse = (reason: AcceptanceReason, detail: string, files: FileStatus[] = facts.files, ran: GateAcceptance['ran'] = null): GateAcceptance =>
-    ({ ok: false, hash: acc.hash, files, ran, receipt: receipt(false), reason, detail });
+    ({ ok: false, hash: acc.hash, files, ...(facts.config && files.length ? { config: facts.config } : {}), ran, receipt: receipt(false), reason, detail });
   if (!facts.cwdGiven) return refuse('acceptance-unproven', 'this ticket has frozen acceptance tests: pass --cwd <the candidate checkout> (they are run and hashed there)', []);
   if (!facts.cwdHead) return refuse('acceptance-unproven', '--cwd is not the root of a git checkout (git rev-parse HEAD / --show-toplevel): the head it holds cannot be proven', []);
   if (facts.cwdHead !== facts.head) return refuse('acceptance-stale-checkout', `--cwd is at ${facts.cwdHead.slice(0, 12)}, not --head ${facts.head.slice(0, 12)}: check out the verified head`, []);
   if (facts.dirty.length) return refuse('acceptance-stale-checkout', `--cwd has uncommitted changes to tracked files (${facts.dirty.slice(0, 5).join(', ')}): the run would not be of --head`, []);
   const bad = facts.files.filter((f) => f.status !== 'same');
   if (bad.length) return refuse('frozen-test-changed', `frozen test file(s) differ from the frozen bytes at ${facts.head.slice(0, 12)}: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`);
+  // #542: the runner config is NOT a frozen test but it decides what runs (testMatch, setupFiles, moduleNameMapper…): a candidate whose copy differs from the bytes recorded at freeze is REFUSED, never run.
+  // A legitimate config change is accepted by the coordinator with `acceptance amend` (a ledger decision), which re-records it.
+  if (facts.config && facts.config.status !== 'same') return refuse('frozen-config-changed', `the runner config ${facts.config.path} (named by the frozen command) ${facts.config.status === 'missing' ? 'is missing or not a regular tracked file at' : 'differs from the bytes recorded at freeze in'} ${facts.head.slice(0, 12)}: do not edit it in the candidate; if the change is intended, the coordinator re-records it with \`acceptance amend\` (ledger decision)`);
   const ran = facts.run(); // only after the bytes are proven: a changed test is never executed
   if (ran.exit !== 0) return refuse('frozen-test-failed', `\`${ran.cmd}\` exited ${ran.exit}`, facts.files, ran);
-  return { ok: true, hash: acc.hash, files: facts.files, ran, receipt: receipt(true) };
+  return { ok: true, hash: acc.hash, files: facts.files, ...(facts.config ? { config: facts.config } : {}), ran, receipt: receipt(true) };
 }
 
 /** A receipt file: the gate's `acceptance.receipt` itself, or the whole gate JSON line (its `acceptance.receipt`). */
