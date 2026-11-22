@@ -474,7 +474,7 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   git itself resolves **for the repo** (`git -C <repo> config --get user.name|email` + optional `author.*`/`committer.*`, so a global
   `includeIf` and a split committer survive — never hardcoded; both `user.*` or nothing) into the worktree's own `config.worktree`
   (`extensions.worktreeConfig`, flipped once in the shared repo config — re-check + retry on git's `config.lock`; refused for a bare repo / `core.worktree`).
-  Idempotent; a key the worktree already carries is kept, never overwritten; never throws (`skipped`: `no-identity | not-a-worktree |
+  Idempotent; a group (`user`/`author`/`committer`) the worktree already carries any key of is kept whole, never overwritten (limits: the source is the repo's resolved config, so an identity an agent plain-`git config`ed into the SHARED config is copied; and the pin shadows a later plain `git config` in the worktree — `--worktree` is the way to override); never throws (`skipped`: `no-identity | not-a-worktree |
   unsupported-repo | error`). Applied at: `createWorktree` (the ONE `git worktree add` — `createWorkspace` = `orchestra spawn` + top-level,
   `dispatchAdoptRepoRequest`, sandbox eject), `unarchiveWorkspace`, `dispatchAttachRequest`, and every session start (`agent-sdk.ts`, right after
   `installOrchestraHooks`) via `ensureWorkspaceGitIdentity(ws)` (skips scratch-like and sandbox workspaces). Tests

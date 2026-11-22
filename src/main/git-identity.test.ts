@@ -103,7 +103,7 @@ test('#513 idempotent: a second call writes nothing, and config.worktree is byte
   assert.ok(fs.readFileSync(path.resolve(wt, cfg)).equals(before));
 });
 
-test('#513 never overwrites an identity the user set explicitly in that worktree (per key)', async () => {
+test('#513 never overwrites an identity the user set explicitly in that worktree (a half-set group is kept whole)', async () => {
   writeGlobal(ownerGlobal);
   const repo = mkRepo();
   const wt = path.join(ROOT, `wt-explicit-${++n}`);
@@ -112,9 +112,9 @@ test('#513 never overwrites an identity the user set explicitly in that worktree
   git(wt, ['config', '--worktree', 'user.email', 'explicit@wt.test']); // only the email is explicit
   const r = await ensureWorktreeGitIdentity(repo, wt);
   assert.equal(git(wt, ['config', '--worktree', '--get', 'user.email']), 'explicit@wt.test', 'explicit email kept');
-  assert.equal(git(wt, ['config', '--worktree', '--get', 'user.name']), OWNER.name, 'the missing key is filled');
-  assert.deepEqual(r.kept, ['user.email']);
-  assert.deepEqual(r.applied, ['user.name']);
+  assert.equal(tryGit(wt, ['config', '--worktree', '--get', 'user.name']).ok, false, 'no owner name written beside their email');
+  assert.deepEqual(r.kept, ['user.name', 'user.email']);
+  assert.deepEqual(r.applied, []);
 });
 
 test('#513 the identity is READ from the host config, never hardcoded: another owner ⇒ another identity', async () => {
