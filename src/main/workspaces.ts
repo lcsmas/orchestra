@@ -770,8 +770,8 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
       status: 'idle',
     };
     await store.upsertWorkspace(updated);
-    await ensureWorkspaceGitIdentity(updated); // #513: a worktree archived before the pin (or edited meanwhile) gets it on restore; never throws
     reopenRunsOf([ws.id]); // #437: unarchive REOPENS the same run (its id is the coordinator's workspace id); history, unread mail and switches kept
+    await ensureWorkspaceGitIdentity(updated); // #513: a worktree archived before the pin (or edited meanwhile) gets it on restore; never throws
     platform.broadcast('workspace:update', updated);
   }
 }
