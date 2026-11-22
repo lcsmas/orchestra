@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readState, resolveFanoutRun, stackView, stateFile, type StackView } from '../shared/fanout-state.ts';
 import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/fanout-deliver.ts';
-import { readPrChecks, realDeps, type DeliverDeps } from './fanout-deliver.ts';
+import { readPrChecks, readTree, realDeps, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState, checkAcceptanceInCheckout, realCheckoutIo, type CheckoutIo } from './fanout-acceptance.ts';
 import type { Acceptance } from '../shared/fanout-state.ts';
 import type { GateAcceptance } from '../shared/fanout-acceptance.ts';
@@ -128,7 +128,7 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
     }
     const frozen = got?.acceptance ?? null;
     if (frozen) {
-      accept = checkAcceptanceInCheckout(frozen, { cwd: opts.cwd, head: opts.head, log: deps.log }, deps.checkout ?? realCheckoutIo);
+      accept = checkAcceptanceInCheckout(frozen, { cwd: opts.cwd, head: opts.head, ticket: opts.ticket, log: deps.log }, deps.checkout ?? realCheckoutIo);
       if (!accept.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: accept.reason, detail: accept.detail, acceptance: accept, ...base } };
     }
     const workflows = await targetWorkflows(opts, deps);
@@ -151,8 +151,15 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
     }
     let stack: StackView | null | undefined;
     if (opts.ticket !== undefined) stack = deps.stack ? deps.stack({ ticket: opts.ticket, run: opts.run }) : null;
+    // #512 — the PR head is another sha than the one verified: read both trees; the same tree means the PR's CI is about the content being verified.
+    let headTree: string | null = null;
+    let prTree: string | null = null;
+    if (snap && snap.view.headRefOid !== opts.head) {
+      [headTree, prTree] = [await readTree(deps.gh, opts.repo, opts.head), await readTree(deps.gh, opts.repo, snap.view.headRefOid)];
+      if (!headTree || !prTree) deps.log('gate: could not read the git tree of --head / the PR head: the CI of another head is not accepted (compared by sha)');
+    }
     const answer = decideGate({
-      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles,
+      workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles, headTree, prTree,
     });
     if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — fullSuite stays on the verifier');
     return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}), ...(accept ? { acceptance: accept } : {}) } };
@@ -169,7 +176,7 @@ gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the 
 ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. NOT detected: a PR that changes what the test command runs (package.json scripts, runner config) — pin the check and review that diff. Without PR CI (or unreadable workflows): fullSuite:"verifier".
 --ticket <id> [--run <id>] adds \`stack\` (#506, from the fanout state): order none | wait-upstream (stacked on a verified upstream candidate: gate it now, \`deliver\` merges only after the upstream) | re-gate (the upstream moved since this ticket was built on it: its verdict is void) | blocked (an upstream is no admissible candidate), plus one row per upstream.
 Acceptance (#510): when the ticket has frozen acceptance tests (\`fanout acceptance freeze\`), \`--cwd <the candidate checkout>\` is REQUIRED: its HEAD must be --head and its tracked files clean, every frozen file is hashed there, then the frozen command runs there. Output gains \`acceptance: {ok, hash, files:[{path,status}], ran, receipt:{head,hash,ok}}\` — save \`receipt\` for \`deliver --acceptance\`. Any failure ⇒ exit 2, verdict "refused", reason frozen-test-changed | frozen-test-failed | acceptance-unproven | acceptance-stale-checkout (before any CI read). The ticket is read from the fanout state like \`stack\` (pass --run when it is not your own run: with --run an absent state/ticket or an unreadable state ⇒ exit 1 bad-state; without it an absent state/ticket prints acceptance:{consulted:false} — NOTHING checked — and logs it). \`deliver\` is the authority and refuses a ticket with frozen tests that has no receipt.
-A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
+A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted — unless (#512) it has the SAME git tree (a rebase / author rewrite): then headMatches:true, sameTree:true (a verdict is keyed on content; unreadable trees ⇒ compared by sha). The receipt also names \`tree\` (the checkout's HEAD^{tree}) and \`ticket\`.
 Prints ONE JSON line. Exit 0 = answered, 2 = refused (acceptance), 1 = could not check (usage, gh failed, unreadable state). \`deliver\` re-checks CI at merge.`;
 
 /** Production deps: real gh + the state-file stack reader (a test drives `runGate` through THIS, so an unwired reader cannot pass). */

@@ -44,6 +44,10 @@ export interface TicketState {
   status: TicketStatus;
   /** #510 — frozen acceptance tests (null = none). Not in SETTABLE_KEYS: only the acceptance verb writes it. */
   acceptance: Acceptance | null;
+  /** #512 — git tree sha of `head`: the CONTENT the verdict speaks about. DERIVED by the CLI whenever `head` is set (null = unknown: the verdict then stays sha-keyed, never looser). */
+  tree: string | null;
+  /** #512 — upstream id → tree of the upstream head it was built on (`builtOn`), derived the same way. */
+  builtOnTree: Record<string, string>;
   updatedAt: string;
 }
 
@@ -60,13 +64,15 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'updatedAt']);
-/** The fields a `state set` may change (updatedAt is the writer's). */
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'tree', 'builtOnTree', 'updatedAt']);
+/** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` are DERIVED (#512): the CLI fills them from git, `state set --json` cannot. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
-export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number]>>;
+export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
+export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number] | (typeof DERIVED_KEYS)[number]>>;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HEX_SHA = /^[0-9a-f]{7,40}$/;
+const TREE_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 export const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
@@ -129,6 +135,21 @@ function builtOnOf(v: unknown): Record<string, string> {
     if (!SAFE_TICKET.test(k)) throw new FanoutStateError(`builtOn: unsafe ticket id ${JSON.stringify(k)}`);
     if (typeof h !== 'string' || !HEX_SHA.test(h)) throw new FanoutStateError(`builtOn[${k}] must be a 7-40 lowercase hex sha`);
     out[k] = h;
+  }
+  return out;
+}
+function treeOrNull(v: unknown, name: string): string | null {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== 'string' || !TREE_SHA.test(v)) throw new FanoutStateError(`${name} must be a full lowercase hex git tree sha or null`);
+  return v;
+}
+function builtOnTreeOf(v: unknown): Record<string, string> {
+  if (v === undefined || v === null) return {};
+  if (!isObj(v)) throw new FanoutStateError('builtOnTree must be an object {<upstream ticket>: <tree sha>}');
+  const out: Record<string, string> = {};
+  for (const [k, h] of Object.entries(v)) {
+    if (!SAFE_TICKET.test(k)) throw new FanoutStateError(`builtOnTree: unsafe ticket id ${JSON.stringify(k)}`);
+    out[k] = treeOrNull(h, `builtOnTree[${k}]`) ?? (() => { throw new FanoutStateError(`builtOnTree[${k}] must be a tree sha`); })();
   }
   return out;
 }
@@ -255,6 +276,8 @@ export function parseState(raw: unknown): FanoutState {
       mergedAccepted: strOrNull(t.mergedAccepted, 'mergedAccepted'),
       status: enumOf(t.status ?? 'todo', TICKET_STATUSES, 'status'),
       acceptance: acceptanceOf(t.acceptance, `ticket ${id}`),
+      tree: treeOrNull(t.tree, 'tree'),
+      builtOnTree: builtOnTreeOf(t.builtOnTree),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -284,13 +307,16 @@ function assertAcyclic(state: FanoutState): void {
 }
 
 const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+/** #512 — do two (sha, tree) pairs name the same CONTENT? Same sha, or both trees known and equal. An unknown tree never matches (fail closed: the verdict stays sha-keyed). */
+export const sameContent = (aSha: string, aTree: string | null | undefined, bSha: string, bTree: string | null | undefined): boolean => sameSha(aSha, bSha) || (!!aTree && !!bTree && aTree === bTree);
 
 /**
  * #506 — may dependent `dep` be NOMINATED/GATED while its (unmerged) upstream `up` is open? Only on the upstream's verified candidate:
  * the upstream is nominated|gated with a recorded head and no failing verdict, and `dep` recorded the head it was built on = that head.
- * `upHead` overrides the state's head (reconcile passes the remote tip when it has one). null = admitted.
+ * `upHead` overrides the state's head (reconcile passes the remote tip when it has one; `upTree` = that tip's tree, unknown ⇒ sha-keyed). null = admitted.
+ * #512: "built on" is CONTENT — the upstream moving to another sha with the tree the dependent was built on (`builtOnTree`) is not a change.
  */
-export function upstreamBlocker(state: FanoutState, dep: TicketState, up: string, upHead?: string | null): { kind: 'ineligible' | 'changed'; why: string } | null {
+export function upstreamBlocker(state: FanoutState, dep: TicketState, up: string, upHead?: string | null, upTree?: string | null): { kind: 'ineligible' | 'changed'; why: string } | null {
   const u = state.tickets[up];
   if (!u) return { kind: 'ineligible', why: `${up} is unknown to the state` };
   if (u.status !== 'nominated' && u.status !== 'gated') return { kind: 'ineligible', why: `${up} is ${u.status} (it needs a nominated|gated candidate)` };
@@ -299,7 +325,7 @@ export function upstreamBlocker(state: FanoutState, dep: TicketState, up: string
   if (!head) return { kind: 'ineligible', why: `${up} has no recorded head` };
   const built = dep.builtOn[up];
   if (!built) return { kind: 'ineligible', why: `no builtOn for ${up} (record the head it was built on: --built-on ${up}=<sha>)` };
-  if (!sameSha(built, head)) return { kind: 'changed', why: `built on ${up}@${built.slice(0, 8)} but ${up} is now at ${head.slice(0, 8)}` };
+  if (!sameContent(built, dep.builtOnTree[up], head, upHead != null ? upTree : u.tree)) return { kind: 'changed', why: `built on ${up}@${built.slice(0, 8)} but ${up} is now at ${head.slice(0, 8)}` };
   return null;
 }
 
@@ -316,7 +342,7 @@ export function stackView(state: FanoutState, id: string): StackView | null {
     const ut = state.tickets[u];
     const head = ut?.head ?? null;
     const builtOn = t.builtOn[u] ?? null;
-    if (upstreamMerged(state, u)) return builtOn && head && !sameSha(builtOn, head) ? { id: u, state: 'changed' as const, builtOn, head, why: `built on ${u}@${builtOn.slice(0, 8)} but ${u} merged at ${head.slice(0, 8)}` } : { id: u, state: 'merged' as const, builtOn, head };
+    if (upstreamMerged(state, u)) return builtOn && head && !sameContent(builtOn, t.builtOnTree[u], head, ut?.tree) ? { id: u, state: 'changed' as const, builtOn, head, why: `built on ${u}@${builtOn.slice(0, 8)} but ${u} merged at ${head.slice(0, 8)}` } : { id: u, state: 'merged' as const, builtOn, head };
     const b = upstreamBlocker(state, t, u);
     return b ? { id: u, state: b.kind, builtOn, head, why: b.why } : { id: u, state: 'candidate' as const, builtOn, head };
   });
@@ -341,11 +367,11 @@ export function unmergedUpstreams(state: FanoutState, id: string): string[] {
  *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
  *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
-export function applyTicketPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string): FanoutState {
+export function applyTicketPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string> } = {}): FanoutState {
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, updatedAt: now,
+    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
@@ -357,6 +383,14 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
   if ('mergedAccepted' in patch) next.mergedAccepted = strOrNull(patch.mergedAccepted, 'mergedAccepted');
   if ('status' in patch) next.status = enumOf(patch.status, TICKET_STATUSES, 'status');
+  // #512 — the content keys follow head / builtOn: a derived value wins; an unchanged sha keeps its tree; a changed sha with no derived tree is UNKNOWN (null), never the old head's tree.
+  if ('head' in patch) next.tree = derived.tree !== undefined ? treeOrNull(derived.tree, 'tree') : prev.head && next.head && sameSha(prev.head, next.head) ? prev.tree : null;
+  const dTrees = builtOnTreeOf(derived.builtOnTree);
+  next.builtOnTree = {};
+  for (const [k, h] of Object.entries(next.builtOn)) {
+    const t = dTrees[k] ?? (prev.builtOn[k] && sameSha(prev.builtOn[k], h) ? prev.builtOnTree[k] : undefined);
+    if (t) next.builtOnTree[k] = t;
+  }
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
   // #506 review R2/D1: a patch that drops builtOn and LEAVES a pass/approve verdict (kept, swapped pass↔approve, or set in the same patch) would make it read as "built after the upstream merged" (deliver skips the content check).
@@ -460,6 +494,9 @@ export interface TicketReality {
   /** Is `branchHead` (or its PR's merge) an ancestor of origin/<target>? */
   mergedIntoTarget?: boolean;
   pr?: { state: 'OPEN' | 'MERGED' | 'CLOSED'; headRefOid: string | null; baseRefName: string | null } | null;
+  /** #512 — git tree of `branchHead` / of `pr.headRefOid`; undefined = unreadable (UNKNOWN: the sha comparison stands). */
+  branchTree?: string | null;
+  prTree?: string | null;
   /** The reads that failed, e.g. `git ls-remote: exit 128`. Non-empty ⇒ nothing is concluded from the missing part. */
   error?: string;
 }
@@ -509,7 +546,8 @@ function realityMerged(r: TicketReality | undefined, status: TicketStatus, targe
 function ungatedMergeHead(t: TicketState, r: TicketReality | undefined, rm: boolean | undefined): string | null {
   if (rm !== true || (t.status !== 'gated' && t.status !== 'merged') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
   const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
-  return mergedHead && !sameSha(mergedHead, t.head) ? mergedHead : null;
+  const mergedTree = r?.pr?.state === 'MERGED' ? r.prTree : r?.branchTree;
+  return mergedHead && !sameContent(mergedHead, mergedTree, t.head, t.tree) ? mergedHead : null; // #512: the verdict's tree merged = covered
 }
 
 export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
@@ -546,14 +584,17 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
     }
-    if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated')) {
+    if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated') && t.tree && r.branchTree === t.tree) {
+      // #512: the branch moved to another sha with the SAME tree (rebase, author rewrite): the verdict stands, only the recorded head follows. Not a divergence.
+      writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead }, why: `head moved to ${r.branchHead.slice(0, 8)}, same tree: ${t.verdict} verdict kept` });
+    } else if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated')) {
       add({ ticket: id, kind: 'head-moved', detail: `branch head ${r.branchHead.slice(0, 8)} != recorded ${t.head.slice(0, 8)} — verdict ${t.verdict} is stale` });
       if (t.verdict !== 'none' || t.status === 'gated') {
         writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
       } else {
         writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead }, why: 'head moved' });
       }
-    } else if (r?.pr && t.head && r.pr.headRefOid && !sameSha(r.pr.headRefOid, t.head) && t.status !== 'merged' && r.pr.state === 'OPEN') {
+    } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
     }
     if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped' && !accepted) {
@@ -570,12 +611,12 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       if (t.status === 'merged' && open.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `merged while upstream ${open.join(', ')} is not merged` });
       if (t.status !== 'merged') {
         // #506: an open upstream is fine only on its verified candidate; the head read is the remote tip when there is one.
-        const bl = open.map((u) => ({ u, b: upstreamBlocker(state, t, u, reality[u]?.error ? null : reality[u]?.branchHead) })).filter((x) => x.b !== null);
+        const bl = open.map((u) => ({ u, b: upstreamBlocker(state, t, u, reality[u]?.error ? null : reality[u]?.branchHead, reality[u]?.branchTree) })).filter((x) => x.b !== null);
         const bad = bl.filter((x) => x.b!.kind === 'ineligible');
         const moved = bl.filter((x) => x.b!.kind === 'changed');
         if (bad.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `${t.status} while upstream ${bad.map((x) => x.u).join(', ')} is not merged and not an admissible candidate: ${bad.map((x) => x.b!.why).join('; ')}` });
         // an upstream that MERGED at a head other than the one recorded in builtOn: re-gate unless the trees match (only `deliver` can tell) — no write-back, the dependent may already be re-gated
-        const movedMerged = t.dependsOn.filter((d) => effMerged(d) && t.builtOn[d]).map((d) => ({ d, h: reality[d]?.pr?.state === 'MERGED' ? reality[d]!.pr!.headRefOid : state.tickets[d]?.head ?? null })).filter((x) => x.h && !sameSha(t.builtOn[x.d], x.h!));
+        const movedMerged = t.dependsOn.filter((d) => effMerged(d) && t.builtOn[d]).map((d) => ({ d, h: reality[d]?.pr?.state === 'MERGED' ? reality[d]!.pr!.headRefOid : state.tickets[d]?.head ?? null })).filter((x) => x.h && !sameContent(t.builtOn[x.d], t.builtOnTree[x.d], x.h!, reality[x.d]?.pr?.state === 'MERGED' ? reality[x.d]?.prTree : state.tickets[x.d]?.tree));
         if (movedMerged.length) add({ ticket: id, kind: 'upstream-changed', detail: `${movedMerged.map((x) => `built on ${x.d}@${t.builtOn[x.d].slice(0, 8)} but ${x.d} merged at ${x.h!.slice(0, 8)}`).join('; ')} — re-gate (unless the trees match; deliver decides), then \`state set ${id} --built-on …\`` });
         if (moved.length) {
           add({ ticket: id, kind: 'upstream-changed', detail: `${moved.map((x) => x.b!.why).join('; ')} — verdict ${t.verdict} is void: rebase onto the new head, \`state set ${id} --built-on …\`, re-gate` });

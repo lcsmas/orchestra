@@ -20,15 +20,17 @@ function deps(home: string, runner: Runner, extra: Partial<FanoutDeps> = {}): Fa
   return { env: { ORCHESTRA_HOME: home }, cwd: home, runner, now: () => NOW, readStdin: () => '', ...extra };
 }
 const noRunner: Runner = () => { throw new Error('git/gh must not be called'); };
+// #512: `state set --head` reads the head's tree (git, then gh); offline = unknown tree, the verdict stays sha-keyed.
+const offline: Runner = () => ({ code: 1, stdout: '', stderr: 'offline' });
 const set = (d: FanoutDeps, ...a: string[]) => runFanout(['state', 'set', '--run', 'r1', ...a], d);
 
 test('init → set → show, flags and --json both work; unknown flag / field refused', (t) => {
-  const d = deps(mkHome(t), noRunner);
+  const d = deps(mkHome(t), offline);
   assert.equal(runFanout(['state', 'init', '--run', 'r1', '--target', 'bench/x'], d).code, 0);
   assert.match(runFanout(['state', 'init', '--run', 'r1'], d).stderr, /already exists/);
   assert.equal(set(d, 'A', '--status', 'started', '--branch', 'a', '--pr', '7').code, 0);
   assert.equal(set(d, 'B', '--json', '{"dependsOn":["A"],"frozenInterface":"#471","status":"started"}').code, 0);
-  assert.equal(set(deps(d.env.ORCHESTRA_HOME!, noRunner, { readStdin: () => '{"head":"abc12345"}' }), 'A', '--json', '-').code, 0);
+  assert.equal(set(deps(d.env.ORCHESTRA_HOME!, offline, { readStdin: () => '{"head":"abc12345"}' }), 'A', '--json', '-').code, 0);
   const show = runFanout(['state', 'show', '--run', 'r1'], d).stdout;
   assert.match(show, /origin\/bench\/x/);
   assert.match(show, /A\s+started\s+none\s+a\s+#7\s+abc12345/);
@@ -118,7 +120,9 @@ test('resume: head moved after the verdict is reported; unreachable git is UNKNO
   git('commit', '--allow-empty', '-q', '-m', 'a');
   git('push', '-q', 'origin', 'feat-a');
   const old = git('rev-parse', 'HEAD');
-  git('commit', '--allow-empty', '-q', '-m', 'a2');
+  fs.writeFileSync(path.join(clone, 'changed.txt'), 'one byte of NEW content\n'); // #512: a head that moves with an identical tree keeps its verdict (tests/fanout-tree-verdict); a changed tree voids it
+  git('add', 'changed.txt');
+  git('commit', '-q', '-m', 'a2');
   git('push', '-q', 'origin', 'feat-a');
   const d = deps(home, hybrid(() => ({ code: 1, stdout: '' })), { cwd: clone });
   runFanout(['state', 'init', '--run', 'r1'], d);
@@ -278,7 +282,7 @@ test('#486 built CLI: the parent-run note reaches stderr on rc 0 AND rc 2; a bar
 });
 
 test('#506 --built-on: flag parses UP=sha[,UP2=sha]; early nominate needs it and is refused when stale; `-` clears; show prints it', (t) => {
-  const d = deps(mkHome(t), noRunner);
+  const d = deps(mkHome(t), offline);
   const HA = 'a'.repeat(40);
   assert.equal(runFanout(['state', 'init', '--run', 'r1'], d).code, 0);
   assert.equal(set(d, 'A', '--status', 'nominated', '--branch', 'a', '--head', HA).code, 0);

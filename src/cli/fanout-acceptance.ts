@@ -253,10 +253,11 @@ export const realCheckoutIo: CheckoutIo = {
 
 /** The acceptance clause of `fanout gate`: `--cwd` required, its HEAD = `--head`, tracked files clean, every frozen file byte-identical (and a regular
  *  file at HEAD), then the frozen command runs there. The command only runs once the bytes are proven. */
-export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; head: string; log?: (s: string) => void }, io: CheckoutIo = realCheckoutIo): GateAcceptance {
+export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; head: string; ticket?: string; log?: (s: string) => void }, io: CheckoutIo = realCheckoutIo): GateAcceptance {
   const cwd = o.cwd ? path.resolve(o.cwd) : null;
   let root: string | null = null;
   let cwdHead: string | null = null;
+  let cwdTree: string | null = null;
   let dirty: string[] = [];
   let files: FileStatus[] = [];
   if (cwd) {
@@ -265,6 +266,8 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
     try { root = top.code === 0 && fs.realpathSync(top.stdout.trim()) === fs.realpathSync(cwd) ? cwd : null; } catch { root = null; }
     cwdHead = root && hd.code === 0 && /^[0-9a-f]{40}$/.test(hd.stdout.trim()) ? hd.stdout.trim() : null;
     if (root && cwdHead) {
+      const tr = io.git(['rev-parse', 'HEAD^{tree}'], root); // #512: the receipt names the CONTENT it was run on
+      cwdTree = tr.code === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(tr.stdout.trim()) ? tr.stdout.trim() : null;
       const st = io.git(['status', '--porcelain', '--untracked-files=no'], root);
       dirty = st.code === 0 ? st.stdout.split('\n').map((l) => l.slice(3).trim()).filter(Boolean) : ['(git status failed)'];
       const paths = Object.keys(acc.files);
@@ -280,7 +283,7 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
     }
   }
   return decideGateAcceptance(acc, {
-    cwdGiven: !!cwd, cwdHead, head: o.head, dirty, files,
+    cwdGiven: !!cwd, cwdHead, head: o.head, dirty, files, cwdTree, ...(o.ticket ? { ticket: o.ticket } : {}),
     run: () => { const r = io.run(parseRunArgv(acc.run, Object.keys(acc.files)), root!); if (r.exit !== 0 && r.tail) o.log?.(`frozen tests (${acc.run}) exit ${r.exit}:\n${r.tail}`); return { cmd: acc.run, exit: r.exit }; },
   });
 }
