@@ -235,7 +235,7 @@ function scenarios(cliPath) {
     arm('F2 must-FAIL an unsafe path (..): exit 1, nothing written', bad.code === 1 && !A.readState().tickets['T-3'], J(bad));
     const npm = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', 'npm run accept', '--from', 'origin/writer-510']);
     arm('F4 must-FAIL freeze with a --run-cmd naming none of the frozen files (npm run indirection): exit 1, nothing written', npm.code === 1 && /not a direct runner call/.test(npm.stderr) && !A.readState().tickets['T-3'], J(npm));
-    const spell = ["sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak', 'node --require=./evil.js t/spec.test.js', 'node --test t/spec.test.js; true'];
+    const spell = ["sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak', 'node --require=./evil.js t/spec.test.js', 'node --test t/spec.test.js; true', 'node --env-file-if-exists=.env t/spec.test.js', 'node --test --test-reporter=./rep.mjs t/spec.test.js', 'bun test --preload=./pre.ts t/spec.test.js', 'node --test-name-pattern t/spec.test.js', 'node --check t/spec.test.js', 'node --test'];
     const leaked = spell.filter((c) => { const x = A.cli(['acceptance', 'freeze', 'T-4', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', c, '--from', 'origin/writer-510']); return x.code !== 1 || !/not a direct runner call/.test(x.stderr); });
     arm('F5 must-FAIL every indirection spelling (sh -c, # path, make ACC=, ENV=path npm run, true path, substring of a longer path, --require, `;`) is refused', leaked.length === 0 && !A.readState().tickets['T-4'], `accepted/odd: ${leaked.join(' | ')}`);
     const sentence = ['--spec-sentence', SENTENCE];
@@ -297,6 +297,8 @@ function report(title, res) {
   return bad;
 }
 
+// NOT mutated here (equivalent in verdict): the metacharacter refusal (a metacharacter always yields a non-frozen token / non-allowlisted flag, so the argument rules refuse it
+// first) and `no shell` (without metacharacters a shell cannot change the argv; the argv-not-string contract is pinned by the unit arm 'executed as an ARGV' + a hand mutation).
 // Each mutant breaks ONE clause in the BUILT bundle; the anchor must occur exactly once. `extra` = a second edit of the same mutant.
 const mutants = [
   { name: 'gate: hashes nothing (every frozen file reads "same")', find: 'sha256Hex(bytes) === acc.files[p] && atHead ? "same" : "changed"', put: () => '"same"' },
@@ -313,12 +315,10 @@ const mutants = [
   { name: 'deliver: receipt.ok ignored', find: 'if (!receipt.ok)', put: () => 'if (false)' },
   { name: 'deliver: the gh byte re-read ignored', find: 'const bad = files.filter((f) => f.status !== "same");', put: () => 'const bad = [];' },
   { name: 'deliver: --acceptance for a ticket without frozen tests is waved through', find: 'if (opts.acceptance !== void 0 && !got.acceptance) {', put: () => 'if (false) {' },
-  { name: 'run: any first word allowed (true / npm run / sh -c …)', find: 'if (!prefix) why(', put: () => 'if (false) why(', extra: [{ find: 'for (const t of inner.slice(prefix.length)) {', put: () => 'for (const t of inner.slice(prefix ? prefix.length : 1)) {' }] },
+  { name: 'run: any first word allowed (true / npm run / sh -c …)', find: 'if (!runner) why(', put: () => 'if (false) why(', extra: [{ find: 'for (const t of inner.slice(runner.prefix.length)) {', put: () => 'for (const t of inner.slice(runner ? runner.prefix.length : 1)) {' }, { find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' }] },
   { name: 'run: any non-flag argument allowed (a script the candidate owns)', find: 'if (!paths.includes(t)) why(', put: () => 'if (false) why(' },
-  { name: 'run: shell metacharacters / comments allowed', find: 'if (/["\'\\\\$`;&|<>(){}*?!#~[\\]]/.test(run)) why(', put: () => 'if (false) why(' },
-  { name: 'run: code-loading flags (--require …) allowed', find: 'if (CODE_LOADING_FLAG.test(t)) why(', put: () => 'if (false) why(' },
+  { name: 'run: any flag allowed (--require, --env-file…, --test-reporter=./x, --check, --test-name-pattern)', find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' },
   { name: 'run: the command need not name a frozen file', find: 'if (named === 0) why(', put: () => 'if (false) why(' },
-  { name: 'gate: the command is executed through `sh -c`', find: 'spawnSync(argv[0], argv.slice(1), {', put: () => 'spawnSync("sh", ["-c", argv.join(" ")], {' },
   { name: 'hash: the command is not part of the hash', find: '.join("") + `run\\0${run}', put: () => '.join("") + `${""}' },
   { name: 'amend: decision reuse keyed on the raw URL (another spelling of the same comment passes)', find: 'const key = (u) => (decisionApiPath(u) ?? u).toLowerCase();', put: () => 'const key = (u) => u;' },
   { name: 'gate: no fallback to the inherited run for a verifier', find: '...opts.run ? [] : inherited ? [inherited] : []', put: () => '...[]' },
