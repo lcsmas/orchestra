@@ -8,7 +8,8 @@ import { readState, resolveFanoutRun, stackView, stateFile, type StackView } fro
 import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/fanout-deliver.ts';
 import { readPrChecks, readTree, realDeps, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState, checkAcceptanceInCheckout, realCheckoutIo, type CheckoutIo } from './fanout-acceptance.ts';
-import type { Acceptance } from '../shared/fanout-state.ts';
+import type { Acceptance, FollowUpReason } from '../shared/fanout-state.ts';
+import { askFollowUp, followUpFromState, type FollowUpReader } from './fanout-followup.ts';
 import type { GateAcceptance } from '../shared/fanout-acceptance.ts';
 
 export interface GateOpts {
@@ -29,7 +30,7 @@ export interface GateOpts {
 
 export interface GateResult extends Partial<GateAnswer> {
   verdict: 'gate' | 'unchecked' | 'refused';
-  reason?: 'gh-failed' | 'bad-args' | 'bad-state' | GateAcceptance['reason'];
+  reason?: 'gh-failed' | 'bad-args' | 'bad-state' | FollowUpReason | GateAcceptance['reason'];
   /** #510 — present when `--ticket` names a ticket with frozen acceptance tests. */
   acceptance?: GateAcceptance | { consulted: false };
   detail?: string;
@@ -103,6 +104,8 @@ export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & {
   /** #510 — the ticket's frozen acceptance tests. `known:false` = no state / no such ticket (only without an explicit --run; with one the reader throws ⇒ exit 1 `bad-state`). Absent = not consulted. */
   acceptance?: (o: { ticket: string; run?: string }) => { known: boolean; acceptance: Acceptance | null };
   checkout?: CheckoutIo;
+  /** #514 — the follow-up rule for `--ticket` (a candidate on a merged ticket must name a BLOCKING|MAJOR finding it fixes). Absent = not consulted. */
+  followUp?: FollowUpReader;
 };
 
 export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: number; result: GateResult }> {
@@ -130,6 +133,14 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
     if (frozen) {
       accept = checkAcceptanceInCheckout(frozen, { cwd: opts.cwd, head: opts.head, ticket: opts.ticket, log: deps.log }, deps.checkout ?? realCheckoutIo);
       if (!accept.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: accept.reason, detail: accept.detail, acceptance: accept, ...base } };
+    }
+    // #514 — a follow-up candidate on a merged ticket without a BLOCKING|MAJOR finding it fixes is refused (exit 2) after the acceptance clause (its reader's strictness is pinned by A's rig first), before any CI read.
+    if (opts.ticket !== undefined && deps.followUp) {
+      let fu;
+      try { fu = await askFollowUp(deps.followUp, { ticket: opts.ticket, run: opts.run, head: opts.head, branch: opts.branch }, (sha) => readTree(deps.gh, opts.repo, sha)); } catch (e) {
+        return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s follow-up rule: ${(e as Error).message}`, ...base } };
+      }
+      if (fu.refusal) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: fu.refusal.reason, detail: fu.refusal.detail, ...base } };
     }
     const workflows = await targetWorkflows(opts, deps);
     const open = JSON.parse(await ghOk(['pr', 'list', '--head', opts.branch, '--base', opts.into, '--state', 'open', '--json', 'number,headRefOid', '--limit', '5'])) as { number: number; headRefOid: string }[];
@@ -176,11 +187,12 @@ gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the 
 ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. NOT detected: a PR that changes what the test command runs (package.json scripts, runner config) — pin the check and review that diff. Without PR CI (or unreadable workflows): fullSuite:"verifier".
 --ticket <id> [--run <id>] adds \`stack\` (#506, from the fanout state): order none | wait-upstream (stacked on a verified upstream candidate: gate it now, \`deliver\` merges only after the upstream) | re-gate (the upstream moved since this ticket was built on it: its verdict is void) | blocked (an upstream is no admissible candidate), plus one row per upstream.
 Acceptance (#510): when the ticket has frozen acceptance tests (\`fanout acceptance freeze\`), \`--cwd <the candidate checkout>\` is REQUIRED: its HEAD must be --head and its tracked files clean, every frozen file is hashed there, then the frozen command runs there. Output gains \`acceptance: {ok, hash, files:[{path,status}], ran, receipt:{head,hash,ok}}\` — save \`receipt\` for \`deliver --acceptance\`. Any failure ⇒ exit 2, verdict "refused", reason frozen-test-changed | frozen-test-failed | acceptance-unproven | acceptance-stale-checkout (before any CI read). The ticket is read from the fanout state like \`stack\` (pass --run when it is not your own run: with --run an absent state/ticket or an unreadable state ⇒ exit 1 bad-state; without it an absent state/ticket prints acceptance:{consulted:false} — NOTHING checked — and logs it). \`deliver\` is the authority and refuses a ticket with frozen tests that has no receipt.
+Follow-up (#514): a --ticket that is a follow-up candidate on an already-merged ticket (\`state set --follow-up-of <merged> --fixes <ids>\`, or a head other than the one the ticket merged at, or the branch/PR of a ticket that merged) is refused (exit 2, verdict "refused", reason followup-undeclared | followup-no-finding | followup-unknown-finding | followup-minor-only | followup-base-not-merged) unless it fixes >= 1 BLOCKING|MAJOR finding recorded on the merged ticket (\`state set --finding <id>=<severity>\`); MINOR findings get no action. A read-only re-gate of a merged tree omits --ticket.
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted — unless (#512) it has the SAME git tree (a rebase / author rewrite): then headMatches:true, sameTree:true (a verdict is keyed on content; unreadable trees ⇒ compared by sha). The receipt also names \`tree\` (the checkout's HEAD^{tree}) and \`ticket\`.
 Prints ONE JSON line. Exit 0 = answered, 2 = refused (acceptance), 1 = could not check (usage, gh failed, unreadable state). \`deliver\` re-checks CI at merge.`;
 
 /** Production deps: real gh + the state-file stack reader (a test drives `runGate` through THIS, so an unwired reader cannot pass). */
-export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o), acceptance: (o) => acceptanceFromState({ ...o, lenient: !o.run }) });
+export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o), acceptance: (o) => acceptanceFromState({ ...o, lenient: !o.run }), followUp: (o) => followUpFromState({ ...o, lenient: o.run === undefined }) });
 
 export async function runGate(args: string[], deps: GateDeps = realGateDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);

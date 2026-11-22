@@ -54,7 +54,7 @@ export function freezeInto(
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
   parseRunArgv(f.run, Object.keys(f.files));
   const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run), run: f.run, source: f.source, frozenAt: f.now, amendments: [] };
-  const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, updatedAt: f.now };
+  const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], updatedAt: f.now };
   return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, updatedAt: f.now } }, updatedAt: f.now };
 }
 

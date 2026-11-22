@@ -1,6 +1,6 @@
 --- v1/verified-fanout/SKILL.md
 +++ v2/src/shared/verified-fanout-skill.ts (rendered)
-@@ -1,649 +1,312 @@
+@@ -1,649 +1,311 @@
  ---
  name: verified-fanout
  description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
@@ -639,19 +639,11 @@
 -**The merge rule — apply it the moment a review comment lands, before any
 -order to the implementer.** Count the round's BLOCKING and MAJOR first. This
 -sentence rides verbatim in the ledger's gate checklist:
-+- Implementer reports done → send the verifier the branch **ref**; FAIL → relay its exact output to the implementer.
-+- **At nomination, parallel with the gate: `orchestra fanout open --branch <b> --into <target> --ticket <id>`** (idempotent, never merges): CI runs while the verifier gates; `deliver` reuses the PR, a later push ⇒ `head-moved`.
-+- PASS → apply the **merge rule** below, through `orchestra fanout deliver` (one PR per
-+  ticket: it opens or reuses `<branch> → <target>` and merges it). Record the outcome with
-+  `orchestra fanout state set <ticket> --pr <n> --head <sha> --status merged` and the PR url
-+  beside the implementer's workspace id in the ledger roster.
-+
-+**The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
- 
- *A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a
- MINOR that touches correctness or a ticket promise goes to the candidate's ONE
- follow-up branch, every other finding is `noted`.*
- 
+-
+-*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a
+-MINOR that touches correctness or a ticket promise goes to the candidate's ONE
+-follow-up branch, every other finding is `noted`.*
+-
 -- **Zero BLOCKING, zero MAJOR → merge on the current gate.** The candidate
 -  stays as gated; the findings are dispositioned beside it. Upgrading a MINOR
 -  to MAJOR takes naming the ticket promise it breaks.
@@ -692,6 +684,18 @@
 -**Done when:** every branch carries a PASS or FAIL verdict recorded in the
 -ledger, every shared-seam merge has a re-gate of the merged tip beside it, and
 -every flow spanning two branches has one whole-flow drive on the merged tree.
++- Implementer reports done → send the verifier the branch **ref**; FAIL → relay its exact output to the implementer.
++- **At nomination, parallel with the gate: `orchestra fanout open --branch <b> --into <target> --ticket <id>`** (idempotent, never merges): CI runs while the verifier gates; `deliver` reuses the PR, a later push ⇒ `head-moved`.
++- PASS → apply the **merge rule** below, through `orchestra fanout deliver` (one PR per
++  ticket: it opens or reuses `<branch> → <target>` and merges it). Record the outcome with
++  `orchestra fanout state set <ticket> --pr <n> --head <sha> --status merged` and the PR url
++  beside the implementer's workspace id in the ledger roster.
++
++**The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
++
++*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every
++MINOR is `noted` — no follow-up PR.*
++
 +The count, the head and the CI are code: write the round's counts to a verdict file
 +`{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}` and run
 +`orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
@@ -707,10 +711,10 @@
 +
 +- **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
 +  (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
-+- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.
++- **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: `state set <ticket> --finding <id>=BLOCKING|MAJOR`, then `state set <new> --follow-up-of <merged> --fixes <id>`; `state`/`gate`/`deliver` refuse a MINOR-only or finding-less one.
 +
 +MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: `fixed` (re-gated), `refuted` (with the
-+measurement), `accepted-gap` (rides in the PR body's NOT VERIFIED), `follow-up` or `noted` (MINOR/NIT only).
++measurement), `accepted-gap` (rides in the PR body's NOT VERIFIED), `follow-up` (BLOCKING/MAJOR) or `noted` (MINOR/NIT).
 +
 +**Serialize merges that touch a shared seam.** Same-file branches merge one at a time in dependency order,
 +each remaining agent rebasing onto the new tip. Re-verify each **merged tip**, not just each branch:

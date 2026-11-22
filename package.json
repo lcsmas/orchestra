@@ -53,6 +53,8 @@
     "test:session-budget": "bash scripts/e2e-session-budget.sh",
     "test:fanout-open": "node scripts/e2e-fanout-open.mjs",
     "test:fanout-open-mutants": "node scripts/e2e-fanout-open.mjs --mutants",
+    "test:fanout-followup": "node scripts/e2e-fanout-followup.mjs",
+    "test:fanout-followup-mutants": "node scripts/e2e-fanout-followup.mjs --mutants",
     "test:fanout-acceptance": "node scripts/e2e-fanout-acceptance-mutants.mjs",
     "test:fanout-acceptance-mutants": "node scripts/e2e-fanout-acceptance-mutants.mjs --mutants",
     "test:fanout-tree-verdict": "node scripts/e2e-fanout-tree-verdict.mjs",

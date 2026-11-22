@@ -233,9 +233,8 @@ review, follow-ups included. The coordinator NEVER reviews (it wrote the specs);
 
 **The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
 
-*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a
-MINOR that touches correctness or a ticket promise goes to the candidate's ONE
-follow-up branch, every other finding is ¤noted¤.*
+*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every
+MINOR is ¤noted¤ — no follow-up PR.*
 
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
@@ -252,10 +251,10 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never
 
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
   (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
-- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.
+- **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
 
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
-measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ or ¤noted¤ (MINOR/NIT only).
+measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ (BLOCKING/MAJOR) or ¤noted¤ (MINOR/NIT).
 
 **Serialize merges that touch a shared seam.** Same-file branches merge one at a time in dependency order,
 each remaining agent rebasing onto the new tip. Re-verify each **merged tip**, not just each branch:
