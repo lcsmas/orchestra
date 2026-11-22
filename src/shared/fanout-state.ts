@@ -154,8 +154,8 @@ export function acceptanceHash(files: Record<string, string>, run: string): stri
 
 /** One allowlisted runner: its argv prefix (executed WITHOUT a shell) and the INERT flags it may carry (whole-token regexes; anything else is refused —
  *  a flag can load a candidate-owned module/config (`--require`, `--env-file`, `--experimental-config-file`, `--test-reporter=./x`, `--preload`, `-pPLUGIN`…) or make
- *  nothing run (`--check`, `--test-name-pattern <frozen path>`, `--test-shard=2/2`), so flags are an allowlist, not a deny list). A package launcher (`npx`, `pnpm exec`,
- *  `yarn exec`) may only precede one of them. */
+ *  nothing run (`--check`, `--test-name-pattern <frozen path>`, `--test-shard=2/2`), so flags are an allowlist, not a deny list). NO package launcher (`npx`, `pnpm exec`,
+ *  `yarn exec`: they resolve the runner in the candidate's tree); `python -I -m` only (-I: the checkout is not put first on sys.path). */
 const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
   { prefix: ['node'], flags: [/^--test$/, /^--test-reporter=(spec|tap|dot|junit|lcov)$/, /^--test-timeout=\d{1,7}$/, /^--test-concurrency=\d{1,3}$/, /^--test-force-exit$/, /^--no-warnings$/, /^--trace-warnings$/] },
   { prefix: ['tsx'], flags: [] },
@@ -164,10 +164,10 @@ const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
   { prefix: ['jest'], flags: [/^--ci$/, /^--runInBand$/, /^--bail$/, /^--silent$/] },
   { prefix: ['mocha'], flags: [/^--reporter=(spec|dot|tap|min|list|json)$/, /^--bail$/, /^--timeout=\d{1,7}$/, /^--exit$/] },
   { prefix: ['pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
-  { prefix: ['python', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
-  { prefix: ['python3', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
-  { prefix: ['python', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
-  { prefix: ['python3', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
+  { prefix: ['python', '-I', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
+  { prefix: ['python3', '-I', '-m', 'pytest'], flags: [/^-q$/, /^-x$/, /^-v{1,2}$/, /^-s$/, /^--tb=(auto|long|short|line|native|no)$/] },
+  { prefix: ['python', '-I', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
+  { prefix: ['python3', '-I', '-m', 'unittest'], flags: [/^-v$/, /^-f$/] },
   { prefix: ['deno', 'test'], flags: [/^-q$/, /^--quiet$/, /^-A$/, /^--no-check$/] },
   { prefix: ['bun', 'test'], flags: [/^--bail$/, /^--timeout=\d{1,7}$/] },
   { prefix: ['ruby'], flags: [] },
@@ -177,14 +177,14 @@ const RUNNERS: Array<{ prefix: string[]; flags: RegExp[] }> = [
 /**
  * The frozen command as an argv, or throws. It must be a DIRECT runner call (no shell, no indirection through `npm run`/`make`/`sh`/`env`): an allowlisted runner,
  * no shell metacharacter, only that runner's INERT flags (RUNNERS), every non-flag argument EXACTLY a frozen path, at least one.
- * Residue NOT checked: a runner config file (vitest.config.*, jest.config.*, .mocharc, deno.json…) or a non-frozen helper the test imports is still the candidate's.
+ * Residue NOT checked: argv[0] and anything on its search path (PATH, the checkout's module/import path, a runner config file, a helper the test imports) are resolved in the candidate's tree.
  */
 export function parseRunArgv(run: string, paths: string[]): string[] {
   const why = (m: string): never => { throw new FanoutStateError(`the run command ${JSON.stringify(run)} is not a direct runner call on the frozen files: ${m} — e.g. \`node --test ${paths[0] ?? '<frozen file>'}\``); };
   if (/[^\x20-\x7e]/.test(run)) why('printable ASCII on one line only');
   if (/["'\\$`;&|<>(){}*?!#~[\]]/.test(run)) why('no shell metacharacters, quotes, comments or globs (it is executed without a shell)');
   const tokens = run.trim().split(/ +/).filter(Boolean);
-  const inner = tokens[0] === 'npx' ? tokens.slice(1) : (tokens[0] === 'pnpm' || tokens[0] === 'yarn') && tokens[1] === 'exec' ? tokens.slice(2) : tokens;
+  const inner = tokens; // no launcher (npx / pnpm exec / yarn exec): they resolve the runner from the candidate's node_modules/.bin and .npmrc
   const runner = [...RUNNERS].sort((a, b) => b.prefix.length - a.prefix.length).find((r) => r.prefix.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
   if (!runner) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNERS.map((r) => r.prefix[0]))].join(', ')}, optionally behind npx / pnpm exec / yarn exec) — not npm, make, sh, env, a script`);
   let named = 0;

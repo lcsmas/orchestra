@@ -64,7 +64,7 @@ function rig(t: { after: (fn: () => void) => void }, o: { freeze?: boolean } = {
   const ghFake = (comments: Record<string, string>): Runner => (cmd, args, cwd) => {
     if (cmd === 'git') return defaultRunner(cmd, args, cwd);
     const m = /^repos\/o\/r\/issues\/comments\/(\d+)$/i.exec(args[1] ?? '');
-    if (args[0] === 'api' && m && comments[m[1]] !== undefined) return { code: 0, stdout: JSON.stringify({ body: comments[m[1]] }), stderr: '' };
+    if (args[0] === 'api' && m && comments[String(Number(m[1]))] !== undefined) return { code: 0, stdout: JSON.stringify({ body: comments[String(Number(m[1]))] }), stderr: '' };
     return { code: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
   };
   const deps = (comments: Record<string, string> = { 900: `Decision: ${SENTENCE}.` }): FanoutDeps => ({ env, cwd: writer, runner: ghFake(comments), now: () => NOW, readStdin: () => '' });
@@ -640,7 +640,7 @@ const SPELLINGS_REFUSED = [
   'pnpm test test/acc.test.js', 'pnpm exec bash test/acc.test.js', 'node --test', 'node --test ../acc.test.js', 'vitest --config=./vitest.evil.ts test/acc.test.js', 'jest --setupFiles=./x.js test/acc.test.js',
   'node --test test/acc.test.js\nnode x', 'node\t--test test/acc.test.js', 'node --test test/acc.test.js > /dev/null', 'node --test test/acc.test.js &', 'FOO=1 node --test test/acc.test.js',
 ];
-const SPELLINGS_OK = ['node --test test/acc.test.js', 'node --test --test-reporter=tap test/acc.test.js', 'npx vitest run test/acc.test.js', 'pnpm exec vitest run --reporter=dot test/acc.test.js', 'python3 -m pytest -q test/acc.test.js'.replace('test/acc.test.js', 'test/acc.test.js'), 'tsx test/acc.test.js'];
+const SPELLINGS_OK = ['node --test test/acc.test.js', 'node --test --test-reporter=tap test/acc.test.js', 'vitest run --reporter=dot test/acc.test.js', 'python3 -I -m pytest -q test/acc.test.js', 'python -I -m unittest -v test/acc.test.js', 'tsx test/acc.test.js'];
 
 test('run-cmd must-FAIL: every reviewer spelling of an indirection (and more) is refused as a non-direct runner call; direct calls pass', () => {
   for (const c of SPELLINGS_REFUSED) assert.throws(() => parseRunArgv(c, FILES), /not a direct runner call/, c);
@@ -685,7 +685,7 @@ test('amend must-FAIL: one decision comment authorises ONE amendment however its
   const go = (url: string, text: string) => { fs.writeFileSync(path.join(r.cand, 't/spec.test.js'), `${SPEC}// ${text}\n`); r.commitCand(text); return runAcceptance(['amend', 'T510', '--decision', url, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', r.cand], r.deps()); };
   assert.equal(go('https://github.com/o/r/issues/511#issuecomment-900', 'one').code, 0);
   const before = JSON.stringify(r.state());
-  for (const [i, u] of ['https://github.com/o/r/pull/9#issuecomment-900', 'https://github.com/O/R/issues/2#issuecomment-900'].entries()) {
+  for (const [i, u] of ['https://github.com/o/r/pull/9#issuecomment-900', 'https://github.com/O/R/issues/2#issuecomment-900', 'https://github.com/o/r/issues/1#issuecomment-0900', 'https://github.com/o/r/issues/1#issuecomment-00900'].entries()) {
     const x = go(u, `again ${i}`);
     assert.equal(x.code, 2, u);
     assert.match(x.stderr, /already authorised/);

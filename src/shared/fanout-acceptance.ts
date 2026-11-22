@@ -69,8 +69,8 @@ export function amendInto(
   const run = a.run ?? acc.run;
   const hashAfter = acceptanceHash(a.files, run);
   if (hashAfter === acc.hash) throw new FanoutStateError(`${id}: the amendment changes nothing (same files, same command: hash ${acc.hash.slice(0, 12)})`);
-  // one decision = one comment, however its URL is spelled (issues/pull, case, number): keyed on the lower-cased API path (repo + comment id)
-  const key = (u: string): string => (decisionApiPath(u) ?? u).toLowerCase();
+  // one decision = one comment, however its URL is spelled (issues/pull, case, number): keyed on lower-cased repo + NUMERIC comment id (`-0900` ≡ `-900`)
+  const key = (u: string): string => { const m = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(decisionApiPath(u) ?? ''); return m ? `${m[1].toLowerCase()}#${Number(m[2])}` : u.toLowerCase(); };
   if (acc.amendments.some((m) => key(m.decision) === key(a.decision))) throw new FanoutStateError(`${id}: this decision already authorised an amendment (${a.decision}) — one decision, one amendment: record a new ledger decision`);
   parseRunArgv(run, Object.keys(a.files));
   const next: Acceptance = {
