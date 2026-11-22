@@ -5,6 +5,7 @@ import { DELIVER_HELP } from './fanout-deliver.ts';
 import { GATE_HELP } from './fanout-gate.ts';
 import { OPEN_HELP } from './fanout-open.ts';
 import { FANOUT_USAGE } from './fanout-state.ts';
+import { ACCEPTANCE_USAGE } from './fanout-acceptance.ts';
 
 export interface CommandHelp {
   name: string;
@@ -508,7 +509,7 @@ Exit codes: 0 = landed, 2 = unmerged commits remain,
     name: 'fanout',
     group: 'Fleet bus',
     summary: "A fan-out vague's state file + resume (state, resume) and one PR per ticket opened at nomination (open), the verifier's derived CI checklist (gate) and merged at the verified head (deliver)",
-    detail: `${FANOUT_USAGE}\n\n${OPEN_HELP}\n\n${GATE_HELP}\n\n${DELIVER_HELP}`,
+    detail: `${FANOUT_USAGE}\n\n${ACCEPTANCE_USAGE}\n\n${OPEN_HELP}\n\n${GATE_HELP}\n\n${DELIVER_HELP}`,
   },
 
   // ── Accounts ──────────────────────────────────────────────────────────

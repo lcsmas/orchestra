@@ -101,6 +101,7 @@ import {
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout } from './fanout-state.ts';
+import { runAcceptance } from './fanout-acceptance.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2461,8 +2462,10 @@ async function main(argv: string[]): Promise<void> {
         if (d.exit !== 0) exitWith(d.exit);
         return;
       }
+      // #510 — frozen acceptance tests (src/cli/fanout-acceptance.ts): `fanout acceptance freeze|amend|show`; same exits (0 ok · 2 refused · 1 usage/could-not-check).
       // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
-      const r = runFanout(args, { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') });
+      const fanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps);
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());

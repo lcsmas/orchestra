@@ -41,6 +41,7 @@ export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--ta
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
        orchestra fanout state show [--run <id>] [--json]
+       orchestra fanout acceptance freeze|amend|show <ticket> …   (frozen acceptance tests, #510 — orchestra fanout acceptance --help)
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
 
 The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one writer, atomic rewrite, unknown field refused).
@@ -54,10 +55,10 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            squash-landed): the only override of a reality that contradicts the state.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
-interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
+export interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
 
 /** Strict flag parser: an unknown flag is refused (never swallowed as a value or positional). */
-function parseArgs(args: string[], valueFlags: string[], boolFlags: string[]): Parsed {
+export function parseArgs(args: string[], valueFlags: string[], boolFlags: string[]): Parsed {
   const out: Parsed = { pos: [], vals: {}, bools: new Set() };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -84,10 +85,10 @@ function builtOnArg(v: string): Record<string, string> {
   return out;
 }
 
-function homeOf(env: NodeJS.ProcessEnv): string {
+export function homeOf(env: NodeJS.ProcessEnv): string {
   return env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
 }
-function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use' | 'write'): { run: string; note: string } {
+export function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use' | 'write'): { run: string; note: string } {
   const { run, inherited } = resolveFanoutRun(p.vals['--run'], deps.env);
   if (!run) throw new FanoutStateError('no run: pass --run <id> (not inside an Orchestra workspace, so no own run to default to)');
   // #486 — `init` is ALWAYS the caller's own run. A scribe/verifier/worker (no run of its own) reads/updates the coordinator's state: set/show/resume
@@ -102,7 +103,7 @@ function runOf(p: Parsed, deps: FanoutDeps, mode: 'init' | 'use' | 'write'): { r
   }
   return { run, note: '' };
 }
-function loadOrFail(file: string): FanoutState {
+export function loadOrFail(file: string): FanoutState {
   const s = readState(file);
   if (!s) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
   return s;
