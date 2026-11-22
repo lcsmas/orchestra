@@ -8,11 +8,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { defaultRunner, runFanout, type FanoutDeps, type Runner } from './fanout-state.ts';
-import { ACCEPTANCE_USAGE, runAcceptance } from './fanout-acceptance.ts';
+import { ACCEPTANCE_USAGE, checkAcceptanceInCheckout, runAcceptance } from './fanout-acceptance.ts';
 import { deliver, realDeps, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
 import { gatePr, parseGateArgs, realGateDeps, type GateOpts } from './fanout-gate.ts';
 import { decisionNamesSentence } from '../shared/fanout-acceptance.ts';
-import { acceptanceHash, applyTicketPatch, newState, parseState, readState, sha256Hex, stateFile, writeStateAtomic } from '../shared/fanout-state.ts';
+import { acceptanceHash, applyTicketPatch, parseRunArgv, newState, parseState, readState, sha256Hex, stateFile, writeStateAtomic } from '../shared/fanout-state.ts';
 
 const NOW = '2026-11-22T10:00:00.000Z';
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
@@ -59,16 +59,16 @@ function rig(t: { after: (fn: () => void) => void }, o: { freeze?: boolean } = {
   fs.writeFileSync(path.join(cand, 'src/impl.js'), 'exports.f = () => 1;\n');
   g('add', '.'); g('commit', '-q', '-m', 'impl: tests copied unchanged + code');
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
-  const marker = path.join(root, 'ran.marker');
+  const marker = path.join(root, 'test-ran.marker'); // written by the frozen test body itself
   writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW }), 'T510', { branch: 'impl-510' }, NOW));
   const ghFake = (comments: Record<string, string>): Runner => (cmd, args, cwd) => {
     if (cmd === 'git') return defaultRunner(cmd, args, cwd);
-    const m = /^repos\/o\/r\/issues\/comments\/(\d+)$/.exec(args[1] ?? '');
+    const m = /^repos\/o\/r\/issues\/comments\/(\d+)$/i.exec(args[1] ?? '');
     if (args[0] === 'api' && m && comments[m[1]] !== undefined) return { code: 0, stdout: JSON.stringify({ body: comments[m[1]] }), stderr: '' };
     return { code: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
   };
   const deps = (comments: Record<string, string> = { 900: `Decision: ${SENTENCE}.` }): FanoutDeps => ({ env, cwd: writer, runner: ghFake(comments), now: () => NOW, readStdin: () => '' });
-  const cmd = `touch ${marker}; node --test t/spec.test.js`;
+  const cmd = 'node --test t/spec.test.js';
   const freeze = (extra: string[] = []) => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', cmd, '--from', 'writer-510', ...extra], deps());
   if (o.freeze !== false) assert.equal(freeze().code, 0);
   const rg: Rig = {
@@ -400,8 +400,8 @@ test('freeze must-PASS: records {files→sha256, hash, run, source, frozenAt, am
   const r = rig(t);
   const a = r.state()!.tickets.T510.acceptance!;
   assert.deepEqual(a.files, { 't/spec.test.js': sha256Hex(SPEC) });
-  assert.equal(a.hash, sha256Hex(`t/spec.test.js\0${sha256Hex(SPEC)}\n`));
-  assert.equal(a.hash, acceptanceHash(a.files));
+  assert.equal(a.hash, sha256Hex(`t/spec.test.js\0${sha256Hex(SPEC)}\nrun\0${a.run}\n`));
+  assert.equal(a.hash, acceptanceHash(a.files, a.run));
   assert.equal(a.source.branch, 'writer-510');
   assert.equal(a.source.head, r.w('rev-parse', 'writer-510'));
   assert.equal(a.frozenAt, NOW);
@@ -468,7 +468,7 @@ test('amend must-PASS: a decision quoting the sentence (whitespace-normalised) �
   assert.equal(res.code, 0, res.stderr);
   const a = r.state()!.tickets.T510.acceptance!;
   assert.notEqual(a.hash, old.hash);
-  assert.equal(a.hash, acceptanceHash(a.files));
+  assert.equal(a.hash, acceptanceHash(a.files, a.run));
   assert.equal(a.amendments.length, 1);
   assert.deepEqual({ ...a.amendments[0], at: 'x' }, { at: 'x', decision: DECISION, specSentence: SENTENCE, bodySha256: sha256Hex(`Ruling, per the spec:\n  the   carrier argument\nis optional in the spec.\n`), hashBefore: old.hash, hashAfter: a.hash });
   assert.equal(a.source.head, r.g('rev-parse', 'impl-510'));
@@ -503,7 +503,7 @@ test('show: read-only; human + --json; a ticket without acceptance says so; unkn
 test('state set must-FAIL: --json cannot write (or clear) acceptance; a hand-edited hash makes the state unreadable', (t) => {
   const r = rig(t);
   const before = JSON.stringify(r.state());
-  const forged = { acceptance: { files: { 't/x.test.js': 'a'.repeat(64) }, hash: acceptanceHash({ 't/x.test.js': 'a'.repeat(64) }), run: 'true', source: { branch: null, head: 'abc1234' }, frozenAt: NOW, amendments: [] } };
+  const forged = { acceptance: { files: { 't/x.test.js': 'a'.repeat(64) }, hash: acceptanceHash({ 't/x.test.js': 'a'.repeat(64) }, 'node --test t/x.test.js'), run: 'node --test t/x.test.js', source: { branch: null, head: 'abc1234' }, frozenAt: NOW, amendments: [] } };
   const w = runFanout(['state', 'set', 'T510', '--json', JSON.stringify(forged)], r.deps());
   assert.equal(w.code, 1);
   assert.match(w.stderr, /unknown field "acceptance"/);
@@ -577,9 +577,10 @@ test('freeze/amend must-FAIL: a --run-cmd naming NONE of the frozen files (npm r
   const f = (cmd: string) => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', cmd, '--from', 'writer-510'], r.deps());
   const bad = f('npm run accept');
   assert.equal(bad.code, 1);
-  assert.match(bad.stderr, /names none of the frozen files/);
+  assert.match(bad.stderr, /not a direct runner call/);
   assert.equal(r.state()!.tickets.T510.acceptance, null, 'nothing written');
   assert.equal(f('node --test t/spec.test.js').code, 0);
+  assert.equal(f('node --test t/spec.test.js --test-reporter=tap').code, 2, 'already frozen (a second freeze is the other refusal)');
   const amend = (extra: string[]) => runAcceptance(['amend', 'T510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', 'writer-510', ...extra], r.deps());
   const before = JSON.stringify(r.state());
   assert.equal(amend(['--run-cmd', 'npm run accept']).code, 1);
@@ -596,7 +597,7 @@ test('amend --run-cmd: replaces the command under the same decision rules (a com
   assert.equal(ok2.code, 0, ok2.stderr);
   const a = r.state()!.tickets.T510.acceptance!;
   assert.equal(a.run, 'node --test t/spec.test.js --test-reporter=tap');
-  assert.equal(a.hash, old.hash);
+  assert.notEqual(a.hash, old.hash, 'the command is part of the hash');
   assert.equal(a.amendments[0].runAfter, a.run);
 });
 
@@ -625,4 +626,103 @@ test('gate: explicit --run with an unknown ticket / absent state ⇒ exit 1 bad-
   assert.ok(noRun.logs.some((l) => /NOT checked/.test(l)));
   const known = await gate(r, { head, ticket: 'T510', run: null });
   assert.equal((known.result.acceptance as { ok?: boolean }).ok, true, 'the own-run default still finds a known ticket');
+});
+
+// ── fix round 2 (delta review c/7077974470) ───────────────────────────────────────────────────────────────
+
+const FILES = ['test/acc.test.js'];
+const SPELLINGS_REFUSED = [
+  'npm run accept test/acc.test.js', "sh -c 'npm run accept' test/acc.test.js", 'npm run accept # test/acc.test.js', 'make accept ACC=test/acc.test.js',
+  'ACC=test/acc.test.js npm run accept', 'true test/acc.test.js', 'node scripts/run.js mytest/acc.test.js.bak', 'node --test test/acc.test.js; true', 'node --test test/acc.test.js && true',
+  'node --test test/acc.test.js | cat', 'node --test $(echo test/acc.test.js)', 'node --test `echo test/acc.test.js`', 'node --test "test/acc.test.js"', "node --test 'test/acc.test.js'",
+  'node --test test/*.test.js', 'node -e require("./x") test/acc.test.js', 'node --require=./evil.js test/acc.test.js', 'node -r ./evil.js test/acc.test.js', 'node --import=./evil.mjs test/acc.test.js',
+  'node --test-reporter tap test/acc.test.js', 'node test/acc.test.js extra.js', 'env node --test test/acc.test.js', 'bash test/acc.test.js', 'npx some-pkg test/acc.test.js', 'npm exec node test/acc.test.js',
+  'pnpm test test/acc.test.js', 'pnpm exec bash test/acc.test.js', 'node --test', 'node --test ../acc.test.js', 'vitest --config=./vitest.evil.ts test/acc.test.js', 'jest --setupFiles=./x.js test/acc.test.js',
+  'node --test test/acc.test.js\nnode x', 'node\t--test test/acc.test.js', 'node --test test/acc.test.js > /dev/null', 'node --test test/acc.test.js &', 'FOO=1 node --test test/acc.test.js',
+];
+const SPELLINGS_OK = ['node --test test/acc.test.js', 'node --test --test-reporter=tap test/acc.test.js', 'npx vitest run test/acc.test.js', 'pnpm exec vitest run --reporter=dot test/acc.test.js', 'python3 -m pytest -q test/acc.test.js'.replace('test/acc.test.js', 'test/acc.test.js'), 'tsx test/acc.test.js'];
+
+test('run-cmd must-FAIL: every reviewer spelling of an indirection (and more) is refused as a non-direct runner call; direct calls pass', () => {
+  for (const c of SPELLINGS_REFUSED) assert.throws(() => parseRunArgv(c, FILES), /not a direct runner call/, c);
+  for (const c of SPELLINGS_OK) assert.deepEqual(parseRunArgv(c, FILES), c.split(' '), c);
+  assert.throws(() => parseRunArgv('node --test test/acc.test.js', ['other.test.js']), /not a frozen file/);
+});
+
+test('run-cmd: freeze and amend refuse each reviewer spelling through the CLI (nothing written), the state loader refuses a hand-edited one', (t) => {
+  const r = rig(t, { freeze: false });
+  const f = (cmd: string) => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', cmd, '--from', 'writer-510'], r.deps());
+  for (const c of ['npm run accept t/spec.test.js', "sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak']) {
+    const x = f(c);
+    assert.equal(x.code, 1, c);
+    assert.match(x.stderr, /not a direct runner call/, c);
+  }
+  assert.equal(r.state()!.tickets.T510.acceptance, null);
+  assert.equal(f('node --test t/spec.test.js').code, 0);
+  const raw = JSON.parse(fs.readFileSync(stateFile(r.home, 'r1'), 'utf8'));
+  raw.tickets.T510.acceptance.run = 'sh -c true t/spec.test.js';
+  raw.tickets.T510.acceptance.hash = acceptanceHash(raw.tickets.T510.acceptance.files, raw.tickets.T510.acceptance.run); // a CONSISTENT hash: only the argv rule can refuse it
+  assert.throws(() => parseState(raw), /not a direct runner call/);
+});
+
+test('gate: the frozen command is executed as an ARGV, never through a shell', () => {
+  const calls: string[][] = [];
+  const bytes = Buffer.from(SPEC);
+  const acc = { files: { 't/spec.test.js': sha256Hex(bytes) }, hash: '', run: 'node --test t/spec.test.js', source: { branch: null, head: 'abc1234' }, frozenAt: NOW, amendments: [] };
+  acc.hash = acceptanceHash(acc.files, acc.run);
+  const HEAD = 'a'.repeat(40);
+  const io = {
+    git: (args: string[]) => ({ code: 0, stdout: args[0] === 'rev-parse' ? (args.includes('--show-toplevel') ? os.tmpdir() : HEAD) : args[0] === 'ls-tree' ? `100644 blob ${'b'.repeat(40)}\tt/spec.test.js\0` : args[0] === 'show' ? SPEC : '' }),
+    readFile: () => bytes,
+    run: (argv: string[]) => { calls.push(argv); return { exit: 0, tail: '' }; },
+  };
+  const out = checkAcceptanceInCheckout(acc, { cwd: os.tmpdir(), head: HEAD }, io);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.deepEqual(calls, [['node', '--test', 't/spec.test.js']]);
+});
+
+test('amend must-FAIL: one decision comment authorises ONE amendment however its URL is spelled (issues/pull, case, number)', (t) => {
+  const r = rig(t);
+  const go = (url: string, text: string) => { fs.writeFileSync(path.join(r.cand, 't/spec.test.js'), `${SPEC}// ${text}\n`); r.commitCand(text); return runAcceptance(['amend', 'T510', '--decision', url, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', r.cand], r.deps()); };
+  assert.equal(go('https://github.com/o/r/issues/511#issuecomment-900', 'one').code, 0);
+  const before = JSON.stringify(r.state());
+  for (const [i, u] of ['https://github.com/o/r/pull/9#issuecomment-900', 'https://github.com/O/R/issues/2#issuecomment-900'].entries()) {
+    const x = go(u, `again ${i}`);
+    assert.equal(x.code, 2, u);
+    assert.match(x.stderr, /already authorised/);
+  }
+  assert.equal(JSON.stringify(r.state()), before);
+});
+
+test('gate without --run: a verifier (own ws id, no state) reads the INHERITED run for the acceptance clause and runs it', async (t) => {
+  const r = rig(t);
+  Object.assign(process.env, r.env);
+  const saved = { ws: process.env.ORCHESTRA_WS_ID, run: process.env.ORCHESTRA_RUN_ID };
+  process.env.ORCHESTRA_WS_ID = 'verifier-ws';
+  process.env.ORCHESTRA_RUN_ID = 'r1';
+  try {
+    const head = r.g('rev-parse', 'HEAD');
+    const ok = await gate(r, { head, run: null });
+    assert.equal(ok.exit, 0);
+    assert.equal((ok.result.acceptance as { ok?: boolean }).ok, true, 'the clause ran through the inherited run');
+    fs.writeFileSync(path.join(r.cand, 'src/impl.js'), 'exports.f = () => 2;\n');
+    const red = await gate(r, { head: r.commitCand('red'), run: null });
+    assert.equal(red.exit, 2);
+    assert.equal(red.result.reason, 'frozen-test-failed');
+  } finally {
+    process.env.ORCHESTRA_WS_ID = saved.ws;
+    if (saved.run === undefined) delete process.env.ORCHESTRA_RUN_ID; else process.env.ORCHESTRA_RUN_ID = saved.run;
+  }
+});
+
+test('receipt binds the command: a receipt gated under the OLD command is stale after amend --run-cmd (hash includes run)', async (t) => {
+  const r = rig(t);
+  Object.assign(process.env, r.env);
+  const head = r.g('rev-parse', 'HEAD');
+  const oldHash = hashOf(r);
+  const am = runAcceptance(['amend', 'T510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', 'writer-510', '--run-cmd', 'node --test --test-reporter=tap t/spec.test.js'], r.deps());
+  assert.equal(am.code, 0, am.stderr);
+  const x = deliverRig(r, head);
+  const d = await deliver(dopts(head, { acceptance: writeReceipt(r, { head, hash: oldHash, ok: true }) }), x.deps);
+  assert.equal(d.exit, 2);
+  assert.equal(d.result.reason, 'acceptance-stale');
 });
