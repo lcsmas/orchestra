@@ -30,6 +30,7 @@ const MUTANTS = [
   { id: 'M08', name: 'adopt-repo creates its worktree with raw git instead of the chokepoint', edits: [[WS, 'await createWorktree(repoPath, branch, baseBranch, newWorktreePath);', "await git.raw(['worktree', 'add', newWorktreePath, branch]);"]] },
   // ── the clauses of the pin itself ──
   { id: 'M09', name: 'an explicit worktree identity is overwritten', edits: [[GI, "(await getConfig(worktreePath, ['--worktree', '--get-regexp', `^${group}\\\\.(name|email)$`])) !== null) keptGroups.add(group);", `${F}) keptGroups.add(group);`]] },
+  { id: 'M25', name: 'the keep check is per key again (an explicit email gets the owner\'s name beside it)', edits: [[GI, "const group = key.split('.')[0];\n      if (!keptGroups.has(group)", "const group = key;\n      if (!keptGroups.has(group)"]] },
   { id: 'M10', name: 'the identity is read at the worktree path (an includeIf onbranch on the repo no longer matches)', edits: [[GI, "const v = await getConfig(repoPath, ['--get', key]);", "const v = await getConfig(worktreePath, ['--get', key]);"]] },
   { id: 'M11', name: 'the identity is hardcoded', edits: [[GI, 'if (v !== null) wanted.push([key, v]);', "if (v !== null) wanted.push([key, key.endsWith('name') ? 'Hardcoded' : 'hard@coded']);"]] },
   { id: 'M12', name: 'a host with no identity still enables the extension / writes', edits: [[GI, "if (!wanted.some(([k]) => k === 'user.name') || !wanted.some(([k]) => k === 'user.email')) return { ...result, skipped: 'no-identity' };\n", '']] },
