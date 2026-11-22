@@ -317,7 +317,7 @@ const mutants = [
   { name: 'deliver: receipt.ok ignored', find: 'if (!receipt.ok)', put: () => 'if (false)' },
   { name: 'deliver: the gh byte re-read ignored', find: 'const bad = files.filter((f) => f.status !== "same");', put: () => 'const bad = [];' },
   { name: 'deliver: --acceptance for a ticket without frozen tests is waved through', find: 'if (opts.acceptance !== void 0 && !got.acceptance) {', put: () => 'if (false) {' },
-  { name: 'run: any first word allowed (true / npm run / sh -c …)', find: 'if (!runner) why(', put: () => 'if (false) why(', extra: [{ find: 'for (const t of inner.slice(runner.prefix.length)) {', put: () => 'for (const t of inner.slice(runner ? runner.prefix.length : 1)) {' }, { find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' }] },
+  { name: 'run: any first word allowed (true / npm run / sh -c …)', find: 'if (!runner) why(', put: () => 'if (false) why(', extra: [{ find: 'const args = inner.slice(runner.prefix.length);', put: () => 'const args = inner.slice(runner ? runner.prefix.length : 1);' }, { find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' }] },
   { name: 'run: any non-flag argument allowed (a script the candidate owns)', find: 'if (!paths.includes(t)) why(', put: () => 'if (false) why(' },
   { name: 'run: any flag allowed (--require, --env-file…, --test-reporter=./x, --check, --test-name-pattern)', find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' },
   { name: 'run: the command need not name a frozen file', find: 'if (named === 0) why(', put: () => 'if (false) why(' },
