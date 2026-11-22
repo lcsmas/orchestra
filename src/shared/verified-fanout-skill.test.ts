@@ -215,6 +215,7 @@ export const REFERENCE_PINS: ReadonlyArray<readonly [id: string, file: string, r
   ['acceptance: Orchestra spawns the writer from the role table (accept-, Opus 5.5); no spawn line of the coordinator', 'acceptance-tests.md', /Orchestra spawns it \(role `accept-` in the fleet role table, Opus 5\.5 pinned there; every other role is unchanged\)/],
   ['acceptance: amend reads the decision through gh and fails closed', 'acceptance-tests.md', /reads the decision through `gh` and fails closed/],
   ['acceptance: deliver\'s acceptance-stale is a re-gate (receipt for another head or set)', 'acceptance-tests.md', /`acceptance-stale` \(deliver: a receipt for another head or frozen set[^)]*\)[^\n]*re-gate/],
+  ['acceptance: the writer\'s brief names the repo\'s integration harness (declared / found), boots the full app module, one execution context per test (#538)', 'acceptance-tests.md', /boot the FULL app module through it and open its OWN execution context per test[^\n]*`orchestra fanout state set --harness/],
   ['acceptance: the freeze does not cover runner config / helpers — pointed at help, reviewed', 'acceptance-tests.md', /runner config file or a non-frozen helper the tests import is still the candidate's and is NOT hashed/],
   ['acceptance: the writer is told to keep tests self-contained (its brief is generated)', 'acceptance-tests.md', /the tests self-contained\)/],
   ['acceptance: --run-cmd is a direct runner call naming a frozen file, no shell', 'acceptance-tests.md', /`--run-cmd`: a direct runner call naming a frozen file, no shell/],

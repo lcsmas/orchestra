@@ -11,6 +11,7 @@ import {
   type FanoutState,
   type TicketState,
 } from './fanout-state.ts';
+import { harnessBriefLines, type ResolvedHarness } from './fanout-harness.ts';
 
 export const MIN_SPEC_SENTENCE = 12;
 
@@ -73,12 +74,19 @@ export function acceptorName(ticket: string): string {
 
 const withAccept = (t: TicketState, f: Partial<AcceptFlow>): AcceptFlow => ({ acceptor: null, wait: null, waived: null, ...(t.accept ?? {}), ...f });
 
-/** The writer's brief: the spec + the ticket ONLY — never an implementer branch (the writer must derive the tests from the spec, not from the code). */
-export function acceptorBrief(o: { run: string; ticket: string; spec: string; repo: string | null; target: string }): string {
+/** The writer's brief: the spec + the ticket ONLY — never an implementer branch (the writer must derive the tests from the spec, not from the code).
+ *  #538: `harness` (declared | discovered | none — fanout-harness.ts) adds the repo's integration harness + its two requirements (full-module boot, per-test execution context);
+ *  absent or `none` keeps the self-contained wording byte-identical (none adds ONE line saying so). */
+export function acceptorBrief(o: { run: string; ticket: string; spec: string; repo: string | null; target: string; harness?: ResolvedHarness | null }): string {
+  const h = o.harness ?? null;
+  const withHarness = h !== null && h.source !== 'none';
   return [
     `You write the frozen ACCEPTANCE TESTS of ticket ${o.ticket} (vague run ${o.run}). Orchestra spawned you; you never see the implementer's code, and nobody waits for you: the implementer starts at dispatch.`,
     `Spec: ${o.spec}  (read the spec and the ticket ${o.ticket} — nothing else: do NOT read any implementer branch or PR for this ticket).`,
-    `Write tests that fail without the feature and pass with it, derived from the spec's sentences, as self-contained files (they import the production code by path; no helper, config or fixture outside the files you freeze). Commit them in your worktree.`,
+    withHarness
+      ? `Write tests that fail without the feature and pass with it, derived from the spec's sentences, as test files of your own (they import the production code by path and the repo's integration harness below; no other helper, config or fixture outside the files you freeze). Commit them in your worktree.`
+      : `Write tests that fail without the feature and pass with it, derived from the spec's sentences, as self-contained files (they import the production code by path; no helper, config or fixture outside the files you freeze). Commit them in your worktree.`,
+    ...(h ? harnessBriefLines(h, o.target) : []),
     `Then freeze them: \`orchestra fanout acceptance freeze ${o.ticket} --run ${o.run} --files <p1,p2,…> --run-cmd "<runner> <the same paths>"\` — a DIRECT runner call (e.g. \`node --test tests/x.test.ts\`; \`orchestra fanout acceptance --help\` lists the runners). It publishes the files to branch ${acceptanceBranch(o.run)}${o.repo ? ` of ${o.repo}` : ''} and tells the ticket's implementer and verifier the path + command.`,
     `Finish with ONE \`orchestra send --type worker_done\` to your parent. You may freeze only ticket ${o.ticket}.`,
   ].join('\n');

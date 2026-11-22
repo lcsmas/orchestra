@@ -90,12 +90,14 @@ export interface FanoutState {
   target: string;
   /** `owner/name` for `gh -R`; null = the checkout's own repo. */
   repo: string | null;
+  /** #538 — the repo's own integration test entry, DECLARED by the coordinator (a path and/or the command that runs it; one line). Absent = not declared (the key is never written as null, so an older binary reads a state that declares nothing): the writer's brief falls back to discovery (shared/fanout-harness.ts). */
+  harness?: string;
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` are DERIVED (#512): the CLI fills them from git, `state set --json` cannot. `forgetMerge` is a verb (#514), not a stored field. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'spec', 'implementer', 'verifier'] as const;
@@ -135,8 +137,24 @@ export function stateFile(home: string, run: string): string {
   return path.join(home, 'fanout', assertRunId(run), 'state.json');
 }
 
-export function newState(run: string, opts: { target?: string; repo?: string | null; now: string }): FanoutState {
-  return { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, tickets: {}, updatedAt: opts.now, reconciledAt: null };
+export function newState(run: string, opts: { target?: string; repo?: string | null; harness?: string | null; now: string }): FanoutState {
+  return { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, ...withHarness(harnessOf(opts.harness ?? null)), tickets: {}, updatedAt: opts.now, reconciledAt: null };
+}
+
+/** #538 — a declared harness: ONE printable line, ≤ 300 chars (a path and/or the command that runs the repo's integration tests); `-` / empty / null = none. */
+export function harnessOf(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string') throw new FanoutStateError('harness must be a string or null');
+  const s = v.trim();
+  if (s === '' || s === '-') return null;
+  if (s.length > 300 || /[\x00-\x1f\x7f]/.test(s)) throw new FanoutStateError('harness must be a single printable line of at most 300 characters (the repo\'s integration test entry: a path and/or the command that runs it)');
+  return s;
+}
+const withHarness = (h: string | null): { harness?: string } => (h === null ? {} : { harness: h });
+/** #538 — `state set --harness <ref|->`: declare (or clear) the harness; pure. */
+export function setHarness(state: FanoutState, v: string, now: string): FanoutState {
+  const { harness: _prev, ...rest } = state;
+  return { ...rest, ...withHarness(harnessOf(v)), updatedAt: now };
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -399,6 +417,7 @@ export function parseState(raw: unknown): FanoutState {
     run: assertRunId(raw.run),
     target: raw.target,
     repo: strOrNull(raw.repo, 'repo'),
+    ...withHarness(harnessOf(raw.harness)),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,

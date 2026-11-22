@@ -12,6 +12,7 @@ import {
   readState,
   reconcile,
   resolveFanoutRun,
+  setHarness,
   stateFile,
   updateState,
   type FanoutState,
@@ -41,7 +42,8 @@ export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string, en
   return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>]
+export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>] [--harness <ref>]
+       orchestra fanout state set --harness <ref|-> [--run <id>]     (run-level: the repo's integration harness, #538; "-" clears it)
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
                                   [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
@@ -62,6 +64,10 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
   --spec <ref>  (#515) registers the ticket's spec: Orchestra then SPAWNS that ticket's \`accept-\` test writer itself (Opus 5.5, brief = spec + ticket only);
            its \`fanout acceptance freeze\` publishes the tests to branch acceptance/<run> and tells --implementer / --verifier (workspace ids) the path + command.
            \`state show\` prints each ticket's path + run command (or "pending"). A gate on an unfrozen ticket WAITS (bounded), deliver answers acceptance-pending.
+  --harness <ref>  (#538) the repo's own INTEGRATION test entry (a path and/or the command that runs it, one line ≤ 300 chars): each \`accept-\` writer's brief names it and requires every
+           frozen test to boot the FULL app module through it and open its OWN execution context per test (no shared DB connection / query runner / transaction). Not declared ⇒ discovery
+           on origin/<target>: root package.json scripts e2e|integration|int (test:e2e…), specs *.e2e-spec.* / *.e2e|integration|int.test.* / files under e2e|integration/, an app-boot
+           fixture (test-app, create-app, app.fixture, e2e-setup…); none found ⇒ the brief says so and keeps the self-contained wording. Read at each writer SPAWN (a writer already spawned keeps its brief).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
   Findings (#514): --finding records a verifier/review finding (id=severity) on the ticket it was raised on; a recorded severity is never re-graded.
@@ -178,19 +184,30 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
 function runState(args: string[], deps: FanoutDeps): RunResult {
   const [verb, ...rest] = args;
   if (verb === 'init') {
-    const p = parseArgs(rest, ['--run', '--target', '--repo'], []);
+    const p = parseArgs(rest, ['--run', '--target', '--repo', '--harness'], []);
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]}`);
     const { run } = runOf(p, deps, 'init');
     const file = stateFile(homeOf(deps.env), run);
     updateState(file, (cur) => {
       if (cur) throw new FanoutStateError(`state already exists at ${file} (run ${cur.run}, ${Object.keys(cur.tickets).length} ticket(s), updated ${cur.updatedAt}) — an earlier vague's, or another coordinator's. Continue it: \`orchestra fanout resume --run ${run}\`; start a fresh one: \`orchestra fanout state init --run <new id>\` (default is your own run ${resolveFanoutRun(undefined, deps.env).run ?? '<id>'}).`);
-      return newState(run, { target: p.vals['--target'], repo: p.vals['--repo'] ?? null, now: deps.now() });
+      return newState(run, { target: p.vals['--target'], repo: p.vals['--repo'] ?? null, harness: p.vals['--harness'], now: deps.now() });
     });
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--implementer', '--verifier', '--json'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--implementer', '--verifier', '--json', '--harness'], []);
     const [ticket, ...extra] = p.pos;
+    if (p.vals['--harness'] !== undefined) {
+      // #538 — run-level: the declared integration harness (no ticket); `-` clears it
+      if (ticket || Object.keys(p.vals).some((k) => k !== '--harness' && k !== '--run')) throw new FanoutStateError('--harness is run-level: `orchestra fanout state set --harness <ref|-> [--run <id>]` takes no ticket and no other flag');
+      const hr = runOf(p, deps, 'write');
+      const hfile = stateFile(homeOf(deps.env), hr.run);
+      const hnext = updateState(hfile, (cur) => {
+        if (!cur) throw new FanoutStateError(`no state at ${hfile} — run \`orchestra fanout state init\` first`);
+        return setHarness(cur, p.vals['--harness'] as string, deps.now());
+      });
+      return { code: 0, stdout: `harness: ${hnext.harness ?? 'none declared (discovery on origin/' + hnext.target + ')'}\n`, stderr: hr.note };
+    }
     if (!ticket || extra.length) throw new FanoutStateError('usage: orchestra fanout state set <ticket> [--status s] [--branch b] …');
     const patch: Record<string, unknown> = {};
     if (p.vals['--json'] !== undefined) {
@@ -251,8 +268,9 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const head = ['ticket', 'status', 'verdict', 'branch', 'pr', 'head', 'dependsOn', 'frozen'];
     const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();
+    const harnessLine = s.harness ? `harness (#538): ${s.harness}\n` : '';
     const acc = Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null);
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
 }
