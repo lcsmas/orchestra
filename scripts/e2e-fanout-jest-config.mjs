@@ -248,8 +248,13 @@ function scenarios(cliPath) {
     arm('S1 must-PASS `acceptance show` prints the recorded config path + bytes hash', sh1.code === 0 && sh1.stdout.includes(`config: ${W.acc().config.sha256.slice(0, 12)}  ${CFG}`), J(sh1));
     W.gw(['checkout', '-q', 'master']); fs.writeFileSync(path.join(W.work, CFG), 'export default { testRegex: ".e2e.test.js$", bail: 1 };\n');
     W.gw(['add', '.']); W.gw(['commit', '-q', '-m', 'target moves the config']); W.gw(['push', '-q', 'origin', 'master']);
+    const rebased = W.variant('g-rebased', (c) => fs.writeFileSync(path.join(c, CFG), 'export default { testRegex: ".e2e.test.js$", bail: 1 };\n')); // the candidate rebased onto the moved target: NO edit of its own
+    const g8 = W.gate(rebased);
+    arm('G8 must-FAIL a candidate carrying the TARGET\'s newer config (target drift, no edit by the candidate): exit 2, frozen-config-changed, the detail names target drift + `amend`', g8.code === 2 && g8.json?.reason === 'frozen-config-changed' && /target moved the config/.test(g8.json.detail ?? '') && /acceptance amend/.test(g8.json.detail ?? ''), J(g8));
     const a1 = W.amend('900', 'the e2e config now bails early', []);
     const acc1 = W.acc();
+    const am1 = acc1.amendments[0];
+    arm('A1b must-PASS the amend prints old → new config sha256 and records configAfter {path,sha256} in the amendment row', /runner config packages\/api-v2\/jest\.e2e\.config\.ts: [0-9a-f]{12} → [0-9a-f]{12} — RE-RECORDED/.test(a1.stdout) && am1.configAfter?.path === CFG && am1.configAfter.sha256 === acc1.config.sha256, J(a1) + JSON.stringify(am1));
     arm('A1 must-PASS an amend (ledger decision) re-records the config from the TARGET tip: exit 0, new sha256, hash changed and bound to it', a1.code === 0 && acc1.config.sha256 !== W.readState().tickets['T-1'].acceptance.amendments[0].hashBefore && acc1.hash !== hash0 && acc1.config.path === CFG, J(a1));
     const a2 = W.amend('901', 'the e2e run needs no config any more', ['--run-cmd', `jest --ci ${TEST}`]);
     arm('A2 must-PASS an amend with a config-less command drops the record: exit 0, no `config`, run replaced', a2.code === 0 && W.acc().config === undefined && W.acc().run === `jest --ci ${TEST}`, J(a2));
@@ -286,6 +291,8 @@ const mutants = [
   { name: 'second --config: accepted (the last one wins)', find: 'if (config !== null) why("--config given twice");', put: () => '' },
   { name: '--config without a value: accepted', find: 'if (v === void 0 || v === "" || v.startsWith("-")) why(', put: () => 'if (false) why(' },
   { name: 'the --config file may also be a frozen test', find: 'if (config !== null && paths.includes(config)) why(', put: () => 'if (false) why(' },
+  { name: 'amend: configAfter is not recorded in the amendment row', find: '...a.config ? { configAfter: a.config } : {}', put: () => '' },
+  { name: 'gate: the refusal detail no longer names target drift', find: 'the target moved the config since the freeze', put: () => 'the candidate edited it' },
   { name: 'other flags: any jest flag accepted', find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' },
   { name: '--config accepted on EVERY runner (node / vitest / mocha …), not jest only', find: 'runner.config && t === "--config"', put: () => 't === "--config"', extra: [{ find: 'runner.config && t.startsWith("--config=")', put: () => 't.startsWith("--config=")' }] },
   { name: 'hash: the config bytes are not part of the frozen hash', find: '(config ? `config\\0${config.path}\\0${config.sha256}\n` : "")', put: () => '""' },

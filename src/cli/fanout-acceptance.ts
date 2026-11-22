@@ -324,6 +324,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     if (p.vals['--run-cmd'] !== undefined && (!newRun || newRun.length > 2000 || /[\r\n\0]/.test(newRun))) throw new FanoutStateError('--run-cmd must be a single-line command (≤ 2000 chars)');
     const cfgPath = runConfigOf(newRun ?? cur.acceptance.run, paths);
     const config = cfgPath ? readRunnerConfig(deps.runner, frozen.repo, st0.target, cfgPath) : undefined; // an amend re-records the config's bytes from the target tip
+    const oldCfg = cur.acceptance.config;
     let hashes: { before: string; after: string } | null = null;
     updateState(file, (c) => {
       if (!c) throw new FanoutStateError(`no state at ${file}`);
@@ -338,7 +339,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
       }
     });
     const h = hashes as { before: string; after: string } | null;
-    return { code: 0, stdout: `${ticket}: amended ${h?.before.slice(0, 12)} → ${h?.after.slice(0, 12)} (decision ${decision})\n`, stderr: r.note };
+    return { code: 0, stdout: `${ticket}: amended ${h?.before.slice(0, 12)} → ${h?.after.slice(0, 12)} (decision ${decision})\n${config ? `runner config ${config.path}: ${oldCfg ? oldCfg.sha256.slice(0, 12) : '(none)'} → ${config.sha256.slice(0, 12)}${oldCfg?.sha256 === config.sha256 ? ' (unchanged)' : ' — RE-RECORDED from the target tip under this decision'}\n` : oldCfg ? `runner config ${oldCfg.path} dropped (the new command names none)\n` : ''}`, stderr: r.note };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json', '--brief']);
@@ -359,7 +360,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
       ...Object.entries(a.files).map(([f, h]) => `  ${h.slice(0, 12)}  ${f}`),
       ...(a.freezeCheck ? [`  ${freezeCheckLine(a.freezeCheck)}${a.amendments.length ? ` — STALE: ${a.amendments.length} amendment(s) since; the amended files/command were NOT re-checked on a target tip` : ''}`] : []),
       `  amendments: ${a.amendments.length}`,
-      ...a.amendments.map((m) => `    ${m.at} ${m.hashBefore.slice(0, 12)} → ${m.hashAfter.slice(0, 12)} ${m.decision}`),
+      ...a.amendments.map((m) => `    ${m.at} ${m.hashBefore.slice(0, 12)} → ${m.hashAfter.slice(0, 12)} ${m.decision}${m.configAfter ? ` (config ${m.configAfter.sha256.slice(0, 12)})` : ''}`),
     ];
     return { code: 0, stdout: `${lines.join('\n')}\n`, stderr: r.note };
   }

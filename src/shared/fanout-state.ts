@@ -24,7 +24,7 @@ export interface Acceptance {
   source: { branch: string | null; head: string };
   frozenAt: string;
   /** `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
-  amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string }>;
+  amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string; /** #542-fu: the runner config (path + sha256 from the target tip) the amended set carries, when its command names one */ configAfter?: { path: string; sha256: string } }>;
   /** #539 — what the freeze's one run on the target tip found (never a refusal: those record nothing): `clean` = no ERROR (assertion FAILs accepted), `escaped` = the coordinator's recorded `--accept-unclassified` (the output could not be classified). */
   freezeCheck?: FreezeCheck;
 }
@@ -404,11 +404,18 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
   if (!Array.isArray(v.amendments)) throw new FanoutStateError(`${where}: acceptance.amendments must be an array`);
   const amendments = v.amendments.map((a, i) => {
     if (!isObj(a)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}] is not an object`);
-    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'bodySha256', 'hashBefore', 'hashAfter', 'runAfter']), `${where} acceptance.amendments[${i}]`);
+    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'bodySha256', 'hashBefore', 'hashAfter', 'runAfter', 'configAfter']), `${where} acceptance.amendments[${i}]`);
     for (const k of ['at', 'decision', 'specSentence'] as const) if (typeof a[k] !== 'string' || !(a[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} missing`);
     for (const k of ['bodySha256', 'hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} must be a sha256`);
+    let configAfter: { path: string; sha256: string } | undefined;
+    if (a.configAfter !== undefined) {
+      if (!isObj(a.configAfter)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].configAfter must be an object`);
+      refuseUnknown(a.configAfter, new Set(['path', 'sha256']), `${where} acceptance.amendments[${i}].configAfter`);
+      if (typeof a.configAfter.sha256 !== 'string' || !SHA256.test(a.configAfter.sha256)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].configAfter.sha256 must be a sha256`);
+      configAfter = { path: assertConfigPath(a.configAfter.path), sha256: a.configAfter.sha256 };
+    }
     if (a.runAfter !== undefined && (typeof a.runAfter !== 'string' || !a.runAfter.trim() || /[\r\n\0]/.test(a.runAfter))) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].runAfter must be a single-line command`);
-    return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, bodySha256: a.bodySha256 as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(a.runAfter !== undefined ? { runAfter: a.runAfter as string } : {}) };
+    return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, bodySha256: a.bodySha256 as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(a.runAfter !== undefined ? { runAfter: a.runAfter as string } : {}), ...(configAfter ? { configAfter } : {}) };
   });
   return { files, hash: v.hash, run: v.run, ...(config ? { config } : {}), source: { branch, head }, frozenAt: v.frozenAt, amendments, ...(v.freezeCheck !== undefined ? { freezeCheck: freezeCheckOf(v.freezeCheck, where) } : {}) };
 }
