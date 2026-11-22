@@ -23,15 +23,15 @@ Frozen acceptance tests (#510): the test writer's files are hashed (sha256 of th
 and recorded in the ticket's fanout state with the targeted command (--run-cmd, run with cwd = the candidate checkout).
   freeze  coordinator only; refused when already frozen (amend), on an empty/unsafe file list, a non-regular or uncommitted file, or a --run-cmd naming
           none of the frozen files. The command is a DIRECT runner call, executed WITHOUT a shell: first word in an allowlist (node, tsx, vitest [run],
-          jest, mocha, pytest, python -m pytest|unittest, deno test, bun test, ruby, rspec; optionally behind npx / pnpm exec / yarn exec), only that runner's
+          jest, mocha, pytest, python -I -m pytest|unittest, deno test, bun test, ruby, rspec; NO npx / pnpm exec / yarn exec launcher), only that runner's
           INERT flags from a fixed allowlist (e.g. node: --test, --test-reporter=spec|tap|dot|junit|lcov, --test-timeout=N — never --require, --env-file*,
           --experimental-*, --test-name-pattern, --check, a reporter/preload/config path), every other argument EXACTLY a frozen path, no shell metacharacter
-          (no npm run / make / sh -c / env / ; & | $ # quotes). The command is part of the frozen hash. NOT checked (residue): a runner config file
-          (vitest.config.*, jest.config.*, .mocharc, deno.json…) or a non-frozen helper the test imports is still the candidate's — keep the frozen tests
-          self-contained and review changes to such files.
+          (no npm run / make / sh -c / env / ; & | $ # quotes). The command is part of the frozen hash. NOT checked (residue): argv[0] and anything on its search
+          path — PATH, the checkout's module/import path, a runner config file (vitest.config.*, .mocharc, deno.json…), a helper the test imports — are resolved in the
+          candidate's tree: keep the frozen tests self-contained and review changes to such files.
   amend   coordinator only; --decision = a GitHub ledger comment URL whose body (read through gh, fail closed) quotes --spec-sentence (≥ 12 chars,
           whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision comment (repo + id,
-          however the URL is spelled) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
+          however the URL is spelled, leading zeros included) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
   show    read-only, every role. \`fanout gate --ticket <id> --cwd <checkout>\` runs + hashes them; \`fanout deliver --acceptance <receipt>\` demands the receipt.
 Exit 0 = ok, 2 = refused (policy), 1 = usage / could not check. A frozen file cannot be set by \`fanout state set\` (--json included).`;
 

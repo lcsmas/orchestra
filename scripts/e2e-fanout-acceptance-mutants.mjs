@@ -41,7 +41,7 @@ const headOf = (p) => (p.state === 'OPEN' ? tip(p.headRefName) : p.head);
 if (a === 'api') {
   const url = args[args.length - 1];
   let m = /^repos\\/o\\/r\\/issues\\/comments\\/(\\d+)$/i.exec(url);
-  if (m) { if (st.comments[m[1]] === undefined) fail('gh: Not Found (HTTP 404)'); out({ body: st.comments[m[1]] }); }
+  if (m) { const id = String(Number(m[1])); if (st.comments[id] === undefined) fail('gh: Not Found (HTTP 404)'); out({ body: st.comments[id] }); }
   m = /\\/contents\\/(.+)\\?ref=([0-9a-f]{40})$/.exec(url);
   if (/\\/commits\\/[0-9a-f]{40}$/.test(url)) out({});
   if (m) { const r = git('show', m[2] + ':' + decodeURIComponent(m[1])); if (r.status !== 0) fail('gh: Not Found (HTTP 404)'); out(r.stdout); }
@@ -235,7 +235,7 @@ function scenarios(cliPath) {
     arm('F2 must-FAIL an unsafe path (..): exit 1, nothing written', bad.code === 1 && !A.readState().tickets['T-3'], J(bad));
     const npm = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', 'npm run accept', '--from', 'origin/writer-510']);
     arm('F4 must-FAIL freeze with a --run-cmd naming none of the frozen files (npm run indirection): exit 1, nothing written', npm.code === 1 && /not a direct runner call/.test(npm.stderr) && !A.readState().tickets['T-3'], J(npm));
-    const spell = ["sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak', 'node --require=./evil.js t/spec.test.js', 'node --test t/spec.test.js; true', 'node --env-file-if-exists=.env t/spec.test.js', 'node --test --test-reporter=./rep.mjs t/spec.test.js', 'bun test --preload=./pre.ts t/spec.test.js', 'node --test-name-pattern t/spec.test.js', 'node --check t/spec.test.js', 'node --test'];
+    const spell = ["sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak', 'node --require=./evil.js t/spec.test.js', 'node --test t/spec.test.js; true', 'node --env-file-if-exists=.env t/spec.test.js', 'node --test --test-reporter=./rep.mjs t/spec.test.js', 'bun test --preload=./pre.ts t/spec.test.js', 'node --test-name-pattern t/spec.test.js', 'node --check t/spec.test.js', 'node --test', 'npx node --test t/spec.test.js', 'pnpm exec node --test t/spec.test.js', 'yarn exec node --test t/spec.test.js', 'python3 -m pytest t/spec.test.js', 'python3 -I test/spec.js'];
     const leaked = spell.filter((c) => { const x = A.cli(['acceptance', 'freeze', 'T-4', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', c, '--from', 'origin/writer-510']); return x.code !== 1 || !/not a direct runner call/.test(x.stderr); });
     arm('F5 must-FAIL every indirection spelling (sh -c, # path, make ACC=, ENV=path npm run, true path, substring of a longer path, --require, `;`) is refused', leaked.length === 0 && !A.readState().tickets['T-4'], `accepted/odd: ${leaked.join(' | ')}`);
     const sentence = ['--spec-sentence', SENTENCE];
@@ -255,8 +255,8 @@ function scenarios(cliPath) {
     arm('A3 must-PASS a decision quoting the sentence (whitespace-normalised): exit 0, hash changed, one amendment {decision, specSentence, hashBefore, hashAfter}',
       a3.code === 0 && acc.hash !== hashBefore && acc.amendments.length === 1 && acc.amendments[0].decision === DECISION && acc.amendments[0].specSentence === SENTENCE && acc.amendments[0].hashBefore === hashBefore && acc.amendments[0].hashAfter === acc.hash && Object.keys(acc.files).length === 2, J(a3));
     arm('A3b the amendment records sha256 of the decision body read through gh', acc.amendments[0].bodySha256 === createHash('sha256').update(`Ruling:\n  the carrier   argument is\n optional in the spec.`).digest('hex'), JSON.stringify(acc.amendments[0]));
-    const a6 = A.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/good', '--decision', 'https://github.com/O/R/pull/9#issuecomment-900', ...sentence]);
-    arm('A6 must-FAIL the SAME decision comment (spelled /O/R/pull/9#…) authorising a second amendment: exit 2, "already authorised", state unchanged', a6.code === 2 && /already authorised/.test(a6.stderr) && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(a6));
+    const a6 = A.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/good', '--decision', 'https://github.com/O/R/pull/9#issuecomment-0900', ...sentence]);
+    arm('A6 must-FAIL the SAME decision comment (spelled /O/R/pull/9#…-0900) authorising a second amendment: exit 2, "already authorised", state unchanged', a6.code === 2 && /already authorised/.test(a6.stderr) && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(a6));
     A.patchGh((s) => { s.comments[901] = `Second ruling: ${SENTENCE}.`; });
     const D2 = 'https://github.com/o/r/issues/511#issuecomment-901';
     const a5 = A.cli([...common, '--decision', D2, ...sentence, '--run-cmd', 'npm run accept']);
@@ -320,7 +320,10 @@ const mutants = [
   { name: 'run: any flag allowed (--require, --env-file…, --test-reporter=./x, --check, --test-name-pattern)', find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' },
   { name: 'run: the command need not name a frozen file', find: 'if (named === 0) why(', put: () => 'if (false) why(' },
   { name: 'hash: the command is not part of the hash', find: '.join("") + `run\\0${run}', put: () => '.join("") + `${""}' },
-  { name: 'amend: decision reuse keyed on the raw URL (another spelling of the same comment passes)', find: 'const key = (u) => (decisionApiPath(u) ?? u).toLowerCase();', put: () => 'const key = (u) => u;' },
+  { name: 'amend: decision key keeps leading zeros (-0900 is another comment)', find: '${m[1].toLowerCase()}#${Number(m[2])}', put: () => '${m[1].toLowerCase()}#${m[2]}' },
+  { name: 'amend: decision reuse keyed on the raw URL (another spelling of the same comment passes)', find: 'const key = (u) => {', put: () => 'const key = (u) => { return u; };\n  const unusedKey = (u) => {' },
+  { name: 'run: a package launcher (npx / pnpm exec / yarn exec) is accepted', find: 'const inner = tokens;', put: () => 'const inner = tokens[0] === "npx" ? tokens.slice(1) : (tokens[0] === "pnpm" || tokens[0] === "yarn") && tokens[1] === "exec" ? tokens.slice(2) : tokens;' },
+  { name: 'run: `python -m` without -I accepted', find: '{ prefix: ["python3", "-I", "-m", "pytest"]', put: () => '{ prefix: ["python3", "-m", "pytest"]' },
   { name: 'gate: no fallback to the inherited run for a verifier', find: '...opts.run ? [] : inherited ? [inherited] : []', put: () => '...[]' },
   { name: 'amend: the decision body hash is not recorded', find: 'bodySha256: sha256Hex(Buffer.from(body, "utf8"))', put: () => 'bodySha256: "0".repeat(64)' },
   { name: 'gate: an explicit --run with an unknown ticket skips the clause', find: 'lenient: !o.run', put: () => 'lenient: true' },
