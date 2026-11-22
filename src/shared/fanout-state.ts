@@ -25,6 +25,10 @@ export interface Acceptance {
   amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string }>;
 }
 
+/** #514 — a finding's severity as the verifier / review report grades it. Only BLOCKING and MAJOR justify a follow-up candidate on a merged ticket. */
+export const FINDING_SEVERITIES = ['BLOCKING', 'MAJOR', 'MINOR'] as const;
+export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
   branch: string | null;
@@ -48,6 +52,18 @@ export interface TicketState {
   tree: string | null;
   /** #512 — upstream id → tree of the upstream head it was built on (`builtOn`), derived the same way. */
   builtOnTree: Record<string, string>;
+  /** #514 — finding id → severity, from the verifier / review reports of THIS ticket's candidates. Merge-only: an id, once recorded, keeps its severity. */
+  findings: Record<string, FindingSeverity>;
+  /** #514 — set = this ticket is a FOLLOW-UP candidate on that already-merged ticket (see `followUpRefusal`). */
+  followUpOf: string | null;
+  /** #514 — the head this ticket merged at, kept even if it is later un-merged (cleared only by `--forget-merge <reason>`): a candidate on any other head is a follow-up. */
+  mergedHead: string | null;
+  /** #514/#512 — git tree of `mergedHead` (derived like `tree`): a candidate with the SAME tree on another sha is the same content (a rebase), not a further candidate. */
+  mergedTree: string | null;
+  /** #514 — append-only: every `--forget-merge <reason>` (the reason, when, and the merged head it cleared). Not settable except through that flag. */
+  forgottenMerges: Array<{ at: string; reason: string; was: string | null }>;
+  /** #514 — the finding ids (of `followUpOf`) this follow-up fixes; at least one must be BLOCKING|MAJOR. */
+  fixes: string[];
   updatedAt: string;
 }
 
@@ -64,11 +80,11 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'tree', 'builtOnTree', 'updatedAt']);
-/** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` are DERIVED (#512): the CLI fills them from git, `state set --json` cannot. */
-export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
+/** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` are DERIVED (#512): the CLI fills them from git, `state set --json` cannot. `forgetMerge` is a verb (#514), not a stored field. */
+export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
-export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number] | (typeof DERIVED_KEYS)[number]>>;
+export type TicketPatch = Partial<Pick<TicketState, Exclude<(typeof SETTABLE_KEYS)[number], 'forgetMerge'> | (typeof DERIVED_KEYS)[number]>> & { forgetMerge?: string };
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HEX_SHA = /^[0-9a-f]{7,40}$/;
@@ -152,6 +168,30 @@ function builtOnTreeOf(v: unknown): Record<string, string> {
     out[k] = treeOrNull(h, `builtOnTree[${k}]`) ?? (() => { throw new FanoutStateError(`builtOnTree[${k}] must be a tree sha`); })();
   }
   return out;
+}
+const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
+function findingsOf(v: unknown): Record<string, FindingSeverity> {
+  if (v === undefined || v === null) return {};
+  if (!isObj(v)) throw new FanoutStateError('findings must be an object {<finding id>: BLOCKING|MAJOR|MINOR}');
+  const out: Record<string, FindingSeverity> = {};
+  for (const [k, sev] of Object.entries(v)) {
+    if (!FINDING_ID.test(k)) throw new FanoutStateError(`findings: unsafe finding id ${JSON.stringify(k)}`);
+    out[k] = enumOf(sev, FINDING_SEVERITIES, `findings[${k}]`);
+  }
+  return out;
+}
+function fixesOf(v: unknown): string[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) throw new FanoutStateError('fixes must be an array of finding ids');
+  return [...new Set(v as string[])];
+}
+function forgottenOf(v: unknown): Array<{ at: string; reason: string; was: string | null }> {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) throw new FanoutStateError('forgottenMerges must be an array');
+  return v.map((e, i) => {
+    if (!isObj(e) || typeof e.at !== 'string' || typeof e.reason !== 'string' || !e.reason.trim()) throw new FanoutStateError(`forgottenMerges[${i}] needs {at, reason, was}`);
+    return { at: e.at, reason: e.reason, was: checked(strOrNull(e.was, 'was'), HEX_SHA, 'forgottenMerges.was') };
+  });
 }
 function enumOf<T extends string>(v: unknown, all: readonly T[], name: string): T {
   if (typeof v !== 'string' || !(all as readonly string[]).includes(v)) throw new FanoutStateError(`${name} must be one of ${all.join('|')} (got ${JSON.stringify(v)})`);
@@ -278,6 +318,12 @@ export function parseState(raw: unknown): FanoutState {
       acceptance: acceptanceOf(t.acceptance, `ticket ${id}`),
       tree: treeOrNull(t.tree, 'tree'),
       builtOnTree: builtOnTreeOf(t.builtOnTree),
+      findings: findingsOf(t.findings),
+      followUpOf: checked(strOrNull(t.followUpOf, 'followUpOf'), SAFE_TICKET, 'followUpOf'),
+      mergedHead: checked(strOrNull(t.mergedHead, 'mergedHead'), HEX_SHA, 'mergedHead (7-40 lowercase hex)'),
+      mergedTree: treeOrNull(t.mergedTree, 'mergedTree'),
+      forgottenMerges: forgottenOf(t.forgottenMerges),
+      fixes: fixesOf(t.fixes),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -358,6 +404,56 @@ export function unmergedUpstreams(state: FanoutState, id: string): string[] {
   return (state.tickets[id]?.dependsOn ?? []).filter((d) => !upstreamMerged(state, d));
 }
 
+/** #514 — the rule, in words (every refusal carries it). */
+export const FOLLOWUP_RULE = 'A follow-up candidate on an already-merged ticket needs at least one BLOCKING or MAJOR finding of that ticket it fixes; MINOR findings get no action (no follow-up PR, no extra list).';
+export type FollowUpReason = 'followup-undeclared' | 'followup-base-not-merged' | 'followup-no-finding' | 'followup-unknown-finding' | 'followup-minor-only';
+export interface FollowUpRefusal { reason: FollowUpReason; detail: string }
+
+/**
+ * #514 — may ticket `id` (a candidate at `head`, when the caller has one) proceed, given the follow-up rule? null = yes.
+ *  - `followUpOf` set: the named ticket must exist and be merged, `fixes` must be non-empty, every id must be a finding recorded on THAT ticket,
+ *    and at least one must be BLOCKING|MAJOR (MINOR-only ⇒ refused, an unknown id ⇒ refused even beside a real one).
+ *  - a ticket WITHOUT `followUpOf` whose branch (`branch` = the one being gated/delivered, or its own) or PR is the one ANOTHER ticket merged at, at another head ⇒ a follow-up
+ *    registered under a fresh id: refused. (A brand-new branch under a fresh id cannot be told from a new ticket: coordinator trust.)
+ *  - a merged ticket with no recorded head has no merged head to compare to: the rule does not consult it (the normal path is unchanged).
+ *  - ANY ticket that has merged (`mergedHead`, or status merged at its recorded head) named with a candidate head other than the one it merged at ⇒ an undeclared
+ *    follow-up: refused — whether or not it has a `followUpOf` itself, and even after an un-merge. (The merged head itself = a retry of the merge: not a follow-up.)
+ */
+export function followUpRefusal(state: FanoutState, id: string, head?: string | null, branch?: string | null, headTree?: string | null): FollowUpRefusal | null {
+  const t = state.tickets[id];
+  if (!t) return null;
+  const refuse = (reason: FollowUpReason, why: string): FollowUpRefusal => ({ reason, detail: `${id}: ${why}. ${FOLLOWUP_RULE}` });
+  // #512: the same git tree on another sha (rebase / author rewrite) is the same content — a retry, not a further candidate
+  const sameMerge = (mh: string, mt: string | null): boolean => !!head && (sameSha(mh, head) || (!!mt && !!headTree && mt === headTree));
+  const merged = t.mergedHead ?? (t.status === 'merged' ? t.head : null);
+  if (head && merged && (t.mergedHead || t.status === 'merged') && !sameMerge(merged, t.mergedHead ? t.mergedTree : t.tree)) {
+    return refuse('followup-undeclared', `it merged${merged ? ` at ${merged.slice(0, 8)}` : ''} and ${head.slice(0, 8)} is a further candidate on it — register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (if the merge was never real: state set ${id} --forget-merge <reason>)`);
+  }
+  if (!t.followUpOf) {
+    if (head) {
+      for (const [mid, m] of Object.entries(state.tickets)) {
+        const mh = m.mergedHead ?? (m.status === 'merged' ? m.head : null);
+        const shared = (m.branch && (m.branch === branch || m.branch === t.branch) ? `branch ${m.branch}` : null) ?? (m.pr && m.pr === t.pr ? `PR #${m.pr}` : null);
+        if (mid !== id && mh && shared && !sameMerge(mh, m.mergedHead ? m.mergedTree : m.tree)) {
+          return refuse('followup-undeclared', `it carries ${shared}, which ${mid} merged at ${mh.slice(0, 8)}, and ${head.slice(0, 8)} is a further candidate on it — a follow-up needs its declaration: state set ${id} --follow-up-of ${mid} --fixes <finding id>[,…]`);
+        }
+      }
+    }
+    if (t.fixes.length) return refuse('followup-no-finding', '--fixes only applies to a follow-up (--follow-up-of <merged ticket>)');
+    return null;
+  }
+  const base = state.tickets[t.followUpOf];
+  if (t.followUpOf === id || !base) return refuse('followup-base-not-merged', `it follows ${t.followUpOf}, which ${t.followUpOf === id ? 'is itself' : 'is not in the state'}`);
+  if (base.status !== 'merged') return refuse('followup-base-not-merged', `it follows ${t.followUpOf}, which is ${base.status}, not merged — fix it on its own branch, not by a follow-up`);
+  if (t.fixes.length === 0) return refuse('followup-no-finding', `it names no finding it fixes (--fixes <id>[,…], recorded on ${t.followUpOf})`);
+  const unknown = t.fixes.filter((f) => !base.findings[f]);
+  if (unknown.length) return refuse('followup-unknown-finding', `finding ${unknown.join(', ')} is not recorded on ${t.followUpOf} (recorded: ${Object.keys(base.findings).join(', ') || 'none'}; record it with state set ${t.followUpOf} --finding <id>=<severity>)`);
+  if (!t.fixes.some((f) => base.findings[f] === 'BLOCKING' || base.findings[f] === 'MAJOR')) {
+    return refuse('followup-minor-only', `it fixes only MINOR finding(s) of ${t.followUpOf} (${t.fixes.map((f) => `${f}=${base.findings[f]}`).join(', ')})`);
+  }
+  return null;
+}
+
 /**
  * The ONE transition function: apply `patch` to ticket `id` (creating it) and return the NEW state, or throw.
  * Rules in code:
@@ -371,7 +467,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, updatedAt: now,
+    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
@@ -391,6 +487,24 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
     const t = dTrees[k] ?? (prev.builtOn[k] && sameSha(prev.builtOn[k], h) ? prev.builtOnTree[k] : undefined);
     if (t) next.builtOnTree[k] = t;
   }
+  if ('findings' in patch) {
+    const add = findingsOf(patch.findings);
+    for (const [k, sev] of Object.entries(add)) if (prev.findings[k] && prev.findings[k] !== sev) throw new FanoutStateError(`${id}: finding ${k} is already recorded as ${prev.findings[k]} — a recorded severity is not re-graded (a MINOR cannot be promoted to justify a follow-up)`);
+    next.findings = { ...prev.findings, ...add };
+  }
+  if ('followUpOf' in patch) next.followUpOf = checked(strOrNull(patch.followUpOf, 'followUpOf'), SAFE_TICKET, 'followUpOf');
+  if ('fixes' in patch) next.fixes = fixesOf(patch.fixes);
+  if ('forgetMerge' in patch) {
+    if (typeof patch.forgetMerge !== 'string' || !patch.forgetMerge.trim()) throw new FanoutStateError('--forget-merge needs a reason');
+    next.forgottenMerges = [...prev.forgottenMerges, { at: now, reason: patch.forgetMerge.trim(), was: prev.mergedHead }];
+    next.mergedHead = null;
+    next.mergedTree = null;
+  }
+  // the head a ticket merged at is the first one recorded with the merge; a plain head change on a merged ticket would launder a further candidate
+  if (prev.status === 'merged' && next.status === 'merged' && 'head' in patch && !('forgetMerge' in patch) && prev.head && next.head && !sameSha(prev.head, next.head)) {
+    throw new FanoutStateError(`${id} is already merged at ${prev.head.slice(0, 8)}: ${next.head.slice(0, 8)} is a further candidate on it, i.e. a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (recording the head it REALLY merged at after a re-gate: add --forget-merge <reason>)`);
+  }
+  if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
   // #506 review R2/D1: a patch that drops builtOn and LEAVES a pass/approve verdict (kept, swapped pass↔approve, or set in the same patch) would make it read as "built after the upstream merged" (deliver skips the content check).
@@ -401,6 +515,12 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if (next.dependsOn.includes(id)) throw new FanoutStateError(`ticket ${id} cannot depend on itself`);
   const out: FanoutState = { ...state, tickets: { ...state.tickets, [id]: next }, updatedAt: now };
   assertAcyclic(out);
+  // #514 — a follow-up candidate must name a BLOCKING/MAJOR finding of the merged ticket it follows; a further candidate on a merged ticket is a follow-up.
+  const fu = followUpRefusal(out, id, next.status === 'nominated' || next.status === 'gated' ? next.head : undefined, next.branch, next.tree); // a nominated|gated candidate on a ticket that ever merged
+  if (fu) throw new FanoutStateError(fu.detail);
+  if (prev.status === 'merged' && (next.status === 'nominated' || next.status === 'gated')) { // (merged → started|todo|dropped is the explicit un-merge, not a candidate)
+    throw new FanoutStateError(`${id} is already merged: a further candidate on it is a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (the findings are recorded with --finding <id>=BLOCKING|MAJOR|MINOR)`);
+  }
   const open = unmergedUpstreams(out, id);
   if (open.length > 0) {
     if (next.status === 'started' && !next.frozenInterface) {
@@ -601,7 +721,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       add({ ticket: id, kind: 'pr-merged-other-base', detail: `PR #${t.pr} is MERGED into ${r.pr.baseRefName ?? '(unknown base)'}, not origin/${state.target}: not merged on the target` });
     }
     if (ungated) {
-      add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${ungated.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head?.slice(0, 8)}: re-gate the merged tree, then \`state set ${id} --status merged --head ${ungated.slice(0, 12)}\`` });
+      add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${ungated.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head?.slice(0, 8)}: re-gate the merged tree, then \`state set ${id} --status merged --head ${ungated.slice(0, 12)} --forget-merge <reason>\`` });
     }
     if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped') {
       add({ ticket: id, kind: 'pr-closed-unmerged', detail: `PR #${t.pr} is CLOSED without merging` });
@@ -676,7 +796,7 @@ export function applyWriteBack(state: FanoutState, writeBack: ReconcilePlan['wri
     const cur = tickets[w.ticket];
     // Skip a ticket changed since the plan read it (`seen`), and never lower one this batch already recorded as merged.
     if (!cur || state.tickets[w.ticket].updatedAt !== w.seen || mergedHere.has(w.ticket)) continue;
-    tickets[w.ticket] = { ...cur, ...w.patch, updatedAt: now };
+    tickets[w.ticket] = { ...cur, ...w.patch, ...(w.patch.status === 'merged' ? { mergedHead: cur.mergedHead ?? cur.head, mergedTree: cur.mergedHead ? cur.mergedTree : cur.tree } : {}), updatedAt: now };
     if (w.patch.status === 'merged') mergedHere.add(w.ticket);
   }
   return parseState({ ...state, tickets, updatedAt: now, reconciledAt: now });

@@ -244,7 +244,7 @@ test('each rule a verb or guard enforces keeps ONE line naming it (#472); the pr
   // the v1 prose of the AskUserQuestion bullet, the wave-C probe story and the simulated-cache numbers were replaced, not kept beside the line
   assert.doesNotMatch(VERIFIED_FANOUT_SKILL, /placeholder question|SIMULATED cache|Why the count comes first/);
   // the judgement rules stay as prose
-  for (const re of [/A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\s+MINOR that touches correctness or a ticket promise goes to the candidate's ONE\s+follow-up branch, every other finding is `noted`\./, /A personal-level copy shadows it/, /VPS install:/, /Specify gates that can fail/]) assert.match(VERIFIED_FANOUT_SKILL, re);
+  for (const re of [/A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every\s+MINOR is `noted` — no follow-up PR\./, /A personal-level copy shadows it/, /VPS install:/, /Specify gates that can fail/]) assert.match(VERIFIED_FANOUT_SKILL, re);
 });
 
 test('must-FAIL: deleting the line of any one enforced rule reddens exactly that rule\'s pin', () => {

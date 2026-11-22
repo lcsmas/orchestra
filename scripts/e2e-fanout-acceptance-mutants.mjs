@@ -184,7 +184,7 @@ function scenarios(cliPath) {
     arm('G10 must-FAIL a skip-worktree file hiding a DIFFERENT blob at HEAD behind the frozen worktree bytes: exit 2, frozen-test-changed', g10.code === 2 && g10.json?.reason === 'frozen-test-changed', J(g10));
 
     const g11 = W.gate(ok, 'T-typo');
-    arm('G11 must-FAIL explicit --run with a ticket the state does not name: exit 1, bad-state (nothing silently skipped)', g11.code === 1 && g11.json?.reason === 'bad-state', J(g11));
+    arm('G11 must-FAIL explicit --run with a ticket the state does not name: exit 1, bad-state (nothing silently skipped)', g11.code === 1 && g11.json?.reason === 'bad-state' && /frozen acceptance tests/.test(g11.json?.detail ?? ''), J(g11)); // the acceptance reader answers (not a later clause's reader)
     const g12 = W.cli(['gate', '--branch', ok.branch, '--into', 'master', '--head', ok.head, '--ticket', 'T-typo']);
     arm('G12 must-PASS without --run an unknown ticket prints acceptance:{consulted:false} (nothing checked, said so), exit 0', g12.code === 0 && g12.json?.acceptance?.consulted === false && /NOT checked/.test(g12.stderr), J(g12));
 

@@ -275,7 +275,7 @@ test('follow-up MINOR 1: merged-at-ungated-head persists across resumes, withhol
   const asMerged = applyTicketPatch(s, 'A', { status: 'merged' }, T);
   assert.ok(reconcile(asMerged, mergedAt(SHA_B)).divergences.some((d) => d.kind === 'merged-at-ungated-head'));
   // clears once the coordinator records the merged head after re-gating
-  const fixed = applyTicketPatch(asMerged, 'A', { head: SHA_B }, T);
+  const fixed = applyTicketPatch(asMerged, 'A', { head: SHA_B, forgetMerge: 'merged at the ungated head' }, T);
   const p3 = reconcile(fixed, mergedAt(SHA_B));
   assert.deepEqual(p3.divergences, []);
   assert.equal(p3.tickets.B.next.action, 'start');
@@ -449,4 +449,159 @@ test('#506 V3: an upstream with NO recorded head (hand-edited state) is ineligib
   assert.deepEqual([stackView(s, 'B')!.order, stackView(s, 'B')!.upstreams[0].state], ['blocked', 'ineligible']);
   const plan = reconcile(s, { A: { branchHead: null, mergedIntoTarget: false }, B: openPr(SHA_B) });
   assert.ok(plan.divergences.some((d) => d.ticket === 'B' && d.kind === 'nominated-before-upstream-merged' && /no recorded head/.test(d.detail)));
+});
+
+// ── #514: a follow-up candidate on a merged ticket must name a BLOCKING/MAJOR finding of that ticket ──────────────
+
+import { followUpRefusal } from './fanout-state.ts';
+/** T-1 merged at SHA_A with findings F-MAJ (MAJOR), F-BLK (BLOCKING), F-MIN (MINOR); T-2 is an unrelated started ticket. */
+function merged514(): FanoutState {
+  let s = newState('r', { now: T });
+  s = applyTicketPatch(s, 'T-1', { status: 'merged', branch: 't1', head: SHA_A, findings: { 'F-MAJ': 'MAJOR', 'F-BLK': 'BLOCKING', 'F-MIN': 'MINOR' } }, T);
+  return applyTicketPatch(s, 'T-2', { status: 'started', branch: 't2' }, T);
+}
+const fu = (s: FanoutState, patch: Record<string, unknown>) => applyTicketPatch(s, 'T-1-fu', { status: 'started', branch: 't1-fu', ...patch }, T);
+
+test('#514 must-PASS: a follow-up naming a MAJOR (or a BLOCKING, or MINOR beside a MAJOR) of the merged ticket is registered', () => {
+  for (const fixes of [['F-MAJ'], ['F-BLK'], ['F-MIN', 'F-MAJ']]) {
+    const s = fu(merged514(), { followUpOf: 'T-1', fixes });
+    assert.equal(s.tickets['T-1-fu'].followUpOf, 'T-1');
+    assert.equal(followUpRefusal(s, 'T-1-fu', SHA_B), null);
+  }
+});
+test('#514 must-FAIL: a follow-up naming only MINOR / naming none / an unknown finding id / a finding of ANOTHER ticket is refused with the rule', () => {
+  const s = merged514();
+  assert.throws(() => fu(s, { followUpOf: 'T-1', fixes: ['F-MIN'] }), /only MINOR.*MINOR findings get no action/s);
+  assert.throws(() => fu(s, { followUpOf: 'T-1', fixes: [] }), /names no finding it fixes/);
+  assert.throws(() => fu(s, { followUpOf: 'T-1' }), /names no finding it fixes/);
+  assert.throws(() => fu(s, { followUpOf: 'T-1', fixes: ['F-NOPE'] }), /F-NOPE is not recorded on T-1/);
+  assert.throws(() => fu(s, { followUpOf: 'T-1', fixes: ['F-MAJ', 'F-NOPE'] }), /F-NOPE is not recorded on T-1/);
+  const other = applyTicketPatch(s, 'T-2', { findings: { 'F-OTHER': 'BLOCKING' } }, T);
+  assert.throws(() => fu(other, { followUpOf: 'T-1', fixes: ['F-OTHER'] }), /F-OTHER is not recorded on T-1/);
+});
+test('#514 must-FAIL: the merged ticket must exist and BE merged; a ticket cannot follow itself', () => {
+  const s = merged514();
+  assert.throws(() => fu(s, { followUpOf: 'T-2', fixes: ['F-X'] }), /T-2, which is started, not merged/);
+  assert.throws(() => fu(s, { followUpOf: 'T-9', fixes: ['F-X'] }), /not in the state/);
+  assert.throws(() => applyTicketPatch(s, 'T-1', { followUpOf: 'T-1', fixes: ['F-MAJ'] }, T), /itself/);
+  assert.throws(() => applyTicketPatch(s, 'T-2', { fixes: ['F-MAJ'] }, T), /--fixes only applies to a follow-up/);
+});
+test('#514 must-FAIL: a recorded finding severity is never re-graded (MINOR → MAJOR would manufacture a follow-up); same severity is idempotent', () => {
+  const s = merged514();
+  assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-MIN': 'MAJOR' } }, T), /already recorded as MINOR/);
+  assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-NEW': 'SEVERE' } }, T), /must be one of BLOCKING\|MAJOR\|MINOR/);
+  const again = applyTicketPatch(s, 'T-1', { findings: { 'F-MIN': 'MINOR', 'F-NEW': 'MAJOR' } }, T);
+  assert.deepEqual(Object.keys(again.tickets['T-1'].findings).sort(), ['F-BLK', 'F-MAJ', 'F-MIN', 'F-NEW']);
+});
+test('#514 a further candidate on a MERGED ticket itself (nominated|gated) is refused; un-merge to started and a non-follow-up ticket are unchanged', () => {
+  const s = merged514();
+  for (const status of ['nominated', 'gated']) assert.throws(() => applyTicketPatch(s, 'T-1', { status, head: SHA_B }, T), /further candidate on it/, status);
+  assert.equal(applyTicketPatch(s, 'T-1', { status: 'started' }, T).tickets['T-1'].status, 'started'); // the explicit un-merge
+  const t2 = applyTicketPatch(s, 'T-2', { status: 'nominated', head: SHA_B }, T); // a non-follow-up ticket: no new rule
+  assert.equal(t2.tickets['T-2'].status, 'nominated');
+});
+test('#514 review F1: a MERGED follow-up is a merged ticket too — a further candidate on it is refused (state, gate/deliver rule)', () => {
+  let s = fu(merged514(), { followUpOf: 'T-1', fixes: ['F-MAJ'] });
+  s = applyTicketPatch(s, 'T-1-fu', { status: 'merged', head: SHA_B }, T);
+  const SHA_C = 'c'.repeat(40);
+  for (const status of ['nominated', 'gated']) assert.throws(() => applyTicketPatch(s, 'T-1-fu', { status, head: SHA_C }, T), /further candidate on it/, status);
+  assert.equal(followUpRefusal(s, 'T-1-fu', SHA_C)?.reason, 'followup-undeclared');
+  assert.equal(followUpRefusal(s, 'T-1-fu', SHA_B), null, 'its own merged head: a retry');
+});
+test('#514 review F2: un-merge then nominate does not launder — the merged head outlives the un-merge; --forget-merge <reason> is the explicit way out', () => {
+  const s = merged514();
+  const un = applyTicketPatch(s, 'T-1', { status: 'started' }, T);
+  assert.equal(un.tickets['T-1'].mergedHead, SHA_A);
+  assert.throws(() => applyTicketPatch(un, 'T-1', { status: 'nominated', head: SHA_B }, T), /further candidate on it.*--forget-merge/s);
+  assert.equal(followUpRefusal(un, 'T-1', SHA_B)?.reason, 'followup-undeclared');
+  assert.throws(() => applyTicketPatch(un, 'T-1', { status: 'nominated', head: SHA_B, forgetMerge: ' ' }, T), /needs a reason/);
+  const forgotten = applyTicketPatch(un, 'T-1', { status: 'nominated', head: SHA_B, forgetMerge: 'the merge was never real (PR closed)' }, T);
+  assert.deepEqual([forgotten.tickets['T-1'].status, forgotten.tickets['T-1'].mergedHead], ['nominated', null]);
+  // re-nominating at the head it merged at is not a further candidate
+  assert.equal(applyTicketPatch(un, 'T-1', { status: 'nominated', head: SHA_A }, T).tickets['T-1'].status, 'nominated');
+});
+test('#514 review F3: a plain head change on a merged ticket is refused (it would rewrite the head a retry is compared to); with --forget-merge it re-records the head', () => {
+  const s = merged514();
+  assert.throws(() => applyTicketPatch(s, 'T-1', { head: SHA_B }, T), /is a further candidate on it, i\.e\. a follow-up/);
+  assert.throws(() => applyTicketPatch(s, 'T-1', { status: 'merged', head: SHA_B }, T), /further candidate/);
+  const re = applyTicketPatch(s, 'T-1', { status: 'merged', head: SHA_B, forgetMerge: 'merged at the ungated head after re-gate' }, T);
+  assert.deepEqual([re.tickets['T-1'].head, re.tickets['T-1'].mergedHead], [SHA_B, SHA_B]);
+  assert.equal(applyTicketPatch(s, 'T-1', { head: SHA_A }, T).tickets['T-1'].head, SHA_A, 'the same head is a no-op');
+});
+test('#514 followUpRefusal for gate/deliver: an undeclared candidate head on a merged ticket is refused; its own merged head (a retry) and an unmerged ticket are not', () => {
+  const s = merged514();
+  assert.equal(followUpRefusal(s, 'T-1', SHA_B)?.reason, 'followup-undeclared');
+  assert.equal(followUpRefusal(s, 'T-1', SHA_A), null);
+  assert.equal(followUpRefusal(s, 'T-2', SHA_B), null);
+  assert.equal(followUpRefusal(s, 'T-nope', SHA_B), null);
+  // a hand-edited state that slipped a MINOR-only follow-up past `state set` is still refused where it is acted on
+  const raw = JSON.parse(JSON.stringify(fu(s, { followUpOf: 'T-1', fixes: ['F-MAJ'] })));
+  raw.tickets['T-1-fu'].fixes = ['F-MIN'];
+  assert.equal(followUpRefusal(parseState(raw), 'T-1-fu', SHA_B)?.reason, 'followup-minor-only');
+});
+test('#514 a state written before #514 (no findings/followUpOf/fixes) parses with the defaults', () => {
+  const raw = JSON.parse(JSON.stringify(merged514()));
+  for (const t of Object.values(raw.tickets) as Record<string, unknown>[]) { delete t.findings; delete t.followUpOf; delete t.fixes; }
+  const s = parseState(raw);
+  assert.deepEqual([s.tickets['T-1'].findings, s.tickets['T-1'].followUpOf, s.tickets['T-1'].fixes], [{}, null, []]);
+});
+
+// ── #514 fix round (review c/7079634662): MAJOR 1 reason kept, MAJOR 2 same branch/PR under a fresh id, MINOR 3 headless merge ──
+test('#514 review M1: --forget-merge keeps its reason (append-only, who/when/which merged head it cleared) and a blank reason is refused', () => {
+  const s = applyTicketPatch(merged514(), 'T-1', { status: 'merged', head: SHA_B, forgetMerge: ' merged at the ungated head ' }, T);
+  assert.deepEqual(s.tickets['T-1'].forgottenMerges, [{ at: T, reason: 'merged at the ungated head', was: SHA_A }]);
+  const again = applyTicketPatch(s, 'T-1', { status: 'merged', head: SHA_A, forgetMerge: 'second' }, T);
+  assert.deepEqual(again.tickets['T-1'].forgottenMerges.map((f) => f.reason), ['merged at the ungated head', 'second']);
+  assert.deepEqual(parseState(JSON.parse(JSON.stringify(again))).tickets['T-1'].forgottenMerges, again.tickets['T-1'].forgottenMerges, 'round-trips through parseState');
+  assert.throws(() => applyTicketPatch(merged514(), 'T-1', { head: SHA_B, forgetMerge: '  ' }, T), /needs a reason/);
+});
+test('#514 review M2 must-FAIL: a fresh ticket id on the SAME branch or PR as a merged ticket, at another head, is refused without --follow-up-of (nominate/gate, --json spelling too)', () => {
+  let s = applyTicketPatch(merged514(), 'T-1', { pr: 9 }, T);
+  for (const status of ['nominated', 'gated']) assert.throws(() => applyTicketPatch(s, 'T-1-b', { status, branch: 't1', head: SHA_B }, T), /carries branch t1, which T-1 merged at aaaaaaaa.*--follow-up-of T-1/s, status);
+  assert.throws(() => applyTicketPatch(s, 'T-1-c', { status: 'nominated', branch: 'other', pr: 9, head: SHA_B }, T), /carries PR #9, which T-1 merged/);
+  assert.throws(() => applyTicketPatch(s, 'T-1-d', { status: 'nominated', branch: 't1', head: SHA_B, followUpOf: null, fixes: [] }, T), /carries branch t1/);
+  // gate / deliver pass the branch they were given, not only the one in the state
+  s = applyTicketPatch(s, 'T-1-e', { status: 'started', branch: 'elsewhere' }, T);
+  assert.equal(followUpRefusal(s, 'T-1-e', SHA_B, 't1')?.reason, 'followup-undeclared');
+});
+test('#514 review M2 must-PASS: a fresh branch under a fresh id, a duplicate record at the merged head, and a DECLARED follow-up on the base\'s own branch are unchanged', () => {
+  const s = merged514();
+  assert.equal(applyTicketPatch(s, 'T-3', { status: 'nominated', branch: 'brand-new', head: SHA_B }, T).tickets['T-3'].status, 'nominated');
+  assert.equal(applyTicketPatch(s, 'T-3', { status: 'nominated', branch: 't1', head: SHA_A }, T).tickets['T-3'].status, 'nominated');
+  assert.equal(applyTicketPatch(s, 'T-1-fu', { status: 'nominated', branch: 't1', head: SHA_B, followUpOf: 'T-1', fixes: ['F-MAJ'] }, T).tickets['T-1-fu'].status, 'nominated');
+});
+test('#514 review M3 (minor 3): a normal ticket merged WITHOUT a head is not consulted by the rule (gate/deliver unchanged)', () => {
+  const s = applyTicketPatch(newState('r', { now: T }), 'T-9', { status: 'merged', branch: 'plain' }, T);
+  assert.equal(s.tickets['T-9'].mergedHead, null);
+  assert.equal(followUpRefusal(s, 'T-9', SHA_B, 'plain'), null);
+  assert.equal(followUpRefusal(s, 'T-9', SHA_A), null);
+});
+
+// ── #514 × #512: the same git tree on another sha is the same content (tree-keyed verdict compat) ──────────────
+const TREE_A = '1'.repeat(40);
+const TREE_B = '2'.repeat(40);
+function mergedWithTree(): FanoutState {
+  let s = newState('r', { now: T });
+  s = applyTicketPatch(s, 'T-1', { status: 'merged', branch: 't1', head: SHA_A }, T, { tree: TREE_A });
+  return s;
+}
+test('#514×#512 must-PASS: the merged tree on another sha (rebase) is no further candidate — rule, state set (nominate on its branch) and a recorded mergedTree', () => {
+  const s = mergedWithTree();
+  assert.equal(s.tickets['T-1'].mergedTree, TREE_A);
+  assert.equal(followUpRefusal(s, 'T-1', SHA_B, null, TREE_A), null);
+  assert.equal(followUpRefusal(applyTicketPatch(s, 'T-3', { status: 'started', branch: 't1' }, T), 'T-3', SHA_B, 't1', TREE_A), null);
+  assert.equal(applyTicketPatch(s, 'T-3', { status: 'nominated', branch: 't1', head: SHA_B }, T, { tree: TREE_A }).tickets['T-3'].status, 'nominated');
+});
+test('#514×#512 must-FAIL: another tree, an unreadable tree, or no tree keeps the sha verdict (undeclared)', () => {
+  const s = mergedWithTree();
+  for (const tree of [TREE_B, null, undefined]) assert.equal(followUpRefusal(s, 'T-1', SHA_B, null, tree)?.reason, 'followup-undeclared', String(tree));
+  assert.throws(() => applyTicketPatch(s, 'T-3', { status: 'nominated', branch: 't1', head: SHA_B }, T, { tree: TREE_B }), /carries branch t1/);
+  assert.throws(() => applyTicketPatch(s, 'T-3', { status: 'nominated', branch: 't1', head: SHA_B }, T), /carries branch t1/, 'tree unknown ⇒ sha verdict');
+});
+test('#514×#512: the merged tree survives an un-merge and is cleared by --forget-merge', () => {
+  const s = applyTicketPatch(mergedWithTree(), 'T-1', { status: 'started' }, T);
+  assert.equal(s.tickets['T-1'].mergedTree, TREE_A);
+  assert.equal(followUpRefusal(s, 'T-1', SHA_B, null, TREE_A), null);
+  const f = applyTicketPatch(s, 'T-1', { status: 'started', forgetMerge: 'never real' }, T);
+  assert.deepEqual([f.tickets['T-1'].mergedHead, f.tickets['T-1'].mergedTree], [null, null]);
 });

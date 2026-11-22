@@ -35,7 +35,8 @@ import {
   decideUpstreams,
 } from '../shared/fanout-deliver.ts';
 import { decideDeliverReceipt, parseReceipt, type DeliverAcceptanceReason, type Receipt } from '../shared/fanout-acceptance.ts';
-import type { Acceptance } from '../shared/fanout-state.ts';
+import type { Acceptance, FollowUpReason } from '../shared/fanout-state.ts';
+import { askFollowUp, followUpFromState, type FollowUpReader } from './fanout-followup.ts';
 import { acceptanceFromState, rereadFrozenAtHead } from './fanout-acceptance.ts';
 
 export interface GhResult {
@@ -138,7 +139,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | DeliverAcceptanceReason;
+  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | FollowUpReason | DeliverAcceptanceReason;
   detail?: string;
   ticket: string;
   branch: string;
@@ -173,6 +174,8 @@ export interface DeliverDeps {
   upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[] | null;
   /** #510 — the ticket's frozen acceptance tests from the state (`consulted:false` = no state read). Absent = the clause is not consulted. Throws on an unreadable state / explicit --run with none / unknown ticket (⇒ exit 1). */
   acceptance?: (opts: { ticket: string; run?: string }) => { consulted: boolean; acceptance: Acceptance | null };
+  /** #514 — the follow-up rule (a candidate on a merged ticket must name a BLOCKING|MAJOR finding it fixes). Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
+  followUp?: FollowUpReader;
 }
 
 /** One upstream of the ticket being delivered, as the fanout state records it. */
@@ -216,6 +219,7 @@ export const realDeps = (): DeliverDeps => ({
   log: (s) => process.stderr.write(`${s}\n`),
   upstreams: (o) => upstreamsFromState(o),
   acceptance: (o) => acceptanceFromState(o),
+  followUp: (o) => followUpFromState(o),
 });
 
 class GhError extends Error {}
@@ -398,6 +402,14 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     }
   }
 
+  // 1a0. #514 — a follow-up candidate on an already-merged ticket must name a BLOCKING|MAJOR finding it fixes (before the PR is opened and before any wait).
+  if (deps.followUp) {
+    let fu;
+    try { fu = await askFollowUp(deps.followUp, { ticket: opts.ticket, run: opts.run, head: verifiedHead, branch: opts.branch }, treeOf); } catch (e) {
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s follow-up rule: ${(e as Error).message}` }, reviewGated);
+    }
+    if (fu.refusal) return done({ verdict: 'refused', reason: fu.refusal.reason, detail: fu.refusal.detail, head: verifiedHead }, reviewGated);
+  }
   // 1a. #510 — frozen acceptance tests: the gate's RECEIPT for this head + this frozen set, AND an independent byte re-read of every frozen file at the head through gh.
   // Before the PR is opened and before any wait: a refusal never depends on CI. The receipt is the coordinator's own file; the re-read is not.
   if (deps.acceptance) {
@@ -544,6 +556,7 @@ and gated against (state builtOn; a fix round or refusal on the upstream since =
 Content key (#512): a verdict is keyed on the git TREE, not the sha. The PR head, --verified-head and the review verdict's head may be different shas of ONE tree (rebase, author rewrite):
 the merge then binds to the REAL PR head (result head, viaTree:{verifiedHead,tree}); trees that differ, or cannot be read, keep the old sha refusals (head-moved, verdict-head-mismatch).
 A gate receipt for another sha holds only if its tree = the verified head's tree and its ticket = --ticket (acceptance-stale otherwise; a changed frozen set/command is still acceptance-stale).
+Follow-up (#514): a follow-up candidate on an already-merged ticket (\`state set --follow-up-of <merged> --fixes <ids>\`; or --ticket naming a merged ticket with a head other than the one it merged at, or carrying the branch/PR of one) is refused (exit 2, before any PR is opened) unless it fixes >= 1 BLOCKING|MAJOR finding recorded on the merged ticket: followup-undeclared | followup-no-finding | followup-unknown-finding | followup-minor-only | followup-base-not-merged. MINOR findings get no action.
 Acceptance (#510): a ticket with frozen acceptance tests (the fanout state, \`fanout acceptance freeze\`) needs --acceptance <receipt.json> (the gate's
 acceptance.receipt {head,tree,ticket,hash,ok} for THIS verified head (or its tree) and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
 at the verified head through gh and must be byte-identical (else frozen-test-changed). Unreadable state / unknown ticket with --acceptance ⇒ exit 1. A ticket without frozen tests is unchanged.

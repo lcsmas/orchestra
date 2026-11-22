@@ -239,6 +239,11 @@ for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']
   // #476: a scribe relays the coordinator's `state set` lines; `init` stays denied to it
   const SETS = [['fanout state set', 'orchestra fanout state set 473 --status merged --pr 5'], ['fanout state set via bash -c', 'bash -c "orchestra fanout state set 1 --status x"'], ['bare state set in sh -c', "sh -c 'orchestra fanout state set'"]] as const;
   for (const [name, cmd] of SETS) { if (role === 'scribe') allow(role, `${name} (scribe relay)`, bash(cmd)); else deny(role, name, bash(cmd), /state file/); }
+  // #514: a scribe cannot rewrite a merge claim (--forget-merge), exactly like --accept-merged; plain relay flags stay allowed
+  for (const [name, cmd] of [['--forget-merge', 'orchestra fanout state set T-1 --head abc1234 --forget-merge x'], ['forgetMerge in a --json payload', "orchestra fanout state set T-1 --json '{\"forgetMerge\":\"x\"}'"], ['--forget-merge after ;', 'cd /r; orchestra fanout state set T-1 --status merged --forget-merge "a; b"']] as const) {
+    if (role === 'scribe') deny(role, `scribe ${name}`, bash(cmd), /forget-merge/); else deny(role, `${name}`, bash(cmd), /state file/);
+  }
+  if (role === 'scribe') allow(role, 'scribe state set with finding relay flags', bash('orchestra fanout state set T-1 --finding F-1=MAJOR'));
   deny(role, 'fanout state init (after &&)', bash('cd /r && orchestra fanout state init --run r1 --target master'), /state file/);
   deny(role, 'bare state init in bash -c', bash('bash -c "orchestra fanout state init"'), /state file/);
   allow(role, 'fanout state show', bash('orchestra fanout state show --json'));
@@ -384,6 +389,7 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
     ['fanout deliver rule removed', 'orchestra[[:space:]]+fanout[[:space:]]+deliver(', 'orchestra[[:space:]]+NOFANOUTVERB('],
     ['fanout state write rule removed', 'fanout[[:space:]]+state[[:space:]]+(init|set)', 'fanout[[:space:]]+state[[:space:]]+NOVERB'],
+    ['#514: --forget-merge / forgetMerge no longer denied to a scribe', '(--accept-merged|--forget-merge|--json|mergedAccepted|forgetMerge)', '(--accept-merged|--json|mergedAccepted)'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
     ['unquote after ANY -c (grep -c ">" reads as a redirect)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh" || nm == "grep" || nm == "psql" || nm == "python3" || nm == "rg") code_operand'],
     ['shell wrappers are never unquoted (bash -c "… > f" invisible)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh") nm = nm'],

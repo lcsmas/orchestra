@@ -40,6 +40,7 @@ export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string): {
 export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>]
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
+                                  [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
        orchestra fanout state show [--run <id>] [--json]
        orchestra fanout acceptance freeze|amend|show <ticket> …   (frozen acceptance tests, #510 — orchestra fanout acceptance --help)
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
@@ -55,6 +56,12 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            moved to another sha with the SAME tree (it records the new head); another tree = head-moved (verdict void).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
+  Findings (#514): --finding records a verifier/review finding (id=severity) on the ticket it was raised on; a recorded severity is never re-graded.
+           A follow-up candidate on an already-merged ticket (--follow-up-of <it> --fixes <ids>, as its own ticket) is registered, gated and delivered
+           only if it fixes >= 1 BLOCKING|MAJOR finding recorded on that ticket — MINOR-only, none, or an unknown id is refused; \`state set\` also refuses
+           to nominate/gate a ticket that ever merged on another head (the merged head outlives an un-merge; --forget-merge <reason> clears it when the merge was never real).
+           Findings are the coordinator's own record (no report reference): one finding may justify more than one follow-up, and a brand-new branch under a fresh ticket id cannot
+           be told from a new ticket — the rule catches the same branch/PR as a merged ticket, any head change on it, and every un-merge/--forget-merge path (the reason is kept in forgottenMerges, denied to a scribe).
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
 const SHA_ARG = /^[0-9a-f]{7,40}$/;
@@ -98,6 +105,17 @@ function builtOnArg(v: string): Record<string, string> {
     const i = part.indexOf('=');
     if (i < 1) throw new FanoutStateError(`--built-on expects <upstream>=<sha>[,…] (got ${JSON.stringify(part)})`);
     out[part.slice(0, i)] = part.slice(i + 1);
+  }
+  return out;
+}
+
+/** `--finding ID=SEV[,ID2=SEV]` → {ID: SEV}. */
+function findingsArg(v: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of v.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const i = part.indexOf('=');
+    if (i < 1) throw new FanoutStateError(`--finding expects <id>=BLOCKING|MAJOR|MINOR[,…] (got ${JSON.stringify(part)})`);
+    out[part.slice(0, i)] = part.slice(i + 1).toUpperCase();
   }
   return out;
 }
@@ -153,7 +171,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--json'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--json'], []);
     const [ticket, ...extra] = p.pos;
     if (!ticket || extra.length) throw new FanoutStateError('usage: orchestra fanout state set <ticket> [--status s] [--branch b] …');
     const patch: Record<string, unknown> = {};
@@ -164,11 +182,11 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--json must be an object');
       Object.assign(patch, obj);
     }
-    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--built-on': 'builtOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted' };
+    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--built-on': 'builtOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted', '--finding': 'findings', '--follow-up-of': 'followUpOf', '--fixes': 'fixes', '--forget-merge': 'forgetMerge' };
     for (const [flag, key] of Object.entries(flagToKey)) {
       const v = p.vals[flag];
       if (v === undefined) continue;
-      patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' ? v.split(',').map((x) => x.trim()).filter(Boolean) : key === 'builtOn' ? builtOnArg(v) : v;
+      patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' || key === 'fixes' ? v.split(',').map((x) => x.trim()).filter(Boolean) : key === 'findings' ? findingsArg(v) : key === 'builtOn' ? builtOnArg(v) : v;
     }
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
     const r = runOf(p, deps, 'write');
@@ -193,7 +211,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       return applyTicketPatch(cur, ticket, patch, deps.now(), derived);
     });
     const t = next.tickets[ticket];
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}\n`, stderr: r.note + notes.join('') };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v}`).join(',')}` : ''}\n`, stderr: r.note + notes.join('') };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
