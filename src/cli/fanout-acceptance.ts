@@ -16,14 +16,16 @@ import {
 import { homeOf, loadOrFail, parseArgs, runOf, type FanoutDeps, type RunResult, type Runner } from './fanout-state.ts';
 
 export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" --from <ref|dir>
-       orchestra fanout acceptance amend  <ticket> [--run <id>] --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2,…> [--from <ref|dir>]
+       orchestra fanout acceptance amend  <ticket> [--run <id>] --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2,…> [--from <ref|dir>] [--run-cmd "<cmd>"]
        orchestra fanout acceptance show   <ticket> [--run <id>] [--json]
 
 Frozen acceptance tests (#510): the test writer's files are hashed (sha256 of the bytes) at --from (a git ref of the writer's branch, or a checkout dir),
 and recorded in the ticket's fanout state with the targeted command (--run-cmd, run with cwd = the candidate checkout).
-  freeze  coordinator only; refused when already frozen (amend), on an empty/unsafe file list, a non-regular or uncommitted file.
+  freeze  coordinator only; refused when already frozen (amend), on an empty/unsafe file list, a non-regular or uncommitted file, or a --run-cmd naming
+          none of the frozen files (call the runner directly: no \`npm run x\` indirection through a file the candidate owns).
   amend   coordinator only; --decision = a GitHub ledger comment URL whose body (read through gh, fail closed) quotes --spec-sentence (≥ 12 chars,
-          whitespace-normalised); appends {decision, specSentence, hashBefore, hashAfter}; refused (exit 2) without them. --from defaults to the recorded source branch.
+          whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision already
+          authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
   show    read-only, every role. \`fanout gate --ticket <id> --cwd <checkout>\` runs + hashes them; \`fanout deliver --acceptance <receipt>\` demands the receipt.
 Exit 0 = ok, 2 = refused (policy), 1 = usage / could not check. A frozen file cannot be set by \`fanout state set\` (--json included).`;
 
@@ -120,7 +122,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\`\n`}`, stderr: r.note };
   }
   if (verb === 'amend') {
-    const p = parseArgs(rest, ['--run', '--decision', '--spec-sentence', '--files', '--from'], []);
+    const p = parseArgs(rest, ['--run', '--decision', '--spec-sentence', '--files', '--from', '--run-cmd'], []);
     const ticket = oneTicket(p.pos, 'amend');
     const decision = p.vals['--decision']?.trim();
     if (!decision) throw new Refusal('an amendment needs --decision <ledger comment url> (the coordinator\'s recorded decision) — none given');
@@ -149,16 +151,18 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     const ok = decisionNamesSentence(body, sentence);
     if (!ok.ok) throw new Refusal(ok.why);
     const frozen = readFrozen(paths, from, deps.cwd, deps.runner);
+    const newRun = p.vals['--run-cmd']?.trim();
+    if (p.vals['--run-cmd'] !== undefined && (!newRun || newRun.length > 2000 || /[\r\n\0]/.test(newRun))) throw new FanoutStateError('--run-cmd must be a single-line command (≤ 2000 chars)');
     let hashes: { before: string; after: string } | null = null;
     updateState(file, (c) => {
       if (!c) throw new FanoutStateError(`no state at ${file}`);
       try {
-        const n = amendInto(c, ticket, { files: frozen.files, decision, specSentence: normaliseSentence(sentence), source: frozen.source, now: deps.now() });
+        const n = amendInto(c, ticket, { files: frozen.files, decision, specSentence: normaliseSentence(sentence), bodySha256: sha256Hex(Buffer.from(body, 'utf8')), source: frozen.source, ...(newRun ? { run: newRun } : {}), now: deps.now() });
         const am = n.tickets[ticket].acceptance!.amendments.at(-1)!;
         hashes = { before: am.hashBefore, after: am.hashAfter };
         return n;
       } catch (e) {
-        if (e instanceof FanoutStateError && /changes nothing/.test(e.message)) throw new Refusal(e.message);
+        if (e instanceof FanoutStateError && /changes nothing|already authorised/.test(e.message)) throw new Refusal(e.message);
         throw e;
       }
     });
@@ -195,21 +199,21 @@ function oneTicket(pos: string[], verb: string): string {
 
 // ── the state reader (gate, deliver) ──────────────────────────────────────────────────────────────────────
 
-/** `lenient` (the gate, like its `stack`): an absent state / ticket = no clause (deliver, the merge authority, is strict). `consulted:false` = no state at all (no --run, none at the caller's own run). Throws (FanoutStateError) like `upstreamsFromState`: explicit --run with
+/** `lenient` (the gate WITHOUT an explicit --run): an absent state / ticket = `known:false`, reported as `acceptance:{consulted:false}` (deliver, the merge authority, is strict; so is the gate with --run). `consulted:false` = no state at all (no --run, none at the caller's own run). Throws (FanoutStateError) like `upstreamsFromState`: explicit --run with
  *  no state, a ticket the existing state does not name, or an unreadable state — fail closed. */
-export function acceptanceFromState(opts: { ticket: string; run?: string; lenient?: boolean }, env: NodeJS.ProcessEnv = process.env): { consulted: boolean; acceptance: Acceptance | null } {
+export function acceptanceFromState(opts: { ticket: string; run?: string; lenient?: boolean }, env: NodeJS.ProcessEnv = process.env): { consulted: boolean; known: boolean; acceptance: Acceptance | null } {
   const { run } = resolveFanoutRun(opts.run, env);
-  if (!run) return { consulted: false, acceptance: null };
+  if (!run) return { consulted: false, known: false, acceptance: null };
   const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
   const state = readState(stateFile(home, run));
   if (!state) {
     if (opts.run && !opts.lenient) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the acceptance clause`);
-    return { consulted: false, acceptance: null };
+    return { consulted: false, known: false, acceptance: null };
   }
   const t = state.tickets[opts.ticket];
-  if (!t && opts.lenient) return { consulted: true, acceptance: null };
+  if (!t && opts.lenient) return { consulted: true, known: false, acceptance: null };
   if (!t) throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run}: a mistyped --ticket would skip the acceptance clause`);
-  return { consulted: true, acceptance: t.acceptance };
+  return { consulted: true, known: true, acceptance: t.acceptance };
 }
 
 // ── gate: hash + run in the candidate checkout ────────────────────────────────────────────────────────────

@@ -30,6 +30,11 @@ export interface GateAcceptance {
 /** Whitespace-normalised, for matching a spec sentence inside a decision body. */
 export const normaliseSentence = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
+/** A direct runner call, not an indirection the candidate owns (`npm run x` → package.json): the command must NAME a frozen path, or the bytes proven are not the bytes run. */
+export function assertRunCmdNamesFrozen(run: string, paths: string[]): void {
+  if (!paths.some((p) => run.includes(p))) throw new FanoutStateError(`the run command ${JSON.stringify(run)} names none of the frozen files (${paths.slice(0, 4).join(', ')}): call the runner on them directly (e.g. \`node --test ${paths[0]}\`) — an \`npm run x\` indirection runs a script the candidate can rewrite`);
+}
+
 export function parseFileList(v: string): string[] {
   const out = v.split(',').map((x) => x.trim()).filter(Boolean);
   if (out.length === 0) throw new FanoutStateError('--files needs at least one path');
@@ -50,6 +55,7 @@ export function freezeInto(
   const cur = ticketOf(state, id);
   if (cur?.acceptance) throw new FanoutStateError(`${id}: acceptance tests are already frozen (hash ${cur.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
+  assertRunCmdNamesFrozen(f.run, Object.keys(f.files));
   const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files), run: f.run, source: f.source, frozenAt: f.now, amendments: [] };
   const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, updatedAt: f.now };
   return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, updatedAt: f.now } }, updatedAt: f.now };
@@ -58,17 +64,20 @@ export function freezeInto(
 /** Replace the frozen set (D3): appends `{at, decision, specSentence, hashBefore, hashAfter}`. A no-op amend is refused. */
 export function amendInto(
   state: FanoutState, id: string,
-  a: { files: Record<string, string>; decision: string; specSentence: string; source: Acceptance['source']; now: string },
+  a: { files: Record<string, string>; decision: string; specSentence: string; bodySha256: string; source: Acceptance['source']; run?: string; now: string },
 ): FanoutState {
   const cur = ticketOf(state, id);
   if (!cur) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   const acc = cur.acceptance;
   if (!acc) throw new FanoutStateError(`${id}: no frozen acceptance tests to amend — freeze first (\`orchestra fanout acceptance freeze\`)`);
   const hashAfter = acceptanceHash(a.files);
-  if (hashAfter === acc.hash) throw new FanoutStateError(`${id}: the amendment changes nothing (same hash ${acc.hash.slice(0, 12)})`);
+  const run = a.run ?? acc.run;
+  if (hashAfter === acc.hash && run === acc.run) throw new FanoutStateError(`${id}: the amendment changes nothing (same hash ${acc.hash.slice(0, 12)}, same command)`);
+  if (acc.amendments.some((m) => m.decision === a.decision)) throw new FanoutStateError(`${id}: this decision already authorised an amendment (${a.decision}) — one decision, one amendment: record a new ledger decision`);
+  assertRunCmdNamesFrozen(run, Object.keys(a.files));
   const next: Acceptance = {
-    ...acc, files: a.files, hash: hashAfter, source: a.source,
-    amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, hashBefore: acc.hash, hashAfter }],
+    ...acc, files: a.files, hash: hashAfter, run, source: a.source,
+    amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, bodySha256: a.bodySha256, hashBefore: acc.hash, hashAfter, ...(run !== acc.run ? { runAfter: run } : {}) }],
   };
   return { ...state, tickets: { ...state.tickets, [id]: { ...cur, acceptance: next, updatedAt: a.now } }, updatedAt: a.now };
 }
