@@ -310,7 +310,7 @@ const mutants = [
   { name: 'gate: a dirty tracked tree accepted', find: 'if (facts.dirty.length)', put: () => 'if (false)' },
   { name: 'gate: the whole acceptance clause skipped', find: 'if (frozen) {', put: () => 'if (false) {' },
   { name: 'deliver: no receipt needed', find: 'if (!receipt) return { ok: false, reason: "acceptance-unproven"', put: () => 'if (!receipt) return { ok: true }; if (false) return { ok: false, reason: "acceptance-unproven"' },
-  { name: 'deliver: a receipt for another head accepted', find: 'if (receipt.head !== verifiedHead)', put: () => 'if (false)' },
+  { name: 'deliver: a receipt for another head accepted', find: 'if (receipt.head !== verifiedHead && !(receipt.tree && ctx.headTree && receipt.tree === ctx.headTree)) {', put: () => 'if (false) {' },
   { name: 'deliver: a receipt for another frozen set accepted', find: 'receipt.hash !== acc.hash', put: () => 'false' },
   { name: 'deliver: receipt.ok ignored', find: 'if (!receipt.ok)', put: () => 'if (false)' },
   { name: 'deliver: the gh byte re-read ignored', find: 'const bad = files.filter((f) => f.status !== "same");', put: () => 'const bad = [];' },
