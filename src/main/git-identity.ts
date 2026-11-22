@@ -47,16 +47,8 @@ async function getConfig(cwd: string, args: string[]): Promise<string | null> {
   }
 }
 
-// Concurrent spawns in one repo all want to set the shared extension flag; git's config.lock makes the losers fail, so serialise per repo
-// in-process and retry once for a lock held by another process.
-const repoLocks = new Map<string, Promise<unknown>>();
-function serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  const prev = repoLocks.get(key) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  repoLocks.set(key, next.catch(() => {}));
-  return next;
-}
-
+// Concurrent spawns (and other processes) all want to set the shared flag; git's config.lock makes the losers fail — re-check (someone else may have
+// won) and retry with a short backoff instead of failing the spawn.
 async function enableWorktreeConfig(repoPath: string): Promise<boolean> {
   if ((await getConfig(repoPath, ['--get', 'extensions.worktreeConfig'])) === 'true') return true;
   // A bare repo / a `core.worktree` must move to config.worktree before the extension is on (git-worktree(1)) — not our job: refuse.
@@ -90,7 +82,7 @@ export async function ensureWorktreeGitIdentity(repoPath: string, worktreePath: 
     }
     if (!wanted.some(([k]) => k === 'user.name') || !wanted.some(([k]) => k === 'user.email')) return { ...result, skipped: 'no-identity' };
     // 2. Per-worktree config is an opt-in repo extension; flip it once (idempotent) — without it `--worktree` is refused with several worktrees.
-    const enabled = await serial(await realpathSafe(repoPath), () => enableWorktreeConfig(repoPath));
+    const enabled = await enableWorktreeConfig(repoPath);
     if (!enabled) return { ...result, skipped: 'unsupported-repo' };
     // 3. Per key: keep what the worktree already carries, write the rest.
     for (const [key, value] of wanted) {
@@ -106,14 +98,6 @@ export async function ensureWorktreeGitIdentity(repoPath: string, worktreePath: 
     const msg = (e as Error).message?.split('\n')[0] ?? String(e);
     glog.warn(`could not pin the git identity in ${worktreePath}: ${msg}`);
     return { ...result, skipped: 'error', error: msg };
-  }
-}
-
-async function realpathSafe(p: string): Promise<string> {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
   }
 }
 

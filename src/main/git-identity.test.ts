@@ -216,6 +216,19 @@ test('#513 24 pins racing on a repo that has never had the flag all succeed', as
   for (const w of wts) assert.equal(identityUnderScratchHome(w).committer, expected, w);
 });
 
+test('#513 a config.lock held by another process for ~120 ms is waited out (retry), not a failed spawn', async () => {
+  writeGlobal(ownerGlobal);
+  const repo = mkRepo();
+  const wt = wtPath('lock');
+  git(repo, ['worktree', 'add', '-q', '-b', 'agent-lock', wt, 'main']);
+  const lock = path.join(repo, '.git', 'config.lock');
+  fs.writeFileSync(lock, '');
+  setTimeout(() => fs.rmSync(lock, { force: true }), 120);
+  const r = await ensureWorktreeGitIdentity(repo, wt);
+  assert.equal(r.skipped, undefined, JSON.stringify(r));
+  assert.equal(identityUnderScratchHome(wt).committer, expected);
+});
+
 test('#513 a bare repo is refused (extension needs a migration we do not do), nothing written', async () => {
   writeGlobal(ownerGlobal);
   const src = mkRepo();
