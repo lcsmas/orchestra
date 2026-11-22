@@ -85,8 +85,14 @@ export async function ensureWorktreeGitIdentity(repoPath: string, worktreePath: 
     const enabled = await enableWorktreeConfig(repoPath);
     if (!enabled) return { ...result, skipped: 'unsupported-repo' };
     // 3. Per key: keep what the worktree already carries, write the rest.
+    // A group (user / author / committer) is the user's unit: any key of it already in the worktree keeps the WHOLE group (no name from us beside their email).
+    const keptGroups = new Set<string>();
+    for (const [key] of wanted) {
+      const group = key.split('.')[0];
+      if (!keptGroups.has(group) && (await getConfig(worktreePath, ['--worktree', '--get-regexp', `^${group}\\.(name|email)$`])) !== null) keptGroups.add(group);
+    }
     for (const [key, value] of wanted) {
-      if ((await getConfig(worktreePath, ['--worktree', '--get', key])) !== null) {
+      if (keptGroups.has(key.split('.')[0])) {
         result.kept.push(key);
         continue;
       }
