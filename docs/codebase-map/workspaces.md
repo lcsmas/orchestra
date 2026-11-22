@@ -473,7 +473,7 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   improvised an author and a rewrite + re-gate followed (18 min in bench run 4). `ensureWorktreeGitIdentity(repoPath, worktreePath)` copies what
   git itself resolves **for the repo** (`git -C <repo> config --get user.name|email` + optional `author.*`/`committer.*`, so a global
   `includeIf` and a split committer survive — never hardcoded; both `user.*` or nothing) into the worktree's own `config.worktree`
-  (`extensions.worktreeConfig`, flipped once in the shared repo config, serialised per repo; refused for a bare repo / `core.worktree`).
+  (`extensions.worktreeConfig`, flipped once in the shared repo config — re-check + retry on git's `config.lock`; refused for a bare repo / `core.worktree`).
   Idempotent; a key the worktree already carries is kept, never overwritten; never throws (`skipped`: `no-identity | not-a-worktree |
   unsupported-repo | error`). Applied at: `createWorktree` (the ONE `git worktree add` — `createWorkspace` = `orchestra spawn` + top-level,
   `dispatchAdoptRepoRequest`, sandbox eject), `unarchiveWorkspace`, `dispatchAttachRequest`, and every session start (`agent-sdk.ts`, right after
