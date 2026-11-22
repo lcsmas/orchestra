@@ -62,7 +62,7 @@ test('resume must-PASS: the branch moved to a new sha with the SAME tree ⇒ no 
   const plan = reconcile(s, realityOf(A2, TREE1));
   assert.equal(plan.divergences.length, 0);
   assert.equal(plan.writeBack.length, 1);
-  assert.deepEqual(plan.writeBack[0].patch, { head: A2 });
+  assert.deepEqual(plan.writeBack[0].patch, { head: A2, tree: TREE1 });
   const after = applyWriteBack(s, plan.writeBack, T);
   assert.deepEqual([after.tickets.A.head, after.tickets.A.verdict, after.tickets.A.status, after.tickets.A.tree], [A2, 'pass', 'gated', TREE1]);
   assert.equal(plan.tickets.A.next.action, 'merge');
@@ -75,7 +75,13 @@ test('resume must-FAIL: ONE changed byte (another tree) ⇒ head-moved, verdict 
     assert.deepEqual(plan.divergences.map((d) => d.kind), ['head-moved'], String(tree));
     const after = applyWriteBack(s, plan.writeBack, T);
     assert.deepEqual([after.tickets.A.verdict, after.tickets.A.status], ['none', 'nominated']);
+    assert.deepEqual([after.tickets.A.head, after.tickets.A.tree], [A3, tree ?? null], 'the tree FOLLOWS the head in the write-back (a stale tree would later "keep" a verdict on other content)');
   }
+  // the pre-review's scenario: PASS recorded on the new content, then the branch is force-pushed back to the OLD content ⇒ must be a divergence
+  let s = gated();
+  s = applyWriteBack(s, reconcile(s, realityOf(A3, TREE2)).writeBack, T);
+  s = applyTicketPatch(s, 'A', { status: 'gated', verdict: 'pass' }, T); // plain `state set --verdict pass`: no --head, no derived tree
+  assert.deepEqual(reconcile(s, realityOf('f'.repeat(40), TREE1)).divergences.map((d) => d.kind), ['head-moved'], 'content T1 is not the content the PASS was issued on (T2)');
 });
 
 test('resume must-FAIL: a verdict recorded with NO tree (older state / unreadable) is never kept by a tree it does not have', () => {
