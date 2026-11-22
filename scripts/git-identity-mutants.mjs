@@ -44,7 +44,8 @@ const MUTANTS = [
   { id: 'M21', name: 'a scratch workspace is pinned (it has no git)', edits: [[GI, 'if (isScratchLike(ws) || !ws.repoPath || ws.host?.kind === \'sandbox\') return null;', "if (!ws.repoPath || ws.host?.kind === 'sandbox') return null;"]] },
   { id: 'M22', name: 'a sandbox workspace is pinned (its checkout is in the container)', edits: [[GI, "if (isScratchLike(ws) || !ws.repoPath || ws.host?.kind === 'sandbox') return null;", 'if (isScratchLike(ws) || !ws.repoPath) return null;']] },
   { id: 'M23', name: 'a second call is not idempotent (rewrites every key)', edits: [[GI, "if ((await getConfig(worktreePath, ['--worktree', '--get', key])) !== null) {\n        result.kept.push(key);\n        continue;\n      }", "if (false as boolean) {\n        result.kept.push(key);\n        continue;\n      }"]] },
-  { id: 'M24', name: 'parallel spawns race on the shared flag (no per-repo lock, no retry)', edits: [[GI, 'const next = prev.then(fn, fn);', 'const next = fn();'], [GI, 'for (let attempt = 0; attempt < 5; attempt++) {', 'for (let attempt = 0; attempt < 1; attempt++) {']] },
+  // three redundant defences against git's config.lock (in-process lock, re-check after a failed write, retry): only removing ALL of them can show.
+  { id: 'M24', name: 'parallel spawns race on the shared flag (no per-repo lock, no re-check, no retry)', edits: [[GI, 'const next = prev.then(fn, fn);', 'const next = fn();'], [GI, "      if ((await getConfig(repoPath, ['--get', 'extensions.worktreeConfig'])) === 'true') return true; // another process won the race\n", ''], [GI, 'for (let attempt = 0; attempt < 5; attempt++) {', 'for (let attempt = 0; attempt < 1; attempt++) {']] },
 ];
 for (const m of MUTANTS) m.tests = [TEST];
 
