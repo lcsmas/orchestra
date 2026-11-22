@@ -34,6 +34,7 @@ import { resolveResumeId, decideRestartGuard } from '../shared/resume-guard.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { isRuntimeStale, runtimeServesLikeCurrent } from '../shared/cli-runtime.ts';
 import { claudeBinaryVersion, resolveClaudeBinary } from './claude-binary';
+import { ensureWorkspaceGitIdentity } from './git-identity';
 
 /** SDK-scoped logger. The structured agent view spans two processes (events are
  *  produced here, folded in the renderer), so attributing a wrong pane to the
@@ -1708,6 +1709,7 @@ async function ensureSessionInner(wsId: string): Promise<Session> {
     await installOrchestraHooks(ws.worktreePath).catch((err) =>
       log.warn(`agent-sdk: hook install failed for ${wsId}`, err),
     );
+    await ensureWorkspaceGitIdentity(ws); // #513: every session start (spawn, restart, wake, restore) — idempotent, never throws
     if (ws.accountId) {
       const account = store.accounts.find((a) => a.id === ws.accountId);
       if (account) {

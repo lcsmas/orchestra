@@ -24,6 +24,7 @@ import {
   sdkStopIfLive,
   sdkSessionLive,
 } from './sdk-delivery';
+import { ensureWorkspaceGitIdentity } from './git-identity';
 import {
   createWorktree,
   detectDefaultBranch,
@@ -769,6 +770,7 @@ export async function unarchiveWorkspace(id: string): Promise<void> {
       status: 'idle',
     };
     await store.upsertWorkspace(updated);
+    await ensureWorkspaceGitIdentity(updated); // #513: a worktree archived before the pin (or edited meanwhile) gets it on restore; never throws
     reopenRunsOf([ws.id]); // #437: unarchive REOPENS the same run (its id is the coordinator's workspace id); history, unread mail and switches kept
     platform.broadcast('workspace:update', updated);
   }
@@ -2098,6 +2100,7 @@ export async function dispatchAttachRequest(input: {
   platform.broadcast('workspace:update', updated);
   if (ownedByLinkOnly && !coordinatorSentinelWanted(updated, false) && ws.host?.kind !== 'sandbox') await unmarkOrchestratorWorktree(ws.worktreePath); // #440-fu: ownership lost → the hook gate's cache goes with it
   log.info(`attached ${ws.branch} (${id}) under ${parent.branch} (${rawParent})`);
+  await ensureWorkspaceGitIdentity(updated); // #513: idempotent — a member attached after the fact carries the owner's identity too; never throws
   await ensureParentOwnsRun(updated); // #434: the new parent owns a run now (ownsRun + sentinel), not only at the child's next session start
   const { restarted, markedStale, hostResolved } = await reconcileRunAfterReparent(oldAnchors, { noRestart });
   return { ok: true, id, parentId: rawParent, branch: ws.branch, restarted, markedStale, hostResolved };

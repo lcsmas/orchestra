@@ -17,7 +17,7 @@ gh CI queries). Tests: `git-merge-state.test.ts`.
 `listBranches` `:66` · `switchWorktreeBranch` `:76` (translates "already used by
 worktree" errors) · `renameWorktreeBranch` `:98` (`git branch -m`, works from any
 worktree) · `createWorktree` `:109` (creates branch from base then `worktree
-add`) · `listWorktreePaths` `:128` (porcelain parse) · `removeWorktree` `:138`
+add`, then pins the owner's git identity into the worktree — #513, `git-identity.ts`, see [workspaces.md](workspaces.md)) · `listWorktreePaths` `:128` (porcelain parse) · `removeWorktree` `:138`
 (`worktree remove --force`, falls back to `rm -rf`).
 
 ## Diffs — against HEAD, not base

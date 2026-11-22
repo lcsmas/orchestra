@@ -10,6 +10,7 @@ import { branchChecksFromRuns, type WorkflowRunLite } from '../shared/ci-state.t
 // runner (git-merge-state.test.ts et al.), which does not resolve extensionless
 // relative specifiers. Same reason logger.ts imports './platform/index.ts'.
 import { scoped } from './logger.ts';
+import { ensureWorktreeGitIdentity } from './git-identity.ts';
 
 const pexec = promisify(execFile);
 
@@ -146,6 +147,8 @@ export async function createWorktree(
     await git.raw(['branch', branch, baseBranch]);
   }
   await git.raw(['worktree', 'add', worktreePath, branch]);
+  // #513: the ONE worktree-creation chokepoint (createWorkspace, adopt-repo, sandbox eject) — never throws.
+  await ensureWorktreeGitIdentity(repoPath, worktreePath);
 }
 
 /** Absolute paths of every worktree git currently tracks for `repoPath`,
