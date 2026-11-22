@@ -14,7 +14,14 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'dist-electron', 'cli.js');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
-const SPEC = "const test = require('node:test');\nconst assert = require('node:assert');\nconst { f } = require('../src/impl.js');\ntest('f is what the spec says', () => assert.equal(f(), 1));\n";
+const SPEC = [
+  "const test = require('node:test');", "const assert = require('node:assert');", "const fs = require('node:fs');", "const path = require('node:path');", "const { f } = require('../src/impl.js');",
+  "test('f is what the spec says', () => {",
+  "  let comm = 'unknown'; // the command line of the process that started `node --test` (a shell, if the gate used one)",
+  "  try { const st = fs.readFileSync('/proc/' + process.ppid + '/stat', 'utf8'); const gp = st.slice(st.lastIndexOf(')') + 2).split(' ')[1]; comm = fs.readFileSync('/proc/' + gp + '/comm', 'utf8').trim(); } catch (e) { /* not linux */ }",
+  "  fs.writeFileSync(path.join(__dirname, '..', '..', 'test-ran.comm'), comm);",
+  "  assert.equal(f(), 1);",
+  "});", ''].join('\n');
 const SENTENCE = 'the carrier argument is optional in the spec';
 const DECISION = 'https://github.com/o/r/issues/511#issuecomment-900';
 
@@ -33,7 +40,7 @@ const [a, b] = args;
 const headOf = (p) => (p.state === 'OPEN' ? tip(p.headRefName) : p.head);
 if (a === 'api') {
   const url = args[args.length - 1];
-  let m = /^repos\\/o\\/r\\/issues\\/comments\\/(\\d+)$/.exec(url);
+  let m = /^repos\\/o\\/r\\/issues\\/comments\\/(\\d+)$/i.exec(url);
   if (m) { if (st.comments[m[1]] === undefined) fail('gh: Not Found (HTTP 404)'); out({ body: st.comments[m[1]] }); }
   m = /\\/contents\\/(.+)\\?ref=([0-9a-f]{40})$/.exec(url);
   if (/\\/commits\\/[0-9a-f]{40}$/.test(url)) out({});
@@ -107,8 +114,8 @@ function world(cliPath, o = {}) {
     return { branch: name, head: gc(['rev-parse', 'HEAD']) };
   };
   const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: home, ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'rig', FAKE_GH_STATE: state, FAKE_GH_BARE: bare, GIT_CONFIG_GLOBAL: '/dev/null' };
-  const cli = (args, timeoutMs = 90_000) => {
-    const r = spawnSync(process.execPath, [cliPath, 'fanout', ...args], { encoding: 'utf8', env, timeout: timeoutMs, cwd: work });
+  const cli = (args, timeoutMs = 90_000, envExtra = {}) => {
+    const r = spawnSync(process.execPath, [cliPath, 'fanout', ...args], { encoding: 'utf8', env: { ...env, ...envExtra }, timeout: timeoutMs, cwd: work });
     let json = null; try { json = JSON.parse(r.stdout.trim().split('\n').pop()); } catch { /* not a JSON verb */ }
     return { code: r.status, json, stdout: r.stdout, stderr: r.stderr };
   };
@@ -124,7 +131,7 @@ function world(cliPath, o = {}) {
   const deliver = (v, extra = []) => cli(['deliver', '--branch', v.branch, '--into', 'master', '--ticket', 'T-1', '--run', 'rig', '--no-review-gate', '--verified-head', v.head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', ...extra]);
   const receiptFile = (name, r) => { const f = path.join(dir, `${name}.json`); fs.writeFileSync(f, JSON.stringify(r)); return f; };
   const count = (verb) => ghState().log.filter((l) => l.startsWith(verb)).length;
-  return { dir, cand, variant, good, cli, gate, deliver, freeze, receiptFile, readState, statePath, patchGh, count, setCi: (h) => patchGh((s) => s.ciGreen.push(h)), cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { dir, work, cand, variant, good, cli, gate, deliver, freeze, receiptFile, readState, statePath, patchGh, count, setCi: (h) => patchGh((s) => s.ciGreen.push(h)), cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
 /** Every arm; returns [{name, ok, detail}]. `cliPath` is the bundle under test (baseline or a mutant). */
@@ -141,6 +148,8 @@ function scenarios(cliPath) {
     const g1 = W.gate(ok);
     arm('G1 must-PASS untouched + green: exit 0, acceptance.ok, receipt {head,hash:frozen,ok:true}, files same, ran.exit 0',
       g1.code === 0 && g1.json?.verdict === 'gate' && g1.json.acceptance?.ok === true && g1.json.acceptance.receipt?.ok === true && g1.json.acceptance.receipt.head === ok.head && g1.json.acceptance.receipt.hash === frozenHash(W) && g1.json.acceptance.files?.[0]?.status === 'same' && g1.json.acceptance.ran?.exit === 0, J(g1));
+    const comm = (() => { try { return fs.readFileSync(path.join(W.dir, 'test-ran.comm'), 'utf8'); } catch { return 'missing'; } })();
+    arm('G1b must-PASS the frozen command runs as a DIRECT argv: the process that started `node --test` is not a shell', !['sh', 'dash', 'bash', 'zsh', 'missing', 'unknown'].includes(comm), `comm=${comm}`);
     const g2 = W.gate(ok, 'T-2', []);
     arm('G2 must-PASS a ticket WITHOUT frozen tests: exit 0, no `acceptance` key, --cwd not needed', g2.code === 0 && g2.json?.verdict === 'gate' && !('acceptance' in g2.json), J(g2));
 
@@ -179,6 +188,10 @@ function scenarios(cliPath) {
     const g12 = W.cli(['gate', '--branch', ok.branch, '--into', 'master', '--head', ok.head, '--ticket', 'T-typo']);
     arm('G12 must-PASS without --run an unknown ticket prints acceptance:{consulted:false} (nothing checked, said so), exit 0', g12.code === 0 && g12.json?.acceptance?.consulted === false && /NOT checked/.test(g12.stderr), J(g12));
 
+    sh('git', ['checkout', '-q', 'g-ok'], { cwd: W.cand });
+    const g13 = W.cli(['gate', '--branch', ok.branch, '--into', 'master', '--head', ok.head, '--ticket', 'T-1', '--cwd', W.cand], 90_000, { ORCHESTRA_WS_ID: 'verifier-x', ORCHESTRA_RUN_ID: 'rig' });
+    arm('G13 must-PASS a verifier (own ws id, no state of its own) WITHOUT --run: the clause runs through the INHERITED run (acceptance.ok, ran.exit 0)', g13.code === 0 && g13.json?.acceptance?.ok === true && g13.json.acceptance.ran?.exit === 0, J(g13));
+
     // ── deliver ──────────────────────────────────────────────────────────────────────────────────────────
     const dOk = W.variant('d-ok', () => {}); W.setCi(dOk.head);
     const d2 = W.deliver(dOk);
@@ -204,6 +217,9 @@ function scenarios(cliPath) {
     arm('D8 must-PASS a ticket WITHOUT frozen tests delivers unchanged (no acceptanceChecked)', d8.code === 0 && d8.json?.verdict === 'already-merged' && d8.json.acceptanceChecked === undefined, J(d8));
     const d10 = W.cli(['deliver', '--branch', dOk.branch, '--into', 'master', '--ticket', 'T-2', '--run', 'rig', '--no-review-gate', '--verified-head', dOk.head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--acceptance', W.receiptFile('r10', { head: dOk.head, hash: 'a'.repeat(64), ok: true })]);
     arm('D10 must-FAIL --acceptance for a ticket that has NO frozen tests: exit 1, bad-state (a belief mismatch, not a free pass)', d10.code === 1 && d10.json?.reason === 'bad-state', J(d10));
+    const am = W.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/writer-510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--run-cmd', 'node --test --test-reporter=tap t/spec.test.js']);
+    const d11 = W.deliver(dOk, ['--acceptance', W.receiptFile('oldcmd', real.json?.acceptance?.receipt ?? {})]);
+    arm('D11 must-FAIL a receipt gated under the OLD command is stale after amend --run-cmd (the command is part of the hash): exit 2, acceptance-stale', am.code === 0 && d11.code === 2 && d11.json?.reason === 'acceptance-stale', `${J(am)} ||| ${J(d11)}`);
     fs.writeFileSync(W.statePath, '{ not json');
     const d9 = W.deliver(dOk, ['--acceptance', W.receiptFile('r9', { head: dOk.head, hash: 'a'.repeat(64), ok: true })]);
     arm('D9 must-FAIL --acceptance with an unreadable state: exit 1 (fails closed), reason bad-state', d9.code === 1 && d9.json?.reason === 'bad-state', J(d9));
@@ -218,7 +234,10 @@ function scenarios(cliPath) {
     const bad = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', '../x', '--run-cmd', 'true', '--from', 'origin/writer-510']);
     arm('F2 must-FAIL an unsafe path (..): exit 1, nothing written', bad.code === 1 && !A.readState().tickets['T-3'], J(bad));
     const npm = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', 'npm run accept', '--from', 'origin/writer-510']);
-    arm('F4 must-FAIL freeze with a --run-cmd naming none of the frozen files (npm run indirection): exit 1, nothing written', npm.code === 1 && /names none of the frozen files/.test(npm.stderr) && !A.readState().tickets['T-3'], J(npm));
+    arm('F4 must-FAIL freeze with a --run-cmd naming none of the frozen files (npm run indirection): exit 1, nothing written', npm.code === 1 && /not a direct runner call/.test(npm.stderr) && !A.readState().tickets['T-3'], J(npm));
+    const spell = ["sh -c 'npm run accept' t/spec.test.js", 'npm run accept # t/spec.test.js', 'make accept ACC=t/spec.test.js', 'ACC=t/spec.test.js npm run accept', 'true t/spec.test.js', 'node scripts/run.js xt/spec.test.js.bak', 'node --require=./evil.js t/spec.test.js', 'node --test t/spec.test.js; true'];
+    const leaked = spell.filter((c) => { const x = A.cli(['acceptance', 'freeze', 'T-4', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', c, '--from', 'origin/writer-510']); return x.code !== 1 || !/not a direct runner call/.test(x.stderr); });
+    arm('F5 must-FAIL every indirection spelling (sh -c, # path, make ACC=, ENV=path npm run, true path, substring of a longer path, --require, `;`) is refused', leaked.length === 0 && !A.readState().tickets['T-4'], `accepted/odd: ${leaked.join(' | ')}`);
     const sentence = ['--spec-sentence', SENTENCE];
     const common = ['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js,src/impl.js', '--from', 'origin/good'];
     const a1 = A.cli([...common, ...sentence]);
@@ -236,24 +255,24 @@ function scenarios(cliPath) {
     arm('A3 must-PASS a decision quoting the sentence (whitespace-normalised): exit 0, hash changed, one amendment {decision, specSentence, hashBefore, hashAfter}',
       a3.code === 0 && acc.hash !== hashBefore && acc.amendments.length === 1 && acc.amendments[0].decision === DECISION && acc.amendments[0].specSentence === SENTENCE && acc.amendments[0].hashBefore === hashBefore && acc.amendments[0].hashAfter === acc.hash && Object.keys(acc.files).length === 2, J(a3));
     arm('A3b the amendment records sha256 of the decision body read through gh', acc.amendments[0].bodySha256 === createHash('sha256').update(`Ruling:\n  the carrier   argument is\n optional in the spec.`).digest('hex'), JSON.stringify(acc.amendments[0]));
-    const a6 = A.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/good', '--decision', DECISION, ...sentence]);
-    arm('A6 must-FAIL the SAME decision URL authorising a second amendment: exit 2, "already authorised", state unchanged', a6.code === 2 && /already authorised/.test(a6.stderr) && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(a6));
+    const a6 = A.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/good', '--decision', 'https://github.com/O/R/pull/9#issuecomment-900', ...sentence]);
+    arm('A6 must-FAIL the SAME decision comment (spelled /O/R/pull/9#…) authorising a second amendment: exit 2, "already authorised", state unchanged', a6.code === 2 && /already authorised/.test(a6.stderr) && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(a6));
     A.patchGh((s) => { s.comments[901] = `Second ruling: ${SENTENCE}.`; });
     const D2 = 'https://github.com/o/r/issues/511#issuecomment-901';
     const a5 = A.cli([...common, '--decision', D2, ...sentence, '--run-cmd', 'npm run accept']);
-    arm('A5 must-FAIL amend --run-cmd naming none of the frozen files: exit 1, state unchanged', a5.code === 1 && /names none of the frozen files/.test(a5.stderr) && A.readState().tickets['T-1'].acceptance.run === acc.run, J(a5));
+    arm('A5 must-FAIL amend --run-cmd naming none of the frozen files: exit 1, state unchanged', a5.code === 1 && /not a direct runner call/.test(a5.stderr) && A.readState().tickets['T-1'].acceptance.run === acc.run, J(a5));
     const a7 = A.cli([...common, '--decision', D2, ...sentence, '--run-cmd', 'node --test t/spec.test.js src/impl.js']);
     const acc2 = A.readState().tickets['T-1'].acceptance;
-    arm('A7 must-PASS amend --run-cmd with the same files (command-only change): exit 0, hash unchanged, run replaced, runAfter recorded', a7.code === 0 && acc2.hash === acc.hash && acc2.run === 'node --test t/spec.test.js src/impl.js' && acc2.amendments[1].runAfter === acc2.run, J(a7));
+    arm('A7 must-PASS amend --run-cmd with the same files (command-only change): exit 0, hash CHANGED (it covers the command), run replaced, runAfter recorded', a7.code === 0 && acc2.hash !== acc.hash && acc2.run === 'node --test t/spec.test.js src/impl.js' && acc2.amendments[1].runAfter === acc2.run, J(a7));
     const snap = JSON.stringify(A.readState());
     const forged = { acceptance: acc };
     const s1 = A.cli(['state', 'set', 'T-2', '--run', 'rig', '--json', JSON.stringify(forged)]);
     arm('S1 must-FAIL `state set --json` writing acceptance: exit 1 "unknown field", state byte-identical', s1.code === 1 && /unknown field "acceptance"/.test(s1.stderr) && JSON.stringify(A.readState()) === snap, J(s1));
     const s2 = A.cli(['state', 'set', 'T-2', '--run', 'rig', '--status', 'started']);
-    arm('S2 must-PASS an ordinary `state set` still works and keeps T-1\'s frozen set', s2.code === 0 && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(s2));
+    arm('S2 must-PASS an ordinary `state set` still works and keeps T-1\'s frozen set', s2.code === 0 && A.readState().tickets['T-1'].acceptance.hash === acc2.hash, J(s2));
     const snap2 = JSON.stringify(A.readState());
     const sh1 = A.cli(['acceptance', 'show', 'T-1', '--run', 'rig', '--json']);
-    arm('H1 must-PASS `acceptance show --json` is read-only and prints the frozen set', sh1.code === 0 && JSON.parse(sh1.stdout).hash === acc.hash && JSON.stringify(A.readState()) === snap2, J(sh1));
+    arm('H1 must-PASS `acceptance show --json` is read-only and prints the frozen set', sh1.code === 0 && JSON.parse(sh1.stdout).hash === acc2.hash && JSON.stringify(A.readState()) === snap2, J(sh1));
     const live = fs.readFileSync(A.statePath, 'utf8');
     const forgedState = JSON.parse(live);
     const evil = { '../evil.test.js': 'a'.repeat(64) };
@@ -283,7 +302,7 @@ const mutants = [
   { name: 'gate: hashes nothing (every frozen file reads "same")', find: 'sha256Hex(bytes) === acc.files[p] && atHead ? "same" : "changed"', put: () => '"same"' },
   { name: 'gate: only the worktree bytes are hashed (the blob at HEAD is not compared)', find: 'sha256Hex(bytes) === acc.files[p] && atHead ? "same" : "changed"', put: () => 'sha256Hex(bytes) === acc.files[p] ? "same" : "changed"' },
   { name: 'amend: a decision from any repo accepted', find: 'if (st0.repo && decisionRepo.toLowerCase() !== st0.repo.toLowerCase())', put: () => 'if (false)' },
-  { name: 'gate: the frozen command is never run (exit 0 assumed)', find: 'const r = io.run(acc.run, root);', put: () => 'const r = { exit: 0, tail: "" };' },
+  { name: 'gate: the frozen command is never run (exit 0 assumed)', find: 'const r = io.run(parseRunArgv(acc.run, Object.keys(acc.files)), root);', put: () => 'const r = { exit: 0, tail: "" };' },
   { name: 'gate: --cwd falls back to the process cwd (not required)', find: 'const cwd = o.cwd ? path.resolve(o.cwd) : null;', put: () => 'const cwd = path.resolve(o.cwd ?? process.cwd());' },
   { name: 'gate: stale checkout accepted (cwd HEAD ≠ --head)', find: 'if (facts.cwdHead !== facts.head)', put: () => 'if (false)' },
   { name: 'gate: a dirty tracked tree accepted', find: 'if (facts.dirty.length)', put: () => 'if (false)' },
@@ -294,9 +313,15 @@ const mutants = [
   { name: 'deliver: receipt.ok ignored', find: 'if (!receipt.ok)', put: () => 'if (false)' },
   { name: 'deliver: the gh byte re-read ignored', find: 'const bad = files.filter((f) => f.status !== "same");', put: () => 'const bad = [];' },
   { name: 'deliver: --acceptance for a ticket without frozen tests is waved through', find: 'if (opts.acceptance !== void 0 && !got.acceptance) {', put: () => 'if (false) {' },
-  { name: 'freeze/amend: a --run-cmd naming no frozen file accepted', find: 'if (!paths.some((p) => run.includes(p)))', put: () => 'if (false)' },
-  { name: 'amend: one decision may authorise several amendments', find: 'if (acc.amendments.some((m) => m.decision === a.decision)) throw', put: () => 'if (false) throw' },
-  { name: 'amend: a command-only change counts as "nothing to amend"', find: 'if (hashAfter === acc.hash && run === acc.run)', put: () => 'if (hashAfter === acc.hash)' },
+  { name: 'run: any first word allowed (true / npm run / sh -c …)', find: 'if (!prefix) why(', put: () => 'if (false) why(', extra: [{ find: 'for (const t of inner.slice(prefix.length)) {', put: () => 'for (const t of inner.slice(prefix ? prefix.length : 1)) {' }] },
+  { name: 'run: any non-flag argument allowed (a script the candidate owns)', find: 'if (!paths.includes(t)) why(', put: () => 'if (false) why(' },
+  { name: 'run: shell metacharacters / comments allowed', find: 'if (/["\'\\\\$`;&|<>(){}*?!#~[\\]]/.test(run)) why(', put: () => 'if (false) why(' },
+  { name: 'run: code-loading flags (--require …) allowed', find: 'if (CODE_LOADING_FLAG.test(t)) why(', put: () => 'if (false) why(' },
+  { name: 'run: the command need not name a frozen file', find: 'if (named === 0) why(', put: () => 'if (false) why(' },
+  { name: 'gate: the command is executed through `sh -c`', find: 'spawnSync(argv[0], argv.slice(1), {', put: () => 'spawnSync("sh", ["-c", argv.join(" ")], {' },
+  { name: 'hash: the command is not part of the hash', find: '.join("") + `run\\0${run}', put: () => '.join("") + `${""}' },
+  { name: 'amend: decision reuse keyed on the raw URL (another spelling of the same comment passes)', find: 'const key = (u) => (decisionApiPath(u) ?? u).toLowerCase();', put: () => 'const key = (u) => u;' },
+  { name: 'gate: no fallback to the inherited run for a verifier', find: '...opts.run ? [] : inherited ? [inherited] : []', put: () => '...[]' },
   { name: 'amend: the decision body hash is not recorded', find: 'bodySha256: sha256Hex(Buffer.from(body, "utf8"))', put: () => 'bodySha256: "0".repeat(64)' },
   { name: 'gate: an explicit --run with an unknown ticket skips the clause', find: 'lenient: !o.run', put: () => 'lenient: true' },
   { name: 'gate: an absent state/ticket is silent (no consulted:false)', find: 'accept = { consulted: false };', put: () => 'accept = void 0;' },

@@ -146,10 +146,40 @@ export function assertAcceptancePath(p: unknown): string {
   }
   return p;
 }
-/** sha256 of the sorted `path\0sha\n` lines — the ticket's frozen-set identity. */
-export function acceptanceHash(files: Record<string, string>): string {
-  const lines = Object.keys(files).sort().map((k) => `${k}\0${files[k]}\n`).join('');
+/** sha256 of the sorted `path\0sha\n` lines then one `run\0<run>\n` line — the ticket's frozen identity: the files AND the command that runs them (a receipt gated under another command is stale). */
+export function acceptanceHash(files: Record<string, string>, run: string): string {
+  const lines = Object.keys(files).sort().map((k) => `${k}\0${files[k]}\n`).join('') + `run\0${run}\n`;
   return crypto.createHash('sha256').update(lines).digest('hex');
+}
+
+/** Direct-runner argv prefixes a frozen command may start with (executed WITHOUT a shell). A package launcher (`npx`, `pnpm exec`, `yarn exec`) may only precede one of them. */
+const RUNNER_PREFIXES: string[][] = [
+  ['node'], ['tsx'], ['vitest'], ['vitest', 'run'], ['jest'], ['mocha'], ['pytest'], ['python', '-m', 'pytest'], ['python3', '-m', 'pytest'],
+  ['python', '-m', 'unittest'], ['python3', '-m', 'unittest'], ['deno', 'test'], ['bun', 'test'], ['ruby'], ['rspec'],
+];
+/** Flags that load code from a file the candidate owns (or run inline code): never part of a frozen command. */
+const CODE_LOADING_FLAG = /^--?(e|eval|p|print|r|require|import|loader|experimental-loader|env-file|c|config|configLoader|setup|setupFiles|setup-files|globalSetup|preset|plugin|plugins|rootDir|root)(=|$)/;
+/**
+ * The frozen command as an argv, or throws. It must be a DIRECT runner call (no shell, no indirection through `npm run`/`make`/`sh`/`env`): runner allowlist,
+ * no shell metacharacter, flags only in `--flag=value` form (never a code-loading one), every non-flag argument EXACTLY a frozen path, at least one.
+ * Residue NOT checked: a runner config file or a non-frozen helper the test imports is still the candidate's.
+ */
+export function parseRunArgv(run: string, paths: string[]): string[] {
+  const why = (m: string): never => { throw new FanoutStateError(`the run command ${JSON.stringify(run)} is not a direct runner call on the frozen files: ${m} — e.g. \`node --test ${paths[0] ?? '<frozen file>'}\``); };
+  if (/[^\x20-\x7e]/.test(run)) why('printable ASCII on one line only');
+  if (/["'\\$`;&|<>(){}*?!#~[\]]/.test(run)) why('no shell metacharacters, quotes, comments or globs (it is executed without a shell)');
+  const tokens = run.trim().split(/ +/).filter(Boolean);
+  const inner = tokens[0] === 'npx' ? tokens.slice(1) : (tokens[0] === 'pnpm' || tokens[0] === 'yarn') && tokens[1] === 'exec' ? tokens.slice(2) : tokens;
+  const prefix = [...RUNNER_PREFIXES].sort((a, b) => b.length - a.length).find((pre) => pre.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
+  if (!prefix) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNER_PREFIXES.map((p) => p[0]))].join(', ')}, optionally behind npx / pnpm exec / yarn exec) — not npm, make, sh, env, a script`);
+  let named = 0;
+  for (const t of inner.slice(prefix!.length)) {
+    if (t.startsWith('-')) { if (CODE_LOADING_FLAG.test(t)) why(`flag ${t} loads or runs code outside the frozen files`); continue; }
+    if (!paths.includes(t)) why(`argument ${JSON.stringify(t)} is not a frozen file (flags take the --flag=value form)`);
+    named++;
+  }
+  if (named === 0) why('it names none of the frozen files');
+  return tokens;
 }
 export const sha256Hex = (b: Buffer | string): string => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -164,8 +194,9 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
     if (typeof h !== 'string' || !SHA256.test(h)) throw new FanoutStateError(`${where}: acceptance.files[${k}] must be a 64-hex sha256`);
     files[k] = h;
   }
-  if (typeof v.hash !== 'string' || v.hash !== acceptanceHash(files)) throw new FanoutStateError(`${where}: acceptance.hash does not match its files (hand-edited state?)`);
   if (typeof v.run !== 'string' || !v.run.trim() || v.run.length > 2000 || /[\r\n\0]/.test(v.run)) throw new FanoutStateError(`${where}: acceptance.run must be a single-line command`);
+  if (typeof v.hash !== 'string' || v.hash !== acceptanceHash(files, v.run)) throw new FanoutStateError(`${where}: acceptance.hash does not match its files + command (hand-edited state?)`);
+  parseRunArgv(v.run, Object.keys(files));
   if (!isObj(v.source)) throw new FanoutStateError(`${where}: acceptance.source missing`);
   refuseUnknown(v.source, new Set(['branch', 'head']), `${where} acceptance.source`);
   const head = checked(strOrNull(v.source.head, 'acceptance.source.head'), HEX_SHA, 'acceptance.source.head');
