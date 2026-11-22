@@ -468,6 +468,17 @@ WOULD be held (`wakeWouldBeHeld()`): every site awaits `wakeHeldForMemory` (asyn
   add -b`. Path is `~/.orchestra/worktrees/<repo>-<safeBranch>-<idShort>`.
 - `removeWorktree`, `listWorktreePaths` (porcelain parse). See
   [git.md](git.md) for the full git surface.
+- **Git identity pinned per worktree (#513)** — `src/main/git-identity.ts`. The cause: a worktree had NO identity of its own, it
+  inherited `~/.gitconfig` of whatever HOME the process ran under; a rig under a scratch HOME hit "Author identity unknown", the agent
+  improvised an author and a rewrite + re-gate followed (18 min in bench run 4). `ensureWorktreeGitIdentity(repoPath, worktreePath)` copies what
+  git itself resolves **for the repo** (`git -C <repo> config --get user.name|email` + optional `author.*`/`committer.*`, so a global
+  `includeIf` and a split committer survive — never hardcoded; both `user.*` or nothing) into the worktree's own `config.worktree`
+  (`extensions.worktreeConfig`, flipped once in the shared repo config, serialised per repo; refused for a bare repo / `core.worktree`).
+  Idempotent; a key the worktree already carries is kept, never overwritten; never throws (`skipped`: `no-identity | not-a-worktree |
+  unsupported-repo | error`). Applied at: `createWorktree` (the ONE `git worktree add` — `createWorkspace` = `orchestra spawn` + top-level,
+  `dispatchAdoptRepoRequest`, sandbox eject), `unarchiveWorkspace`, `dispatchAttachRequest`, and every session start (`agent-sdk.ts`, right after
+  `installOrchestraHooks`) via `ensureWorkspaceGitIdentity(ws)` (skips scratch-like and sandbox workspaces). Tests
+  `src/main/git-identity.test.ts` (real git; wiring arms pin each path), mutants `pnpm run test:git-identity-mutants`.
 
 ## Spawn & orchestration (socket dispatch handlers)
 All return `{ ok, ... }` envelopes; routed from `hooks-server.ts`. See
