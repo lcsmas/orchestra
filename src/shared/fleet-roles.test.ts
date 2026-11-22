@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { COORDINATOR_HANDOFF_BOUND_TURNS, FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, workspaceRole, type FleetRole } from './fleet-roles.ts';
+import { ACCEPTOR_MODEL, COORDINATOR_HANDOFF_BOUND_TURNS, FLEET_ROLES, ROLE_PREFIX, SCRIBE_MODEL, parseRoleConfig, resolveSpawnRoleDefaults, roleOfName, roleSpec, workspaceRole, type FleetRole } from './fleet-roles.ts';
 import { ROLES, checkSpawnName } from './naming-policy.ts';
 import { HANDOFF_MIN_BOUND_TURNS, HandoffTurnCounter, resolveHandoffBound } from './handoff.ts';
 
@@ -12,7 +12,7 @@ const SRC = path.join(import.meta.dirname, 'fleet-roles.ts');
 
 test('table complete: every role has a spec, a prefix the naming policy accepts, and denies AskUserQuestion (D6)', () => {
   assert.deepEqual(Object.values(ROLE_PREFIX).sort(), [...ROLES].sort(), 'ROLE_PREFIX = the naming policy ROLES');
-  assert.equal(FLEET_ROLES.length, 6);
+  assert.equal(FLEET_ROLES.length, 7);
   for (const role of FLEET_ROLES) {
     const spec = roleSpec(role);
     assert.equal(spec.role, role);
@@ -30,6 +30,20 @@ test('strong roles pin nothing; scribe pins haiku + low', () => {
   }
   assert.deepEqual([roleSpec('scribe').model, roleSpec('scribe').effort], [SCRIBE_MODEL, 'low']);
   assert.equal(SCRIBE_MODEL, 'claude-haiku-5-5');
+});
+
+test('#515 acceptor: `accept-` is the typed role of the auto-spawned acceptance-test writer — Opus 5.5 pinned in the TABLE (every other strong role still pins nothing)', () => {
+  assert.equal(ROLE_PREFIX.acceptor, 'accept');
+  assert.equal(roleOfName('accept-T1'), 'acceptor');
+  assert.equal(roleOfName('acceptance-x'), null, 'a look-alike is not the role');
+  assert.equal(ACCEPTOR_MODEL, 'claude-opus-5-5');
+  assert.equal(roleSpec('acceptor').model, ACCEPTOR_MODEL);
+  assert.equal(roleSpec('acceptor').effort, undefined);
+  assert.equal(resolveSpawnRoleDefaults('accept-T1', {}).model, ACCEPTOR_MODEL);
+  assert.equal(resolveSpawnRoleDefaults('accept-T1', { model: 'claude-sonnet-5-5' }).model, 'claude-sonnet-5-5', 'an explicit flag still wins');
+  assert.equal(resolveSpawnRoleDefaults('impl-x', {}).model, undefined, 'every other role unchanged');
+  assert.equal(roleSpec('acceptor', { acceptor: { model: undefined } }).model, undefined, 'fleet-roles.json can clear the pin');
+  assert.equal(roleSpec('acceptor').tools.edit, 'own-worktree');
 });
 
 test('roleOfName: prefix only, role-less names and look-alikes are null', () => {

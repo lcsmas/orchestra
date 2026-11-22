@@ -128,7 +128,7 @@ function world(cliPath) {
     return head();
   };
   const reset = (name, sha) => { g(['checkout', '-q', '-B', name, sha]); g(['push', '-q', '-f', 'origin', name]); };
-  const deliver = (b, ticket, verified, extra = []) => cli(['deliver', '--branch', b, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', verified, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', ...extra]);
+  const deliver = (b, ticket, verified, extra = []) => cli(['deliver', '--branch', b, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', verified, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate', ...extra]); // #515 M3: the rig's tickets carry no spec / frozen tests — the explicit escape
   const gate = (b, ticket, headSha, extra = []) => cli(['gate', '--branch', b, '--into', 'master', '--head', headSha, '--ticket', ticket, '--run', 'rig', '--require-check', 'ci', ...extra]);
   const file = (name, o) => { const f = path.join(dir, name); fs.writeFileSync(f, typeof o === 'string' ? o : JSON.stringify(o)); return f; };
   cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
@@ -202,11 +202,11 @@ function scenarios(cliPath) {
     arm('D2 must-FAIL ONE byte changed in the candidate tree: exit 2 head-moved (trees differ), no merge call', dv2.code === 2 && dv2.json?.reason === 'head-moved' && /trees differ/.test(dv2.json.detail) && W.count('pr merge') === before, J(dv2));
     const f1 = W.branch('t-f', 'master', 'src/impl.js', 'exports.f = () => 1;\n');
     const f2 = W.rewrite('t-f'); W.setCi(f1, f2);
-    const dv3 = W.cli(['deliver', '--branch', 't-f', '--into', 'master', '--ticket', 'T-F', '--run', 'rig', '--review-verdict', W.file('rv-f.json', { round: 1, blocking: 0, major: 0, minor: 0, head: f1 }), '--verified-head', f2, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1']);
+    const dv3 = W.cli(['deliver', '--branch', 't-f', '--into', 'master', '--ticket', 'T-F', '--run', 'rig', '--review-verdict', W.file('rv-f.json', { round: 1, blocking: 0, major: 0, minor: 0, head: f1 }), '--verified-head', f2, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate']);
     arm('D3 must-PASS the review round reviewed the OLD sha, the verified head is the rewritten sha, same tree: merged', dv3.code === 0 && dv3.json?.verdict === 'merged' && dv3.json.reviewGated === true, J(dv3));
     const h1 = W.branch('t-h', 'master', 'src/impl.js', 'exports.f = () => 1;\n'); W.setCi(h1);
     const other = W.branch('t-other', 'master', 'src/other.js', "exports.other = 'another ticket';\n");
-    const dv4 = W.cli(['deliver', '--branch', 't-h', '--into', 'master', '--ticket', 'T-H', '--run', 'rig', '--review-verdict', W.file('rv-other.json', { round: 1, blocking: 0, major: 0, minor: 0, head: other }), '--verified-head', h1, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1']);
+    const dv4 = W.cli(['deliver', '--branch', 't-h', '--into', 'master', '--ticket', 'T-H', '--run', 'rig', '--review-verdict', W.file('rv-other.json', { round: 1, blocking: 0, major: 0, minor: 0, head: other }), '--verified-head', h1, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate']);
     arm('D4 must-FAIL a review verdict for ANOTHER ticket\'s tree: exit 2 verdict-head-mismatch (the trees differ), no merge', dv4.code === 2 && dv4.json?.reason === 'verdict-head-mismatch' && /trees differ/.test(dv4.json.detail), J(dv4));
 
     // ── deliver + acceptance receipt (A's receipt is tree-keyed too; its hash refusal is kept) ─────────────

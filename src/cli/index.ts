@@ -2464,12 +2464,34 @@ async function main(argv: string[]): Promise<void> {
       }
       // #510 — frozen acceptance tests (src/cli/fanout-acceptance.ts): `fanout acceptance freeze|amend|show`; same exits (0 ok · 2 refused · 1 usage/could-not-check).
       // #469 — vague state file + resume (src/cli/fanout-state.ts owns argv, reconcile and the git/gh runner).
+      // #515 review M1: a freeze is made on the word of the HOST — a keyed session the host cannot vouch (superseded / unknown / unreachable) freezes nothing; no key = the env id, as for every bus verb.
+      if (args[0] === 'acceptance' && args[1] === 'freeze') {
+        await settleHostIdentity();
+        if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
+      }
       const fanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
       const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps);
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
       if (r.code !== 0) throw new CliExit(r.code);
+      // #515 — what the state write owes the HOST (spawn the ticket's `accept-` writer / post the freeze status): the state is on disk first, then the app acts.
+      for (const call of r.hostCalls ?? []) {
+        const ticket = String(call.body.ticket);
+        let res: OrchestraResponse;
+        try { res = await request(call.route, call.body, { timeoutMs: 180_000 }); } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+        if (call.body.op === 'spawn') {
+          if (!res.ok) fail(`ticket ${ticket} is registered but its test writer was NOT spawned: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout acceptance spawn ${ticket}`);
+          process.stdout.write(`${ticket}: Orchestra spawned its test writer ${String(res.name)} (${String(res.id)}) — it freezes the tests to the shared acceptance branch\n`);
+        } else if (!res.ok) {
+          process.stderr.write(`WARNING: ${ticket} is frozen, but the host did not post the status: ${String(res.error ?? 'refused')} — tell the implementer and verifier yourself (orchestra fanout acceptance show ${ticket} --brief)\n`);
+        } else {
+          const failed = (res.failed as Array<{ id: string; error: string }> | undefined) ?? [];
+          process.stdout.write(`${ticket}: told ${(res.notified as string[] | undefined)?.join(', ') || 'nobody'} (bus status: path + command)\n`);
+          if (typeof res.note === 'string') process.stderr.write(`WARNING: ${res.note}\n`);
+          for (const f of failed) process.stderr.write(`WARNING: could not tell ${f.id}: ${f.error}\n`);
+        }
+      }
       return;
     }
 

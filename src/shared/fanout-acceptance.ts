@@ -4,7 +4,9 @@ import {
   FanoutStateError,
   acceptanceHash,
   assertAcceptancePath,
+  blankTicket,
   parseRunArgv,
+  type AcceptFlow,
   type Acceptance,
   type FanoutState,
   type TicketState,
@@ -44,6 +46,108 @@ function ticketOf(state: FanoutState, id: string): TicketState | undefined {
   return state.tickets[id];
 }
 
+// ── #515: the forced flow (auto-spawned writer, gate wait, deliver pending, waiver) ─────────────────────────────
+
+/** none = no such ticket · waived = coordinator escape recorded · frozen = tests frozen · pending = spec registered, nothing frozen, not waived (a writer is owed) ·
+ *  unspecified = no spec, nothing frozen, not waived (no writer will come: `deliver` refuses until it is frozen, waived or `--no-acceptance-gate`d — #515 review M3). */
+export type AcceptancePhase = 'none' | 'waived' | 'frozen' | 'pending' | 'unspecified';
+export function acceptancePhase(t: TicketState | undefined): AcceptancePhase {
+  if (!t) return 'none';
+  if (t.acceptance) return 'frozen';
+  if (t.accept?.waived) return 'waived';
+  return t.spec ? 'pending' : 'unspecified';
+}
+
+/** How long a gate waits for the freeze by default (s): under the 10-minute ceiling of a foreground tool call. `--accept-wait <s>` overrides (0 = do not wait). */
+export const GATE_WAIT_DEFAULT_SEC = 480;
+export const GATE_WAIT_MAX_SEC = 3600;
+
+/** The ONE shared branch the frozen tests are published to (outside what the target's CI runs). */
+export const acceptanceBranch = (run: string): string => `acceptance/${run}`;
+
+/** `accept-<ticket>`: a spawn name the naming policy accepts (letters, digits, . _ - only). */
+export function acceptorName(ticket: string): string {
+  const slug = ticket.normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').replace(/\.{2,}/g, '.').slice(0, 60);
+  return `accept-${slug || 'ticket'}`;
+}
+
+const withAccept = (t: TicketState, f: Partial<AcceptFlow>): AcceptFlow => ({ acceptor: null, wait: null, waived: null, ...(t.accept ?? {}), ...f });
+
+/** The writer's brief: the spec + the ticket ONLY — never an implementer branch (the writer must derive the tests from the spec, not from the code). */
+export function acceptorBrief(o: { run: string; ticket: string; spec: string; repo: string | null; target: string }): string {
+  return [
+    `You write the frozen ACCEPTANCE TESTS of ticket ${o.ticket} (vague run ${o.run}). Orchestra spawned you; you never see the implementer's code, and nobody waits for you: the implementer starts at dispatch.`,
+    `Spec: ${o.spec}  (read the spec and the ticket ${o.ticket} — nothing else: do NOT read any implementer branch or PR for this ticket).`,
+    `Write tests that fail without the feature and pass with it, derived from the spec's sentences, as self-contained files (they import the production code by path; no helper, config or fixture outside the files you freeze). Commit them in your worktree.`,
+    `Then freeze them: \`orchestra fanout acceptance freeze ${o.ticket} --run ${o.run} --files <p1,p2,…> --run-cmd "<runner> <the same paths>"\` — a DIRECT runner call (e.g. \`node --test tests/x.test.ts\`; \`orchestra fanout acceptance --help\` lists the runners). It publishes the files to branch ${acceptanceBranch(o.run)}${o.repo ? ` of ${o.repo}` : ''} and tells the ticket's implementer and verifier the path + command.`,
+    `Finish with ONE \`orchestra send --type worker_done\` to your parent. You may freeze only ticket ${o.ticket}.`,
+  ].join('\n');
+}
+
+/** The bus status the host posts to the ticket's implementer and verifier when the freeze lands. */
+export function frozenStatusText(o: { run: string; ticket: string; files: string[]; runCmd: string; branch: string; head: string }): string {
+  return `acceptance tests of ${o.ticket} are FROZEN @ ${o.head.slice(0, 12)} on ${o.branch}: ${o.files.join(', ')}. Run: ${o.runCmd}. Implementer: \`git fetch origin ${o.branch} && git checkout origin/${o.branch} -- ${o.files.join(' ')}\` (copy unchanged; do not edit). Verifier: \`fanout gate --ticket ${o.ticket} --run ${o.run} --cwd <checkout>\` runs them (a gate that waited resumes now).`;
+}
+
+/** Who the freeze status goes to: the ticket's implementer and verifier, de-duplicated, never the writer itself. */
+export function frozenRecipients(t: TicketState, writer: string | null): string[] {
+  return [...new Set([t.implementer, t.verifier].filter((x): x is string => !!x && x !== writer))];
+}
+
+/** A claim (`acceptor.id` null, no error) older than this is a spawn that never settled (the app died mid-spawn): it is re-claimable. */
+export const CLAIM_STALE_SEC = 300;
+export function claimIsStale(a: { id: string | null; error?: string; at: string }, nowIso: string): boolean {
+  return a.id === null && !a.error && Date.parse(nowIso) - Date.parse(a.at) > CLAIM_STALE_SEC * 1000;
+}
+
+/** Claim the ticket's writer slot (id null = spawn in flight). Throws when a live writer already exists / the tests are frozen / waived / no spec.
+ *  A failed or stale claim is retaken; `replace` (the coordinator's `acceptance spawn --replace`: its writer died, was archived…) retakes a settled one too. */
+export function claimAcceptor(state: FanoutState, id: string, name: string, now: string, o: { replace?: boolean } = {}): FanoutState {
+  const t = state.tickets[id];
+  if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
+  if (!t.spec) throw new FanoutStateError(`${id}: no spec registered (\`state set ${id} --spec <file|url|ledger section>\`) — the writer's brief is the spec`);
+  if (t.acceptance) throw new FanoutStateError(`${id}: acceptance tests are already frozen`);
+  if (t.accept?.waived) throw new FanoutStateError(`${id}: acceptance is waived (${t.accept.waived.decision})`);
+  const a = t.accept?.acceptor;
+  if (a && !a.error && !o.replace && !claimIsStale(a, now)) throw new FanoutStateError(`${id}: a writer was already spawned (${a.name}${a.id ? ` ${a.id}` : ', spawn in flight'})`);
+  return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor: { id: null, name, at: now } }), updatedAt: now } }, updatedAt: now };
+}
+/** Record the spawn's outcome: the writer's id, or the error (the slot stays retryable). */
+export function settleAcceptor(state: FanoutState, id: string, r: { id: string } | { error: string }, now: string): FanoutState {
+  const t = state.tickets[id];
+  const a = t?.accept?.acceptor;
+  if (!t || !a) return state;
+  const acceptor = 'id' in r ? { id: r.id, name: a.name, at: now } : { id: null, name: a.name, at: a.at, error: r.error.slice(0, 500) };
+  return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor }), updatedAt: now } }, updatedAt: now };
+}
+
+/** Coordinator-only escape for a ticket that cannot have acceptance tests (with or without a registered spec). Refused once tests are frozen. */
+export function waiveInto(state: FanoutState, id: string, w: { decision: string; reason: string; now: string }): FanoutState {
+  const t = state.tickets[id];
+  if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
+  if (t.acceptance) throw new FanoutStateError(`${id}: acceptance tests are frozen — there is nothing to waive (amend them with a ledger decision)`);
+  if (t.accept?.waived) throw new FanoutStateError(`${id}: already waived (${t.accept.waived.decision})`);
+  if (!w.reason.trim()) throw new FanoutStateError('a waiver needs --reason');
+  return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { wait: null, waived: { decision: w.decision, reason: w.reason.trim(), at: w.now } }), updatedAt: w.now } }, updatedAt: w.now };
+}
+
+/** `deliver --no-acceptance-gate` leaves its trace on the ticket (a coordinator escape is never silent): the same record a waiver writes, with the bypass as the decision. */
+export function bypassInto(state: FanoutState, id: string, b: { head: string; now: string }): FanoutState {
+  const t = state.tickets[id];
+  if (!t || t.acceptance || t.accept?.waived) return state;
+  return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { wait: null, waived: { decision: 'deliver --no-acceptance-gate', reason: `merged without frozen acceptance tests at ${b.head.slice(0, 12)}`, at: b.now } }), updatedAt: b.now } }, updatedAt: b.now };
+}
+
+/** The gate's wait window for a ticket pending its freeze: reuse a still-open window (a concurrent gate), else open a new one of `boundSec`. */
+export function openWait(state: FanoutState, id: string, boundSec: number, nowMs: number): { state: FanoutState; wait: NonNullable<AcceptFlow['wait']> } {
+  const t = state.tickets[id];
+  if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
+  const cur = t.accept?.wait;
+  if (cur && Date.parse(cur.deadline) > nowMs) return { state, wait: cur };
+  const wait = { since: new Date(nowMs).toISOString(), deadline: new Date(nowMs + boundSec * 1000).toISOString(), boundSec };
+  return { state: { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { wait }) } } }, wait };
+}
+
 /** Record the frozen set on `id` (creating the ticket, like `state set`). Refused when one is already frozen: that is an amend. */
 export function freezeInto(
   state: FanoutState, id: string,
@@ -54,8 +158,8 @@ export function freezeInto(
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
   parseRunArgv(f.run, Object.keys(f.files));
   const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run), run: f.run, source: f.source, frozenAt: f.now, amendments: [] };
-  const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], updatedAt: f.now };
-  return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, updatedAt: f.now } }, updatedAt: f.now };
+  const base: TicketState = cur ?? blankTicket(f.now);
+  return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, ...(base.accept?.wait ? { accept: { ...base.accept, wait: null } } : {}), updatedAt: f.now } }, updatedAt: f.now };
 }
 
 /** Replace the frozen set (D3): appends `{at, decision, specSentence, hashBefore, hashAfter}`. A no-op amend is refused. */

@@ -101,7 +101,7 @@ function world(cliPath) {
   const ghLog = () => JSON.parse(fs.readFileSync(ghFile, 'utf8')).log;
   const count = (verb) => ghLog().filter((l) => l.startsWith(verb)).length;
   const gate = (ticket, branch, head) => cli(['gate', '--branch', branch, '--into', 'master', '--head', head, '--ticket', ticket, '--run', 'rig']);
-  const deliver = (ticket, branch, head) => cli(['deliver', '--branch', branch, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1']);
+  const deliver = (ticket, branch, head) => cli(['deliver', '--branch', branch, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate']); // #515 M3: unspecced rig tickets need the explicit escape
   const setCi = (h) => { const s = JSON.parse(fs.readFileSync(ghFile, 'utf8')); s.ciGreen.push(h); fs.writeFileSync(ghFile, JSON.stringify(s)); };
   cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
   const t1 = set('T-1', '--status', 'merged', '--branch', 't1', '--head', heads.t1, '--finding', 'F-MAJ=MAJOR,F-BLK=BLOCKING,F-MIN=minor');
@@ -331,7 +331,7 @@ const mutants = [
   { name: 'gate: a refusal is ignored', find: 'if (fu.refusal) return { exit: DELIVER_EXIT.refused,', put: () => 'if (false) return { exit: DELIVER_EXIT.refused,' },
   { name: 'deliver: the clause is not consulted', find: 'if (deps.followUp) {', put: () => 'if (false) {' },
   { name: 'deliver: a refusal is ignored', find: 'if (fu.refusal) return done(', put: () => 'if (false) return done(' },
-  { name: 'deliver: the production reader is not wired', find: 'followUp: (o) => followUpFromState(o)\n', put: () => 'followUp: void 0\n' },
+  { name: 'deliver: the production reader is not wired', find: 'followUp: (o) => followUpFromState(o),\n', put: () => 'followUp: void 0,\n' },
   { name: 'reader: the verified head is not passed (undeclared candidate invisible)', find: 'refusal: followUpRefusal(state, opts.ticket, opts.head, opts.branch, opts.headTree)', put: () => 'refusal: followUpRefusal(state, opts.ticket, void 0, opts.branch, opts.headTree)' },
   { name: 'state: findings are not parsed (a recorded finding is lost on re-read)', find: 'findings: findingsOf(t.findings),', put: () => 'findings: {},' },
 ];

@@ -275,9 +275,14 @@ test('deliver must-PASS (no clause): a ticket without acceptance merges as befor
   Object.assign(process.env, r.env);
   const head = r.g('rev-parse', 'HEAD');
   const a = deliverRig(r, head);
-  const ok1 = await deliver(dopts(head), a.deps);
+  const refused = await deliver(dopts(head), a.deps); // #515 M3: no spec, nothing frozen, no waiver ⇒ acceptance-pending (nothing merged) …
+  assert.equal(refused.exit, 2);
+  assert.equal(refused.result.reason, 'acceptance-pending');
+  assert.equal(a.merges().length, 0);
+  const ok1 = await deliver(dopts(head, { noAcceptanceGate: true }), a.deps); // … with the explicit escape it merges as before
   assert.equal(ok1.exit, 0);
   assert.equal(ok1.result.acceptanceChecked, undefined);
+  assert.equal(ok1.result.acceptanceGate, 'bypassed');
   const b = deliverRig(r, head);
   const bad = await deliver(dopts(head, { acceptance: writeReceipt(r, { head, hash: 'a'.repeat(64), ok: true }) }), b.deps);
   assert.equal(bad.exit, 1);

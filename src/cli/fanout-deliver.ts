@@ -12,6 +12,7 @@ import {
   readState,
   resolveFanoutRun,
   stateFile,
+  updateState,
 } from '../shared/fanout-state.ts';
 import {
   classifyMergeFailure,
@@ -35,8 +36,9 @@ import {
   decideUpstreams,
 } from '../shared/fanout-deliver.ts';
 import { decideDeliverReceipt, parseReceipt, type DeliverAcceptanceReason, type Receipt } from '../shared/fanout-acceptance.ts';
-import type { Acceptance, FollowUpReason } from '../shared/fanout-state.ts';
+import type { Acceptance, FollowUpReason, TicketState } from '../shared/fanout-state.ts';
 import { askFollowUp, followUpFromState, type FollowUpReader } from './fanout-followup.ts';
+import { bypassInto, type AcceptancePhase } from '../shared/fanout-acceptance.ts';
 import { acceptanceFromState, rereadFrozenAtHead } from './fanout-acceptance.ts';
 
 export interface GhResult {
@@ -72,13 +74,15 @@ export interface DeliverOpts {
   requireChecks: string[];
   /** #506 — the fanout run whose state file names this ticket's upstreams (default: the caller's own run). */
   run?: string;
+  /** `--no-acceptance-gate` (#515): the coordinator's recorded escape for a ticket whose frozen tests never landed (acceptance-pending). Never lifts an edited / red frozen test. */
+  noAcceptanceGate?: boolean;
   /** #510 — the gate's receipt file (`acceptance.receipt`), required when the ticket has frozen acceptance tests. */
   acceptance?: string;
 }
 
 export const DELIVER_USAGE =
   'usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]\n' +
-  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>]';
+  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>] [--no-acceptance-gate]';
 
 export type ParsedArgs = { ok: true; opts: DeliverOpts } | { ok: false; error: string };
 
@@ -88,9 +92,11 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
   const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check', '--run', '--acceptance']);
   const required: string[] = [];
   let noReviewGate = false;
+  let noAcceptanceGate = false;
   for (let i = 0; i < args.length; i += 2) {
     const k = args[i];
-    if (k === '--no-review-gate') { noReviewGate = true; i -= 1; continue; } // the one valueless flag
+    if (k === '--no-review-gate') { noReviewGate = true; i -= 1; continue; } // valueless flag
+    if (k === '--no-acceptance-gate') { noAcceptanceGate = true; i -= 1; continue; } // valueless flag (#515)
     if (!known.has(k)) return { ok: false, error: `unknown argument: ${k}\n${DELIVER_USAGE}` };
     const val = args[i + 1];
     if (val === undefined) return { ok: false, error: `${k} needs a value\n${DELIVER_USAGE}` };
@@ -123,6 +129,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
       ticket: v['--ticket'],
       reviewVerdict: v['--review-verdict'],
       noReviewGate,
+      noAcceptanceGate,
       verifiedHead: v['--verified-head'],
       strategy,
       timeoutMs: timeout * 1000,
@@ -139,7 +146,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | FollowUpReason | DeliverAcceptanceReason;
+  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | 'acceptance-pending' | FollowUpReason | DeliverAcceptanceReason;
   detail?: string;
   ticket: string;
   branch: string;
@@ -159,6 +166,8 @@ export interface DeliverResult {
   upstreamsChecked?: boolean;
   /** #510 — true: the ticket's frozen acceptance tests were proven (gate receipt for this head + this hash, and every frozen file re-read byte-identical at the head through gh). Absent: the ticket has none. */
   acceptanceChecked?: boolean;
+  /** #515 — the ticket carries a spec but no frozen tests and was merged anyway: `bypassed` = `--no-acceptance-gate` (recorded in the state), `waived` = a recorded `acceptance waive`. */
+  acceptanceGate?: 'bypassed' | 'waived';
   /** #487 — where `combinedSuite`'s test command came from: --suite-cmd, package.json packageManager, a lockfile on the target, or the npm fallback. */
   combinedSuiteSource?: SuiteSource;
 }
@@ -173,9 +182,12 @@ export interface DeliverDeps {
   /** #506 — the upstreams the state file names for `ticket` (none when there is no state / no such ticket). Absent = none. */
   upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[] | null;
   /** #510 — the ticket's frozen acceptance tests from the state (`consulted:false` = no state read). Absent = the clause is not consulted. Throws on an unreadable state / explicit --run with none / unknown ticket (⇒ exit 1). */
-  acceptance?: (opts: { ticket: string; run?: string }) => { consulted: boolean; acceptance: Acceptance | null };
+  acceptance?: (opts: { ticket: string; run?: string }) => { consulted: boolean; acceptance: Acceptance | null; phase?: AcceptancePhase; ticket?: TicketState; run?: string };
   /** #514 — the follow-up rule (a candidate on a merged ticket must name a BLOCKING|MAJOR finding it fixes). Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
   followUp?: FollowUpReader;
+
+  /** #515 — leave the `--no-acceptance-gate` bypass on the ticket in the state (best effort; a failure is logged, the escape is also in the printed result). */
+  recordBypass?: (o: { ticket: string; run: string; head: string }) => void;
 }
 
 /** One upstream of the ticket being delivered, as the fanout state records it. */
@@ -220,6 +232,10 @@ export const realDeps = (): DeliverDeps => ({
   upstreams: (o) => upstreamsFromState(o),
   acceptance: (o) => acceptanceFromState(o),
   followUp: (o) => followUpFromState(o),
+  recordBypass: (o) => {
+    const home = process.env.ORCHESTRA_HOME && process.env.ORCHESTRA_HOME.trim() ? process.env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+    updateState(stateFile(home, o.run), (cur) => { if (!cur) throw new Error('no state'); return bypassInto(cur, o.ticket, { head: o.head, now: new Date().toISOString() }); });
+  },
 });
 
 class GhError extends Error {}
@@ -349,8 +365,14 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   let acceptanceChecked: boolean | undefined;
   let verdictVia: DeliverResult['viaTree'];
   let headVia: DeliverResult['viaTree'];
+  let acceptanceGate: 'bypassed' | 'waived' | undefined;
+  let bypassRec: { run: string; head: string } | null = null;
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
-    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}), ...((headVia ?? verdictVia) ? { viaTree: headVia ?? verdictVia } : {}) };
+    if (bypassRec && (result.verdict === 'merged' || result.verdict === 'already-merged')) {
+      try { deps.recordBypass?.({ ticket: opts.ticket, run: bypassRec.run, head: bypassRec.head }); } catch (e) { deps.log(`acceptance: could not record the bypass in the state (${(e as Error).message}); it is in this result (acceptanceGate:"bypassed")`); }
+      bypassRec = null;
+    }
+    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}), ...(acceptanceGate ? { acceptanceGate } : {}), ...((headVia ?? verdictVia) ? { viaTree: headVia ?? verdictVia } : {}) };
     if (result.verdict === 'merged' || result.verdict === 'already-merged') full.combinedSuite = combinedSuiteCommand(opts.into, opts.suiteCmd);
     const exit = full.verdict === 'refused' ? DELIVER_EXIT.refused : full.verdict === 'unchecked' ? DELIVER_EXIT.unchecked : DELIVER_EXIT.merged;
     return { exit, result: full };
@@ -413,7 +435,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   // 1a. #510 — frozen acceptance tests: the gate's RECEIPT for this head + this frozen set, AND an independent byte re-read of every frozen file at the head through gh.
   // Before the PR is opened and before any wait: a refusal never depends on CI. The receipt is the coordinator's own file; the re-read is not.
   if (deps.acceptance) {
-    let got: { consulted: boolean; acceptance: Acceptance | null };
+    let got: ReturnType<NonNullable<DeliverDeps['acceptance']>>;
     try {
       got = deps.acceptance({ ticket: opts.ticket, run: opts.run });
     } catch (e) {
@@ -440,7 +462,19 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       if (bad.length) return done({ verdict: 'refused', reason: 'frozen-test-changed', detail: `frozen test file(s) at ${verifiedHead.slice(0, 12)} differ from the frozen bytes: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`, head: verifiedHead }, reviewGated);
       acceptanceChecked = true;
       deps.log(`acceptance ok: ${files.length} frozen file(s) byte-identical at ${verifiedHead.slice(0, 12)}, receipt for hash ${got.acceptance.hash.slice(0, 12)}`);
-    }
+    } else if (got.phase === 'pending' || got.phase === 'unspecified') {
+      // #515: a spec is registered and nothing was frozen (or waived): the merge waits. The only ways through are the freeze, `acceptance waive` or the recorded `--no-acceptance-gate`.
+      const w = got.ticket?.accept?.acceptor;
+      if (!opts.noAcceptanceGate) {
+        const ways = `three ways out: (1) register --spec so the test writer is spawned and the tests are frozen, (2) coordinator, recorded: \`fanout acceptance waive ${opts.ticket} --decision <ledger comment naming it> --reason …\`, (3) coordinator, recorded: \`fanout deliver … --no-acceptance-gate\``;
+        return done({ verdict: 'refused', reason: 'acceptance-pending', detail: got.phase === 'unspecified'
+          ? `${opts.ticket} has no registered spec, no frozen acceptance tests and no waiver: ${ways}`
+          : `${opts.ticket} has a registered spec (${got.ticket?.spec ?? '?'}) but its acceptance tests are not frozen${w ? ` (writer ${w.name}${w.id ? ` ${w.id}` : ''}${w.error ? `, spawn failed: ${w.error}` : ''})` : ' (no writer spawned: `fanout acceptance spawn`)'}: wait for the freeze status, or ${ways}`, head: verifiedHead }, reviewGated);
+      }
+      acceptanceGate = 'bypassed';
+      deps.log(`acceptance: ${opts.ticket} has no frozen tests — merging anyway on --no-acceptance-gate (recorded)`);
+      if (got.run) bypassRec = { run: got.run, head: verifiedHead }; // recorded in the state only once the merge LANDED (see `done`): a red CI / timeout leaves the ticket pending
+    } else if (got.phase === 'waived') acceptanceGate = 'waived';
   }
 
   try {
@@ -546,7 +580,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
 /** `orchestra help fanout` text for the deliver half (appended to #469's FANOUT_USAGE in help.ts). */
 export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]
                                 [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
-                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>]
+                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>] [--no-acceptance-gate]
 
 deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge with
 \`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
@@ -560,6 +594,7 @@ Follow-up (#514): a follow-up candidate on an already-merged ticket (\`state set
 Acceptance (#510): a ticket with frozen acceptance tests (the fanout state, \`fanout acceptance freeze\`) needs --acceptance <receipt.json> (the gate's
 acceptance.receipt {head,tree,ticket,hash,ok} for THIS verified head (or its tree) and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
 at the verified head through gh and must be byte-identical (else frozen-test-changed). Unreadable state / unknown ticket with --acceptance ⇒ exit 1. A ticket without frozen tests is unchanged.
+Forced flow (#515): a ticket registered with --spec and NOT frozen is refused (exit 2, acceptance-pending) — the freeze lands, or the coordinator waives it (\`fanout acceptance waive\`) or passes --no-acceptance-gate (recorded in the state and in the result as acceptanceGate:"bypassed"). Neither lifts a refusal for an edited or red frozen test.
 Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
 merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
 the verdict file, a head that is not the verified head, a conflict, a --require-check

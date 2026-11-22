@@ -179,13 +179,13 @@ the Briefing section of ledger #N — pull it first".
 
 ## 1b. Acceptance tests: written blind, frozen, copied unchanged
 
-A ticket with a testable promise gets tests before code, from a writer who never sees the code:
+Code forces it; you do not spawn the writer.
 
-- **At dispatch, spawn the writer**: ¤orchestra spawn --name impl-tests-<ticket> --model claude-opus-5-5 --task "<brief>"¤ (the pin rides this line, an explicit ¤--model¤ wins, the role stays ¤impl-¤). It reads ONLY the spec and the ticket, never an implementer's branch.
-- **You freeze its tests**: ¤orchestra fanout acceptance freeze <ticket> --files <p1,p2> --run-cmd "<cmd>" --from <writer-ref>¤ (coordinator-only); implementers copy the files UNCHANGED; a runner config or a helper the tests import is NOT hashed (¤orchestra help fanout¤, review it).
-- **Bytes decide**: ¤orchestra fanout gate … --ticket <id> --cwd <checkout>¤ runs them; ¤orchestra fanout deliver … --acceptance <receipt.json>¤ re-reads them at the PR head. ¤frozen-test-changed¤ / ¤frozen-test-failed¤ go to the implementer (a frozen test is never edited to go green); ¤acceptance-unproven¤ / ¤acceptance-stale¤ / ¤acceptance-stale-checkout¤ mean the verifier re-gates. A wrong test is yours alone to amend: ¤orchestra fanout acceptance amend <ticket> --decision <url> --spec-sentence "<text>" --files <p1,p2>¤.
+- **Register the spec**: ¤orchestra fanout state set <ticket> --spec <file|url|ledger section> --implementer <ws id> --verifier <ws id>¤. Orchestra spawns its ¤accept-¤ writer itself (Opus 5.5; brief = spec + ticket, never an implementer branch).
+- **The writer freezes** (own ticket only) to ¤acceptance/<run>¤; Orchestra tells implementer and verifier the path + command (¤orchestra fanout acceptance show <ticket> --brief¤). Implementers copy them UNCHANGED.
+- **Bytes decide**: ¤orchestra fanout gate … --ticket <id> --cwd <checkout>¤ runs them (unfrozen it WAITS, then ¤pending¤ exit 3: no round consumed); ¤orchestra fanout deliver … --acceptance <receipt.json>¤ re-reads them (¤acceptance-pending¤ while unfrozen). ¤frozen-test-changed¤ / ¤frozen-test-failed¤ go to the implementer; ¤acceptance-unproven¤ / ¤acceptance-stale¤ / ¤acceptance-stale-checkout¤ mean the verifier re-gates. Yours: ¤orchestra fanout acceptance amend <ticket> --decision <url> --spec-sentence "<text>" --files <p1,p2>¤, ¤orchestra fanout acceptance waive <ticket> --decision <url> --reason "<why>"¤.
 
-→ **Read ¤references/acceptance-tests.md¤ when you brief the writer, freeze or amend.**
+→ **Read ¤references/acceptance-tests.md¤ when you register a spec, amend or waive.**
 
 ## 2. Spawn the implementers
 

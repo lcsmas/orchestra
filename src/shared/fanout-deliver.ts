@@ -11,8 +11,8 @@
 //   5. (#506) a dependent merges only after every upstream merged, and only on the upstream content it was built on and gated against
 //      (`decideUpstreams`): a dependent may be nominated and gated EARLY, but never merges stale or out of order.
 
-/** Exit codes of the verb — the 0/2/1 split of `verify-landed`: a refusal is an ANSWER, could-not-check is not. */
-export const DELIVER_EXIT = { merged: 0, refused: 2, unchecked: 1 } as const;
+/** Exit codes of the verb — the 0/2/1 split of `verify-landed`: a refusal is an ANSWER, could-not-check is not. `pending` (3, #515, `fanout gate` only): the rest of the gate answered but the ticket's frozen tests had not landed within the wait — no round consumed, re-run after the freeze status. */
+export const DELIVER_EXIT = { merged: 0, refused: 2, unchecked: 1, pending: 3 } as const;
 
 /** Review verdict file (frozen, #467): `{"round":2,"blocking":0,"major":0,"minor":3,"head":"<40-hex sha reviewed>"}`. */
 export interface ReviewVerdict {

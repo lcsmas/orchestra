@@ -331,7 +331,7 @@ test('#506 V1 production wiring: parseDeliverArgs --run → realDeps().upstreams
   t.after(() => { for (const k of keys) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
   process.env.ORCHESTRA_HOME = r.home;
   delete process.env.ORCHESTRA_WS_ID; delete process.env.ORCHESTRA_WS_ID_IDENTITY; delete process.env.ORCHESTRA_RUN_ID;
-  const argv = (branch: string, ticket: string, head: string) => ['--branch', branch, '--into', 'master', '--ticket', ticket, '--no-review-gate', '--verified-head', head, '--run', 'r1', '--no-checks-grace', '0'];
+  const argv = (branch: string, ticket: string, head: string) => ['--branch', branch, '--into', 'master', '--ticket', ticket, '--no-review-gate', '--verified-head', head, '--run', 'r1', '--no-checks-grace', '0', '--no-acceptance-gate']; // #515 M3: an unspecced ticket in the state needs the explicit escape
   const parsed = parseDeliverArgs(argv('dep', 'DEP', D));
   assert.ok(parsed.ok && parsed.opts.run === 'r1', '--run survives the parse');
   const prod = (): DeliverDeps => ({ ...realDeps(), gh: r.gh, sleep: async () => {}, now: () => 0, log: () => {} });

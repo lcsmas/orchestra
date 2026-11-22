@@ -23,7 +23,7 @@ test('required — must-FAIL: missing / empty / whitespace-only names are refuse
 });
 
 test('rôle prefix — must-PASS: every rôle of the fixed list is accepted', () => {
-  assert.deepEqual([...ROLES], ['ops', 'impl', 'verif', 'review', 'explo', 'scribe']);
+  assert.deepEqual([...ROLES], ['ops', 'impl', 'verif', 'review', 'explo', 'scribe', 'accept']);
   for (const role of ROLES) {
     assert.deepEqual(checkSpawnName(`${role}-nommage-parent`), { ok: true, name: `${role}-nommage-parent` });
   }

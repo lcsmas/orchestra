@@ -1,18 +1,22 @@
 # Acceptance tests: written blind, frozen, copied unchanged
 
-(Read when you write the test writer's brief, freeze its tests, or amend them (SKILL.md §1b). The commands carry the rules: `orchestra help fanout` is the truth, this file only says WHEN to call what.)
+(Read when you register a spec, amend or waive (SKILL.md §1b). The commands carry the rules: `orchestra help fanout` is the truth, this file only says WHEN to call what.)
 
 ## Why a separate writer
 
-An implementer who writes its own tests proves the code it wrote. The writer reads ONLY the spec and the ticket, so its tests encode the promise, not the implementation. The model pin is on the spawn line (`--model claude-opus-5-5`, the repo's wire-id pattern; the role stays `impl-`, `roleSpec()` is untouched).
+An implementer who writes its own tests proves the code it wrote. The writer reads ONLY the spec and the ticket, so its tests encode the promise, not the implementation. Orchestra spawns it (role `accept-` in the fleet role table, Opus 5.5 pinned there; every other role is unchanged) — no spawn line of yours to remember.
 
 ## The sequence
 
-1. **At dispatch**, with the implementers: spawn the writer, `orchestra spawn --name impl-tests-<ticket> --model claude-opus-5-5 --task "<brief>"`. Its brief: the spec path, the ticket, the repo-relative path the tests go under, the ONE command that runs them (`--run-cmd`: a direct runner call naming a frozen file, no shell), the tests self-contained (no helper outside the frozen files), "never read an implementer's branch", the common contract (ledger Briefing). It commits the tests to its own branch and reports the ref.
-2. **Freeze** (you, once the writer's ref exists): `orchestra fanout acceptance freeze <ticket> --files <p1,p2> --run-cmd "<cmd>" --from <writer-ref>`. It records each path's sha256 and the command in the state file; a second freeze is refused (use amend). Read it back with `orchestra fanout acceptance show <ticket>` (open to every role).
-3. **Implementers copy** the frozen files UNCHANGED into their branch (`git checkout <writer-ref> -- <paths>`) and make them pass. The tests are RED before the code, so they land WITH each candidate, never alone.
-4. **Gate**: the verifier runs `orchestra fanout gate --branch <b> --into <target> --head <sha> --ticket <id> --cwd <checkout>`. The checkout must be at `--head`; every frozen path is hashed, then the stored command is run there. Refusals: `frozen-test-changed`, `frozen-test-failed`, `acceptance-unproven` (no `--cwd`), `acceptance-stale-checkout`. A ticket without acceptance tests gates exactly as before.
-5. **Deliver**: save the gate's `acceptance.receipt` to a file; `orchestra fanout deliver … --acceptance <receipt.json>` checks it against the PR head and the state hash and re-reads every frozen path from GitHub at that head. A forged receipt does not survive the byte re-read.
+1. **Register**: `orchestra fanout state set <ticket> --spec <ref> --implementer <ws id> --verifier <ws id>` (the spec is a file, URL or ledger section; the two ids are who is told). Orchestra spawns the ticket's writer from that line; a failed spawn exits 1 and is retried by `orchestra fanout acceptance spawn <ticket>`. Implementers are dispatched as usual: nobody waits.
+2. **The writer freezes** its own ticket: `orchestra fanout acceptance freeze <ticket> --files <p1,p2> --run-cmd "<cmd>"` (`--run-cmd`: a direct runner call naming a frozen file, no shell; the tests self-contained). The files go to ONE shared branch `acceptance/<run>`, the state records each path's sha256 + the command, and Orchestra posts a bus status (path + command) to the implementer and verifier. A second freeze is refused (use amend). `orchestra fanout acceptance show <ticket> --brief` / `fanout state show` print the path and the command; the gate runs exactly that command.
+3. **Implementers copy** the frozen files UNCHANGED (`git fetch origin acceptance/<run> && git checkout origin/acceptance/<run> -- <paths>`) and make them pass. The tests are RED before the code, so they land WITH each candidate, never alone.
+4. **Gate**: the verifier runs `orchestra fanout gate --branch <b> --into <target> --head <sha> --ticket <id> --cwd <checkout>`. The checkout must be at `--head`; every frozen path is hashed, then the stored command is run there. A candidate nominated BEFORE the freeze is never refused, and it does NOT pass on that head either (D1: the frozen bytes must be at the candidate's head): the gate answers CI etc., waits (bound + deadline printed in `state show`, `--accept-wait <s>`), and when the freeze lands — or the bound ends — answers `pending` (exit 3, no round consumed). The implementer, told by the bus status, copies the files UNCHANGED, re-nominates, and the verifier re-gates the NEW head. Without `--cwd` it answers `pending` at once (it cannot run them). Refusals: `frozen-test-changed`, `frozen-test-failed`, `acceptance-unproven` (no `--cwd`, once frozen), `acceptance-stale-checkout`.
+5. **Deliver**: save the gate's `acceptance.receipt` to a file; `orchestra fanout deliver … --acceptance <receipt.json>` checks it against the PR head and the state hash and re-reads every frozen path from GitHub at that head. An unfrozen ticket with a spec is `acceptance-pending` (exit 2). A forged receipt does not survive the byte re-read.
+
+## Escapes (coordinator-only, recorded)
+
+`deliver` refuses (exit 2 `acceptance-pending`) any ticket of the state that has no frozen tests and no waiver — with a spec (writer owed) or WITHOUT one (`state set` says so up front). The ways out, coordinator-only and recorded: register `--spec`; for a ticket that cannot have tests (docs) `orchestra fanout acceptance waive <ticket> --decision <ledger comment url naming the ticket> --reason "<why>"` (works without a spec); or `deliver --no-acceptance-gate` (leaves the same record in the state). None lifts a refusal for an edited or red frozen test.
 
 ## What the freeze does not cover
 
@@ -21,11 +25,12 @@ The runner allowlist and the residue are in `orchestra help fanout` (read `fanou
 ## What a refusal means
 
 - `frozen-test-changed` / `frozen-test-failed`: the implementer's code is wrong, or it touched a frozen file. Route it back; never "fix" the test in the candidate.
+- `pending` (gate, exit 3) / `acceptance-pending` (deliver): the writer has not frozen yet — wait for the status; nothing is wrong with the candidate.
 - `acceptance-unproven` / `acceptance-stale-checkout` (gate) and `acceptance-stale` (deliver: a receipt for another head or frozen set, e.g. after an amend): the verifier ran nothing, the wrong checkout or an old set: re-gate.
 
 ## Amend: yours alone, with a decision
 
-A test that contradicts the spec is amended, never worked around: write the decision in the ledger (the spec sentence the test now follows), then `orchestra fanout acceptance amend <ticket> --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2> [--from <ref>] [--run-cmd "<cmd>"]`: one decision authorises ONE amendment; `--run-cmd` replaces the stored command and must name a frozen file. The amend reads the decision through `gh` and fails closed when the sentence is not in it. Freeze and amend are coordinator-only (a guarded verb); every implementer then re-copies from the new ref.
+A test that contradicts the spec is amended, never worked around: write the decision in the ledger (the spec sentence the test now follows), then `orchestra fanout acceptance amend <ticket> --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2> [--from <ref>] [--run-cmd "<cmd>"]`: one decision authorises ONE amendment; `--run-cmd` replaces the stored command and must name a frozen file. The amend reads the decision through `gh` and fails closed when the sentence is not in it. Amend, waive and spawn are coordinator-only (guarded verbs; the writer only freezes its own ticket); every implementer then re-copies from the new ref.
 
 ## Routing rule
 

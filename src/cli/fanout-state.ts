@@ -17,11 +17,15 @@ import {
   type FanoutState,
   type Reality,
   type TicketReality,
+  type TicketState,
 } from '../shared/fanout-state.ts';
+import { acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
-export interface RunResult { code: number; stdout: string; stderr: string }
-/** The injectable git/gh seam: tests hand a fake; production spawns the real binary. */
-export type Runner = (cmd: 'git' | 'gh', args: string[], cwd: string) => { code: number; stdout: string; stderr: string };
+/** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
+export interface HostCall { route: '/fanoutAcceptance'; body: Record<string, unknown> }
+export interface RunResult { code: number; stdout: string; stderr: string; hostCalls?: HostCall[] }
+/** The injectable git/gh seam: tests hand a fake; production spawns the real binary. `env` (optional, extra variables) is how a verb points git at a scratch index. */
+export type Runner = (cmd: 'git' | 'gh', args: string[], cwd: string, env?: Record<string, string>) => { code: number; stdout: string; stderr: string };
 
 export interface FanoutDeps {
   env: NodeJS.ProcessEnv;
@@ -31,8 +35,8 @@ export interface FanoutDeps {
   readStdin: () => string;
 }
 
-export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string): { code: number; stdout: string; stderr: string } {
-  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
+export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string, env?: Record<string, string>): { code: number; stdout: string; stderr: string } {
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: 60_000, maxBuffer: 16 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) });
   if (r.error) return { code: 127, stdout: '', stderr: String(r.error.message) };
   return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
@@ -41,8 +45,9 @@ export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--ta
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
                                   [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
+                                  [--spec <file|url|ledger section>] [--implementer <ws id>] [--verifier <ws id>]
        orchestra fanout state show [--run <id>] [--json]
-       orchestra fanout acceptance freeze|amend|show <ticket> …   (frozen acceptance tests, #510 — orchestra fanout acceptance --help)
+       orchestra fanout acceptance freeze|amend|waive|spawn|show <ticket> …   (frozen acceptance tests, #510/#515 — orchestra fanout acceptance --help)
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
 
 The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one writer, atomic rewrite, unknown field refused).
@@ -54,6 +59,9 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
   Content key (#512): \`set --head\` / \`--built-on\` also record the git TREE of each sha (derived, read-only; unreadable ⇒ unknown ⇒ sha-keyed). \`resume\` keeps a verdict whose head
            moved to another sha with the SAME tree (it records the new head); another tree = head-moved (verdict void).
+  --spec <ref>  (#515) registers the ticket's spec: Orchestra then SPAWNS that ticket's \`accept-\` test writer itself (Opus 5.5, brief = spec + ticket only);
+           its \`fanout acceptance freeze\` publishes the tests to branch acceptance/<run> and tells --implementer / --verifier (workspace ids) the path + command.
+           \`state show\` prints each ticket's path + run command (or "pending"). A gate on an unfrozen ticket WAITS (bounded), deliver answers acceptance-pending.
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
   Findings (#514): --finding records a verifier/review finding (id=severity) on the ticket it was raised on; a recorded severity is never re-graded.
@@ -119,6 +127,16 @@ function findingsArg(v: string): Record<string, string> {
   }
   return out;
 }
+/** #515 — does this ticket owe a writer spawn? spec registered, nothing frozen, not waived, and no live writer (a failed spawn and a claim older than CLAIM_STALE_SEC — the app died mid-spawn — are retried). */
+export function needsAcceptor(t: TicketState | undefined, nowIso?: string): boolean {
+  if (!t || acceptancePhase(t) !== 'pending') return false;
+  const a = t.accept?.acceptor;
+  return !a || !!a.error || claimIsStale(a, nowIso ?? new Date().toISOString());
+}
+export function spawnCall(run: string, ticket: string, deps: Pick<FanoutDeps, 'env'>, replace = false): HostCall {
+  const from = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+  return { route: '/fanoutAcceptance', body: { op: 'spawn', run, ticket, ...(from ? { from } : {}), ...(replace ? { replace: true } : {}) } };
+}
 
 export function homeOf(env: NodeJS.ProcessEnv): string {
   return env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
@@ -171,7 +189,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--json'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--implementer', '--verifier', '--json'], []);
     const [ticket, ...extra] = p.pos;
     if (!ticket || extra.length) throw new FanoutStateError('usage: orchestra fanout state set <ticket> [--status s] [--branch b] …');
     const patch: Record<string, unknown> = {};
@@ -182,7 +200,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--json must be an object');
       Object.assign(patch, obj);
     }
-    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--built-on': 'builtOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted', '--finding': 'findings', '--follow-up-of': 'followUpOf', '--fixes': 'fixes', '--forget-merge': 'forgetMerge' };
+    const flagToKey: Record<string, string> = { '--status': 'status', '--branch': 'branch', '--pr': 'pr', '--head': 'head', '--verdict': 'verdict', '--depends-on': 'dependsOn', '--built-on': 'builtOn', '--frozen-interface': 'frozenInterface', '--accept-merged': 'mergedAccepted', '--finding': 'findings', '--follow-up-of': 'followUpOf', '--fixes': 'fixes', '--forget-merge': 'forgetMerge', '--spec': 'spec', '--implementer': 'implementer', '--verifier': 'verifier' };
     for (const [flag, key] of Object.entries(flagToKey)) {
       const v = p.vals[flag];
       if (v === undefined) continue;
@@ -206,12 +224,21 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
         if (tr) derived.builtOnTree[up] = tr; else notes.push(`note: the tree of ${up}@${String(sha).slice(0, 8)} is unreadable: ${up} stays keyed on the sha\n`);
       }
     }
+    let prev: TicketState | undefined;
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
+      prev = cur.tickets[ticket];
       return applyTicketPatch(cur, ticket, patch, deps.now(), derived);
     });
     const t = next.tickets[ticket];
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v}`).join(',')}` : ''}\n`, stderr: r.note + notes.join('') };
+    // #515: a ticket that carries a spec and has no live writer, no frozen tests and no waiver gets its `accept-` writer from the HOST (the call is made after the state is on disk).
+    const hostCalls: HostCall[] = needsAcceptor(t, deps.now()) ? [spawnCall(r.run, ticket, deps)] : [];
+    // a recipient recorded AFTER the freeze (the implementer does not exist at dispatch) still gets the frozen status (path + command), once (#515 review m7)
+    const late = (['implementer', 'verifier'] as const).map((k) => t[k]).filter((id, i): id is string => !!id && id !== (prev?.[(['implementer', 'verifier'] as const)[i]] ?? null));
+    if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });
+    // an unspecified ticket will be refused by `deliver` (acceptance-pending): say so now, not at merge time (#515 review M3)
+    const notice = acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
@@ -224,9 +251,25 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const head = ['ticket', 'status', 'verdict', 'branch', 'pr', 'head', 'dependsOn', 'frozen'];
     const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${[fmt(head), ...rows.map(fmt)].join('\n')}\n`, stderr: r.note };
+    const acc = Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null);
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
+}
+
+/** One line per ticket with an acceptance story: where the frozen tests are + the run command, or what it waits for / why it is waived. null = nothing forced. */
+export function acceptanceLine(id: string, t: TicketState): string | null {
+  const ph = acceptancePhase(t);
+  if (ph === 'none') return null;
+  if (ph === 'unspecified') return t.status === 'merged' || t.status === 'dropped' ? null : `${id}  unspecified  no --spec, nothing frozen, not waived: \`fanout deliver\` refuses (acceptance-pending) — set --spec, \`fanout acceptance waive\`, or deliver with --no-acceptance-gate`;
+  if (ph === 'frozen') {
+    const a = t.acceptance!;
+    return `${id}  frozen  ${a.source.branch ?? '-'}@${a.source.head.slice(0, 12)}  files: ${Object.keys(a.files).join(', ')}  run: ${a.run}`;
+  }
+  if (ph === 'waived') return `${id}  waived  ${t.accept!.waived!.decision} — ${t.accept!.waived!.reason}`;
+  const w = t.accept?.acceptor;
+  const wait = t.accept?.wait;
+  return `${id}  pending  writer: ${w ? `${w.name}${w.id ? ` (${w.id})` : ''}${w.error ? ` — spawn failed: ${w.error}` : w.id ? '' : ' (spawning)'}` : 'none yet (`fanout acceptance spawn`)'}${wait ? `  gate waits until ${wait.deadline} (bound ${wait.boundSec}s)` : ''}`;
 }
 
 /** Read git + gh for every ticket that names a branch or a PR. A failed read is recorded as `error` (UNKNOWN), never as absence. */
