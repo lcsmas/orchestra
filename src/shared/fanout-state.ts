@@ -586,13 +586,13 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     }
     if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated') && t.tree && r.branchTree === t.tree) {
       // #512: the branch moved to another sha with the SAME tree (rebase, author rewrite): the verdict stands, only the recorded head follows. Not a divergence.
-      writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead }, why: `head moved to ${r.branchHead.slice(0, 8)}, same tree: ${t.verdict} verdict kept` });
+      writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree }, why: `head moved to ${r.branchHead.slice(0, 8)}, same tree: ${t.verdict} verdict kept` });
     } else if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated')) {
       add({ ticket: id, kind: 'head-moved', detail: `branch head ${r.branchHead.slice(0, 8)} != recorded ${t.head.slice(0, 8)} — verdict ${t.verdict} is stale` });
       if (t.verdict !== 'none' || t.status === 'gated') {
-        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
+        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
       } else {
-        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead }, why: 'head moved' });
+        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null }, why: 'head moved' });
       }
     } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });

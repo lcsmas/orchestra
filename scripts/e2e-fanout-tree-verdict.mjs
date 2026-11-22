@@ -163,7 +163,7 @@ function scenarios(cliPath) {
     arm('R1 must-PASS the branch moved to a NEW sha with the SAME tree: resume exit 0, no divergence, verdict pass kept, head follows', a2 !== a1 && W.tree(a2) === W.tree(a1) && r1.code === 0 && tk('T-A').verdict === 'pass' && tk('T-A').head === a2 && tk('T-A').status === 'gated', `${J(r1)} head=${tk('T-A').head}`);
     const a3 = W.bump('t-a');
     const r2 = W.cli(['resume', '--run', 'rig']);
-    arm('R2 must-FAIL ONE byte changed in the candidate tree: resume exit 2 head-moved, verdict reset to none/nominated', r2.code === 2 && /head-moved/.test(r2.stdout) && tk('T-A').verdict === 'none' && tk('T-A').status === 'nominated' && a3 !== a2, `${J(r2)} verdict=${tk('T-A').verdict}`);
+    arm('R2 must-FAIL ONE byte changed in the candidate tree: resume exit 2 head-moved, verdict reset to none/nominated', r2.code === 2 && /head-moved/.test(r2.stdout) && tk('T-A').verdict === 'none' && tk('T-A').status === 'nominated' && a3 !== a2 && tk('T-A').tree === W.tree(a3), `${J(r2)} verdict=${tk('T-A').verdict}`);
 
     // ── resume: upstream trees ─────────────────────────────────────────────────────────────────────────────
     const u1 = W.branch('t-up', 'master', 'src/up.js', 'exports.up = 1;\n');
@@ -282,6 +282,7 @@ const mutants = [
   { name: 'content key: an UNKNOWN tree matches', find: '!!aTree && !!bTree && aTree === bTree', put: () => '!aTree || !bTree || aTree === bTree' },
   { name: 'resume: a head moved to the same tree still voids the verdict (tree ignored)', find: '&& t.tree && r.branchTree === t.tree) {', put: () => '&& false) {' },
   { name: 'resume: a moved head is always "same tree" (the tree is not compared)', find: '&& t.tree && r.branchTree === t.tree) {', put: () => '&& t.tree) {' },
+  { name: 'resume: the head-moved write-back leaves the OLD tree on the new head', find: 'patch: { head: r.branchHead, tree: r.branchTree ?? null, verdict: "none"', put: () => 'patch: { head: r.branchHead, verdict: "none"' },
   { name: 'resume: the upstream tip\'s tree is not read (a rewritten upstream voids the dependent)', find: 'reality[u]?.error ? null : reality[u]?.branchHead, reality[u]?.branchTree)', put: () => 'reality[u]?.error ? null : reality[u]?.branchHead, void 0)' },
   { name: 'resume: the upstream tree is ignored (any rewritten upstream passes)', find: 'if (!sameContent(built, dep.builtOnTree[up], head, upHead != null ? upTree : u.tree))', put: () => 'if (false)' },
   { name: 'deliver: a different PR head is always accepted (headSameTree forced)', find: 'headSameTree = !!a && a === b;', put: () => 'headSameTree = true;' },
