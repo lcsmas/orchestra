@@ -13,7 +13,9 @@ import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NA
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
 import { mkHomeScratch } from './home-scratch.ts';
-import { FLEET_ROLES, roleSpec, type FleetRole } from './fleet-roles.ts';
+import { FLEET_ROLES, roleOfName, roleSpec, resolveSpawnRoleDefaults, type FleetRole } from './fleet-roles.ts';
+import { isValidModelArg } from './model-defaults.ts';
+import { MODEL_CHOICES } from '../renderer/components/agent/model-util.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const workspacesSrc = fs.readFileSync(path.join(root, 'src', 'main', 'workspaces.ts'), 'utf8');
@@ -155,6 +157,12 @@ export const RULE_PINS: ReadonlyArray<readonly [id: string, enforcedBy: string, 
   ['combined suite after N merges', '#467 deliver combinedSuite', /`deliver` prints `combinedSuite`/],
   ['final report = worker_done --cap', 'host capability (#160)', /ONLY on its `worker_done` \(#160\)/],
   ['no common ancestry: status/ask only; message refused', '#436/#441 CLI', /`orchestra message` is refused for every target/],
+  ['acceptance: writer spawned at dispatch on the model-pinned line', '#510 D4 — the pin is the spawn line', /At dispatch, spawn the writer\*\*: `orchestra spawn --name impl-tests-<ticket> --model claude-opus-5-5 --task "<brief>"`[\s\S]*never an implementer's branch/],
+  ['acceptance: the writer reads ONLY the spec and the ticket', '#510 blind writer', /It reads ONLY the spec and the ticket, never an implementer's branch/],
+  ['acceptance: coordinator freezes, implementers copy unchanged', '#510 fanout acceptance freeze', /`orchestra fanout acceptance freeze <ticket> --files <p1,p2> --run-cmd "<cmd>" --from <writer-ref>` \(coordinator-only\); implementers copy the files UNCHANGED/],
+  ['acceptance: a runner config / imported helper is not hashed — pointed at help', '#510 freeze residue (help)', /a runner config or a helper the tests import is NOT hashed \(`orchestra help fanout`, review it\)/],
+  ['acceptance: gate runs them, deliver re-reads the bytes', '#510 fanout gate --cwd / deliver --acceptance', /`orchestra fanout gate … --ticket <id> --cwd <checkout>` runs them; `orchestra fanout deliver … --acceptance <receipt\.json>` re-reads them at the PR head[\s\S]*`frozen-test-changed` \/ `frozen-test-failed` go to the implementer[\s\S]*`acceptance-unproven` \/ `acceptance-stale` \/ `acceptance-stale-checkout` mean the verifier re-gates/],
+  ['acceptance: a wrong test is amended by the coordinator with a ledger decision', '#510 fanout acceptance amend', /`orchestra fanout acceptance amend <ticket> --decision <url> --spec-sentence "<text>" --files <p1,p2>`/],
   ['reversible default instead of asking (judgement line)', 'none — ledger decision', /take the REVERSIBLE default, apply it and write it in your ledger\s+comment/],
 ];
 
@@ -183,6 +191,7 @@ export const JUDGEMENT_PINS: ReadonlyArray<readonly [id: string, re: RegExp]> = 
   ['scribe lever: scribe-able turns are a ceiling, the static prefix dominates, handoff late', /scribe-able turns are a\s+~6\.4% ceiling, ≥49% is the static prefix: keep this file small, `orchestra handoff` late/],
   ['scribe spawn shape: body text or absolute path + run id; the coordinator deletes it', /scribe-<object> --task "<body text or absolute path, run id, fixed commands, ledger #N>"`; it ends with `worker_done --cap`, then\s+you delete it/],
   ['a scribe\'s state set never carries --accept-merged / --json / mergedAccepted', /A scribe's `state set` never carries `--accept-merged`, `--json` or `mergedAccepted` \(guard-denied\)/],
+  ['routing rule: an upstream gap is fixed ON the upstream, never by changing the dependent\'s interface', /a gap found in an upstream is fixed by a follow-up ON the upstream, never by changing the dependent's spec interface \(the one it was specified and tested against\); a follow-up that must change the frozen interface goes through a ledger decision first/],
   ['deliverable file exists on the integration branch', /Then confirm each deliverable \*\*file\*\* exists on the integration branch/],
 ];
 
@@ -205,6 +214,13 @@ export const REFERENCE_PINS: ReadonlyArray<readonly [id: string, file: string, r
   ['delete-gate trap 0: a rebase reads a false not-landed', 'closeout-and-gates.md', /after a REBASE, `verify-landed` reads a FALSE not-landed/],
   ['delete-gate trap 2: filter generated porcelain noise', 'closeout-and-gates.md', /porcelain is never literally empty — filter the known generated noise/],
   ['delete-gate trap 1: an older build exits 0 on NOT LANDED', 'closeout-and-gates.md', /Older \*installed\*\s+builds exit 0 on NOT LANDED/],
+  ['acceptance: the model pin rides the spawn line, the role stays impl-', 'acceptance-tests.md', /--model claude-opus-5-5`, the repo's wire-id pattern; the role stays `impl-`/],
+  ['acceptance: amend reads the decision through gh and fails closed', 'acceptance-tests.md', /reads the decision through `gh` and fails closed/],
+  ['acceptance: deliver\'s acceptance-stale is a re-gate (receipt for another head or set)', 'acceptance-tests.md', /`acceptance-stale` \(deliver: a receipt for another head or frozen set[^)]*\)[^\n]*re-gate/],
+  ['acceptance: the freeze does not cover runner config / helpers — pointed at help, reviewed', 'acceptance-tests.md', /runner config file or a non-frozen helper the tests import is still the candidate's and is NOT hashed/],
+  ['acceptance: the writer is briefed to keep tests self-contained', 'acceptance-tests.md', /brief the writer to keep the tests self-contained/],
+  ['acceptance: --run-cmd is a direct runner call naming a frozen file, no shell', 'acceptance-tests.md', /`--run-cmd`: a direct runner call naming a frozen file, no shell/],
+  ['acceptance: the routing rule, with its reason', 'acceptance-tests.md', /a test amended to fit an upstream's bug freezes the bug\)\. A follow-up that must change that frozen interface is a ledger decision first/],
   ['gate example: wrap-not-touch', 'closeout-and-gates.md', /\*wrap-not-touch\*/],
   ['visual claims need a triptych', 'closeout-and-gates.md', /before\/after\/reference triptych/],
 ];
@@ -291,6 +307,77 @@ test('size budget (#472): the rendered text stays within 32,000 B (v1 40,690 B),
   const bytes = (t: string) => Buffer.byteLength(t, 'utf8');
   assert.ok(bytes(VERIFIED_FANOUT_SKILL) <= SIZE_BUDGET, `${bytes(VERIFIED_FANOUT_SKILL)} B > ${SIZE_BUDGET} B`);
   assert.ok(bytes(VERIFIED_FANOUT_SKILL + 'x'.repeat(SIZE_BUDGET)) > SIZE_BUDGET);
+});
+
+// ---- #510 B: the acceptance-tests section ---------------------------------------------------------------------------------------------
+
+/** The writer's spawn span in `text` (the `orchestra spawn … impl-tests-…` line), or undefined. */
+const writerSpawn = (text: string): string | undefined => orchestraSpans(text).find((s) => /^orchestra spawn --name impl-tests-/.test(s));
+/** Problems of a writer spawn span: its model must be what `resolveSpawnRoleDefaults` hands the spawn, on a valid known id, under the implementer role. */
+export function writerSpawnProblems(span: string | undefined): string[] {
+  if (!span) return ['no `orchestra spawn --name impl-tests-…` line'];
+  const name = /--name (\S+)/.exec(span)?.[1]?.replace('<ticket>', '510');
+  const model = /--model (\S+)/.exec(span)?.[1];
+  const p: string[] = [];
+  if (roleOfName(name) !== 'implementer') p.push(`name ${name} is not an implementer-role name`);
+  if (!model) { p.push('no --model on the writer spawn line'); return p; }
+  if (!isValidModelArg(model) || !MODEL_CHOICES.some((c) => c.value === model)) p.push(`${model} is not a known wire id`);
+  // the line's model is what the spawn carries — through the SAME resolver the CLI/host use — and an override file cannot beat it (explicit wins)
+  const got = resolveSpawnRoleDefaults(name, { model }, { implementer: { model: 'claude-haiku-5-5' } }).model;
+  if (got !== model) p.push(`resolveSpawnRoleDefaults gave ${got}, the line says ${model}`);
+  // the pin is the LINE's, not the role's: without --model the implementer role pins nothing, so dropping the flag silently un-pins
+  if (resolveSpawnRoleDefaults(name, {}).model !== undefined) p.push('the implementer role now pins a model itself: the line is redundant');
+  return p;
+}
+
+test('#510 B: the writer spawn line pins Opus 5.5 and resolves through resolveSpawnRoleDefaults (explicit --model wins)', () => {
+  const span = writerSpawn(VERIFIED_FANOUT_SKILL);
+  assert.ok(span, 'the skill carries the writer spawn line');
+  assert.deepEqual(writerSpawnProblems(span), []);
+  assert.match(span!, /--model claude-opus-5-5 /);
+  assert.equal(resolveSpawnRoleDefaults('impl-tests-510', { model: 'claude-opus-5-5' }).model, 'claude-opus-5-5');
+  assert.equal(resolveSpawnRoleDefaults('impl-tests-510', { model: 'claude-opus-5-5' }, { implementer: { model: 'claude-haiku-5-5' } }).model, 'claude-opus-5-5', 'explicit --model beats fleet-roles.json');
+  assert.equal(resolveSpawnRoleDefaults('impl-tests-510', {}).model, undefined, 'without the flag the implementer role pins nothing: the line IS the pin');
+  // must-FAIL: flag dropped, model swapped for another id, a non-implementer name, an unknown id — each seen
+  assert.ok(writerSpawnProblems(span!.replace(' --model claude-opus-5-5', '')).some((q) => /no --model/.test(q)));
+  assert.deepEqual(writerSpawnProblems(span!.replace('claude-opus-5-5', 'claude-opus-5')), [], 'another KNOWN id passes the structural check — the Opus 5.5 pin itself is held by the RULE_PIN below');
+  assert.ok(writerSpawnProblems(span!.replace('claude-opus-5-5', 'claude-opus-9-9')).some((q) => /not a known wire id/.test(q)));
+  assert.ok(writerSpawnProblems(span!.replace('impl-tests-', 'scribe-tests-')).some((q) => /not an implementer-role name/.test(q)));
+  assert.ok(writerSpawnProblems(undefined).length === 1);
+  // the pinned-model RULE_PIN sees the swap and the dropped flag in the real text
+  for (const mutant of [VERIFIED_FANOUT_SKILL.replace('--model claude-opus-5-5', '--model claude-haiku-5-5'), VERIFIED_FANOUT_SKILL.replace(' --model claude-opus-5-5', '')]) {
+    assert.notEqual(mutant, VERIFIED_FANOUT_SKILL, 'mutant anchor matches');
+    assert.ok(droppedRules(mutant).includes('acceptance: writer spawned at dispatch on the model-pinned line'));
+  }
+});
+
+/** The `orchestra fanout …` spans of `text` that belong to the acceptance feature (gate/deliver spans only when they carry its flags). */
+const acceptanceSpans = (text: string): string[] => orchestraSpans(text).filter((s) => /^orchestra fanout acceptance /.test(s) || (/^orchestra fanout (gate|deliver) /.test(s) && /--(cwd|acceptance)\b/.test(s)));
+
+test('#510 B: every acceptance verb the skill and its reference name is in the CLI help (A\'s help text); a fake one is seen', () => {
+  const spans = [...acceptanceSpans(VERIFIED_FANOUT_SKILL), ...acceptanceSpans(refText('acceptance-tests.md'))];
+  for (const need of [/^orchestra fanout acceptance freeze /, /^orchestra fanout acceptance amend /, /^orchestra fanout acceptance show /, /^orchestra fanout gate .*--cwd/, /^orchestra fanout deliver .*--acceptance/]) assert.ok(spans.some((x) => need.test(x)), `the skill or its reference names ${need}`);
+  assert.deepEqual(spans.flatMap(lintSpan), [], 'every named acceptance verb and flag exists in `orchestra fanout --help` (needs track A\'s help text)');
+  // must-FAIL: a renamed sub-verb, a renamed flag on gate and on deliver, and a verb that does not exist
+  for (const bad of ['orchestra fanout acceptance frize t --files a', 'orchestra fanout acceptance amend t --desicion u', 'orchestra fanout gate --ticket 1 --cwdd x', 'orchestra fanout deliver --acceptence r.json', 'orchestra fanout acceptence freeze t']) assert.ok(lintSpan(bad).length > 0, bad);
+  // the real text, mutated in place: each of the four acceptance verbs renamed is seen by the existing lint
+  for (const [from, to] of [['acceptance freeze', 'acceptance frize'], ['acceptance amend', 'acceptance amnd'], ['--cwd <checkout>', '--cwdd <checkout>'], ['--acceptance <receipt.json>', '--acceptence <receipt.json>']] as const) {
+    const m = VERIFIED_FANOUT_SKILL.replace(from, to);
+    assert.notEqual(m, VERIFIED_FANOUT_SKILL, `${from}: mutant anchor matches`);
+    assert.ok(lint(m).length > 0, `${from} → ${to} is seen`);
+  }
+});
+
+test('#510 B: §1b exists, points at its reference with a trigger, and the routing rule sits in the dependent-track paragraph', () => {
+  const from = VERIFIED_FANOUT_SKILL.indexOf('## 1b. Acceptance tests'); const to = VERIFIED_FANOUT_SKILL.indexOf('\n## ', from + 4);
+  assert.ok(from > 0 && to > from, '§1b present');
+  assert.match(VERIFIED_FANOUT_SKILL.slice(from, to), /Read[^\n]*references\/acceptance-tests\.md[^\n]*\bwhen\b/);
+  assert.ok(VERIFIED_FANOUT_V2_REFERENCES.some((f) => f.path === 'references/acceptance-tests.md'), 'the reference ships');
+  // the routing rule lives in §1 (dependent tracks), not only in §1b
+  const s1 = VERIFIED_FANOUT_SKILL.slice(VERIFIED_FANOUT_SKILL.indexOf('## 1. Split and brief'), from);
+  assert.match(s1, /\*\*Routing rule: a gap found in an upstream is fixed by a follow-up ON the upstream, never by changing the dependent's spec interface \(the one it was specified and tested against\); a follow-up that must change the frozen interface goes through a ledger decision first\.\*\*/);
+  // the section points at commands, it does not restate what code enforces: no sha/hash algorithm, no exit-code table, no state-field list
+  assert.doesNotMatch(VERIFIED_FANOUT_SKILL.slice(from, to), /sha256|exit 2|\bfrozenAt\b|\bamendments\b/);
 });
 
 // ---- #474: every pointer reaches a shipped file, with its trigger -------------------------------------------------------------------
