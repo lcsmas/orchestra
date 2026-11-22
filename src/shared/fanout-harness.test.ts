@@ -110,7 +110,8 @@ test('brief: a DISCOVERED harness says it was found and is CONDITIONAL (a name m
   const b = brief(resolveHarness(null, NEST));
   assert.match(b, /FOUND by Orchestra on master, not declared — read it before you rely on it\): script `pnpm run test:e2e`; existing specs test\/app\.e2e-spec\.ts, test\/orders\.e2e-spec\.ts; app-boot fixture test\/utils\/create-test-app\.ts\./);
   assert.match(b, /READ them first\. IF they boot the application module/);
-  assert.match(b, /then every frozen test MUST \(a\) boot the FULL application module the same way/);
+  assert.match(b, /and every frozen test MUST \(a\) boot the FULL application module the same way/);
+  assert.match(b, /IF they boot the application module[^]*the harness named above is the ONE exception to "no helper, config or fixture outside the files you freeze" \(import it, as it stands on master\)/, 'the IF-boots case must not contradict the kept self-contained line');
   assert.match(b, /OWN execution context per test/);
   assert.match(b, /IF they do NOT boot an application module \(docker, transport, browser-only tests\), this does not apply: keep the tests self-contained as above/);
   assert.ok(b.includes(SELF_CONTAINED), 'the self-contained line is kept: a FOUND harness may not apply');
