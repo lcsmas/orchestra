@@ -89,9 +89,9 @@ const gateGh = async (args: string[]): Promise<GhResult> => {
   return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` };
 };
 /** The PRODUCTION gate wiring (stack + acceptance readers on the state file), only gh faked. */
-async function gate(r: Rig, o: { head: string; cwd?: string | null; ticket?: string }) {
+async function gate(r: Rig, o: { head: string; cwd?: string | null; ticket?: string; run?: string | null }) {
   Object.assign(process.env, r.env);
-  const opts: GateOpts = { branch: 'impl-510', into: 'master', head: o.head, requireChecks: [], ticket: o.ticket ?? 'T510', run: 'r1', cwd: o.cwd === null ? undefined : (o.cwd ?? r.cand), settleMs: 0 };
+  const opts: GateOpts = { branch: 'impl-510', into: 'master', head: o.head, requireChecks: [], ticket: o.ticket ?? 'T510', run: o.run === null ? undefined : 'r1', cwd: o.cwd === null ? undefined : (o.cwd ?? r.cand), settleMs: 0 };
   const logs: string[] = [];
   const res = await gatePr(opts, { ...realGateDeps(), gh: gateGh, log: (s) => logs.push(s), sleep: async () => {} });
   return { ...res, logs };
@@ -415,7 +415,7 @@ test('freeze must-FAIL: already frozen ⇒ refused (use amend); empty files; uns
   const again = r.freeze();
   assert.equal(again.code, 2);
   assert.match(again.stderr, /already frozen.*amend/);
-  const fresh = (files: string, from = 'writer-510') => runAcceptance(['freeze', 'T2', '--files', files, '--run-cmd', 'true', '--from', from], r.deps());
+  const fresh = (files: string, from = 'writer-510') => runAcceptance(['freeze', 'T2', '--files', files, '--run-cmd', 'node --test t/spec.test.js', '--from', from], r.deps());
   assert.equal(fresh('').code, 1);
   for (const bad of ['../t/spec.test.js', '/etc/passwd', 't/../spec', '-x', 't//a', 'a\\b']) assert.equal(fresh(bad).code, 1, bad);
   assert.equal(fresh('t/nope.test.js').code, 1);
@@ -427,7 +427,7 @@ test('freeze must-FAIL: already frozen ⇒ refused (use amend); empty files; uns
 test('freeze: --from <dir> reads a committed checkout; uncommitted changes there are refused', (t) => {
   const r = rig(t, { freeze: false });
   const d = r.deps();
-  const go = () => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', 'true', '--from', r.cand], d);
+  const go = () => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js', '--from', r.cand], d);
   fs.writeFileSync(path.join(r.cand, 't/spec.test.js'), `${SPEC}// edited, uncommitted\n`);
   assert.equal(go().code, 1);
   r.g('checkout', '--', 't/spec.test.js');
@@ -470,7 +470,7 @@ test('amend must-PASS: a decision quoting the sentence (whitespace-normalised) �
   assert.notEqual(a.hash, old.hash);
   assert.equal(a.hash, acceptanceHash(a.files));
   assert.equal(a.amendments.length, 1);
-  assert.deepEqual({ ...a.amendments[0], at: 'x' }, { at: 'x', decision: DECISION, specSentence: SENTENCE, hashBefore: old.hash, hashAfter: a.hash });
+  assert.deepEqual({ ...a.amendments[0], at: 'x' }, { at: 'x', decision: DECISION, specSentence: SENTENCE, bodySha256: sha256Hex(`Ruling, per the spec:\n  the   carrier argument\nis optional in the spec.\n`), hashBefore: old.hash, hashAfter: a.hash });
   assert.equal(a.source.head, r.g('rev-parse', 'impl-510'));
   assert.equal(a.source.branch, 'impl-510');
   assert.equal(a.frozenAt, old.frozenAt, 'frozenAt stays the original freeze');
@@ -558,7 +558,7 @@ test('amend must-FAIL: a decision comment of ANOTHER repo than the vague\'s ⇒ 
 
 test('freeze: a ticket the state does not name is created WITH a visible note (a typo shows up); a deliver on an unpushed head is could-not-check, not "test missing"', async (t) => {
   const r = rig(t);
-  const f = runAcceptance(['freeze', 'T-typo', '--files', 't/spec.test.js', '--run-cmd', 'true', '--from', 'writer-510'], r.deps());
+  const f = runAcceptance(['freeze', 'T-typo', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js', '--from', 'writer-510'], r.deps());
   assert.equal(f.code, 0);
   assert.match(f.stdout, /ticket T-typo was not in the state.*created/);
   Object.assign(process.env, r.env);
@@ -568,4 +568,61 @@ test('freeze: a ticket the state does not name is created WITH a visible note (a
   assert.equal(d.exit, 1);
   assert.equal(d.result.reason, 'gh-failed');
   assert.match(d.result.detail ?? '', /pushed/);
+});
+
+// ── fix round 1 (review c/7077873477) ─────────────────────────────────────────────────────────────────────
+
+test('freeze/amend must-FAIL: a --run-cmd naming NONE of the frozen files (npm run x indirection) is refused; a direct runner call passes', (t) => {
+  const r = rig(t, { freeze: false });
+  const f = (cmd: string) => runAcceptance(['freeze', 'T510', '--files', 't/spec.test.js', '--run-cmd', cmd, '--from', 'writer-510'], r.deps());
+  const bad = f('npm run accept');
+  assert.equal(bad.code, 1);
+  assert.match(bad.stderr, /names none of the frozen files/);
+  assert.equal(r.state()!.tickets.T510.acceptance, null, 'nothing written');
+  assert.equal(f('node --test t/spec.test.js').code, 0);
+  const amend = (extra: string[]) => runAcceptance(['amend', 'T510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', 'writer-510', ...extra], r.deps());
+  const before = JSON.stringify(r.state());
+  assert.equal(amend(['--run-cmd', 'npm run accept']).code, 1);
+  assert.equal(JSON.stringify(r.state()), before);
+});
+
+test('amend --run-cmd: replaces the command under the same decision rules (a command-only change is NOT a no-op; recorded as runAfter)', (t) => {
+  const r = rig(t);
+  const base = ['amend', 'T510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', 'writer-510'];
+  const old = r.state()!.tickets.T510.acceptance!;
+  assert.equal(runAcceptance(base, r.deps()).code, 2, 'same files + same command = nothing to amend');
+  assert.equal(runAcceptance([...base, '--run-cmd', 'node --test t/spec.test.js --test-reporter=tap'], r.deps({ 900: 'nothing relevant' })).code, 2, 'no decision quoting the sentence');
+  const ok2 = runAcceptance([...base, '--run-cmd', 'node --test t/spec.test.js --test-reporter=tap'], r.deps());
+  assert.equal(ok2.code, 0, ok2.stderr);
+  const a = r.state()!.tickets.T510.acceptance!;
+  assert.equal(a.run, 'node --test t/spec.test.js --test-reporter=tap');
+  assert.equal(a.hash, old.hash);
+  assert.equal(a.amendments[0].runAfter, a.run);
+});
+
+test('amend must-FAIL: ONE decision authorises ONE amendment (a second amend with the same URL is refused, state unchanged); bodySha256 is recorded', (t) => {
+  const r = rig(t);
+  const body = `Decision: ${SENTENCE}.`;
+  const go = (text: string) => { fs.writeFileSync(path.join(r.cand, 't/spec.test.js'), `${SPEC}// ${text}\n`); r.commitCand(text); return runAcceptance(['amend', 'T510', '--decision', DECISION, '--spec-sentence', SENTENCE, '--files', 't/spec.test.js', '--from', r.cand], r.deps()); };
+  assert.equal(go('first').code, 0);
+  assert.equal(r.state()!.tickets.T510.acceptance!.amendments[0].bodySha256, sha256Hex(body));
+  const before = JSON.stringify(r.state());
+  const again = go('second');
+  assert.equal(again.code, 2);
+  assert.match(again.stderr, /already authorised an amendment/);
+  assert.equal(JSON.stringify(r.state()), before);
+});
+
+test('gate: explicit --run with an unknown ticket / absent state ⇒ exit 1 bad-state (nothing skipped); WITHOUT --run an unknown ticket prints acceptance:{consulted:false} + logs, exit 0', async (t) => {
+  const r = rig(t);
+  const head = r.g('rev-parse', 'HEAD');
+  const strict = await gate(r, { head, ticket: 'TT-typo' });
+  assert.equal(strict.exit, 1);
+  assert.equal(strict.result.reason, 'bad-state');
+  const noRun = await gate(r, { head, ticket: 'TT-typo', run: null });
+  assert.equal(noRun.exit, 0);
+  assert.deepEqual(noRun.result.acceptance, { consulted: false });
+  assert.ok(noRun.logs.some((l) => /NOT checked/.test(l)));
+  const known = await gate(r, { head, ticket: 'T510', run: null });
+  assert.equal((known.result.acceptance as { ok?: boolean }).ok, true, 'the own-run default still finds a known ticket');
 });

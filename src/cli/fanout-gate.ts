@@ -29,9 +29,9 @@ export interface GateOpts {
 
 export interface GateResult extends Partial<GateAnswer> {
   verdict: 'gate' | 'unchecked' | 'refused';
-  reason?: 'gh-failed' | 'bad-args' | GateAcceptance['reason'];
+  reason?: 'gh-failed' | 'bad-args' | 'bad-state' | GateAcceptance['reason'];
   /** #510 — present when `--ticket` names a ticket with frozen acceptance tests. */
-  acceptance?: GateAcceptance;
+  acceptance?: GateAcceptance | { consulted: false };
   detail?: string;
   branch: string;
   into: string;
@@ -100,8 +100,8 @@ export function stackFromState(opts: { ticket: string; run?: string }, env: Node
 
 export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & {
   stack?: (o: { ticket: string; run?: string }) => StackView | null;
-  /** #510 — the ticket's frozen acceptance tests (null = none / no state). Absent = the clause is not consulted. Throws on an unreadable state (⇒ exit 1). */
-  acceptance?: (o: { ticket: string; run?: string }) => Acceptance | null;
+  /** #510 — the ticket's frozen acceptance tests. `known:false` = no state / no such ticket (only without an explicit --run; with one the reader throws ⇒ exit 1 `bad-state`). Absent = not consulted. */
+  acceptance?: (o: { ticket: string; run?: string }) => { known: boolean; acceptance: Acceptance | null };
   checkout?: CheckoutIo;
 };
 
@@ -117,8 +117,16 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
   };
   try {
     // #510 — the acceptance clause first: a candidate whose frozen tests changed / fail / were not proven is refused (exit 2) before any CI read.
-    let accept: GateAcceptance | undefined;
-    const frozen = opts.ticket !== undefined && deps.acceptance ? deps.acceptance({ ticket: opts.ticket, run: opts.run }) : null;
+    let accept: GateAcceptance | { consulted: false } | undefined;
+    let got: { known: boolean; acceptance: Acceptance | null } | null = null;
+    try { got = opts.ticket !== undefined && deps.acceptance ? deps.acceptance({ ticket: opts.ticket, run: opts.run }) : null; } catch (e) {
+      return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s frozen acceptance tests: ${(e as Error).message}`, ...base } };
+    }
+    if (got && !got.known) {
+      accept = { consulted: false }; // not "no frozen tests": the state / ticket was not found, so NOTHING was checked
+      deps.log(`gate: no fanout state / no ticket ${opts.ticket} found (pass --run <id>): frozen acceptance tests NOT checked (acceptance.consulted:false)`);
+    }
+    const frozen = got?.acceptance ?? null;
     if (frozen) {
       accept = checkAcceptanceInCheckout(frozen, { cwd: opts.cwd, head: opts.head, log: deps.log }, deps.checkout ?? realCheckoutIo);
       if (!accept.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: accept.reason, detail: accept.detail, acceptance: accept, ...base } };
@@ -160,12 +168,12 @@ gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the 
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
 ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. NOT detected: a PR that changes what the test command runs (package.json scripts, runner config) — pin the check and review that diff. Without PR CI (or unreadable workflows): fullSuite:"verifier".
 --ticket <id> [--run <id>] adds \`stack\` (#506, from the fanout state): order none | wait-upstream (stacked on a verified upstream candidate: gate it now, \`deliver\` merges only after the upstream) | re-gate (the upstream moved since this ticket was built on it: its verdict is void) | blocked (an upstream is no admissible candidate), plus one row per upstream.
-Acceptance (#510): when the ticket has frozen acceptance tests (\`fanout acceptance freeze\`), \`--cwd <the candidate checkout>\` is REQUIRED: its HEAD must be --head and its tracked files clean, every frozen file is hashed there, then the frozen command runs there. Output gains \`acceptance: {ok, hash, files:[{path,status}], ran, receipt:{head,hash,ok}}\` — save \`receipt\` for \`deliver --acceptance\`. Any failure ⇒ exit 2, verdict "refused", reason frozen-test-changed | frozen-test-failed | acceptance-unproven | acceptance-stale-checkout (before any CI read). The ticket is read from the fanout state like \`stack\` (--run when it is not your own run; an unreadable state ⇒ exit 1, an absent state/ticket skips the clause — \`deliver\` is the authority and refuses a ticket with frozen tests that has no receipt).
+Acceptance (#510): when the ticket has frozen acceptance tests (\`fanout acceptance freeze\`), \`--cwd <the candidate checkout>\` is REQUIRED: its HEAD must be --head and its tracked files clean, every frozen file is hashed there, then the frozen command runs there. Output gains \`acceptance: {ok, hash, files:[{path,status}], ran, receipt:{head,hash,ok}}\` — save \`receipt\` for \`deliver --acceptance\`. Any failure ⇒ exit 2, verdict "refused", reason frozen-test-changed | frozen-test-failed | acceptance-unproven | acceptance-stale-checkout (before any CI read). The ticket is read from the fanout state like \`stack\` (pass --run when it is not your own run: with --run an absent state/ticket or an unreadable state ⇒ exit 1 bad-state; without it an absent state/ticket prints acceptance:{consulted:false} — NOTHING checked — and logs it). \`deliver\` is the authority and refuses a ticket with frozen tests that has no receipt.
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
 Prints ONE JSON line. Exit 0 = answered, 2 = refused (acceptance), 1 = could not check (usage, gh failed, unreadable state). \`deliver\` re-checks CI at merge.`;
 
 /** Production deps: real gh + the state-file stack reader (a test drives `runGate` through THIS, so an unwired reader cannot pass). */
-export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o), acceptance: (o) => acceptanceFromState({ ...o, lenient: true }).acceptance });
+export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o), acceptance: (o) => acceptanceFromState({ ...o, lenient: !o.run }) });
 
 export async function runGate(args: string[], deps: GateDeps = realGateDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);

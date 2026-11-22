@@ -174,6 +174,11 @@ function scenarios(cliPath) {
     sh('git', ['checkout', '--', 't/spec.test.js'], { cwd: W.cand });
     arm('G10 must-FAIL a skip-worktree file hiding a DIFFERENT blob at HEAD behind the frozen worktree bytes: exit 2, frozen-test-changed', g10.code === 2 && g10.json?.reason === 'frozen-test-changed', J(g10));
 
+    const g11 = W.gate(ok, 'T-typo');
+    arm('G11 must-FAIL explicit --run with a ticket the state does not name: exit 1, bad-state (nothing silently skipped)', g11.code === 1 && g11.json?.reason === 'bad-state', J(g11));
+    const g12 = W.cli(['gate', '--branch', ok.branch, '--into', 'master', '--head', ok.head, '--ticket', 'T-typo']);
+    arm('G12 must-PASS without --run an unknown ticket prints acceptance:{consulted:false} (nothing checked, said so), exit 0', g12.code === 0 && g12.json?.acceptance?.consulted === false && /NOT checked/.test(g12.stderr), J(g12));
+
     // ── deliver ──────────────────────────────────────────────────────────────────────────────────────────
     const dOk = W.variant('d-ok', () => {}); W.setCi(dOk.head);
     const d2 = W.deliver(dOk);
@@ -212,6 +217,8 @@ function scenarios(cliPath) {
     arm('F1 must-FAIL freezing a ticket twice: exit 2, "already frozen", state unchanged', f2.code === 2 && /already frozen/.test(f2.stderr) && JSON.stringify(A.readState()) === before, J(f2));
     const bad = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', '../x', '--run-cmd', 'true', '--from', 'origin/writer-510']);
     arm('F2 must-FAIL an unsafe path (..): exit 1, nothing written', bad.code === 1 && !A.readState().tickets['T-3'], J(bad));
+    const npm = A.cli(['acceptance', 'freeze', 'T-3', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', 'npm run accept', '--from', 'origin/writer-510']);
+    arm('F4 must-FAIL freeze with a --run-cmd naming none of the frozen files (npm run indirection): exit 1, nothing written', npm.code === 1 && /names none of the frozen files/.test(npm.stderr) && !A.readState().tickets['T-3'], J(npm));
     const sentence = ['--spec-sentence', SENTENCE];
     const common = ['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js,src/impl.js', '--from', 'origin/good'];
     const a1 = A.cli([...common, ...sentence]);
@@ -228,6 +235,16 @@ function scenarios(cliPath) {
     const acc = A.readState().tickets['T-1'].acceptance;
     arm('A3 must-PASS a decision quoting the sentence (whitespace-normalised): exit 0, hash changed, one amendment {decision, specSentence, hashBefore, hashAfter}',
       a3.code === 0 && acc.hash !== hashBefore && acc.amendments.length === 1 && acc.amendments[0].decision === DECISION && acc.amendments[0].specSentence === SENTENCE && acc.amendments[0].hashBefore === hashBefore && acc.amendments[0].hashAfter === acc.hash && Object.keys(acc.files).length === 2, J(a3));
+    arm('A3b the amendment records sha256 of the decision body read through gh', acc.amendments[0].bodySha256 === createHash('sha256').update(`Ruling:\n  the carrier   argument is\n optional in the spec.`).digest('hex'), JSON.stringify(acc.amendments[0]));
+    const a6 = A.cli(['acceptance', 'amend', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--from', 'origin/good', '--decision', DECISION, ...sentence]);
+    arm('A6 must-FAIL the SAME decision URL authorising a second amendment: exit 2, "already authorised", state unchanged', a6.code === 2 && /already authorised/.test(a6.stderr) && A.readState().tickets['T-1'].acceptance.hash === acc.hash, J(a6));
+    A.patchGh((s) => { s.comments[901] = `Second ruling: ${SENTENCE}.`; });
+    const D2 = 'https://github.com/o/r/issues/511#issuecomment-901';
+    const a5 = A.cli([...common, '--decision', D2, ...sentence, '--run-cmd', 'npm run accept']);
+    arm('A5 must-FAIL amend --run-cmd naming none of the frozen files: exit 1, state unchanged', a5.code === 1 && /names none of the frozen files/.test(a5.stderr) && A.readState().tickets['T-1'].acceptance.run === acc.run, J(a5));
+    const a7 = A.cli([...common, '--decision', D2, ...sentence, '--run-cmd', 'node --test t/spec.test.js src/impl.js']);
+    const acc2 = A.readState().tickets['T-1'].acceptance;
+    arm('A7 must-PASS amend --run-cmd with the same files (command-only change): exit 0, hash unchanged, run replaced, runAfter recorded', a7.code === 0 && acc2.hash === acc.hash && acc2.run === 'node --test t/spec.test.js src/impl.js' && acc2.amendments[1].runAfter === acc2.run, J(a7));
     const snap = JSON.stringify(A.readState());
     const forged = { acceptance: acc };
     const s1 = A.cli(['state', 'set', 'T-2', '--run', 'rig', '--json', JSON.stringify(forged)]);
@@ -277,6 +294,12 @@ const mutants = [
   { name: 'deliver: receipt.ok ignored', find: 'if (!receipt.ok)', put: () => 'if (false)' },
   { name: 'deliver: the gh byte re-read ignored', find: 'const bad = files.filter((f) => f.status !== "same");', put: () => 'const bad = [];' },
   { name: 'deliver: --acceptance for a ticket without frozen tests is waved through', find: 'if (opts.acceptance !== void 0 && !got.acceptance) {', put: () => 'if (false) {' },
+  { name: 'freeze/amend: a --run-cmd naming no frozen file accepted', find: 'if (!paths.some((p) => run.includes(p)))', put: () => 'if (false)' },
+  { name: 'amend: one decision may authorise several amendments', find: 'if (acc.amendments.some((m) => m.decision === a.decision)) throw', put: () => 'if (false) throw' },
+  { name: 'amend: a command-only change counts as "nothing to amend"', find: 'if (hashAfter === acc.hash && run === acc.run)', put: () => 'if (hashAfter === acc.hash)' },
+  { name: 'amend: the decision body hash is not recorded', find: 'bodySha256: sha256Hex(Buffer.from(body, "utf8"))', put: () => 'bodySha256: "0".repeat(64)' },
+  { name: 'gate: an explicit --run with an unknown ticket skips the clause', find: 'lenient: !o.run', put: () => 'lenient: true' },
+  { name: 'gate: an absent state/ticket is silent (no consulted:false)', find: 'accept = { consulted: false };', put: () => 'accept = void 0;' },
   { name: 'amend: no decision required', find: 'if (!decision) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
   { name: 'amend: the decision body is not checked for the sentence', find: 'if (!ok.ok) throw new Refusal(ok.why);', put: () => '' },
   { name: 'freeze: a second freeze is not refused as a policy refusal (the verb check)', find: 'if (had?.acceptance) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },

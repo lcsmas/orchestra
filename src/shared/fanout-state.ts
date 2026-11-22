@@ -21,7 +21,8 @@ export interface Acceptance {
   run: string;
   source: { branch: string | null; head: string };
   frozenAt: string;
-  amendments: Array<{ at: string; decision: string; specSentence: string; hashBefore: string; hashAfter: string }>;
+  /** `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
+  amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string }>;
 }
 
 export interface TicketState {
@@ -174,10 +175,11 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
   if (!Array.isArray(v.amendments)) throw new FanoutStateError(`${where}: acceptance.amendments must be an array`);
   const amendments = v.amendments.map((a, i) => {
     if (!isObj(a)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}] is not an object`);
-    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'hashBefore', 'hashAfter']), `${where} acceptance.amendments[${i}]`);
+    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'bodySha256', 'hashBefore', 'hashAfter', 'runAfter']), `${where} acceptance.amendments[${i}]`);
     for (const k of ['at', 'decision', 'specSentence'] as const) if (typeof a[k] !== 'string' || !(a[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} missing`);
-    for (const k of ['hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} must be a sha256`);
-    return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string };
+    for (const k of ['bodySha256', 'hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} must be a sha256`);
+    if (a.runAfter !== undefined && (typeof a.runAfter !== 'string' || !a.runAfter.trim() || /[\r\n\0]/.test(a.runAfter))) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].runAfter must be a single-line command`);
+    return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, bodySha256: a.bodySha256 as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(a.runAfter !== undefined ? { runAfter: a.runAfter as string } : {}) };
   });
   return { files, hash: v.hash, run: v.run, source: { branch, head }, frozenAt: v.frozenAt, amendments };
 }
