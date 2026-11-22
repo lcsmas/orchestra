@@ -202,10 +202,15 @@ test('amend re-records the config from the target tip: a config change accepted 
   assert.equal(mid.config!.sha256, sha256Hex("export default { testRegex: '.e2e.test.ts$', bail: 1 };\n"));
   assert.notEqual(mid.hash, before.hash);
   assert.equal(mid.hash, acceptanceHash(mid.files, mid.run, mid.config));
+  assert.deepEqual(mid.amendments[0].configAfter, mid.config, 'the amendment row records the config it re-recorded');
+  assert.match(a1.stdout, /runner config packages\/api-v2\/jest\.e2e\.config\.ts: [0-9a-f]{12} → [0-9a-f]{12} — RE-RECORDED/);
+  assert.equal(parseState(JSON.parse(fs.readFileSync(stateFile(r.home, 'r1'), 'utf8'))).tickets.T542.acceptance!.amendments[0].configAfter?.sha256, mid.config!.sha256, 'configAfter survives a state reload');
   const gh2: Runner = (c, a, d) => c === 'gh' ? { code: 0, stdout: JSON.stringify({ body: 'Decision 2: the e2e run no longer needs a config here.' }), stderr: '' } : defaultRunner(c, a, d);
   const a2 = runAcceptance(['amend', 'T542', '--decision', 'https://github.com/o/r/issues/542#issuecomment-2', '--spec-sentence', 'the e2e run no longer needs a config here', '--files', TEST, '--run-cmd', `jest --ci ${TEST}`], { ...r.deps, runner: gh2 });
   assert.equal(a2.code, 0, a2.stderr);
   assert.equal(r.acc()!.config, undefined);
+  assert.equal(r.acc()!.amendments[1].configAfter, undefined, 'a config-less command records no configAfter');
+  assert.match(a2.stdout, /runner config .* dropped/);
   assert.equal(r.acc()!.run, `jest --ci ${TEST}`);
 });
 
@@ -232,6 +237,7 @@ test('gate: config byte-identical ⇒ the command runs (argv as frozen) and the 
     assert.equal(res.receipt.ok, false);
     assert.equal(res.config?.status, status, label);
     assert.match(res.detail ?? '', /runner config packages\/api-v2\/jest\.e2e\.config\.ts/);
+    assert.match(res.detail ?? '', /target moved the config since the freeze/);
     assert.deepEqual(ran, [], `${label}: the changed config is never executed`);
   };
   refused('candidate edits the config', () => fs.writeFileSync(path.join(r.cand, CFG), "export default { testRegex: '.*' };\n"), 'changed');

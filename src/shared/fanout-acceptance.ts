@@ -195,7 +195,7 @@ export function amendInto(
   const { config: _oldConfig, ...accRest } = acc; // the amended set carries ITS config (or none), never the old one
   const next: Acceptance = {
     ...accRest, files: a.files, hash: hashAfter, run, ...(a.config ? { config: a.config } : {}), source: a.source,
-    amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, bodySha256: a.bodySha256, hashBefore: acc.hash, hashAfter, ...(run !== acc.run ? { runAfter: run } : {}) }],
+    amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, bodySha256: a.bodySha256, hashBefore: acc.hash, hashAfter, ...(run !== acc.run ? { runAfter: run } : {}), ...(a.config ? { configAfter: a.config } : {}) }],
   };
   return { ...state, tickets: { ...state.tickets, [id]: { ...cur, acceptance: next, updatedAt: a.now } }, updatedAt: a.now };
 }
@@ -234,7 +234,7 @@ export function decideGateAcceptance(acc: Acceptance, facts: {
   if (bad.length) return refuse('frozen-test-changed', `frozen test file(s) differ from the frozen bytes at ${facts.head.slice(0, 12)}: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`);
   // #542: the runner config is NOT a frozen test but it decides what runs (testMatch, setupFiles, moduleNameMapper…): a candidate whose copy differs from the bytes recorded at freeze is REFUSED, never run.
   // A legitimate config change is accepted by the coordinator with `acceptance amend` (a ledger decision), which re-records it.
-  if (facts.config && facts.config.status !== 'same') return refuse('frozen-config-changed', `the runner config ${facts.config.path} (named by the frozen command) ${facts.config.status === 'missing' ? 'is missing or not a regular tracked file at' : 'differs from the bytes recorded at freeze in'} ${facts.head.slice(0, 12)}: do not edit it in the candidate; if the change is intended, the coordinator re-records it with \`acceptance amend\` (ledger decision)`);
+  if (facts.config && facts.config.status !== 'same') return refuse('frozen-config-changed', `the runner config ${facts.config.path} (named by the frozen command) ${facts.config.status === 'missing' ? 'is missing or not a regular tracked file at' : 'differs from the bytes recorded at freeze in'} ${facts.head.slice(0, 12)}: if the candidate's diff touches it, do not edit it there; if the diff does NOT touch it, the target moved the config since the freeze (rebasing cannot fix this) — either way the coordinator re-records it with \`acceptance amend\` (ledger decision)`);
   const ran = facts.run(); // only after the bytes are proven: a changed test is never executed
   if (ran.exit !== 0) return refuse('frozen-test-failed', `\`${ran.cmd}\` exited ${ran.exit}`, facts.files, ran);
   return { ok: true, hash: acc.hash, files: facts.files, ...(facts.config ? { config: facts.config } : {}), ran, receipt: receipt(true) };
