@@ -25,6 +25,8 @@ FORCED FLOW (#515): \`fanout state set <ticket> --spec <ref>\` registers the tic
 never an implementer branch; \`spawn\` re-requests it after a failure). The writer ends with \`freeze\` (its OWN ticket only; --from defaults to its checkout): the files are
 committed to ONE shared branch ${'`'}acceptance/<run>${'`'} (a commit built from the writer's blobs, pushed without force; a path another ticket froze with other bytes is refused) and
 Orchestra posts a bus status (path + command) to the ticket's --implementer / --verifier. Until then \`fanout gate\` WAITS (bounded) and \`deliver\` says acceptance-pending.
+Harness (#538): the writer's brief names the repo's integration harness (declared: \`fanout state init|set --harness <ref>\`; else discovered on origin/<target>; else none, said in the brief)
+and requires every frozen test to boot the FULL app module through it and to open its OWN execution context per test. The harness is imported as it stands on the target (residue below).
   waive   coordinator only, recorded: the ticket cannot have tests. --decision = a ledger comment URL of this repo that names the ticket (read through gh, fail closed).
           The other recorded escape is \`fanout deliver --no-acceptance-gate\`. Neither lifts a refusal for an edited or red frozen test.
   spawn   coordinator only: re-request the writer after a failed / stale spawn; --replace respawns even when one is recorded (its session died, was archived…).
@@ -39,7 +41,7 @@ and recorded in the ticket's fanout state with the targeted command (--run-cmd, 
           --experimental-*, --test-name-pattern, --check, a reporter/preload/config path), every other argument EXACTLY a frozen path, no shell metacharacter
           (no npm run / make / sh -c / env / ; & | $ # quotes). The command is part of the frozen hash. NOT checked (residue): argv[0] and anything on its search
           path — PATH, the checkout's module/import path, a runner config file (vitest.config.*, .mocharc, deno.json…), a helper the test imports — are resolved in the
-          candidate's tree: keep the frozen tests self-contained and review changes to such files.
+          candidate's tree: keep the frozen tests self-contained (the one helper they may import is the repo's integration harness, #538 — NOT hashed either) and review changes to such files.
   amend   coordinator only; --decision = a GitHub ledger comment URL whose body (read through gh, fail closed) quotes --spec-sentence (≥ 12 chars,
           whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision comment (repo + id,
           however the URL is spelled, leading zeros included) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.

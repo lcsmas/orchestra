@@ -1,8 +1,10 @@
 // #515 — the HOST half of the forced acceptance flow (the `/fanoutAcceptance` socket route): spawn the ticket's `accept-` writer, post the freeze status. Pure of Electron: the app's spawn
 // and bus come in as `deps` (src/main/fanout-acceptance-wiring.ts), so the rig and the tests drive this very function. Decisions on the state: src/shared/fanout-acceptance.ts.
 import {
-  FanoutStateError, assertRunId, readState, stateFile, updateState,
+  FanoutStateError, assertRunId, readState, stateFile, updateState, type FanoutState,
 } from './fanout-state.ts';
+import { readRepoFacts } from './fanout-harness-facts.ts';
+import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
 export interface AcceptanceHostDeps {
@@ -14,6 +16,8 @@ export interface AcceptanceHostDeps {
   repoPath: (i: { run: string; ticket: string; from?: string; repo: string | null; implementer: string | null }) => string | undefined;
   /** The agent spawn route (`dispatchAgentSpawnRequest`): the role table pins the model from the name's `accept-` prefix. */
   spawn: (i: { from?: string; name: string; task: string; repoPath?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
+  /** #538 — the facts the harness discovery reads, from the TARGET ref of the repo at `repoPath` (null = cannot inspect). Default: git on that path (fanout-harness-facts.ts). */
+  repoFacts?: (repoPath: string | undefined, target: string) => RepoFacts | null;
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -24,6 +28,15 @@ export type AcceptanceHostResult =
   | { ok: false; error: string };
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+
+/** #538 — DECLARED in the state, else DISCOVERED on the target ref (never the implementer's worktree), else none. The facts are only read when nothing is declared; a failed read never blocks the spawn. */
+function harnessFor(state: FanoutState, repoPath: string | undefined, deps: AcceptanceHostDeps): ResolvedHarness {
+  const declared = resolveHarness(state.harness, null);
+  if (declared.source === 'declared') return declared;
+  let facts: RepoFacts | null = null;
+  try { facts = (deps.repoFacts ?? readRepoFacts)(repoPath, state.target); } catch { /* unreadable = not inspected */ }
+  return resolveHarness(null, facts);
+}
 
 export async function dispatchFanoutAcceptance(input: Record<string, unknown>, deps: AcceptanceHostDeps): Promise<AcceptanceHostResult> {
   try {
@@ -43,7 +56,6 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
         return next;
       });
       const t = claimed.tickets[ticket];
-      const task = acceptorBrief({ run, ticket, spec, repo: claimed.repo, target: claimed.target });
       const parent = deps.isWorkspace(run) ? run : from;
       // the writer exists once the spawn answered: losing its id (a lock timeout…) would strand the ticket, so the write is retried
       const settle = (r: { id: string } | { error: string }): void => {
@@ -53,7 +65,9 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       };
       let res: Awaited<ReturnType<AcceptanceHostDeps['spawn']>>;
       try {
-        res = await deps.spawn({ ...(parent ? { from: parent } : {}), name, task, repoPath: deps.repoPath({ run, ticket, from, repo: claimed.repo, implementer: t.implementer }) });
+        const repoPath = deps.repoPath({ run, ticket, from, repo: claimed.repo, implementer: t.implementer });
+        const task = acceptorBrief({ run, ticket, spec, repo: claimed.repo, target: claimed.target, harness: harnessFor(claimed, repoPath, deps) });
+        res = await deps.spawn({ ...(parent ? { from: parent } : {}), name, task, repoPath });
       } catch (e) {
         res = { ok: false, error: e instanceof Error ? e.message : String(e) };
       }

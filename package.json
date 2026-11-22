@@ -61,6 +61,8 @@
     "test:fanout-tree-verdict-mutants": "node scripts/e2e-fanout-tree-verdict.mjs --mutants",
     "test:acceptance-forced": "node scripts/e2e-fanout-acceptance-forced.mjs",
     "test:acceptance-forced-mutants": "node scripts/e2e-fanout-acceptance-forced.mjs --mutants",
+    "test:harness-brief": "node scripts/e2e-fanout-harness-brief.mjs",
+    "test:harness-brief-mutants": "node scripts/e2e-fanout-harness-brief.mjs --mutants",
     "test:role-guard-cli": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/role-guard/e2e-role-guard-cli.mjs",
     "test:session-identity": "node scripts/session-identity/run.mjs",
     "test:pause-ui-render": "node scripts/pause-ui-render-smoke.mjs",
