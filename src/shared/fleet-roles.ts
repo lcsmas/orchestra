@@ -4,13 +4,13 @@ import { HANDOFF_MIN_BOUND_TURNS } from './handoff.ts';
 
 // Fleet roles (#465, verified-fanout v2 lever 1) — the ONE table of the role → model / effort / tool-policy, keyed by the `--name`
 // prefix (#382). Pure: no Electron, no node:*. Interface FROZEN in ledger #471 §Interfaces item 1; #468 (role guard) builds on it.
-// Strong roles pin NO model (the Settings default applies); only `scribe` (mechanical steps) pins Haiku.
+// Strong roles pin NO model (the Settings default applies); `scribe` (mechanical steps) pins Haiku, `acceptor` (#515, the frozen-acceptance-test writer Orchestra spawns itself) pins Opus 5.5.
 
 /** Role = the spawn-name prefix. `scribe` is the mechanical-steps role added by #465 (D2). */
-export type FleetRole = 'coordinator' | 'implementer' | 'verifier' | 'reviewer' | 'explorer' | 'scribe';
+export type FleetRole = 'coordinator' | 'implementer' | 'verifier' | 'reviewer' | 'explorer' | 'scribe' | 'acceptor';
 
 /** Every role, in table order. */
-export const FLEET_ROLES: readonly FleetRole[] = ['coordinator', 'implementer', 'verifier', 'reviewer', 'explorer', 'scribe'];
+export const FLEET_ROLES: readonly FleetRole[] = ['coordinator', 'implementer', 'verifier', 'reviewer', 'explorer', 'scribe', 'acceptor'];
 
 /** Name prefix (without the `-`) of each role. `Object.keys` order = the {@link ROLES}-style list of the naming policy. */
 export const ROLE_PREFIX: Readonly<Record<FleetRole, string>> = {
@@ -20,6 +20,7 @@ export const ROLE_PREFIX: Readonly<Record<FleetRole, string>> = {
   reviewer: 'review',
   explorer: 'explo',
   scribe: 'scribe',
+  acceptor: 'accept',
 };
 
 /** Tool policy of a role, read by the role guard (#468). */
@@ -46,6 +47,9 @@ export interface RoleSpec {
 /** Wire id of the cheap model (never the short alias — `unrecognized_model`). */
 export const SCRIBE_MODEL = 'claude-haiku-5-5';
 
+/** #515: wire id of the acceptance-test writer's model (Opus 5.5) — DERIVED from the id pattern above (`isValidModelArg` is a charset check) and NOT measured against the API (no real tokens). */
+export const ACCEPTOR_MODEL = 'claude-opus-5-5';
+
 /** #478: the coordinator's built-in handoff bound. Replaying rts-vf2-local-1's OPS (214 turns, ~3.5 requests/turn, +2.4k tok/turn) the weighted cache cost is
  *  minimal at 14-24 turns (fresh base 60-160k tok) and flat to 40; 30 is within 1-4 points of it with fewer handoffs (docs/evidence/478-handoff-bound.txt). */
 export const COORDINATOR_HANDOFF_BOUND_TURNS = 30;
@@ -60,6 +64,8 @@ const DEFAULT_TABLE: Readonly<Record<FleetRole, RoleSpec>> = {
   reviewer: { role: 'reviewer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
   explorer: { role: 'explorer', model: undefined, effort: undefined, tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
   scribe: { role: 'scribe', model: SCRIBE_MODEL, effort: 'low', tools: { denyTools: ['AskUserQuestion', ...EDIT_TOOLS], edit: 'none', bashDeny: NO_COMMIT }, handoffBoundTurns: 0 },
+  // #515: writes + commits the frozen tests in its own worktree (like an implementer); the freeze verb publishes them, so it needs no push of its own.
+  acceptor: { role: 'acceptor', model: ACCEPTOR_MODEL, effort: undefined, tools: { denyTools: ['AskUserQuestion'], edit: 'own-worktree', bashDeny: ['\\bgit\\s+push\\b'] }, handoffBoundTurns: 0 },
 };
 
 /** Role of a spawn name (`impl-foo-12` → `implementer`), or null when the name has no role prefix. Reads the prefix

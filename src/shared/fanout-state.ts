@@ -28,6 +28,15 @@ export interface Acceptance {
 /** #514 — a finding's severity as the verifier / review report grades it. Only BLOCKING and MAJOR justify a follow-up candidate on a merged ticket. */
 export const FINDING_SEVERITIES = ['BLOCKING', 'MAJOR', 'MINOR'] as const;
 export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+/** #515 — the code-written half of the acceptance flow (never settable by `state set`): who writes the tests, how long a gate waits for them, the recorded waiver. */
+export interface AcceptFlow {
+  /** The `accept-` writer Orchestra spawned for this ticket (`id` null = the spawn is in flight or failed — `error`). */
+  acceptor: { id: string | null; name: string; at: string; error?: string } | null;
+  /** A gate waiting for the freeze: when it started, the deadline, the bound (seconds) — printed by `state show`. */
+  wait: { since: string; deadline: string; boundSec: number } | null;
+  /** Coordinator-only escape (`acceptance waive`): the ticket cannot have acceptance tests. */
+  waived: { decision: string; reason: string; at: string } | null;
+}
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -64,6 +73,13 @@ export interface TicketState {
   forgottenMerges: Array<{ at: string; reason: string; was: string | null }>;
   /** #514 — the finding ids (of `followUpOf`) this follow-up fixes; at least one must be BLOCKING|MAJOR. */
   fixes: string[];
+  /** #515 — the spec reference (file | url | ledger section) of a ticket whose acceptance tests are FORCED: registering it makes Orchestra spawn the `accept-` writer. null = no forced flow. */
+  spec: string | null;
+  /** #515 — workspace ids of the ticket's implementer / verifier: the freeze status (path + command) is posted to them. */
+  implementer: string | null;
+  verifier: string | null;
+  /** #515 — see {@link AcceptFlow}. Written only by the acceptance verbs / the host, not by `state set`. */
+  accept: AcceptFlow | null;
   updatedAt: string;
 }
 
@@ -80,9 +96,9 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` are DERIVED (#512): the CLI fills them from git, `state set --json` cannot. `forgetMerge` is a verb (#514), not a stored field. */
-export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge'] as const;
+export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
 export type TicketPatch = Partial<Pick<TicketState, Exclude<(typeof SETTABLE_KEYS)[number], 'forgetMerge'> | (typeof DERIVED_KEYS)[number]>> & { forgetMerge?: string };
 
@@ -93,6 +109,11 @@ export const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
 export class FanoutStateError extends Error {}
+
+/** A ticket as `state set` creates it. */
+export function blankTicket(now: string): TicketState {
+  return { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, spec: null, implementer: null, verifier: null, accept: null, tree: null, builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], updatedAt: now };
+}
 
 export function assertRunId(run: string): string {
   if (!SAFE_ID.test(run) || run.includes('..')) throw new FanoutStateError(`unsafe run id ${JSON.stringify(run)} (letters, digits, . _ - only)`);
@@ -193,6 +214,48 @@ function forgottenOf(v: unknown): Array<{ at: string; reason: string; was: strin
     return { at: e.at, reason: e.reason, was: checked(strOrNull(e.was, 'was'), HEX_SHA, 'forgottenMerges.was') };
   });
 }
+/** #515 — a spec reference: one printable line (a path, a URL, a ledger section). */
+function specOf(v: unknown): string | null {
+  const s = strOrNull(v, 'spec');
+  if (s !== null && (s.length > 500 || /[\x00-\x1f\x7f]/.test(s))) throw new FanoutStateError('spec must be a single printable line of at most 500 characters (a file, a URL, a ledger section)');
+  return s === null ? null : s.trim();
+}
+function wsIdOf(v: unknown, name: string): string | null {
+  const s = strOrNull(v, name);
+  if (s !== null && !SAFE_ID.test(s)) throw new FanoutStateError(`${name} must be a workspace id (letters, digits, . _ -)`);
+  return s;
+}
+function acceptFlowOf(v: unknown, where: string): AcceptFlow | null {
+  if (v === undefined || v === null) return null;
+  if (!isObj(v)) throw new FanoutStateError(`${where}: accept must be an object or null`);
+  refuseUnknown(v, new Set(['acceptor', 'wait', 'waived']), `${where} accept`);
+  const iso = (x: unknown, n: string): string => { if (typeof x !== 'string' || !x.trim() || Number.isNaN(Date.parse(x))) throw new FanoutStateError(`${where}: ${n} must be an ISO date`); return x; };
+  let acceptor: AcceptFlow['acceptor'] = null;
+  if (v.acceptor !== undefined && v.acceptor !== null) {
+    const a = v.acceptor;
+    if (!isObj(a)) throw new FanoutStateError(`${where}: accept.acceptor must be an object`);
+    refuseUnknown(a, new Set(['id', 'name', 'at', 'error']), `${where} accept.acceptor`);
+    if (typeof a.name !== 'string' || !a.name.trim()) throw new FanoutStateError(`${where}: accept.acceptor.name missing`);
+    acceptor = { id: wsIdOf(a.id, 'accept.acceptor.id'), name: a.name, at: iso(a.at, 'accept.acceptor.at'), ...(typeof a.error === 'string' && a.error ? { error: a.error.slice(0, 500) } : {}) };
+  }
+  let wait: AcceptFlow['wait'] = null;
+  if (v.wait !== undefined && v.wait !== null) {
+    const w = v.wait;
+    if (!isObj(w)) throw new FanoutStateError(`${where}: accept.wait must be an object`);
+    refuseUnknown(w, new Set(['since', 'deadline', 'boundSec']), `${where} accept.wait`);
+    if (typeof w.boundSec !== 'number' || !Number.isInteger(w.boundSec) || w.boundSec <= 0) throw new FanoutStateError(`${where}: accept.wait.boundSec must be a positive integer`);
+    wait = { since: iso(w.since, 'accept.wait.since'), deadline: iso(w.deadline, 'accept.wait.deadline'), boundSec: w.boundSec };
+  }
+  let waived: AcceptFlow['waived'] = null;
+  if (v.waived !== undefined && v.waived !== null) {
+    const w = v.waived;
+    if (!isObj(w)) throw new FanoutStateError(`${where}: accept.waived must be an object`);
+    refuseUnknown(w, new Set(['decision', 'reason', 'at']), `${where} accept.waived`);
+    for (const k of ['decision', 'reason'] as const) if (typeof w[k] !== 'string' || !(w[k] as string).trim()) throw new FanoutStateError(`${where}: accept.waived.${k} missing`);
+    waived = { decision: w.decision as string, reason: w.reason as string, at: iso(w.at, 'accept.waived.at') };
+  }
+  return { acceptor, wait, waived };
+}
 function enumOf<T extends string>(v: unknown, all: readonly T[], name: string): T {
   if (typeof v !== 'string' || !(all as readonly string[]).includes(v)) throw new FanoutStateError(`${name} must be one of ${all.join('|')} (got ${JSON.stringify(v)})`);
   return v as T;
@@ -245,9 +308,9 @@ export function parseRunArgv(run: string, paths: string[]): string[] {
   if (/[^\x20-\x7e]/.test(run)) why('printable ASCII on one line only');
   if (/["'\\$`;&|<>(){}*?!#~[\]]/.test(run)) why('no shell metacharacters, quotes, comments or globs (it is executed without a shell)');
   const tokens = run.trim().split(/ +/).filter(Boolean);
-  const inner = tokens; // no launcher (npx / pnpm exec / yarn exec): they resolve the runner from the candidate's node_modules/.bin and .npmrc
+  const inner = tokens; // no launcher: npx / pnpm exec / yarn exec resolve the runner from the candidate's node_modules/.bin and .npmrc
   const runner = [...RUNNERS].sort((a, b) => b.prefix.length - a.prefix.length).find((r) => r.prefix.every((t, i) => inner[i] === t)); // longest wins (`vitest run` over `vitest`)
-  if (!runner) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNERS.map((r) => r.prefix[0]))].join(', ')}, optionally behind npx / pnpm exec / yarn exec) — not npm, make, sh, env, a script`);
+  if (!runner) why(`the first word must be one of the allowlisted runners (${[...new Set(RUNNERS.map((r) => r.prefix[0]))].join(', ')}) called DIRECTLY — no npx / pnpm exec / yarn exec launcher, not npm, make, sh, env, a script`);
   let named = 0;
   for (const t of inner.slice(runner!.prefix.length)) {
     if (t.startsWith('-')) { if (!runner!.flags.some((re) => re.test(t))) why(`flag ${t} is not on ${runner!.prefix.join(' ')}'s inert-flag allowlist (a flag can load code from, or stop running, the frozen files)`); continue; }
@@ -324,6 +387,10 @@ export function parseState(raw: unknown): FanoutState {
       mergedTree: treeOrNull(t.mergedTree, 'mergedTree'),
       forgottenMerges: forgottenOf(t.forgottenMerges),
       fixes: fixesOf(t.fixes),
+      spec: specOf(t.spec),
+      implementer: wsIdOf(t.implementer, 'implementer'),
+      verifier: wsIdOf(t.verifier, 'verifier'),
+      accept: acceptFlowOf(t.accept, `ticket ${id}`),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -466,9 +533,7 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
 export function applyTicketPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string> } = {}): FanoutState {
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
-  const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], updatedAt: now,
-  };
+  const prev: TicketState = state.tickets[id] ?? blankTicket(now);
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
   if ('pr' in patch) next.pr = prOrNull(patch.pr);
@@ -505,6 +570,9 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
     throw new FanoutStateError(`${id} is already merged at ${prev.head.slice(0, 8)}: ${next.head.slice(0, 8)} is a further candidate on it, i.e. a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (recording the head it REALLY merged at after a re-gate: add --forget-merge <reason>)`);
   }
   if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
+  if ('spec' in patch) next.spec = specOf(patch.spec);
+  if ('implementer' in patch) next.implementer = wsIdOf(patch.implementer, 'implementer');
+  if ('verifier' in patch) next.verifier = wsIdOf(patch.verifier, 'verifier');
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
   // #506 review R2/D1: a patch that drops builtOn and LEAVES a pass/approve verdict (kept, swapped pass↔approve, or set in the same patch) would make it read as "built after the upstream merged" (deliver skips the content check).

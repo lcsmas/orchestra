@@ -583,7 +583,7 @@ governed by the flags of the **innermost** run of its two parties).
   (`exactName`), also when `from` is unresolved. It is the role in force (`workspaceRole(ws)` = `spawnRole ?? roleOfName(branch)`,
   `fleet-roles.ts`): the role sentinel, the handoff bound and the nudge gate read it, so NO rename (self, parent, human, out-of-band
   `git branch -m`) changes the role; model/effort were already frozen at spawn. Human-created / pre-#489 records have none and still follow
-  their name. Pinned by `naming-policy.test.ts` (#489 block), `fleet-roles.test.ts`, `role-guard-wiring.test.ts`.
+  their name. Pinned by `naming-policy.test.ts` (#489 block), `fleet-roles.test.ts`, `role-guard-wiring.test.ts`. **#515:** a 7th role `acceptor` (prefix `accept-`, `ACCEPTOR_MODEL` Opus 5.5 pinned in the TABLE, edits its own worktree, `git push` denied) is the auto-spawned acceptance-test writer — spawned by the host route `/fanoutAcceptance` through `dispatchAgentSpawnRequest` (git.md §Frozen acceptance tests).
   `decideRename(target, caller)` (`:69`) says what a rename pins: `{kind:'human'}` → `manual` pin, no counter;
   `{kind:'agent', id?}` → the human > parent > child matrix below (#383; an unnamed workspace keeps today's rule:
   `bumpAutoCount = nudgeActive(target)`). `pinFields(ws, pin)` is what an allowed rename writes; `pinAdvancesGate(ws, pin)` (`:80`)

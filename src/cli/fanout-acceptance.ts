@@ -7,21 +7,32 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FanoutStateError, SAFE_BRANCH, parseRunArgv, readState, resolveFanoutRun, sha256Hex, stateFile, updateState,
-  type Acceptance, type FanoutState,
+  type Acceptance, type FanoutState, type TicketState,
 } from '../shared/fanout-state.ts';
 import {
-  amendInto, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList,
-  type FileStatus, type GateAcceptance,
+  acceptanceBranch, acceptancePhase, amendInto, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
+  type AcceptancePhase, type FileStatus, type GateAcceptance,
 } from '../shared/fanout-acceptance.ts';
-import { homeOf, loadOrFail, parseArgs, runOf, type FanoutDeps, type RunResult, type Runner } from './fanout-state.ts';
+import { acceptanceLine, homeOf, loadOrFail, needsAcceptor, parseArgs, runOf, spawnCall, type FanoutDeps, type HostCall, type RunResult, type Runner } from './fanout-state.ts';
 
-export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" --from <ref|dir>
+export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" [--from <ref|dir>]
        orchestra fanout acceptance amend  <ticket> [--run <id>] --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2,…> [--from <ref|dir>] [--run-cmd "<cmd>"]
-       orchestra fanout acceptance show   <ticket> [--run <id>] [--json]
+       orchestra fanout acceptance waive  <ticket> [--run <id>] --decision <ledger comment url> --reason "<why this ticket cannot have tests>"
+       orchestra fanout acceptance spawn  <ticket> [--run <id>] [--replace]
+       orchestra fanout acceptance show   <ticket> [--run <id>] [--json | --brief]
+
+FORCED FLOW (#515): \`fanout state set <ticket> --spec <ref>\` registers the ticket's spec and Orchestra SPAWNS its \`accept-\` writer itself (Opus 5.5; brief = spec + ticket,
+never an implementer branch; \`spawn\` re-requests it after a failure). The writer ends with \`freeze\` (its OWN ticket only; --from defaults to its checkout): the files are
+committed to ONE shared branch ${'`'}acceptance/<run>${'`'} (a commit built from the writer's blobs, pushed without force; a path another ticket froze with other bytes is refused) and
+Orchestra posts a bus status (path + command) to the ticket's --implementer / --verifier. Until then \`fanout gate\` WAITS (bounded) and \`deliver\` says acceptance-pending.
+  waive   coordinator only, recorded: the ticket cannot have tests. --decision = a ledger comment URL of this repo that names the ticket (read through gh, fail closed).
+          The other recorded escape is \`fanout deliver --no-acceptance-gate\`. Neither lifts a refusal for an edited or red frozen test.
+  spawn   coordinator only: re-request the writer after a failed / stale spawn; --replace respawns even when one is recorded (its session died, was archived…).
+  show    --brief = one line: where the tests are + the run command (or pending / waived).
 
 Frozen acceptance tests (#510): the test writer's files are hashed (sha256 of the bytes) at --from (a git ref of the writer's branch, or a checkout dir),
 and recorded in the ticket's fanout state with the targeted command (--run-cmd, run with cwd = the candidate checkout).
-  freeze  coordinator only; refused when already frozen (amend), on an empty/unsafe file list, a non-regular or uncommitted file, or a --run-cmd naming
+  freeze  the coordinator, or the ticket's own writer (#515); refused when already frozen (amend), on an empty/unsafe file list, a non-regular or uncommitted file, or a --run-cmd naming
           none of the frozen files. The command is a DIRECT runner call, executed WITHOUT a shell: first word in an allowlist (node, tsx, vitest [run],
           jest, mocha, pytest, python -I -m pytest|unittest, deno test, bun test, ruby, rspec; NO npx / pnpm exec / yarn exec launcher), only that runner's
           INERT flags from a fixed allowlist (e.g. node: --test, --test-reporter=spec|tap|dot|junit|lcov, --test-timeout=N — never --require, --env-file*,
@@ -52,7 +63,7 @@ function treeModes(out: string): Map<string, string> {
 
 // ── reading the frozen files ──────────────────────────────────────────────────────────────────────────────
 
-interface Frozen { files: Record<string, string>; source: Acceptance['source'] }
+interface Frozen { files: Record<string, string>; source: Acceptance['source']; /** the checkout the blobs were read in + their git modes (the publish reuses them) */ repo: string; modes: Map<string, string> }
 
 /** Hash `paths` as committed at `from`: a checkout DIR (HEAD, tracked files unmodified) or a git ref resolved in `cwd` with the runner. */
 export function readFrozen(paths: string[], from: string, cwd: string, runner: Runner): Frozen {
@@ -90,7 +101,47 @@ export function readFrozen(paths: string[], from: string, cwd: string, runner: R
     if (blob.stdout.includes('�')) throw new FanoutStateError(`${p}: not valid UTF-8 text (the byte re-read cannot be exact) — freeze text files only`);
     files[p] = sha256Hex(Buffer.from(blob.stdout, 'utf8'));
   }
-  return { files, source: { branch, head } };
+  return { files, source: { branch, head }, repo, modes };
+}
+
+// ── #515: publish to the ONE shared branch acceptance/<run> ───────────────────────────────────────────────
+
+/** Add the frozen blobs to branch `acceptance/<run>` as ONE new commit on its remote tip (git plumbing on a scratch index: the writer's worktree and branch are untouched),
+ *  pushed WITHOUT force; a lost race re-reads the tip and retries. A path another ticket already froze on that branch with other bytes is refused. */
+export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticket: string; paths: string[] }): Acceptance['source'] {
+  const branch = acceptanceBranch(o.run);
+  const git = (args: string[], env?: Record<string, string>) => runner('git', args, f.repo, env);
+  const idx = path.join(process.env.TMPDIR || os.tmpdir(), `orchestra-accept-idx-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const ls = git(['ls-remote', '--heads', 'origin', `refs/heads/${branch}`]);
+      if (ls.code !== 0) throw new FanoutStateError(`cannot publish to ${branch}: git ls-remote origin failed (exit ${ls.code}) — the writer's checkout needs an origin remote`);
+      const tip = ls.stdout.trim().split(/\s+/)[0] ?? '';
+      if (tip && git(['fetch', '--quiet', 'origin', `refs/heads/${branch}`]).code !== 0) throw new FanoutStateError(`cannot publish to ${branch}: git fetch origin ${branch} failed`);
+      const env = { GIT_INDEX_FILE: idx };
+      fs.rmSync(idx, { force: true });
+      if (git(tip ? ['read-tree', tip] : ['read-tree', '--empty'], env).code !== 0) throw new FanoutStateError('git read-tree failed');
+      for (const p of o.paths) {
+        const blob = git(['rev-parse', '--verify', '-q', `${f.source.head}:${p}`]).stdout.trim();
+        if (!/^[0-9a-f]{40,64}$/.test(blob)) throw new FanoutStateError(`${p}: no blob at ${f.source.head.slice(0, 12)}`);
+        if (tip) {
+          const there = git(['rev-parse', '--verify', '-q', `${tip}:${p}`]).stdout.trim();
+          if (there && there !== blob) throw new Refusal(`${p} is already on ${branch} with other bytes (another ticket froze it): a frozen path belongs to ONE ticket — choose another path`);
+        }
+        if (git(['update-index', '--add', '--cacheinfo', f.modes.get(p) ?? '100644', blob, p], env).code !== 0) throw new FanoutStateError(`git update-index ${p} failed`);
+      }
+      const tree = git(['write-tree'], env).stdout.trim();
+      if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new FanoutStateError('git write-tree failed');
+      if (tip && git(['rev-parse', `${tip}^{tree}`]).stdout.trim() === tree) return { branch, head: tip }; // same bytes already published
+      const c = git(['commit-tree', tree, ...(tip ? ['-p', tip] : []), '-m', `acceptance(${o.ticket}): freeze ${o.paths.length} file(s) [${o.run}]`]);
+      const commit = c.stdout.trim();
+      if (c.code !== 0 || !/^[0-9a-f]{40}$/.test(commit)) throw new FanoutStateError(`git commit-tree failed: ${c.stderr.trim().slice(0, 200)}`);
+      if (git(['push', '--quiet', 'origin', `${commit}:refs/heads/${branch}`]).code === 0) return { branch, head: commit };
+    }
+    throw new FanoutStateError(`could not push ${branch} after 3 attempts (another writer keeps winning the race, or the push is refused) — nothing was frozen`);
+  } finally {
+    fs.rmSync(idx, { force: true });
+  }
 }
 
 // ── freeze | amend | show ─────────────────────────────────────────────────────────────────────────────────
@@ -111,21 +162,76 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
   if (verb === 'freeze') {
     const p = parseArgs(rest, ['--run', '--files', '--run-cmd', '--from'], []);
     const ticket = oneTicket(p.pos, 'freeze');
-    for (const f of ['--files', '--run-cmd', '--from']) if (!p.vals[f]) throw new FanoutStateError(`${f} is required\n${ACCEPTANCE_USAGE}`);
+    for (const f of ['--files', '--run-cmd']) if (!p.vals[f]) throw new FanoutStateError(`${f} is required\n${ACCEPTANCE_USAGE}`);
     const run = p.vals['--run-cmd'].trim();
     if (!run || run.length > 2000 || /[\r\n\0]/.test(run)) throw new FanoutStateError('--run-cmd must be a single-line command (≤ 2000 chars)');
     const paths = parseFileList(p.vals['--files']);
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
-    const had = loadOrFail(file).tickets[ticket];
+    const st0 = loadOrFail(file);
+    const had = st0.tickets[ticket];
+    const caller = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+    // #515: the writer is role-limited to ITS OWN ticket — a workspace recorded as another ticket's writer may not freeze this one.
+    const own = Object.entries(st0.tickets).find(([, t]) => caller && t.accept?.acceptor?.id === caller);
+    if (own && own[0] !== ticket) throw new Refusal(`you are the test writer of ticket ${own[0]}; you may freeze only that ticket, not ${ticket}`);
+    // …and ONLY that ticket's recorded writer (in the run this freeze addresses) or the run's coordinator may freeze it; no workspace identity ⇒ refused (the host posts the status on no one else's word; #515 review M1).
+    if (!caller) throw new Refusal(`${ticket}: no workspace identity (ORCHESTRA_WS_ID is empty): only the run's coordinator or the ticket's recorded test writer may freeze — run it from your workspace`);
+    if (caller !== r.run && caller !== had?.accept?.acceptor?.id) throw new Refusal(`${ticket}: only its test writer${had?.accept?.acceptor?.id ? ` (${had.accept.acceptor.id})` : ' (none recorded in this run)'} or the run's coordinator (${r.run}) may freeze it, not ${caller}`);
     if (had?.acceptance) throw new Refusal(`${ticket}: acceptance tests are already frozen (hash ${had.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
-    const frozen = readFrozen(paths, p.vals['--from'], deps.cwd, deps.runner);
+    if (had?.accept?.waived) throw new Refusal(`${ticket}: acceptance is waived (${had.accept.waived.decision}) — nothing to freeze`);
+    const frozen = readFrozen(paths, p.vals['--from'] ?? '.', deps.cwd, deps.runner);
+    // #515: a ticket registered with a spec has its tests PUBLISHED to the one shared branch acceptance/<run>; the recorded source is that published commit.
+    const forced = !!had?.spec;
+    const source = forced ? publishFrozen(deps.runner, frozen, { run: r.run, ticket, paths }) : frozen.source;
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
-      return freezeInto(cur, ticket, { files: frozen.files, run, source: frozen.source, now: deps.now() });
+      return freezeInto(cur, ticket, { files: frozen.files, run, source, now: deps.now() });
     });
     const a = next.tickets[ticket].acceptance!;
-    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\`\n`}`, stderr: r.note };
+    const hostCalls: HostCall[] | undefined = forced ? [{ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, ...(caller ? { from: caller } : {}) } }] : undefined;
+    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\` lists the tickets\n`}`, stderr: r.note, ...(hostCalls ? { hostCalls } : {}) };
+  }
+  if (verb === 'waive') {
+    const p = parseArgs(rest, ['--run', '--decision', '--reason'], []);
+    const ticket = oneTicket(p.pos, 'waive');
+    const decision = p.vals['--decision']?.trim();
+    if (decision === undefined || decision === '') throw new Refusal('a waiver needs --decision <ledger comment url> (the coordinator\'s recorded decision) — none given');
+    const reason = p.vals['--reason']?.trim();
+    if (!reason) throw new Refusal('a waiver needs --reason "<why this ticket cannot have acceptance tests>" — none given');
+    const api = decisionApiPath(decision);
+    if (!api) throw new FanoutStateError(`--decision must be a GitHub ledger comment URL (https://github.com/<o>/<r>/issues/<n>#issuecomment-<id>), got ${JSON.stringify(decision)}`);
+    const r = runOf(p, deps, 'write');
+    const file = stateFile(homeOf(deps.env), r.run);
+    const st0 = loadOrFail(file);
+    if (!st0.tickets[ticket]) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
+    const decisionRepo = /^repos\/([^/]+\/[^/]+)\//.exec(api)?.[1] ?? '';
+    if (st0.repo !== null && st0.repo.toLowerCase() !== decisionRepo.toLowerCase()) throw new Refusal(`the decision is a comment of ${decisionRepo}, not of this vague's repo ${st0.repo}`);
+    const g = deps.runner('gh', ['api', api], deps.cwd);
+    if (g.code !== 0) throw new FanoutStateError(`could not read the decision ${decision} (gh api exit ${g.code}): ${g.stderr.trim().slice(0, 300)}`);
+    let body: unknown;
+    try { body = (JSON.parse(g.stdout) as { body?: unknown }).body; } catch { body = undefined; }
+    if (typeof body !== 'string') throw new FanoutStateError(`could not read the decision ${decision}: gh returned no comment body`);
+    if (!body.toLowerCase().includes(ticket.toLowerCase())) throw new Refusal(`the decision comment does not name ticket ${ticket}: a waiver is a ledger decision about THIS ticket`);
+    try {
+      updateState(file, (c) => {
+        if (!c) throw new FanoutStateError(`no state at ${file}`);
+        return waiveInto(c, ticket, { decision, reason, now: deps.now() });
+      });
+    } catch (e) {
+      if (e instanceof FanoutStateError && /already waived|nothing to waive/.test(e.message)) throw new Refusal(e.message);
+      throw e;
+    }
+    return { code: 0, stdout: `${ticket}: acceptance waived (${decision}) — ${reason}\n`, stderr: r.note };
+  }
+  if (verb === 'spawn') {
+    const p = parseArgs(rest, ['--run'], ['--replace']);
+    const ticket = oneTicket(p.pos, 'spawn');
+    const r = runOf(p, deps, 'use');
+    const t = loadOrFail(stateFile(homeOf(deps.env), r.run)).tickets[ticket];
+    if (!t) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
+    const replace = p.bools.has('--replace');
+    if (replace ? acceptancePhase(t) !== 'pending' : !needsAcceptor(t, deps.now())) throw new Refusal(`${ticket}: no writer is owed (${t.accept?.acceptor && !t.accept.acceptor.error ? `writer ${t.accept.acceptor.name} exists` : acceptancePhase(t) === 'pending' ? 'nothing to do' : `acceptance is ${acceptancePhase(t)}`})`);
+    return { code: 0, stdout: `${ticket}: requesting its accept- writer from Orchestra\n`, stderr: r.note, hostCalls: [spawnCall(r.run, ticket, deps, replace)] };
   }
   if (verb === 'amend') {
     const p = parseArgs(rest, ['--run', '--decision', '--spec-sentence', '--files', '--from', '--run-cmd'], []);
@@ -176,13 +282,14 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `${ticket}: amended ${h?.before.slice(0, 12)} → ${h?.after.slice(0, 12)} (decision ${decision})\n`, stderr: r.note };
   }
   if (verb === 'show') {
-    const p = parseArgs(rest, ['--run'], ['--json']);
+    const p = parseArgs(rest, ['--run'], ['--json', '--brief']);
     const ticket = oneTicket(p.pos, 'show');
     const r = runOf(p, deps, 'use');
     const s: FanoutState = loadOrFail(stateFile(homeOf(deps.env), r.run));
     const t = s.tickets[ticket];
     if (!t) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
     const a = t.acceptance;
+    if (p.bools.has('--brief')) return { code: 0, stdout: `${acceptanceLine(ticket, t) ?? `${ticket}  no acceptance flow (no spec registered, nothing frozen)`}\n`, stderr: r.note };
     if (p.bools.has('--json')) return { code: 0, stdout: `${JSON.stringify(a, null, 2)}\n`, stderr: r.note };
     if (!a) return { code: 0, stdout: `${ticket}: no frozen acceptance tests\n`, stderr: r.note };
     const lines = [
@@ -207,9 +314,11 @@ function oneTicket(pos: string[], verb: string): string {
 
 /** `lenient` (the gate WITHOUT an explicit --run): an absent state / ticket = `known:false`, reported as `acceptance:{consulted:false}` (deliver, the merge authority, is strict; so is the gate with --run). `consulted:false` = no state at all (no --run, none at the caller's own run). Throws (FanoutStateError) like `upstreamsFromState`: explicit --run with
  *  no state, a ticket the existing state does not name, or an unreadable state — fail closed. */
-export function acceptanceFromState(opts: { ticket: string; run?: string; lenient?: boolean }, env: NodeJS.ProcessEnv = process.env): { consulted: boolean; known: boolean; acceptance: Acceptance | null } {
+/** What the gate / deliver read of a ticket: its frozen tests, its #515 phase, and the ticket itself + the run it was found in (`run`, for the wait and the bypass record). */
+export interface AcceptanceRead { consulted: boolean; known: boolean; acceptance: Acceptance | null; phase: AcceptancePhase; ticket?: TicketState; run?: string }
+export function acceptanceFromState(opts: { ticket: string; run?: string; lenient?: boolean }, env: NodeJS.ProcessEnv = process.env): AcceptanceRead {
   const { run, inherited } = resolveFanoutRun(opts.run, env);
-  if (!run) return { consulted: false, known: false, acceptance: null };
+  if (!run) return { consulted: false, known: false, acceptance: null, phase: 'none' };
   const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
   // A verifier has no state of its own run: without --run the ticket is looked up in its own run, then in the run it inherits (#486, like show/resume).
   let sawState = false;
@@ -218,13 +327,13 @@ export function acceptanceFromState(opts: { ticket: string; run?: string; lenien
     if (!state) continue;
     sawState = true;
     const t = state.tickets[opts.ticket];
-    if (t) return { consulted: true, known: true, acceptance: t.acceptance };
+    if (t) return { consulted: true, known: true, acceptance: t.acceptance, phase: acceptancePhase(t), ticket: t, run: r };
   }
   if (!sawState) {
     if (opts.run && !opts.lenient) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the acceptance clause`);
-    return { consulted: false, known: false, acceptance: null };
+    return { consulted: false, known: false, acceptance: null, phase: 'none' };
   }
-  if (opts.lenient) return { consulted: true, known: false, acceptance: null };
+  if (opts.lenient) return { consulted: true, known: false, acceptance: null, phase: 'none' };
   throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run}${inherited && !opts.run ? ` or ${inherited}` : ''}: a mistyped --ticket would skip the acceptance clause`);
 }
 

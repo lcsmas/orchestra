@@ -279,22 +279,33 @@ test('#479 MUST-FAIL ARM: without the rule `fanout open` passes the installed co
 
 // #510: `fanout acceptance freeze|amend` writes a ticket's frozen acceptance tests — coordinator-only; `show` stays open to every role.
 const FREEZE = 'orchestra fanout acceptance freeze 510 --files t/a.test.ts --run-cmd "node --test t/a.test.ts" --from impl-writer';
+const WAIVE = 'orchestra fanout acceptance waive 510 --decision https://github.com/o/r/issues/511#issuecomment-1 --reason "docs only"';
+const SPAWN = 'orchestra fanout acceptance spawn 510';
 const AMEND = 'orchestra fanout acceptance amend 510 --decision https://github.com/o/r/issues/511#issuecomment-1 --spec-sentence "the carrier is optional" --files t/a.test.ts';
 for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
-  for (const [name, cmd] of [['freeze', FREEZE], ['amend', AMEND], ['freeze after &&', `cd /r && ${FREEZE}`], ['amend via bash -c', `bash -c "${AMEND}"`], ['bare freeze', 'orchestra fanout acceptance freeze'], ['bare amend + ;', 'orchestra fanout acceptance amend; ls']] as const) {
-    deny(role, `fanout acceptance ${name}`, bash(cmd), /fanout acceptance freeze\|amend.*coordinator/);
+  for (const [name, cmd] of [['freeze', FREEZE], ['amend', AMEND], ['freeze after &&', `cd /r && ${FREEZE}`], ['amend via bash -c', `bash -c "${AMEND}"`], ['bare freeze', 'orchestra fanout acceptance freeze'], ['bare amend + ;', 'orchestra fanout acceptance amend; ls'], ['waive', WAIVE], ['spawn', SPAWN], ['waive after &&', `cd /r && ${WAIVE}`]] as const) {
+    deny(role, `fanout acceptance ${name}`, bash(cmd), /fanout acceptance freeze\|amend\|waive\|spawn.*coordinator/);
   }
   allow(role, 'fanout acceptance show', bash('orchestra fanout acceptance show 510 --json'));
   allow(role, 'fanout gate --cwd', bash('orchestra fanout gate --branch b --into master --head abc --ticket 510 --cwd /r'));
   allow(role, 'a comment MENTIONING fanout acceptance freeze', bash('gh issue comment 510 --body "the coordinator runs orchestra fanout acceptance freeze at dispatch"'));
 }
 allow('coordinator', 'fanout acceptance freeze/amend/show', bash(`${FREEZE} && ${AMEND} && orchestra fanout acceptance show 510`));
+allow('coordinator', 'fanout acceptance waive/spawn', bash(`${WAIVE} && ${SPAWN}`));
+// #515: the `accept-` writer freezes ITS OWN ticket (the CLI checks the ticket) and reads (show/gate), but never amends / waives / re-spawns, never writes state, merges or delivers.
+allow('acceptor', 'fanout acceptance freeze', bash(FREEZE));
+allow('acceptor', 'fanout acceptance show --brief', bash('orchestra fanout acceptance show 510 --brief'));
+allow('acceptor', 'Edit in its own worktree', edit('Edit', `${wt}/t/a.test.ts`));
+for (const [name, cmd] of [['amend', AMEND], ['waive', WAIVE], ['spawn', SPAWN]] as const) deny('acceptor', `fanout acceptance ${name}`, bash(cmd), /amend\|waive\|spawn.*coordinator/);
+deny('acceptor', 'fanout state set', bash('orchestra fanout state set 510 --status started'), /state init\|set/);
+deny('acceptor', 'gh pr merge', bash('gh pr merge 1'), /merging a PR/);
+deny('acceptor', 'AskUserQuestion', tool('AskUserQuestion'), /AskUserQuestion/);
 allow('(none)', 'fanout acceptance freeze (no sentinel: inert)', bash(FREEZE));
 test('#510 MUST-FAIL ARM: without the rule `fanout acceptance freeze|amend` passes the installed command (and with it, every non-coordinator role is denied)', () => {
-  const noRule = ROLE_GUARD_SCRIPT.split('orchestra[[:space:]]+fanout[[:space:]]+acceptance[[:space:]]+(freeze|amend)(').join('orchestra[[:space:]]+NOACCEPTANCEVERB[[:space:]]+(freeze|amend)(');
+  const noRule = ROLE_GUARD_SCRIPT.split('orchestra[[:space:]]+fanout[[:space:]]+acceptance[[:space:]]+(freeze|amend|waive|spawn)(').join('orchestra[[:space:]]+NOACCEPTANCEVERB[[:space:]]+(freeze|amend|waive|spawn)(');
   assert.notEqual(noRule, ROLE_GUARD_SCRIPT);
   for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
-    for (const cmd of [FREEZE, AMEND]) {
+    for (const cmd of [FREEZE, AMEND, WAIVE, SPAWN]) {
       assert.equal(run(install(noRule, role, `na-${role}`), bash(cmd)).code, 0, `${role}: the rule-less guard must let it through`);
       const r = run(install(ROLE_GUARD_SCRIPT, role, `a-${role}`), bash(cmd));
       assert.equal(r.code, 2); assert.match(r.err, /coordinator/);

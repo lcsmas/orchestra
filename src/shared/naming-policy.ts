@@ -6,12 +6,12 @@ import { roleOfName } from './fleet-roles.ts';
 import type { Workspace } from './types.ts';
 
 /** Rôle prefixes of a spawned agent's name (CONTEXT.md "Rôle"). */
-export const ROLES = ['ops', 'impl', 'verif', 'review', 'explo', 'scribe'] as const;
+export const ROLES = ['ops', 'impl', 'verif', 'review', 'explo', 'scribe', 'accept'] as const;
 export type Role = (typeof ROLES)[number];
 
 /** The convention, restated verbatim by every refusal / help / skill. Owned by #382. */
 export const NAME_CONVENTION =
-  "<rôle>-<objet en mots humains>[-<ticket>] — rôle ∈ ops | impl | verif | review | explo | scribe (ex. impl-politique-nommage-381)";
+  "<rôle>-<objet en mots humains>[-<ticket>] — rôle ∈ ops | impl | verif | review | explo | scribe | accept (ex. impl-politique-nommage-381)";
 
 /** The agent may auto-rename its own branch this many times before the nudge retires. Moved here by #381. */
 export const MAX_AUTO_RENAMES = 2;

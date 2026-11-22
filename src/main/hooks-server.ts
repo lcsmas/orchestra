@@ -23,6 +23,7 @@ import {
   dispatchStatusRequest,
   dispatchRunRefreezeRequest,
 } from './workspaces';
+import { dispatchFanoutAcceptanceRequest } from './fanout-acceptance-wiring.ts';
 import { busDivergenceReport } from './bus-mirror.ts';
 import { getBus, badRecipientRows as busBadRecipientRows } from './bus.ts';
 import { busStatusRunView } from './bus-runs.ts';
@@ -602,6 +603,9 @@ export async function startHooksServer(): Promise<void> {
           } else if (route === '/handoff') {
             // #466: `orchestra handoff` — `{id, key, summary}`; the summary shape + the open run are checked host-side, the context ends at the turn end.
             send(200, dispatchHandoffRequest(msg));
+          } else if (route === '/fanoutAcceptance') {
+            // #515: `orchestra fanout state set --spec` / `acceptance freeze|spawn` ask the HOST to spawn a ticket's `accept-` writer / post the freeze status (shared/fanout-acceptance-host.ts).
+            send(200, await dispatchFanoutAcceptanceRequest(msg));
           } else if (route === '/browser') {
             // #395 / ADR 0009: `orchestra browser` asks for ITS workspace's agent-browser endpoint — `{id, key}` is verified against
             // the session-key registry (no key / stale key / another workspace's id = refused); the reply carries a proxy URL, never a key.
