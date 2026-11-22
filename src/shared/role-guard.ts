@@ -35,6 +35,8 @@ const FANOUT_DELIVER = `${B}orchestra[[:space:]]+fanout[[:space:]]+deliver([[:sp
 const FANOUT_OPEN = `${B}orchestra[[:space:]]+fanout[[:space:]]+open([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_WRITE = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+(init|set)([[:space:];&|)"'\\]|$)`;
 const FANOUT_STATE_INIT = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+init([[:space:];&|)"'\\]|$)`;
+// #510: `fanout acceptance freeze|amend` records / changes a ticket's frozen acceptance tests — the coordinator's alone (`show` stays open to every role).
+const FANOUT_ACCEPTANCE_WRITE = `${B}orchestra[[:space:]]+fanout[[:space:]]+acceptance[[:space:]]+(freeze|amend)([[:space:];&|)"'\\]|$)`;
 // #476: a scribe's `state set` may not override a merge claim: `--accept-merged`, or `--json` (any payload can carry `mergedAccepted`, even piped in) — `.*`, not `[^;&|]*`, so `--note "a; b"` cannot hide the flag.
 const FANOUT_ACCEPT_MERGED = `${B}orchestra[[:space:]]+fanout[[:space:]]+state[[:space:]]+set[[:space:]].*(--accept-merged|--json|mergedAccepted)`;
 // #498: a host-wide kill by name/pattern reaches OTHER agents' processes (a verifier's `pkill -f jest` did). Own pid / pgid (`kill 123`, `kill -- -123`) pass.
@@ -112,14 +114,15 @@ const NO_OPEN: Rule = { re: FANOUT_OPEN, why: 'orchestra fanout open opens the P
 const NO_STATE_WRITE: Rule = { re: FANOUT_STATE_WRITE, why: "orchestra fanout state init|set writes the coordinator's state file (one writer) — report the fact to the coordinator; state show / resume stay allowed" };
 const NO_STATE_INIT: Rule = { re: FANOUT_STATE_INIT, why: "orchestra fanout state init creates the coordinator's state file — report to the coordinator; a scribe may relay state set only" };
 const NO_ACCEPT_MERGED: Rule = { re: FANOUT_ACCEPT_MERGED, why: "a scribe's state set carries no --accept-merged / --json / mergedAccepted (they override a merge claim) — pass plain flags (--status --branch --pr --head), or report to the coordinator" };
+const NO_ACCEPTANCE_WRITE: Rule = { re: FANOUT_ACCEPTANCE_WRITE, why: "orchestra fanout acceptance freeze|amend writes a ticket's frozen acceptance tests — the coordinator's alone (an amend needs its ledger decision); report the gap to the coordinator. acceptance show stays allowed" };
 const NO_PROTECT: Rule = { re: PROTECT_RE, why: "the role guard's own wiring (.orchestra/role, role-guard.sh, .claude/settings*.json) is never written by a fleet role" };
 const NO_DELETE: Rule = { re: ORCH_DELETE, why: 'deleting/archiving a workspace belongs to the coordinator that owns it' };
 
 /** Rules this module adds on top of the role table's `bashDeny` (the table is the frozen #465 interface; the ticket's classes are ours). */
 function extraRules(role: FleetRole): Rule[] {
   if (role === 'coordinator') return [NO_PROTECT];
-  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_DELETE, NO_PROTECT]; // #476: a scribe relays the coordinator's `state set` lines
-  return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_WRITE, NO_DELETE, NO_PROTECT];
+  if (role === 'scribe') return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_INIT, NO_ACCEPT_MERGED, NO_ACCEPTANCE_WRITE, NO_DELETE, NO_PROTECT]; // #476: a scribe relays the coordinator's `state set` lines
+  return [NO_MERGE, NO_DELIVER, NO_OPEN, NO_STATE_WRITE, NO_ACCEPTANCE_WRITE, NO_DELETE, NO_PROTECT];
 }
 
 const WHY_TABLE = 'a command the fleet-roles table denies this role (push of the target branch / commit-class git act)';

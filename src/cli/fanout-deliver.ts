@@ -34,6 +34,9 @@ import {
   type UpstreamFacts,
   decideUpstreams,
 } from '../shared/fanout-deliver.ts';
+import { decideDeliverReceipt, parseReceipt, type DeliverAcceptanceReason, type Receipt } from '../shared/fanout-acceptance.ts';
+import type { Acceptance } from '../shared/fanout-state.ts';
+import { acceptanceFromState, rereadFrozenAtHead } from './fanout-acceptance.ts';
 
 export interface GhResult {
   code: number;
@@ -68,18 +71,20 @@ export interface DeliverOpts {
   requireChecks: string[];
   /** #506 — the fanout run whose state file names this ticket's upstreams (default: the caller's own run). */
   run?: string;
+  /** #510 — the gate's receipt file (`acceptance.receipt`), required when the ticket has frozen acceptance tests. */
+  acceptance?: string;
 }
 
 export const DELIVER_USAGE =
   'usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]\n' +
-  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>]';
+  '       [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>] [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>]';
 
 export type ParsedArgs = { ok: true; opts: DeliverOpts } | { ok: false; error: string };
 
 /** Strict argv parse: an unknown flag or a ref that could be read as a gh option / shell metacharacter is a usage error (exit 1). */
 export function parseDeliverArgs(args: string[]): ParsedArgs {
   const v: Record<string, string> = {};
-  const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check', '--run']);
+  const known = new Set(['--branch', '--into', '--ticket', '--review-verdict', '--verified-head', '--strategy', '--timeout', '--interval', '--no-checks-grace', '--suite-cmd', '--repo', '--require-check', '--run', '--acceptance']);
   const required: string[] = [];
   let noReviewGate = false;
   for (let i = 0; i < args.length; i += 2) {
@@ -126,13 +131,14 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
       repo: v['--repo'],
       requireChecks: required,
       run: v['--run'],
+      acceptance: v['--acceptance'],
     },
   };
 }
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state';
+  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | DeliverAcceptanceReason;
   detail?: string;
   ticket: string;
   branch: string;
@@ -148,6 +154,8 @@ export interface DeliverResult {
   combinedSuite?: string;
   /** #506 — true: the state named this ticket and its upstreams (maybe none) were checked; false: NO state was consulted (none found, no --run), so order/content were NOT checked. Absent: refused before the check. */
   upstreamsChecked?: boolean;
+  /** #510 — true: the ticket's frozen acceptance tests were proven (gate receipt for this head + this hash, and every frozen file re-read byte-identical at the head through gh). Absent: the ticket has none. */
+  acceptanceChecked?: boolean;
   /** #487 — where `combinedSuite`'s test command came from: --suite-cmd, package.json packageManager, a lockfile on the target, or the npm fallback. */
   combinedSuiteSource?: SuiteSource;
 }
@@ -161,6 +169,8 @@ export interface DeliverDeps {
   log: (s: string) => void;
   /** #506 — the upstreams the state file names for `ticket` (none when there is no state / no such ticket). Absent = none. */
   upstreams?: (opts: { ticket: string; run?: string }) => UpstreamRef[] | null;
+  /** #510 — the ticket's frozen acceptance tests from the state (`consulted:false` = no state read). Absent = the clause is not consulted. Throws on an unreadable state / explicit --run with none / unknown ticket (⇒ exit 1). */
+  acceptance?: (opts: { ticket: string; run?: string }) => { consulted: boolean; acceptance: Acceptance | null };
 }
 
 /** One upstream of the ticket being delivered, as the fanout state records it. */
@@ -201,6 +211,7 @@ export const realDeps = (): DeliverDeps => ({
   readFile: (p) => fs.readFileSync(p, 'utf8'),
   log: (s) => process.stderr.write(`${s}\n`),
   upstreams: (o) => upstreamsFromState(o),
+  acceptance: (o) => acceptanceFromState(o),
 });
 
 class GhError extends Error {}
@@ -314,8 +325,9 @@ export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<Del
 async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
   const base = { ticket: opts.ticket, branch: opts.branch, into: opts.into };
   let upstreamsChecked: boolean | undefined;
+  let acceptanceChecked: boolean | undefined;
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
-    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}) };
+    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}) };
     if (result.verdict === 'merged' || result.verdict === 'already-merged') full.combinedSuite = combinedSuiteCommand(opts.into, opts.suiteCmd);
     const exit = full.verdict === 'refused' ? DELIVER_EXIT.refused : full.verdict === 'unchecked' ? DELIVER_EXIT.unchecked : DELIVER_EXIT.merged;
     return { exit, result: full };
@@ -357,6 +369,39 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       { verdict: 'refused', reason: 'verdict-head-mismatch', detail: `--verified-head ${opts.verifiedHead.slice(0, 12)} != the verdict's head ${verdict.head.slice(0, 12)}`, head: opts.verifiedHead },
       reviewGated,
     );
+  }
+
+  // 1a. #510 — frozen acceptance tests: the gate's RECEIPT for this head + this frozen set, AND an independent byte re-read of every frozen file at the head through gh.
+  // Before the PR is opened and before any wait: a refusal never depends on CI. The receipt is the coordinator's own file; the re-read is not.
+  if (deps.acceptance) {
+    let got: { consulted: boolean; acceptance: Acceptance | null };
+    try {
+      got = deps.acceptance({ ticket: opts.ticket, run: opts.run });
+    } catch (e) {
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state to find ${opts.ticket}'s frozen acceptance tests: ${(e as Error).message}` }, reviewGated);
+    }
+    if (opts.acceptance !== undefined && !got.acceptance) {
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `--acceptance was given but ${got.consulted ? `ticket ${opts.ticket} has no frozen acceptance tests in the fanout state` : 'no fanout state was found (pass --run)'}` }, reviewGated);
+    }
+    if (!got.consulted) deps.log(`acceptance: no fanout state consulted for ${opts.ticket} (no --run, none at your own run) — frozen acceptance tests NOT checked`);
+    if (got.acceptance) {
+      let receipt: Receipt | null = null;
+      if (opts.acceptance !== undefined) {
+        let text: string | null = null;
+        try { text = deps.readFile(opts.acceptance); } catch (e) { return done({ verdict: 'refused', reason: 'acceptance-unproven', detail: `cannot read the acceptance receipt ${opts.acceptance}: ${(e as Error).message}`, head: verifiedHead }, reviewGated); }
+        const pr = parseReceipt(text);
+        if (!pr.ok) return done({ verdict: 'refused', reason: 'acceptance-unproven', detail: `${opts.acceptance}: ${pr.error}`, head: verifiedHead }, reviewGated);
+        receipt = pr.receipt;
+      }
+      const rd = decideDeliverReceipt(got.acceptance, receipt, verifiedHead);
+      if (!rd.ok) return done({ verdict: 'refused', reason: rd.reason, detail: rd.detail, head: verifiedHead }, reviewGated);
+      let files;
+      try { files = await rereadFrozenAtHead(got.acceptance, verifiedHead, opts.repo, deps.gh); } catch (e) { return done({ verdict: 'unchecked', reason: 'gh-failed', detail: e instanceof Error ? e.message : String(e) }, reviewGated); }
+      const bad = files.filter((f) => f.status !== 'same');
+      if (bad.length) return done({ verdict: 'refused', reason: 'frozen-test-changed', detail: `frozen test file(s) at ${verifiedHead.slice(0, 12)} differ from the frozen bytes: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`, head: verifiedHead }, reviewGated);
+      acceptanceChecked = true;
+      deps.log(`acceptance ok: ${files.length} frozen file(s) byte-identical at ${verifiedHead.slice(0, 12)}, receipt for hash ${got.acceptance.hash.slice(0, 12)}`);
+    }
   }
 
   try {
@@ -453,13 +498,16 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
 /** `orchestra help fanout` text for the deliver half (appended to #469's FANOUT_USAGE in help.ts). */
 export const DELIVER_HELP = `usage: orchestra fanout deliver --branch <b> --into <target> --ticket <id> (--review-verdict <file> | --no-review-gate) [--verified-head <sha>]
                                 [--strategy merge|squash|rebase] [--timeout <s>] [--interval <s>] [--no-checks-grace <s>]
-                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>]
+                                [--suite-cmd <cmd>] [--repo <owner/name>] [--require-check <name>]… [--run <id>] [--acceptance <receipt.json>]
 
 deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge with
 \`gh pr merge --match-head-commit <verified head>\` (check and merge are ONE call).
 Order (#506): a ticket whose upstreams the fanout state names (--run, default your own run) merges ONLY after each upstream
 merged into <target> (upstream-not-merged), and only if its verified head still sits on the upstream content it was built on
 and gated against (state builtOn; a fix round or refusal on the upstream since = upstream-changed: re-gate). Nominating and gating early is allowed; merging out of order is not.
+Acceptance (#510): a ticket with frozen acceptance tests (the fanout state, \`fanout acceptance freeze\`) needs --acceptance <receipt.json> (the gate's
+acceptance.receipt {head,hash,ok} for THIS verified head and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
+at the verified head through gh and must be byte-identical (else frozen-test-changed). Unreadable state / unknown ticket with --acceptance ⇒ exit 1. A ticket without frozen tests is unchanged.
 Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
 merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
 the verdict file, a head that is not the verified head, a conflict, a --require-check

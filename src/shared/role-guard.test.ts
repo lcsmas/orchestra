@@ -272,6 +272,31 @@ test('#479 MUST-FAIL ARM: without the rule `fanout open` passes the installed co
   }
 });
 
+// #510: `fanout acceptance freeze|amend` writes a ticket's frozen acceptance tests — coordinator-only; `show` stays open to every role.
+const FREEZE = 'orchestra fanout acceptance freeze 510 --files t/a.test.ts --run-cmd "node --test t/a.test.ts" --from impl-writer';
+const AMEND = 'orchestra fanout acceptance amend 510 --decision https://github.com/o/r/issues/511#issuecomment-1 --spec-sentence "the carrier is optional" --files t/a.test.ts';
+for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+  for (const [name, cmd] of [['freeze', FREEZE], ['amend', AMEND], ['freeze after &&', `cd /r && ${FREEZE}`], ['amend via bash -c', `bash -c "${AMEND}"`], ['bare freeze', 'orchestra fanout acceptance freeze'], ['bare amend + ;', 'orchestra fanout acceptance amend; ls']] as const) {
+    deny(role, `fanout acceptance ${name}`, bash(cmd), /fanout acceptance freeze\|amend.*coordinator/);
+  }
+  allow(role, 'fanout acceptance show', bash('orchestra fanout acceptance show 510 --json'));
+  allow(role, 'fanout gate --cwd', bash('orchestra fanout gate --branch b --into master --head abc --ticket 510 --cwd /r'));
+  allow(role, 'a comment MENTIONING fanout acceptance freeze', bash('gh issue comment 510 --body "the coordinator runs orchestra fanout acceptance freeze at dispatch"'));
+}
+allow('coordinator', 'fanout acceptance freeze/amend/show', bash(`${FREEZE} && ${AMEND} && orchestra fanout acceptance show 510`));
+allow('(none)', 'fanout acceptance freeze (no sentinel: inert)', bash(FREEZE));
+test('#510 MUST-FAIL ARM: without the rule `fanout acceptance freeze|amend` passes the installed command (and with it, every non-coordinator role is denied)', () => {
+  const noRule = ROLE_GUARD_SCRIPT.split('orchestra[[:space:]]+fanout[[:space:]]+acceptance[[:space:]]+(freeze|amend)(').join('orchestra[[:space:]]+NOACCEPTANCEVERB[[:space:]]+(freeze|amend)(');
+  assert.notEqual(noRule, ROLE_GUARD_SCRIPT);
+  for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']) {
+    for (const cmd of [FREEZE, AMEND]) {
+      assert.equal(run(install(noRule, role, `na-${role}`), bash(cmd)).code, 0, `${role}: the rule-less guard must let it through`);
+      const r = run(install(ROLE_GUARD_SCRIPT, role, `a-${role}`), bash(cmd));
+      assert.equal(r.code, 2); assert.match(r.err, /coordinator/);
+    }
+  }
+});
+
 allow('coordinator', 'fanout deliver', bash(DELIVER));
 allow('coordinator', 'fanout deliver in a chain', bash(`cd /r && ${DELIVER}`));
 allow('coordinator', 'fanout deliver via bash -c', bash(`bash -c "${DELIVER}"`));

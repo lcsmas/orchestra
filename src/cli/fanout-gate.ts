@@ -7,6 +7,9 @@ import path from 'node:path';
 import { readState, resolveFanoutRun, stackView, stateFile, type StackView } from '../shared/fanout-state.ts';
 import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/fanout-deliver.ts';
 import { readPrChecks, realDeps, type DeliverDeps } from './fanout-deliver.ts';
+import { acceptanceFromState, checkAcceptanceInCheckout, realCheckoutIo, type CheckoutIo } from './fanout-acceptance.ts';
+import type { Acceptance } from '../shared/fanout-state.ts';
+import type { GateAcceptance } from '../shared/fanout-acceptance.ts';
 
 export interface GateOpts {
   branch: string;
@@ -18,13 +21,17 @@ export interface GateOpts {
   /** #506 — the ticket (and its fanout run) whose upstreams the answer reports as `stack`. */
   ticket?: string;
   run?: string;
+  /** #510 — the candidate checkout the ticket's frozen acceptance tests are hashed + run in (required when the ticket has any). */
+  cwd?: string;
   /** ms between the two check reads (default 5000). */
   settleMs?: number;
 }
 
 export interface GateResult extends Partial<GateAnswer> {
-  verdict: 'gate' | 'unchecked';
-  reason?: 'gh-failed' | 'bad-args';
+  verdict: 'gate' | 'unchecked' | 'refused';
+  reason?: 'gh-failed' | 'bad-args' | GateAcceptance['reason'];
+  /** #510 — present when `--ticket` names a ticket with frozen acceptance tests. */
+  acceptance?: GateAcceptance;
   detail?: string;
   branch: string;
   into: string;
@@ -35,14 +42,14 @@ export interface GateResult extends Partial<GateAnswer> {
   stack?: StackView | null;
 }
 
-export const GATE_USAGE = 'usage: orchestra fanout gate --branch <b> --into <target> --head <sha> [--repo <owner/name>] [--require-check <name>]… [--ticket <id> [--run <id>]]';
+export const GATE_USAGE = 'usage: orchestra fanout gate --branch <b> --into <target> --head <sha> [--repo <owner/name>] [--require-check <name>]… [--ticket <id> [--run <id>] [--cwd <checkout>]]';
 
 export type ParsedGate = { ok: true; opts: GateOpts } | { ok: false; error: string };
 
 export function parseGateArgs(args: string[]): ParsedGate {
   const v: Record<string, string> = {};
   const required: string[] = [];
-  const known = new Set(['--branch', '--into', '--head', '--repo', '--require-check', '--ticket', '--run']);
+  const known = new Set(['--branch', '--into', '--head', '--repo', '--require-check', '--ticket', '--run', '--cwd']);
   for (let i = 0; i < args.length; i += 2) {
     const k = args[i];
     if (!known.has(k)) return { ok: false, error: `unknown argument: ${k}\n${GATE_USAGE}` };
@@ -57,7 +64,8 @@ export function parseGateArgs(args: string[]): ParsedGate {
   if (!/^[0-9a-f]{40}$/.test(v['--head'])) return { ok: false, error: '--head must be a full 40-hex sha' };
   if (v['--repo'] !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(v['--repo'])) return { ok: false, error: '--repo must be <owner>/<name>' };
   if (v['--run'] !== undefined && v['--ticket'] === undefined) return { ok: false, error: '--run only applies with --ticket' };
-  return { ok: true, opts: { branch: v['--branch'], into: v['--into'], head: v['--head'], repo: v['--repo'], requireChecks: required, ticket: v['--ticket'], run: v['--run'] } };
+  if (v['--cwd'] !== undefined && v['--ticket'] === undefined) return { ok: false, error: '--cwd only applies with --ticket' };
+  return { ok: true, opts: { branch: v['--branch'], into: v['--into'], head: v['--head'], repo: v['--repo'], requireChecks: required, ticket: v['--ticket'], run: v['--run'], cwd: v['--cwd'] } };
 }
 
 /** The TARGET branch's workflow files (contents read from GitHub, never this checkout). `[]` = the repo has none (404); `null` = could not read. */
@@ -90,7 +98,12 @@ export function stackFromState(opts: { ticket: string; run?: string }, env: Node
   return state ? stackView(state, opts.ticket) : null;
 }
 
-export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & { stack?: (o: { ticket: string; run?: string }) => StackView | null };
+export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & {
+  stack?: (o: { ticket: string; run?: string }) => StackView | null;
+  /** #510 — the ticket's frozen acceptance tests (null = none / no state). Absent = the clause is not consulted. Throws on an unreadable state (⇒ exit 1). */
+  acceptance?: (o: { ticket: string; run?: string }) => Acceptance | null;
+  checkout?: CheckoutIo;
+};
 
 export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: number; result: GateResult }> {
   const base = { branch: opts.branch, into: opts.into, head: opts.head };
@@ -103,6 +116,13 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
     return r.stdout;
   };
   try {
+    // #510 — the acceptance clause first: a candidate whose frozen tests changed / fail / were not proven is refused (exit 2) before any CI read.
+    let accept: GateAcceptance | undefined;
+    const frozen = opts.ticket !== undefined && deps.acceptance ? deps.acceptance({ ticket: opts.ticket, run: opts.run }) : null;
+    if (frozen) {
+      accept = checkAcceptanceInCheckout(frozen, { cwd: opts.cwd, head: opts.head, log: deps.log }, deps.checkout ?? realCheckoutIo);
+      if (!accept.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: accept.reason, detail: accept.detail, acceptance: accept, ...base } };
+    }
     const workflows = await targetWorkflows(opts, deps);
     const open = JSON.parse(await ghOk(['pr', 'list', '--head', opts.branch, '--base', opts.into, '--state', 'open', '--json', 'number,headRefOid', '--limit', '5'])) as { number: number; headRefOid: string }[];
     const pr = open[0] ?? null;
@@ -127,7 +147,7 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
       workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles,
     });
     if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — fullSuite stays on the verifier');
-    return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}) } };
+    return { exit: DELIVER_EXIT.merged, result: { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}), ...(accept ? { acceptance: accept } : {}) } };
   } catch (e) {
     return bad('gh-failed', e instanceof Error ? e.message : String(e));
   }
@@ -140,11 +160,12 @@ gate: the verifier's checklist, DERIVED (read-only, any role). Says whether the 
 --head (the sha you checked out). With PR CI: fullSuite:"ci" — do NOT re-run the full suite, wait for
 ciGreenOnHead:true (two reads 5s apart, check names stable), keep the checklist's keep list. A green check is the SUITE only if it is a test job of the PR workflow (derived: suiteChecks) or pinned with --require-check <name>; none => fullSuite:"verifier". A reusable-workflow suite (caller job with uses:) is never derived: pin its full check name, e.g. ci / test. A PR that edits .github/ => fullSuite:"verifier" (its CI is the candidate's, not the target's read here). A suite check absent from the head is listed in absentSuiteChecks. NOT detected: a PR that changes what the test command runs (package.json scripts, runner config) — pin the check and review that diff. Without PR CI (or unreadable workflows): fullSuite:"verifier".
 --ticket <id> [--run <id>] adds \`stack\` (#506, from the fanout state): order none | wait-upstream (stacked on a verified upstream candidate: gate it now, \`deliver\` merges only after the upstream) | re-gate (the upstream moved since this ticket was built on it: its verdict is void) | blocked (an upstream is no admissible candidate), plus one row per upstream.
+Acceptance (#510): when the ticket has frozen acceptance tests (\`fanout acceptance freeze\`), \`--cwd <the candidate checkout>\` is REQUIRED: its HEAD must be --head and its tracked files clean, every frozen file is hashed there, then the frozen command runs there. Output gains \`acceptance: {ok, hash, files:[{path,status}], ran, receipt:{head,hash,ok}}\` — save \`receipt\` for \`deliver --acceptance\`. Any failure ⇒ exit 2, verdict "refused", reason frozen-test-changed | frozen-test-failed | acceptance-unproven | acceptance-stale-checkout (before any CI read). The ticket is read from the fanout state like \`stack\` (--run when it is not your own run; an unreadable state ⇒ exit 1, an absent state/ticket skips the clause — \`deliver\` is the authority and refuses a ticket with frozen tests that has no receipt).
 A PR head other than --head ⇒ headMatches:false, ciGreenOnHead:false: the CI of another head is not accepted.
-Prints ONE JSON line. Exit 0 = answered, 1 = could not check (usage, gh failed). \`deliver\` re-checks CI at merge.`;
+Prints ONE JSON line. Exit 0 = answered, 2 = refused (acceptance), 1 = could not check (usage, gh failed, unreadable state). \`deliver\` re-checks CI at merge.`;
 
 /** Production deps: real gh + the state-file stack reader (a test drives `runGate` through THIS, so an unwired reader cannot pass). */
-export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o) });
+export const realGateDeps = (): GateDeps => ({ ...realDeps(), stack: (o) => stackFromState(o), acceptance: (o) => acceptanceFromState({ ...o, lenient: true }).acceptance });
 
 export async function runGate(args: string[], deps: GateDeps = realGateDeps()): Promise<{ exit: number; stdout?: string; error?: string }> {
   const p = parseGateArgs(args);

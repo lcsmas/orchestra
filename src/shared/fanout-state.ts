@@ -1,6 +1,7 @@
 // #469 — the fan-out vague's execution state: ONE file per run (<ORCHESTRA_HOME>/fanout/<run>/state.json),
 // one writer, atomic rewrite, and a pure reconcile against git/gh reality. Prior art: Reclaim's run file + 5-step resume.
 // Pure logic + tiny fs helpers; the CLI (src/cli/fanout-state.ts) owns argv and the git/gh runner.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -10,6 +11,18 @@ export const TICKET_STATUSES = ['todo', 'started', 'nominated', 'gated', 'merged
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
 export const VERDICTS = ['none', 'pass', 'fail', 'approve', 'changes-requested'] as const;
 export type Verdict = (typeof VERDICTS)[number];
+
+/** #510 — the frozen acceptance tests of a ticket: path → sha256 of the bytes the test writer froze. Written ONLY by `fanout acceptance freeze|amend` (never by `state set`). */
+export interface Acceptance {
+  files: Record<string, string>;
+  /** sha256 of the sorted `path\0sha\n` lines of `files` (see `acceptanceHash`). */
+  hash: string;
+  /** Targeted test command, run with cwd = the candidate checkout. */
+  run: string;
+  source: { branch: string | null; head: string };
+  frozenAt: string;
+  amendments: Array<{ at: string; decision: string; specSentence: string; hashBefore: string; hashAfter: string }>;
+}
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -28,6 +41,8 @@ export interface TicketState {
   /** Why a `merged` ticket counts as merged although git/gh do not show it on the target (e.g. its PR landed in a stacked base that was later squash-merged). Explicit, human-written. */
   mergedAccepted: string | null;
   status: TicketStatus;
+  /** #510 — frozen acceptance tests (null = none). Not in SETTABLE_KEYS: only the acceptance verb writes it. */
+  acceptance: Acceptance | null;
   updatedAt: string;
 }
 
@@ -44,14 +59,14 @@ export interface FanoutState {
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status'] as const;
 export type TicketPatch = Partial<Pick<TicketState, (typeof SETTABLE_KEYS)[number]>>;
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HEX_SHA = /^[0-9a-f]{7,40}$/;
-const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
+export const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
 export class FanoutStateError extends Error {}
@@ -121,6 +136,52 @@ function enumOf<T extends string>(v: unknown, all: readonly T[], name: string): 
   return v as T;
 }
 
+
+const SHA256 = /^[0-9a-f]{64}$/;
+/** A repo-relative POSIX path a frozen test may have: no absolute, no `..`, no backslash/NUL/newline, no leading `-`. */
+export function assertAcceptancePath(p: unknown): string {
+  if (typeof p !== 'string' || !p || p.length > 300 || p.startsWith('/') || p.startsWith('-') || /[\\\0\r\n]/.test(p) || p.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) {
+    throw new FanoutStateError(`unsafe acceptance path ${JSON.stringify(p)} (repo-relative, no .. / absolute / empty segment)`);
+  }
+  return p;
+}
+/** sha256 of the sorted `path\0sha\n` lines — the ticket's frozen-set identity. */
+export function acceptanceHash(files: Record<string, string>): string {
+  const lines = Object.keys(files).sort().map((k) => `${k}\0${files[k]}\n`).join('');
+  return crypto.createHash('sha256').update(lines).digest('hex');
+}
+export const sha256Hex = (b: Buffer | string): string => crypto.createHash('sha256').update(b).digest('hex');
+
+function acceptanceOf(v: unknown, where: string): Acceptance | null {
+  if (v === undefined || v === null) return null;
+  if (!isObj(v)) throw new FanoutStateError(`${where}: acceptance must be an object or null`);
+  refuseUnknown(v, new Set(['files', 'hash', 'run', 'source', 'frozenAt', 'amendments']), `${where} acceptance`);
+  if (!isObj(v.files) || Object.keys(v.files).length === 0) throw new FanoutStateError(`${where}: acceptance.files must be a non-empty {path: sha256}`);
+  const files: Record<string, string> = {};
+  for (const [k, h] of Object.entries(v.files)) {
+    assertAcceptancePath(k);
+    if (typeof h !== 'string' || !SHA256.test(h)) throw new FanoutStateError(`${where}: acceptance.files[${k}] must be a 64-hex sha256`);
+    files[k] = h;
+  }
+  if (typeof v.hash !== 'string' || v.hash !== acceptanceHash(files)) throw new FanoutStateError(`${where}: acceptance.hash does not match its files (hand-edited state?)`);
+  if (typeof v.run !== 'string' || !v.run.trim() || v.run.length > 2000 || /[\r\n\0]/.test(v.run)) throw new FanoutStateError(`${where}: acceptance.run must be a single-line command`);
+  if (!isObj(v.source)) throw new FanoutStateError(`${where}: acceptance.source missing`);
+  refuseUnknown(v.source, new Set(['branch', 'head']), `${where} acceptance.source`);
+  const head = checked(strOrNull(v.source.head, 'acceptance.source.head'), HEX_SHA, 'acceptance.source.head');
+  if (!head) throw new FanoutStateError(`${where}: acceptance.source.head missing`);
+  const branch = checked(strOrNull(v.source.branch, 'acceptance.source.branch'), SAFE_BRANCH, 'acceptance.source.branch');
+  if (typeof v.frozenAt !== 'string') throw new FanoutStateError(`${where}: acceptance.frozenAt missing`);
+  if (!Array.isArray(v.amendments)) throw new FanoutStateError(`${where}: acceptance.amendments must be an array`);
+  const amendments = v.amendments.map((a, i) => {
+    if (!isObj(a)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}] is not an object`);
+    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'hashBefore', 'hashAfter']), `${where} acceptance.amendments[${i}]`);
+    for (const k of ['at', 'decision', 'specSentence'] as const) if (typeof a[k] !== 'string' || !(a[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} missing`);
+    for (const k of ['hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} must be a sha256`);
+    return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string };
+  });
+  return { files, hash: v.hash, run: v.run, source: { branch, head }, frozenAt: v.frozenAt, amendments };
+}
+
 /** Parse + validate a whole state document. Unknown field (top level or per ticket) is REFUSED; so is a dependency cycle. */
 export function parseState(raw: unknown): FanoutState {
   if (!isObj(raw)) throw new FanoutStateError('state is not an object');
@@ -145,6 +206,7 @@ export function parseState(raw: unknown): FanoutState {
       frozenInterface: strOrNull(t.frozenInterface, 'frozenInterface'),
       mergedAccepted: strOrNull(t.mergedAccepted, 'mergedAccepted'),
       status: enumOf(t.status ?? 'todo', TICKET_STATUSES, 'status'),
+      acceptance: acceptanceOf(t.acceptance, `ticket ${id}`),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -235,7 +297,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? {
-    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', updatedAt: now,
+    branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, updatedAt: now,
   };
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
