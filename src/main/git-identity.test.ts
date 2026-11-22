@@ -135,6 +135,26 @@ test('#513 resolved for the REPO (includeIf gitdir), not for the worktree path',
   assert.equal(identityUnderScratchHome(wt).author, 'Work Me <work@example.test>');
 });
 
+test('#513 the REPO\'s own resolution wins where it differs from the worktree\'s (includeIf onbranch)', async () => {
+  const repo = mkRepo(); // on `main`
+  const incl = path.join(ROOT, `onbranch-${++n}.gitconfig`);
+  fs.writeFileSync(incl, '[user]\n\tname = Main Branch Me\n\temail = mainbranch@example.test\n');
+  writeGlobal(`${ownerGlobal}[includeIf "onbranch:main"]\n\tpath = ${incl}\n`);
+  const wt = wtPath('onb');
+  await createWorktree(repo, 'agent-onb', 'main', wt); // the worktree is on `agent-onb`: resolved AT the worktree it would read the plain global
+  assert.equal(identityUnderScratchHome(wt).author, 'Main Branch Me <mainbranch@example.test>');
+});
+
+test('#513 author.* overrides are copied when the owner set them', async () => {
+  writeGlobal(`${ownerGlobal}[author]\n\tname = Pen Name\n\temail = pen@example.test\n`);
+  const repo = mkRepo();
+  const wt = wtPath('auth');
+  await createWorktree(repo, 'agent-auth', 'main', wt);
+  const { author, committer } = identityUnderScratchHome(wt);
+  assert.equal(author, 'Pen Name <pen@example.test>');
+  assert.equal(committer, expected);
+});
+
 test('#513 a split committer the owner configured survives (author.* / committer.* are copied when set)', async () => {
   writeGlobal(`${ownerGlobal}[committer]\n\tname = Bot Committer\n\temail = bot@example.test\n`);
   const repo = mkRepo();
@@ -183,6 +203,19 @@ test('#513 parallel spawns in one repo all end pinned (the shared-config flip is
   for (const w of wts) assert.equal(identityUnderScratchHome(w).committer, expected, w);
 });
 
+test('#513 24 pins racing on a repo that has never had the flag all succeed', async () => {
+  writeGlobal(ownerGlobal);
+  const repo = mkRepo();
+  const wts = Array.from({ length: 24 }, (_, i) => {
+    const w = wtPath(`race${i}`);
+    git(repo, ['worktree', 'add', '-q', '-b', `agent-race${i}`, w, 'main']);
+    return w;
+  });
+  const rs = await Promise.all(wts.map((w) => ensureWorktreeGitIdentity(repo, w)));
+  for (const r of rs) assert.equal(r.skipped, undefined, JSON.stringify(r));
+  for (const w of wts) assert.equal(identityUnderScratchHome(w).committer, expected, w);
+});
+
 test('#513 a bare repo is refused (extension needs a migration we do not do), nothing written', async () => {
   writeGlobal(ownerGlobal);
   const src = mkRepo();
@@ -222,6 +255,7 @@ test('#513 ensureWorkspaceGitIdentity: restore / attach / session-start entry â€
   const other = wtPath('ws2');
   git(repo, ['worktree', 'add', '-q', '-b', 'agent-ws2', other, 'main']);
   assert.equal(await ensureWorkspaceGitIdentity({ kind: 'scratch', repoPath: '', worktreePath: other }), null);
+  assert.equal(await ensureWorkspaceGitIdentity({ kind: 'scratch', repoPath: repo, worktreePath: other }), null, 'a scratch record with a stray repoPath is still scratch');
   assert.equal(await ensureWorkspaceGitIdentity({ kind: 'orchestrator', repoPath: '', worktreePath: other }), null);
   assert.equal(await ensureWorkspaceGitIdentity({ ...base, worktreePath: other, host: { kind: 'sandbox' } as never }), null);
   assert.equal(tryGit(other, ['config', '--worktree', '--get', 'user.name']).ok, false, 'skipped kinds wrote nothing');
