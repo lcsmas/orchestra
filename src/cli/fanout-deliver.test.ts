@@ -201,12 +201,12 @@ test('MUST-FAIL: MAJOR (or BLOCKING) in the verdict → refused, exit 2, no merg
   }
 });
 
-test('MUST-FAIL: --verified-head disagreeing with the verdict head is refused before any gh call', async () => {
+test('MUST-FAIL: --verified-head disagreeing with the verdict head is refused before any PR is read (#512: only the two trees are read, and they are unreadable here)', async () => {
   const f = fakeGh({ views: [{ checks: [green()] }] });
   const r = await deliver(opts({ reviewVerdict: 'v', verifiedHead: H }), deps(f.gh, { v: verdictFile({ head: H2 }) }).d);
   assert.equal(r.exit, 2);
   assert.equal(r.result.reason, 'verdict-head-mismatch');
-  assert.equal(f.calls.length, 0);
+  assert.ok(f.calls.every((c) => c[0] === 'api' && /\/commits\//.test(c[1])), 'only the tree reads of #512 — no PR / checks call');
 });
 
 test('red CI → refused (2); wrong base → refused (2)', async () => {

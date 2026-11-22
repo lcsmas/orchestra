@@ -51,9 +51,26 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
   'merged' is REFUSED until every upstream is merged (fanout deliver re-proves order and content at merge time).
   resume   load → reconcile against git + gh → classify → next action per ticket → write back reality-ahead facts.
            exit 0 = state matches reality, 2 = divergences reported (state claims reality does not back are never auto-corrected).
+  Content key (#512): \`set --head\` / \`--built-on\` also record the git TREE of each sha (derived, read-only; unreadable ⇒ unknown ⇒ sha-keyed). \`resume\` keeps a verdict whose head
+           moved to another sha with the SAME tree (it records the new head); another tree = head-moved (verdict void).
   --accept-merged <reason>  a merged ticket counts as merged although git/gh do not show it on the target (stacked base later
            squash-landed): the only override of a reality that contradicts the state.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
+
+const SHA_ARG = /^[0-9a-f]{7,40}$/;
+const TREE_OUT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** #512 — the git tree of `sha`: the local object first, else GitHub's commit. null = UNREADABLE — the verdict then stays sha-keyed (never looser, never "no tree"). */
+export function treeOfSha(runner: Runner, sha: string, cwd: string, repo: string | null): string | null {
+  if (!SHA_ARG.test(sha)) return null;
+  const g = runner('git', ['rev-parse', '--verify', '-q', `${sha}^{tree}`], cwd);
+  if (g.code === 0 && TREE_OUT.test(g.stdout.trim())) return g.stdout.trim();
+  const a = runner('gh', ['api', `repos/${repo ?? '{owner}/{repo}'}/commits/${sha}`], cwd);
+  if (a.code !== 0) return null;
+  try {
+    const t = ((JSON.parse(a.stdout) as { commit?: { tree?: { sha?: unknown } } }).commit?.tree?.sha);
+    return typeof t === 'string' && TREE_OUT.test(t) ? t : null;
+  } catch { return null; }
+}
 
 export interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
 
@@ -156,12 +173,27 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
+    // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
+    const derived: { tree?: string | null; builtOnTree?: Record<string, string> } = {};
+    const notes: string[] = [];
+    const repo = readState(file)?.repo ?? null;
+    if (typeof patch.head === 'string') {
+      derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
+      if (!derived.tree) notes.push(`note: the tree of head ${patch.head.slice(0, 8)} is unreadable (not fetched? gh?): its verdict stays keyed on the sha, not the content\n`);
+    }
+    if (patch.builtOn && typeof patch.builtOn === 'object') {
+      derived.builtOnTree = {};
+      for (const [up, sha] of Object.entries(patch.builtOn as Record<string, unknown>)) {
+        const tr = typeof sha === 'string' ? treeOfSha(deps.runner, sha, deps.cwd, repo) : null;
+        if (tr) derived.builtOnTree[up] = tr; else notes.push(`note: the tree of ${up}@${String(sha).slice(0, 8)} is unreadable: ${up} stays keyed on the sha\n`);
+      }
+    }
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
-      return applyTicketPatch(cur, ticket, patch, deps.now());
+      return applyTicketPatch(cur, ticket, patch, deps.now(), derived);
     });
     const t = next.tickets[ticket];
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}\n`, stderr: r.note };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}\n`, stderr: r.note + notes.join('') };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
@@ -205,7 +237,10 @@ export function gatherReality(state: FanoutState, runner: Runner, cwd: string, o
     if (t.branch) {
       const l = runner('git', ['ls-remote', '--heads', 'origin', `refs/heads/${t.branch}`], cwd);
       if (l.code !== 0) errs.push(`git ls-remote ${t.branch}: exit ${l.code}`);
-      else r.branchHead = l.stdout.trim() ? l.stdout.trim().split(/\s+/)[0] : null;
+      else {
+        r.branchHead = l.stdout.trim() ? l.stdout.trim().split(/\s+/)[0] : null;
+        if (r.branchHead) r.branchTree = r.branchHead === t.head ? t.tree : treeOfSha(runner, r.branchHead, cwd, state.repo); // #512: only a moved tip needs its content read
+      }
     }
     const probe = r.branchHead ?? t.head;
     if (t.status === 'merged' && !probe && !t.pr && errs.length === 0) errs.push('merged with no head or PR recorded and the branch gone: nothing to verify');
@@ -222,7 +257,10 @@ export function gatherReality(state: FanoutState, runner: Runner, cwd: string, o
           const j = JSON.parse(g.stdout) as { state?: string; headRefOid?: string; baseRefName?: string };
           if (j.state !== 'OPEN' && j.state !== 'MERGED' && j.state !== 'CLOSED') errs.push(`gh pr view ${t.pr}: unexpected state ${JSON.stringify(j.state)}`);
           else if (typeof j.baseRefName !== 'string' || !j.baseRefName) errs.push(`gh pr view ${t.pr}: no baseRefName (cannot tell which branch it merged into)`);
-          else r.pr = { state: j.state, headRefOid: j.headRefOid ?? null, baseRefName: j.baseRefName };
+          else {
+            r.pr = { state: j.state, headRefOid: j.headRefOid ?? null, baseRefName: j.baseRefName };
+            if (j.headRefOid) r.prTree = j.headRefOid === t.head ? t.tree : treeOfSha(runner, j.headRefOid, cwd, state.repo);
+          }
         } catch { errs.push(`gh pr view ${t.pr}: unparseable output`); }
       }
     }

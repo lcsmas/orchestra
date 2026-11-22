@@ -127,6 +127,12 @@ export interface DecideInput {
   requiredChecks?: string[];
   /** The set of check names is identical to the previous poll's — a merge needs it, so a late-registering check can't be skipped by the first poll. */
   stable: boolean;
+  /** #512 — the verdict is keyed on CONTENT: true ⇒ the CLI proved tree(PR head) = tree(verifiedHead) although the shas differ (rebase, author rewrite). */
+  headSameTree?: boolean;
+  /** #512 — same for the review verdict's reviewed head vs verifiedHead. */
+  verdictSameTree?: boolean;
+  /** #512 — the CLI READ both trees and they differ (vs. could not read): only changes the refusal's wording. */
+  treesDiffer?: boolean;
 }
 
 export type RefuseReason =
@@ -188,8 +194,8 @@ export function decideDelivery(i: DecideInput): Decision {
   const { pr, checks, verdict } = i;
   if (pr.state === 'MERGED') {
     // "Already merged" is only the answer when it was merged AT the verified head — else it is a different head's merge.
-    if (pr.headRefOid !== i.verifiedHead) {
-      return { action: 'refuse', reason: 'head-moved', detail: `PR was merged at ${short(pr.headRefOid)}, verified head is ${short(i.verifiedHead)}` };
+    if (pr.headRefOid !== i.verifiedHead && !i.headSameTree) {
+      return { action: 'refuse', reason: 'head-moved', detail: `PR was merged at ${short(pr.headRefOid)}, verified head is ${short(i.verifiedHead)}${i.treesDiffer ? ' (the trees differ)' : ''}` };
     }
     if (verdict && (verdict.blocking > 0 || verdict.major > 0)) {
       return { action: 'refuse', reason: 'review-blocking', detail: `PR already merged, but review round ${verdict.round} has ${verdict.blocking} BLOCKING / ${verdict.major} MAJOR` };
@@ -208,16 +214,16 @@ export function decideDelivery(i: DecideInput): Decision {
         detail: `review round ${verdict.round}: ${verdict.blocking} BLOCKING / ${verdict.major} MAJOR (merge needs 0 / 0)`,
       };
     }
-    if (verdict.head !== i.verifiedHead) {
+    if (verdict.head !== i.verifiedHead && !i.verdictSameTree) {
       return {
         action: 'refuse',
         reason: 'verdict-head-mismatch',
-        detail: `the verdict reviewed ${short(verdict.head)} but the verified head is ${short(i.verifiedHead)}`,
+        detail: `the verdict reviewed ${short(verdict.head)} but the verified head is ${short(i.verifiedHead)}${i.treesDiffer ? ' (the trees differ)' : ''}`,
       };
     }
   }
-  if (pr.headRefOid !== i.verifiedHead) {
-    return { action: 'refuse', reason: 'head-moved', detail: `PR head is ${short(pr.headRefOid)}, verified head is ${short(i.verifiedHead)}` };
+  if (pr.headRefOid !== i.verifiedHead && !i.headSameTree) {
+    return { action: 'refuse', reason: 'head-moved', detail: `PR head is ${short(pr.headRefOid)}, verified head is ${short(i.verifiedHead)}${i.treesDiffer ? ' (the trees differ)' : ''}` };
   }
   if (pr.mergeable === 'CONFLICTING') return { action: 'refuse', reason: 'merge-conflict', detail: 'the PR conflicts with its base' };
 
@@ -239,7 +245,7 @@ export function decideDelivery(i: DecideInput): Decision {
     case 'green':
       break;
   }
-  return { action: 'merge', head: i.verifiedHead };
+  return { action: 'merge', head: pr.headRefOid }; // the REAL head (= verifiedHead unless #512 proved the same tree): `gh pr merge --match-head-commit` binds to it
 }
 
 /** gh `statusCheckRollup` items (CheckRun / StatusContext) → {@link DeliverCheck}. `stepsOf(detailsUrl)` supplies the step count. */
@@ -528,6 +534,9 @@ export type GateInput = {
   prFiles?: string[] | null;
   /** The check-name set is identical across two reads a few seconds apart (a late-registering check can't hide behind an early green). */
   stable: boolean;
+  /** #512 — git trees of `head` and of the PR head (null/undefined = unread ⇒ the sha comparison stands). Equal trees ⇒ the CI of the PR head is about the content being verified. */
+  headTree?: string | null;
+  prTree?: string | null;
 };
 
 export type GateAnswer = {
@@ -537,8 +546,10 @@ export type GateAnswer = {
   ci: 'no-pr' | 'none' | 'pending' | 'red' | 'zero-steps' | 'green';
   /** The PR head right now (null without a PR). */
   prHead: string | null;
-  /** true ⇒ the CI answer above is about the head the verifier verifies. false ⇒ a CI-green of another head is NOT accepted. */
+  /** true ⇒ the CI answer above is about the head the verifier verifies (same sha, or #512 the same git tree). false ⇒ a CI-green of another head is NOT accepted. */
   headMatches: boolean;
+  /** #512 — true ⇒ the PR head has another sha than `head` but the SAME tree (headMatches is true because of it). */
+  sameTree: boolean;
   /** WHO runs the full test suite: `ci` (the verifier does not) / `verifier` (its seat — no PR CI to trust, or could not tell). */
   fullSuite: 'ci' | 'verifier';
   /** The verifier may sign PASS on the CI side ONLY when true: PR CI exists, is green, on exactly `head`. Always false when fullSuite is `verifier`. */
@@ -559,7 +570,8 @@ const KEEP = ['real entry-point drive of the changed flow', 'mutants of every ch
 /** Pure. Fail closed: every doubt (no workflow listing, no PR, a moved head, red/pending/zero-step CI) leaves the verifier NOT trusting CI. */
 export function decideGate(i: GateInput): GateAnswer {
   const prHead = i.pr?.headRefOid ?? null;
-  const headMatches = prHead === i.head;
+  const sameTree = prHead !== null && prHead !== i.head && !!i.headTree && !!i.prTree && i.headTree === i.prTree;
+  const headMatches = prHead === i.head || sameTree;
   const repoCi: GateAnswer['repoCi'] =
     i.workflows === null ? 'unknown'
     : i.workflows.some((w) => workflowRunsOnPr(w, i.into)) ? 'pr-workflows'
@@ -576,7 +588,7 @@ export function decideGate(i: GateInput): GateAnswer {
   const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const h = i.head.slice(0, 12);
   const verifierSuite = (detail: string): GateAnswer => ({
-    repoCi, ci, prHead, headMatches, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [], suiteChecks: [], suiteSource, absentSuiteChecks: [],
+    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [], suiteChecks: [], suiteSource, absentSuiteChecks: [],
     checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
     detail,
   });
@@ -588,9 +600,9 @@ export function decideGate(i: GateInput): GateAnswer {
   const absent = i.pr ? suiteChecks.filter((n) => !i.checks.some((c) => suiteMatches(c.name, n, exact))) : [];
   const why = !i.pr ? 'no PR open: `orchestra fanout open` first (CI runs while you gate)'
     : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
-    : ci === 'green' ? `CI green on ${h}, suite check(s): ${suiteChecks.join(', ')}` : `CI ${ci} on ${h}: do not sign PASS until green${absent.length > 0 ? `; suite check(s) NOT on the head: ${absent.join(', ')} — if they never register (typo, a matrix name), pin the exact name with --require-check or run the suite on the verifier\'s seat` : ''}`;
+    : ci === 'green' ? `CI green on ${sameTree ? `${(prHead ?? '').slice(0, 12)} (same tree as ${h})` : h}, suite check(s): ${suiteChecks.join(', ')}` : `CI ${ci} on ${h}: do not sign PASS until green${absent.length > 0 ? `; suite check(s) NOT on the head: ${absent.join(', ')} — if they never register (typo, a matrix name), pin the exact name with --require-check or run the suite on the verifier\'s seat` : ''}`;
   return {
-    repoCi, ci, prHead, headMatches, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name), suiteChecks, suiteSource, absentSuiteChecks: absent,
+    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name), suiteChecks, suiteSource, absentSuiteChecks: absent,
     checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h}, suite check(s) ${suiteChecks.join(', ')} included (re-run this verb after any push)`], keep: KEEP, run: [] },
     detail: why,
   };

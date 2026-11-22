@@ -15,7 +15,8 @@ export const MIN_SPEC_SENTENCE = 12;
 export type AcceptanceReason = 'frozen-test-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale-checkout';
 export type DeliverAcceptanceReason = 'frozen-test-changed' | 'frozen-test-failed' | 'acceptance-unproven' | 'acceptance-stale';
 
-export interface Receipt { head: string; hash: string; ok: boolean }
+/** The gate's proof for ONE head. #512: it is keyed on CONTENT — `tree` (git tree of `head`) and `ticket` bind it to what was run; both optional so an older receipt (head-only) still parses and stays head-keyed. */
+export interface Receipt { head: string; hash: string; ok: boolean; tree?: string; ticket?: string }
 export interface FileStatus { path: string; status: 'same' | 'changed' | 'missing' }
 /** What `fanout gate` prints under `acceptance` (frozen interface, #511). */
 export interface GateAcceptance {
@@ -53,7 +54,7 @@ export function freezeInto(
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
   parseRunArgv(f.run, Object.keys(f.files));
   const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run), run: f.run, source: f.source, frozenAt: f.now, amendments: [] };
-  const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, updatedAt: f.now };
+  const base: TicketState = cur ?? { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, tree: null, builtOnTree: {}, updatedAt: f.now };
   return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, updatedAt: f.now } }, updatedAt: f.now };
 }
 
@@ -98,8 +99,10 @@ export function decisionNamesSentence(body: string, sentence: string): { ok: tru
 /** Gate-side verdict from the facts read in the candidate checkout (D1/D2). Pure: the I/O already happened. */
 export function decideGateAcceptance(acc: Acceptance, facts: {
   cwdGiven: boolean; cwdHead: string | null; head: string; dirty: string[]; files: FileStatus[]; run: () => { cmd: string; exit: number };
+  /** #512 — tree of the checkout's HEAD (null = unread) and the ticket the gate was asked about: both go into the receipt. */
+  cwdTree?: string | null; ticket?: string;
 }): GateAcceptance {
-  const receipt = (ok: boolean): Receipt => ({ head: facts.head, hash: acc.hash, ok });
+  const receipt = (ok: boolean): Receipt => ({ head: facts.head, hash: acc.hash, ok, ...(facts.cwdTree ? { tree: facts.cwdTree } : {}), ...(facts.ticket ? { ticket: facts.ticket } : {}) });
   const refuse = (reason: AcceptanceReason, detail: string, files: FileStatus[] = facts.files, ran: GateAcceptance['ran'] = null): GateAcceptance =>
     ({ ok: false, hash: acc.hash, files, ran, receipt: receipt(false), reason, detail });
   if (!facts.cwdGiven) return refuse('acceptance-unproven', 'this ticket has frozen acceptance tests: pass --cwd <the candidate checkout> (they are run and hashed there)', []);
@@ -122,13 +125,20 @@ export function parseReceipt(text: string): { ok: true; receipt: Receipt } | { o
   if (!r || typeof r !== 'object' || typeof r.head !== 'string' || !/^[0-9a-f]{40}$/.test(r.head) || typeof r.hash !== 'string' || !/^[0-9a-f]{64}$/.test(r.hash) || typeof r.ok !== 'boolean') {
     return { ok: false, error: 'receipt must be {"head":"<40-hex>","hash":"<sha256>","ok":true|false} (the gate\'s acceptance.receipt)' };
   }
-  return { ok: true, receipt: { head: r.head, hash: r.hash, ok: r.ok } };
+  if (r.tree !== undefined && (typeof r.tree !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(r.tree))) return { ok: false, error: 'receipt "tree" must be a full hex git tree sha' };
+  if (r.ticket !== undefined && (typeof r.ticket !== 'string' || !r.ticket)) return { ok: false, error: 'receipt "ticket" must be a non-empty string' };
+  return { ok: true, receipt: { head: r.head, hash: r.hash, ok: r.ok, ...(r.tree !== undefined ? { tree: r.tree as string } : {}), ...(r.ticket !== undefined ? { ticket: r.ticket as string } : {}) } };
 }
 
-/** Deliver-side verdict on the receipt alone (the gh byte re-read is separate). `receipt` null = none given. */
-export function decideDeliverReceipt(acc: Acceptance, receipt: Receipt | null, verifiedHead: string): { ok: true } | { ok: false; reason: DeliverAcceptanceReason; detail: string } {
+/** Deliver-side verdict on the receipt alone (the gh byte re-read is separate). `receipt` null = none given.
+ *  #512: the receipt speaks about CONTENT — it holds for `verifiedHead` when it was issued for that sha OR for a head with the same git tree (`headTree` = the tree of
+ *  `verifiedHead` as GitHub reports it; null = unread ⇒ sha-keyed) and, when it names a ticket, for THIS ticket. A changed frozen set / command (hash) stays `acceptance-stale`. */
+export function decideDeliverReceipt(acc: Acceptance, receipt: Receipt | null, verifiedHead: string, ctx: { headTree?: string | null; ticket?: string } = {}): { ok: true } | { ok: false; reason: DeliverAcceptanceReason; detail: string } {
   if (!receipt) return { ok: false, reason: 'acceptance-unproven', detail: "this ticket has frozen acceptance tests: pass --acceptance <receipt.json> (the gate's acceptance.receipt for this head)" };
-  if (receipt.head !== verifiedHead) return { ok: false, reason: 'acceptance-stale', detail: `the receipt is for head ${receipt.head.slice(0, 12)}, not the verified head ${verifiedHead.slice(0, 12)}: re-run \`fanout gate\` on this head` };
+  if (receipt.ticket !== undefined && ctx.ticket !== undefined && receipt.ticket !== ctx.ticket) return { ok: false, reason: 'acceptance-stale', detail: `the receipt is for ticket ${receipt.ticket}, not ${ctx.ticket}: a verdict is bound to the ticket it was issued for` };
+  if (receipt.head !== verifiedHead && !(receipt.tree && ctx.headTree && receipt.tree === ctx.headTree)) {
+    return { ok: false, reason: 'acceptance-stale', detail: `the receipt is for head ${receipt.head.slice(0, 12)}${receipt.tree ? ` (tree ${receipt.tree.slice(0, 12)})` : ''}, not the verified head ${verifiedHead.slice(0, 12)}${ctx.headTree ? ` (tree ${ctx.headTree.slice(0, 12)})` : ''}: the content differs — re-run \`fanout gate\` on this head` };
+  }
   if (receipt.hash !== acc.hash) return { ok: false, reason: 'acceptance-stale', detail: `the receipt is for frozen set ${receipt.hash.slice(0, 12)} but the state's is ${acc.hash.slice(0, 12)} (amended since): re-run \`fanout gate\`` };
   if (!receipt.ok) return { ok: false, reason: 'frozen-test-failed', detail: 'the gate receipt says the frozen tests did not pass (ok:false)' };
   return { ok: true };

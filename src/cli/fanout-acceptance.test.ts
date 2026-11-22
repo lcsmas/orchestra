@@ -97,7 +97,7 @@ async function gate(r: Rig, o: { head: string; cwd?: string | null; ticket?: str
   return { ...res, logs };
 }
 
-test('gate must-PASS: frozen tests untouched + green ⇒ exit 0, acceptance.ok, receipt {head,hash,ok:true}, the command ran', async (t) => {
+test('gate must-PASS: frozen tests untouched + green ⇒ exit 0, acceptance.ok, receipt {head,hash,ok:true,tree,ticket}, the command ran', async (t) => {
   const r = rig(t);
   const head = r.g('rev-parse', 'HEAD');
   const { exit, result } = await gate(r, { head });
@@ -106,7 +106,7 @@ test('gate must-PASS: frozen tests untouched + green ⇒ exit 0, acceptance.ok, 
   assert.equal(result.acceptance?.ok, true);
   assert.deepEqual(result.acceptance?.files, [{ path: 't/spec.test.js', status: 'same' }]);
   assert.equal(result.acceptance?.ran?.exit, 0);
-  assert.deepEqual(result.acceptance?.receipt, { head, hash: r.state()!.tickets.T510.acceptance!.hash, ok: true });
+  assert.deepEqual(result.acceptance?.receipt, { head, hash: r.state()!.tickets.T510.acceptance!.hash, ok: true, tree: r.g('rev-parse', 'HEAD^{tree}'), ticket: 'T510' }); // #512: the receipt names the content + the ticket
   assert.ok(fs.existsSync(r.marker), 'the frozen command really ran in the checkout');
   assert.ok(fs.existsSync(path.join(r.root, 'test-ran.marker')), 'and the frozen test body itself executed (not just exit 0)');
 });

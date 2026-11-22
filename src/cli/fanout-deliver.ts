@@ -145,8 +145,10 @@ export interface DeliverResult {
   into: string;
   pr?: number;
   url?: string;
-  /** The head the merge was bound to (verified head). */
+  /** The head the merge was bound to: the PR's real head (= the verified head unless #512's same-tree rule applied). */
   head?: string;
+  /** #512 — present when the verdict was kept by CONTENT: the PR head / the review verdict's head is another sha than `verifiedHead` with the same git tree. */
+  viaTree?: { verifiedHead: string; tree: string };
   mergeCommit?: string;
   /** false ⇒ the merge was NOT gated by a review round (only possible with an explicit `--no-review-gate`). */
   reviewGated: boolean;
@@ -182,6 +184,8 @@ export interface UpstreamRef {
   builtOn: string | null;
   /** state `mergedAccepted` set: the human override, nothing is checked. */
   accepted: boolean;
+  /** #512 — tree of `builtOn` as recorded when it was set (state `builtOnTree`): the content key that survives the old commit being rewritten away. null = not recorded (read through gh). */
+  builtOnTree?: string | null;
 }
 
 /** Production reader: `<ORCHESTRA_HOME>/fanout/<run>/state.json`. FAILS CLOSED (throws ⇒ could-not-check, exit 1) on an explicit `--run` with no state, a
@@ -200,7 +204,7 @@ export function upstreamsFromState(opts: { ticket: string; run?: string }, env: 
   if (!t) throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run} (known: ${Object.keys(state.tickets).slice(0, 12).join(', ') || 'none'}): a mistyped --ticket would skip the order rule`);
   return t.dependsOn.map((id) => {
     const u = state.tickets[id];
-    return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: t.builtOn[id] ?? null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
+    return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: t.builtOn[id] ?? null, builtOnTree: t.builtOnTree[id] ?? null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
   });
 }
 
@@ -215,6 +219,17 @@ export const realDeps = (): DeliverDeps => ({
 });
 
 class GhError extends Error {}
+
+/** #512 — the git tree of `sha` as GitHub reports it (`gh api commits/<sha>`); null = unreadable (the sha comparison then stands: never looser). */
+export async function readTree(gh: (args: string[]) => Promise<GhResult>, repo: string | undefined, sha: string): Promise<string | null> {
+  if (!/^[0-9a-f]{7,40}$/.test(sha)) return null;
+  const r = await gh(['api', `repos/${repo ?? '{owner}/{repo}'}/commits/${sha}`]);
+  if (r.code !== 0) return null;
+  try {
+    const t = (JSON.parse(r.stdout) as { commit?: { tree?: { sha?: unknown } } }).commit?.tree?.sha;
+    return typeof t === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(t) ? t : null;
+  } catch { return null; }
+}
 
 export interface DeliverOutcome {
   exit: number;
@@ -266,7 +281,7 @@ export async function readPrChecks(ghOk: (args: string[]) => Promise<string>, pr
 
 /** #506 — read what GitHub says about each upstream and whether the dependent's verified head sits on it. Any unreadable fact throws (could-not-check, exit 1). */
 export async function gatherUpstreamFacts(
-  refs: UpstreamRef[], opts: Pick<DeliverOpts, 'into' | 'repo'>, verifiedHead: string,
+  refs: UpstreamRef[], opts: Pick<DeliverOpts, 'into' | 'repo'>, verifiedHeads: string | string[],
   gh: GhRunner, ghOk: (args: string[]) => Promise<string>,
 ): Promise<UpstreamFacts[]> {
   const api = async (rel: string): Promise<Record<string, unknown>> => {
@@ -285,6 +300,8 @@ export async function gatherUpstreamFacts(
     if (typeof st !== 'string') throw new GhError(`gh api compare ${base.slice(0, 12)}...${head.slice(0, 12)}: no status in the answer`);
     return st === 'ahead' || st === 'identical';
   };
+  const heads = Array.isArray(verifiedHeads) ? verifiedHeads : [verifiedHeads]; // #512: every sha the verdict covers (same tree): any of them may be the one sitting on the upstream
+  const containsAny = async (base: string): Promise<boolean> => { for (const h of heads) if (await contains(h, base)) return true; return false; };
   type PrRow = { number: number; state: 'OPEN' | 'MERGED' | 'CLOSED'; baseRefName: string; headRefOid: string; mergeCommit?: { oid?: string } | null };
   const out: UpstreamFacts[] = [];
   for (const u of refs) {
@@ -305,9 +322,9 @@ export async function gatherUpstreamFacts(
     if (base.pr && base.pr.state === 'MERGED' && base.pr.baseRefName === opts.into && u.builtOn) {
       const mergedHead = base.pr.headRefOid;
       if (typeof mergedHead !== 'string' || !mergedHead) throw new GhError(`upstream ${u.id}: GitHub reported no head for its merged PR`);
-      if (!(mergedHead.startsWith(u.builtOn) || u.builtOn.startsWith(mergedHead))) base.sameTree = (await treeOf(u.builtOn)) === (await treeOf(mergedHead));
-      base.dependentOnBuiltOn = await contains(verifiedHead, u.builtOn);
-      base.dependentOnMerge = base.pr.mergeCommit ? await contains(verifiedHead, base.pr.mergeCommit) : false;
+      if (!(mergedHead.startsWith(u.builtOn) || u.builtOn.startsWith(mergedHead))) base.sameTree = (u.builtOnTree ?? (await treeOf(u.builtOn))) === (await treeOf(mergedHead));
+      base.dependentOnBuiltOn = await containsAny(u.builtOn);
+      base.dependentOnMerge = base.pr.mergeCommit ? await containsAny(base.pr.mergeCommit) : false;
     }
     out.push(base);
   }
@@ -326,8 +343,10 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   const base = { ticket: opts.ticket, branch: opts.branch, into: opts.into };
   let upstreamsChecked: boolean | undefined;
   let acceptanceChecked: boolean | undefined;
+  let verdictVia: DeliverResult['viaTree'];
+  let headVia: DeliverResult['viaTree'];
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
-    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}) };
+    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}), ...((headVia ?? verdictVia) ? { viaTree: headVia ?? verdictVia } : {}) };
     if (result.verdict === 'merged' || result.verdict === 'already-merged') full.combinedSuite = combinedSuiteCommand(opts.into, opts.suiteCmd);
     const exit = full.verdict === 'refused' ? DELIVER_EXIT.refused : full.verdict === 'unchecked' ? DELIVER_EXIT.unchecked : DELIVER_EXIT.merged;
     return { exit, result: full };
@@ -364,11 +383,19 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   if (!verifiedHead) {
     return done({ verdict: 'unchecked', reason: 'no-verified-head', detail: 'give --verified-head <sha> or --review-verdict <file> (its "head"): the merge is bound to a head' }, reviewGated);
   }
+  // #512 — a verdict is keyed on CONTENT: the review round's head and the verified head may be different shas (rebase, author rewrite) if their git trees are equal.
+  const treeMemo = new Map<string, Promise<string | null>>();
+  const treeOf = (sha: string): Promise<string | null> => { let p = treeMemo.get(sha); if (!p) { p = readTree(gh, opts.repo, sha); treeMemo.set(sha, p); } return p; };
+  let verdictSameTree = false;
   if (opts.verifiedHead && verdict && verdict.head !== opts.verifiedHead) {
-    return done(
-      { verdict: 'refused', reason: 'verdict-head-mismatch', detail: `--verified-head ${opts.verifiedHead.slice(0, 12)} != the verdict's head ${verdict.head.slice(0, 12)}`, head: opts.verifiedHead },
-      reviewGated,
-    );
+    const [a, b] = [await treeOf(verdict.head), await treeOf(opts.verifiedHead)];
+    if (a && a === b) { verdictSameTree = true; verdictVia = { verifiedHead: opts.verifiedHead, tree: a }; deps.log(`review verdict is for ${verdict.head.slice(0, 12)}, verified head is ${opts.verifiedHead.slice(0, 12)}: same git tree ${a.slice(0, 12)} — the verdict stands`); }
+    else {
+      return done(
+        { verdict: 'refused', reason: 'verdict-head-mismatch', detail: `--verified-head ${opts.verifiedHead.slice(0, 12)} != the verdict's head ${verdict.head.slice(0, 12)}${a && b ? ' (the trees differ: the content changed)' : ' (trees unreadable: compared by sha)'}`, head: opts.verifiedHead },
+        reviewGated,
+      );
+    }
   }
 
   // 1a. #510 — frozen acceptance tests: the gate's RECEIPT for this head + this frozen set, AND an independent byte re-read of every frozen file at the head through gh.
@@ -393,7 +420,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
         if (!pr.ok) return done({ verdict: 'refused', reason: 'acceptance-unproven', detail: `${opts.acceptance}: ${pr.error}`, head: verifiedHead }, reviewGated);
         receipt = pr.receipt;
       }
-      const rd = decideDeliverReceipt(got.acceptance, receipt, verifiedHead);
+      const rd = decideDeliverReceipt(got.acceptance, receipt, verifiedHead, { ticket: opts.ticket, headTree: receipt && receipt.head !== verifiedHead && receipt.tree ? await treeOf(verifiedHead) : null });
       if (!rd.ok) return done({ verdict: 'refused', reason: rd.reason, detail: rd.detail, head: verifiedHead }, reviewGated);
       let files;
       try { files = await rereadFrozenAtHead(got.acceptance, verifiedHead, opts.repo, deps.gh); } catch (e) { return done({ verdict: 'unchecked', reason: 'gh-failed', detail: e instanceof Error ? e.message : String(e) }, reviewGated); }
@@ -417,7 +444,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state to find ${opts.ticket}'s upstreams: ${bad ? e.message : (e as Error).message}` }, reviewGated);
     }
     if (refs.length > 0) {
-      const facts = await gatherUpstreamFacts(refs, opts, verifiedHead, gh, ghOk);
+      const facts = await gatherUpstreamFacts(refs, opts, verdictSameTree && verdict ? [verifiedHead, verdict.head] : verifiedHead, gh, ghOk);
       const u = decideUpstreams(facts, opts.into);
       if (!u.ok) return done({ verdict: 'refused', reason: u.reason, detail: u.detail, head: verifiedHead }, reviewGated);
       deps.log(`upstreams ok: ${refs.map((r) => r.id).join(', ')}`);
@@ -456,9 +483,18 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
       const names = JSON.stringify(checks.map((c) => c.name).sort());
       const stable = names === prevNames;
       prevNames = names;
+      // #512 — the PR head is another sha than the verified one: the verdict still holds when the git trees are equal (a rebase / an author rewrite changes shas, not content).
+      let headSameTree = false;
+      let treesDiffer = false;
+      if (view.headRefOid !== verifiedHead && view.state !== 'CLOSED') {
+        const [a, b] = [await treeOf(view.headRefOid), await treeOf(verifiedHead)];
+        headSameTree = !!a && a === b;
+        treesDiffer = !!a && !!b && a !== b;
+      }
+      headVia = headSameTree ? { verifiedHead, tree: (await treeOf(verifiedHead))! } : undefined;
       const d = decideDelivery({
         pr: view, checks, stable, requiredChecks: opts.requireChecks, into: opts.into, verifiedHead, verdict,
-        waitedMs: deps.now() - t0, noChecksGraceMs: opts.noChecksGraceMs,
+        waitedMs: deps.now() - t0, noChecksGraceMs: opts.noChecksGraceMs, headSameTree, verdictSameTree, treesDiffer,
       });
       if (d.action === 'already-merged') return done({ verdict: 'already-merged', detail: 'the PR was already merged at the verified head (not re-gated by the review verdict or CI)', ...prInfo, head: view.headRefOid }, reviewGated);
       if (d.action === 'refuse') return done({ verdict: 'refused', reason: d.reason, detail: d.detail, ...prInfo, head: view.headRefOid }, reviewGated);
@@ -505,8 +541,11 @@ deliver: open or reuse the PR <branch> → <target>, wait for CI, then merge wit
 Order (#506): a ticket whose upstreams the fanout state names (--run, default your own run) merges ONLY after each upstream
 merged into <target> (upstream-not-merged), and only if its verified head still sits on the upstream content it was built on
 and gated against (state builtOn; a fix round or refusal on the upstream since = upstream-changed: re-gate). Nominating and gating early is allowed; merging out of order is not.
+Content key (#512): a verdict is keyed on the git TREE, not the sha. The PR head, --verified-head and the review verdict's head may be different shas of ONE tree (rebase, author rewrite):
+the merge then binds to the REAL PR head (result head, viaTree:{verifiedHead,tree}); trees that differ, or cannot be read, keep the old sha refusals (head-moved, verdict-head-mismatch).
+A gate receipt for another sha holds only if its tree = the verified head's tree and its ticket = --ticket (acceptance-stale otherwise; a changed frozen set/command is still acceptance-stale).
 Acceptance (#510): a ticket with frozen acceptance tests (the fanout state, \`fanout acceptance freeze\`) needs --acceptance <receipt.json> (the gate's
-acceptance.receipt {head,hash,ok} for THIS verified head and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
+acceptance.receipt {head,tree,ticket,hash,ok} for THIS verified head (or its tree) and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
 at the verified head through gh and must be byte-identical (else frozen-test-changed). Unreadable state / unknown ticket with --acceptance ⇒ exit 1. A ticket without frozen tests is unchanged.
 Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
 merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
