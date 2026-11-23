@@ -156,12 +156,12 @@ function scenarios(cliPath) {
   { const A = world(cliPath); try {
     // a spec that is not a readable file (a URL / ledger section) is NOT captured: a sentence is refused until the text is given with --spec-text
     A.set('T-1', '--status', 'started', '--branch', 't1', '--spec', 'https://example.invalid/ticket/1');
-    arm('capture must-FAIL: a URL spec is not read — specText stays null', T1(A).specText === null, JSON.stringify(T1(A).specText));
+    arm('capture must-FAIL: a URL spec is not read — no spec text is stored', (T1(A).specText ?? null) === null, JSON.stringify(T1(A).specText));
     const r = A.finding('F-1', { severity: 'MINOR', specSentence: A.SENT });
     arm('sentence must-FAIL: no captured spec text ⇒ any sentence is refused, naming how to capture it', r.code === 1 && /no spec text was captured/.test(r.stderr) && /--spec-text/.test(r.stderr), `${r.code} ${r.stderr}`);
     A.set('T-2', '--spec', 'spec.md');
     A.set('T-2', '--spec', 'https://example.invalid/ticket/2');
-    arm('capture must-FAIL: a ticket re-registered under a URL spec does NOT keep the previous spec\'s text', A.readState().tickets['T-2'].specText === null, JSON.stringify(A.readState().tickets['T-2'].specText));
+    arm('capture must-FAIL: a ticket re-registered under a URL spec does NOT keep the previous spec\'s text', (A.readState().tickets['T-2'].specText ?? null) === null, JSON.stringify(A.readState().tickets['T-2'].specText));
     const cap = A.set('T-1', '--spec-text', path.join(A.work, 'spec.md'));
     const r2 = A.finding('F-1', { severity: 'MINOR', specSentence: A.SENT });
     arm('capture must-PASS: --spec-text <file> captures the text of a URL spec; the sentence is then accepted', cap.code === 0 && T1(A).specText === A.SPEC && r2.code === 0, `${cap.code} ${cap.stderr} / ${r2.code} ${r2.stderr}`);
@@ -226,6 +226,8 @@ function scenarios(cliPath) {
   { const A = world(cliPath); try {
     A.register();
     A.finding('C-1', { severity: 'MINOR', specSentence: A.SENT });
+    const late = A.finding('C-1', { severity: 'MINOR', kind: 'process' });
+    arm('process must-FAIL: a finding recorded with no kind (a code finding) cannot be turned into a process one later (it would dodge the fix) (rc 1)', late.code === 1 && /already records kind "code"/.test(late.stderr) && T1(A).findings['C-1'].kind === undefined, `${late.code} ${late.stderr}`);
     const bad = A.set('T-1', '--settle', 'C-1=pr-body:PR #7');
     arm('settle must-FAIL: a code finding is not settled by a PR-body edit (rc 1)', bad.code === 1 && /settled by a fix/.test(bad.stderr), `${bad.code} ${bad.stderr}`);
     const none = A.set('T-1', '--settle', 'C-1=fixed:');
@@ -290,14 +292,15 @@ const mutants = [
   { name: 'sentence: with NO captured spec text every sentence is accepted', find: 't.specText !== null && t.specText.includes(f.specSentence);', put: () => '(t.specText === null || t.specText.includes(f.specSentence));' },
   { name: 'record: the sentence is not checked against the spec at registration', find: 'if (f.specSentence !== void 0 && !sentenceAccepted({ specText: next.specText }, f)) {', put: () => 'if (false) {' },
   { name: 'record: a recorded severity may be re-graded', find: 'if (had && had.severity !== f.severity) throw', put: () => 'if (false) throw' },
-  { name: 'record: a recorded kind / evidence / sentence may be rewritten', find: 'if (had && had[field] !== void 0 && f[field] !== void 0 && had[field] !== f[field]) throw', put: () => 'if (false) throw' },
+  { name: 'record: a recorded kind / evidence / sentence may be rewritten', find: 'for (const field of ["evidence", "kind", "specSentence"]) if (had && f[field] !== void 0 && (field === "kind"', put: () => 'for (const field of ["evidence", "kind", "specSentence"]) if (false && (field === "kind"' },
+  { name: 'record: a kind that was never set (a plain code finding) may be set to process later', find: '(field === "kind" ? had.kind ?? "code" : had[field]) !== void 0 && ', put: () => '(field === "kind" ? had.kind : had[field]) !== void 0 && ', extra: [{ find: '(field === "kind" ? had.kind ?? "code" : had[field]) !== f[field])', put: () => '(field === "kind" ? had.kind : had[field]) !== f[field])' }] },
   { name: 'record: a settlement / decision may be forged through --finding-json', find: 'if (f.decision || f.settled) throw', put: () => 'if (false) throw' },
-  { name: 'capture: a readable --spec file is not read', find: 'if (isFile) return { text: read(ref), note: "" };', put: () => 'if (false) return { text: read(ref), note: "" };' },
+  { name: 'capture: a readable --spec file is not read', find: '    return { text: read(ref), note: "" };', put: () => '    return { text: null, note: "" };' },
   { name: 'capture: the derived spec text is dropped', find: 'if (derived.specText !== void 0) next.specText = specTextOf(derived.specText);', put: () => '' },
   { name: 'capture: a new spec reference keeps the previous spec\'s text', find: 'else if ("spec" in patch && next.spec !== prev.spec) next.specText = null;', put: () => '' },
   { name: 'capture: re-capturing may drop an accepted unsettled sentence (silent un-block)', find: 'if (lost.length) throw', put: () => 'if (false) throw' },
   { name: 'block: the merge block is not consulted by the reader (gate + deliver)', find: ' ?? mergeBlockRefusal(state, opts.ticket)', put: () => '' },
-  { name: 'block: settled / decided findings still block', find: ' && !findingClosed(f)).map(([k]) => k);', put: () => ').map(([k]) => k);' },
+  { name: 'block: settled / decided findings still block', find: 'sentenceAccepted(t, f) && !findingClosed(f)).map(([k]) => k);', put: () => 'sentenceAccepted(t, f)).map(([k]) => k);' },
   { name: 'block: a decision does not close a finding', find: 'const findingClosed = (f) => !!f.settled || !!f.decision;', put: () => 'const findingClosed = (f) => !!f.settled;' },
   { name: 'block: a settlement does not close a finding', find: 'const findingClosed = (f) => !!f.settled || !!f.decision;', put: () => 'const findingClosed = (f) => !!f.decision;' },
   { name: 'block: a merged ticket is blocked too (a retry of its own merge)', find: ' || t.status === "merged" || t.mergedHead) return [];', put: () => ') return [];' },
@@ -306,9 +309,9 @@ const mutants = [
   { name: 'block: every MINOR blocks (the sentence requirement is dropped)', find: 'f.severity === "MINOR" && sentenceAccepted(t, f) && !findingClosed(f)', put: () => 'f.severity === "MINOR" && !findingClosed(f)' },
   { name: 'process: a process finding may be settled as a code fix (and a code one as a PR-body edit)', find: 'const how = f.kind === "process" ? "pr-body" : "fixed";', put: () => 'const how = v.how;' },
   { name: 'follow-up: a process finding may be named in --fixes', find: 'const proc = t.fixes.filter((f) => base.findings[f].kind === "process");', put: () => 'const proc = t.fixes.filter(() => false);' },
-  { name: 'follow-up: a MINOR with an accepted sentence is not enough', find: ' || sentenceAccepted(base, base.findings[f]);', put: () => ';' },
-  { name: 'follow-up: every MINOR is enough', find: ' || sentenceAccepted(base, base.findings[f]);', put: () => ' || true;' },
-  { name: 'follow-up: a MINOR\'s sentence is not re-checked against the spec', find: ' || sentenceAccepted(base, base.findings[f]);', put: () => ' || base.findings[f].specSentence !== void 0;' },
+  { name: 'follow-up: a MINOR with an accepted sentence is not enough', find: ' || policy === "spec" && sentenceAccepted(base, base.findings[f]);', put: () => ';' },
+  { name: 'follow-up: every MINOR is enough', find: ' || policy === "spec" && sentenceAccepted(base, base.findings[f]);', put: () => ' || true;' },
+  { name: 'follow-up: a MINOR\'s sentence is not re-checked against the spec', find: ' || policy === "spec" && sentenceAccepted(base, base.findings[f]);', put: () => ' || base.findings[f].specSentence !== void 0;' },
   { name: 'limit: the refusal no longer states what code does NOT check', find: ' (Code checks the sentence is in the spec, not that it is really broken: the reviewer judges that.)', put: () => '' },
 ];
 

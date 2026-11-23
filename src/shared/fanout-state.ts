@@ -305,6 +305,11 @@ function storedFindings(f: Record<string, FindingRecord>): Record<string, Stored
 }
 /** The limit, stated where a recorder reads it (the `state` help, the skill). */
 export const SPEC_SENTENCE_LIMIT = 'Limit: code checks that the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.';
+/** The on-disk ticket: findings in their stored form, and `specText` omitted while null — a state that captured no spec text stays readable by a build older than #552 (unknown field refused there). */
+function storedTicket(t: TicketState): Record<string, unknown> {
+  const { specText, ...rest } = t;
+  return { ...rest, findings: storedFindings(t.findings), ...(specText !== null ? { specText } : {}) };
+}
 export const SPEC_TEXT_MAX = 200_000;
 function specTextOf(v: unknown): string | null {
   if (v === undefined || v === null) return null;
@@ -804,7 +809,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
       const had = prev.findings[k];
       if (f.decision || f.settled) throw new FanoutStateError(`${id}: finding ${k}: decision / settled are recorded with --decide / --settle, not with --finding`);
       if (had && had.severity !== f.severity) throw new FanoutStateError(`${id}: finding ${k} is already recorded as ${had.severity} — a recorded severity is not re-graded (a MINOR cannot be promoted to justify a follow-up)`);
-      for (const field of ['evidence', 'kind', 'specSentence'] as const) if (had && had[field] !== undefined && f[field] !== undefined && had[field] !== f[field]) throw new FanoutStateError(`${id}: finding ${k} already records ${field} ${JSON.stringify(had[field])} — a recorded finding is not rewritten`);
+      for (const field of ['evidence', 'kind', 'specSentence'] as const) if (had && f[field] !== undefined && (field === 'kind' ? (had.kind ?? 'code') : had[field]) !== undefined && (field === 'kind' ? (had.kind ?? 'code') : had[field]) !== f[field]) throw new FanoutStateError(`${id}: finding ${k} already records ${field} ${JSON.stringify(field === 'kind' ? (had.kind ?? 'code') : had[field])} — a recorded finding is not rewritten (the kind is fixed when the finding is recorded: a code finding cannot become a process one to be settled by a PR-body edit)`);
       if (had?.report && f.report && JSON.stringify(had.report) !== JSON.stringify(f.report)) throw new FanoutStateError(`${id}: finding ${k} already records its report — a recorded finding is not rewritten`);
       if (f.specSentence !== undefined && !sentenceAccepted({ specText: next.specText }, f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
@@ -902,7 +907,7 @@ export function writeStateAtomic(file: string, state: FanoutState): void {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
     const fd = fs.openSync(tmp, 'w', 0o600);
-    try { fs.writeSync(fd, `${JSON.stringify({ ...valid, tickets: Object.fromEntries(Object.entries(valid.tickets).map(([id, t]) => [id, { ...t, findings: storedFindings(t.findings) }])) }, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    try { fs.writeSync(fd, `${JSON.stringify({ ...valid, tickets: Object.fromEntries(Object.entries(valid.tickets).map(([id, t]) => [id, storedTicket(t)])) }, null, 2)}\n`); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     fs.renameSync(tmp, file);
   } catch (e) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
