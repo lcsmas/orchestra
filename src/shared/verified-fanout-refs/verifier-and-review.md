@@ -78,6 +78,18 @@ each and change nothing).
   test that lets a mutant survive).
 - **NIT** — cosmetic (comment, doc, naming) — not reported by the spawned reviewer.
 
+**A MINOR that breaks a sentence of the ticket (#552, `minorPolicy: spec`).** A finding may carry
+`specSentence` — text quoted from the ticket's spec — and `kind: process` when the sentence is about how
+the work is REPORTED ("write the list in the pull request"). Record it with
+`state set <ticket> --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>"}}'`
+(the spec text is captured by `state set --spec <file>`, or `--spec-text <file|->` for a URL / ledger spec).
+Code accepts the sentence only if it is a literal substring of that captured text (no trim, no
+case-fold; empty refused). An accepted, unsettled MINOR blocks `gate` + `deliver` (`finding-unsettled`)
+until `state set <ticket> --settle <id>=fixed:<head>` (code) / `--settle <id>=pr-body:<what the PR body
+says now>` (process) or the coordinator records `--decide <id>=<text>`; it may be named in `--fixes`
+(a process finding never: its fix is the PR-body edit). **Limit: code checks the sentence is IN the spec,
+not that it is really broken — judging that stays with the reviewer.** A MINOR with no sentence stays `noted`.
+
 **No spawned reviewer when the candidate's diff touches no production code**
 (tests, comments, docs, rigs only): the implementer's pre-review + the
 verifier's delta gate suffice. Any production-code line in the diff → spawned

@@ -233,8 +233,8 @@ review, follow-ups included. The coordinator NEVER reviews (it wrote the specs);
 
 **The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
 
-*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every
-MINOR is ¤noted¤ — no follow-up PR.*
+*A review round with 0 BLOCKING, 0 MAJOR and no unsettled spec-sentence MINOR merges on its
+current gate; every other MINOR is ¤noted¤ — no follow-up PR.*
 
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
@@ -247,11 +247,11 @@ conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back
 for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
 ¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
 ¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
-refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never refuses: its disposition stays yours.
+refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR refuses only when it quotes a spec sentence (¤finding-unsettled¤).
 
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
   (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
-- **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
+- **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR (or a spec-sentence MINOR, ¤references/verifier-and-review.md¤): ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other MINOR-only or finding-less one.
 
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
 measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ (BLOCKING/MAJOR) or ¤noted¤ (MINOR/NIT).
