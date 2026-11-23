@@ -40,6 +40,11 @@ test('#552 persistence: a severity-only record is WRITTEN as the legacy string (
     assert.deepEqual(raw.tickets['T-1'].findings['F-B'], { severity: 'MINOR', specSentence: SENT });
     assert.equal(raw.tickets['T-1'].specText, SPEC);
     assert.deepEqual(readState(file), s);
+    // no captured text ⇒ the key is not written at all (a build older than #552 refuses an unknown field: such a state stays readable by it)
+    const bare = applyTicketPatch(newState('r', { now: T }), 'T-2', { status: 'started' }, T);
+    writeStateAtomic(file, bare);
+    assert.ok(!('specText' in JSON.parse(fs.readFileSync(file, 'utf8')).tickets['T-2']));
+    writeStateAtomic(file, s);
     // a state written before #552 (no specText) parses with null
     delete raw.tickets['T-1'].specText;
     assert.equal(parseState(raw).tickets['T-1'].specText, null);
@@ -90,6 +95,13 @@ test('#552 a recorded finding is not rewritten: severity, kind, evidence, specSe
   const withSentence = rec(s, { 'F-1': { severity: 'MINOR', specSentence: SENT } }); // adding a quoted sentence later is allowed (validated)
   assert.equal(withSentence.tickets['T-1'].findings['F-1'].kind, 'code');
   assert.throws(() => rec(withSentence, { 'F-1': { severity: 'MINOR', specSentence: 'Write the list in the pull request.' } }), /already records specSentence/);
+});
+
+test('#552 the kind is fixed when the finding is recorded: a code MINOR (kind unset or code) cannot become process later, a process one cannot become code', () => {
+  const s = rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: SENT }, 'F-2': { severity: 'MINOR', kind: 'process' } });
+  assert.throws(() => rec(s, { 'F-1': { severity: 'MINOR', kind: 'process' } }), /already records kind "code"/);
+  assert.throws(() => rec(s, { 'F-2': { severity: 'MINOR', kind: 'code' } }), /already records kind "process"/);
+  assert.doesNotThrow(() => rec(s, { 'F-1': { severity: 'MINOR', kind: 'code' } }), 'restating the same kind is idempotent');
 });
 
 test('#552 merge block (minorPolicy spec): an unsettled MINOR with an accepted sentence blocks, naming the finding; settled / decided passes; no sentence / not in spec / merged ticket does not block', () => {

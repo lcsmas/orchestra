@@ -86,7 +86,7 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only refused) of the spec TEXT captured at registration — --spec <file>
            reads the file; for a URL / ledger spec give the text: --spec-text <file|-> (derived, never settable by --json). An accepted, unsettled MINOR BLOCKS \`gate\` + \`deliver\`
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
-           round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide denied). It may be named in --fixes (a process finding never).
+           round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
            LIMIT: code checks the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
@@ -179,7 +179,10 @@ function readSpecText(ref: string | undefined, explicit: string | undefined, dep
   if (ref === undefined) return { text: null, note: '' };
   let isFile = false;
   try { isFile = fs.statSync(path.resolve(deps.cwd, ref)).isFile(); } catch { /* not a file: a URL / a ledger section */ }
-  if (isFile) return { text: read(ref), note: '' };
+  if (isFile) {
+    if (fs.statSync(path.resolve(deps.cwd, ref)).size > SPEC_TEXT_MAX) return { text: null, note: `note: the spec file ${JSON.stringify(ref.slice(0, 80))} is larger than ${SPEC_TEXT_MAX} bytes: its text was NOT captured (give the relevant part with \`state set <ticket> --spec-text <file|->\`)\n` };
+    return { text: read(ref), note: '' };
+  }
   return { text: null, note: `note: the spec text of ${JSON.stringify(ref.slice(0, 80))} was NOT captured (not a readable file): a finding's specSentence is refused until \`state set <ticket> --spec-text <file|->\` records it\n` };
 }
 

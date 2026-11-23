@@ -294,8 +294,8 @@ function report(title, results) {
 
 // Each mutant breaks ONE clause in the BUILT bundle; the anchor must occur exactly once. `extra` = a second edit of the same mutant.
 const mutants = [
-  { name: 'rule: MINOR counts as enough (BLOCKING|MAJOR test off)', find: 'if (!t.fixes.some((f) => base.findings[f] === "BLOCKING" || base.findings[f] === "MAJOR"))', put: () => 'if (false)' },
-  { name: 'rule: MINOR alone passes only by promoting MINOR to MAJOR in the test', find: 'base.findings[f] === "MAJOR"))', put: () => 'base.findings[f] === "MAJOR" || base.findings[f] === "MINOR"))' },
+  { name: 'rule: MINOR counts as enough (BLOCKING|MAJOR test off)', find: 'if (!t.fixes.some(qualifies)) {', put: () => 'if (false) {' },
+  { name: 'rule: MINOR alone passes only by promoting MINOR to MAJOR in the test', find: 'base.findings[f].severity === "MAJOR" ||', put: () => 'base.findings[f].severity === "MAJOR" || base.findings[f].severity === "MINOR" ||' },
   { name: 'rule: a follow-up naming no finding is accepted', find: 'if (t.fixes.length === 0) return refuse(', put: () => 'if (false) return refuse(' },
   { name: 'rule: an unknown finding id is accepted', find: 'if (unknown.length) return refuse(', put: () => 'if (false) return refuse(' },
   { name: 'rule: unknown id checked against ANY ticket (not the merged one)', find: 'const unknown = t.fixes.filter((f) => !base.findings[f]);', put: () => 'const unknown = t.fixes.filter((f) => !Object.values(state.tickets).some((x) => x.findings[f]));' },
@@ -305,8 +305,8 @@ const mutants = [
   { name: 'state: the registration check is skipped', find: 'if (fu) throw new FanoutStateError(fu.detail);', put: () => '' },
   { name: 'state: the merged ticket can be nominated/gated as itself', find: 'if (prev.status === "merged" && (next.status === "nominated" || next.status === "gated")) {', put: () => 'if (false) {' },
   { name: 'state: the explicit un-merge is refused too', find: 'if (prev.status === "merged" && (next.status === "nominated" || next.status === "gated")) {', put: () => 'if (prev.status === "merged" && next.status !== "merged") {' },
-  { name: 'state: a recorded severity may be re-graded', find: 'if (prev.findings[k] && prev.findings[k] !== sev) throw', put: () => 'if (false) throw' },
-  { name: 'state: a re-recorded finding set REPLACES the earlier one', find: 'next.findings = { ...prev.findings, ...add };', put: () => 'next.findings = add;' },
+  { name: 'state: a recorded severity may be re-graded', find: 'if (had && had.severity !== f.severity) throw', put: () => 'if (false) throw' },
+  { name: 'state: a re-recorded finding set REPLACES the earlier one', find: 'next.findings = { ...prev.findings };', put: () => 'next.findings = {};' },
   { name: 'state: --fixes without --follow-up-of is accepted', find: 'if (t.fixes.length) return refuse(', put: () => 'if (false) return refuse(' },
   { name: 'reader: the --branch of gate/deliver is not passed (only the state\'s own branch)', find: 'refusal: followUpRefusal(state, opts.ticket, opts.head, opts.branch, opts.headTree)', put: () => 'refusal: followUpRefusal(state, opts.ticket, opts.head, void 0, opts.headTree)' },
   { name: 'review F2: the merged head is forgotten on un-merge', find: '(t.mergedHead || t.status === "merged")', put: () => 't.status === "merged"' },
@@ -326,7 +326,7 @@ const mutants = [
   { name: '#512 compat: the rule never retries with the candidate\'s git tree', find: 'return headTree ? read({ ...o, headTree }) : first;', put: () => 'return first;' },
   { name: '#512 compat: the merged tree is not recorded', find: '    next.mergedTree = next.tree;\n  }', put: () => '  }' },
   { name: '#512 compat: a same-tree candidate counts as another head (tree ignored)', find: '(sameSha(mh, head) || !!mt && !!headTree && mt === headTree)', put: () => 'sameSha(mh, head)' },
-  { name: 'rule text: the refusal does not name the rule', find: 'MINOR findings get no action (no follow-up PR, no extra list).', put: () => '' },
+  { name: 'rule text: the refusal does not name the rule', find: '; other MINOR findings get no action (no follow-up PR, no extra list).', put: () => '', extra: [{ find: '; MINOR findings get no action (no follow-up PR, no extra list).', put: () => '' }] },
   { name: 'gate: the clause is not consulted', find: 'if (opts.ticket !== void 0 && deps.followUp) {', put: () => 'if (false) {' },
   { name: 'gate: a refusal is ignored', find: 'if (fu.refusal) return { exit: DELIVER_EXIT.refused,', put: () => 'if (false) return { exit: DELIVER_EXIT.refused,' },
   { name: 'deliver: the clause is not consulted', find: 'if (deps.followUp) {', put: () => 'if (false) {' },

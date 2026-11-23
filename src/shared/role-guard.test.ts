@@ -247,8 +247,7 @@ for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']
   // #552: recording a finding (with its sentence) is relayable; settling or deciding one lifts a merge block — not a scribe's
   if (role === 'scribe') {
     allow(role, 'scribe state set --finding-json relay', bash("orchestra fanout state set T-1 --finding-json '{\"F-1\":{\"severity\":\"MINOR\",\"specSentence\":\"x\"}}'"));
-    allow(role, 'scribe state set --spec-text relay', bash('orchestra fanout state set T-1 --spec-text spec.md'));
-    for (const [name, cmd] of [['--settle', 'orchestra fanout state set T-1 --settle F-1=fixed:abc1234'], ['--decide', 'orchestra fanout state set T-1 --decide "F-1=fine"'], ['--settle after ;', 'cd /r; orchestra fanout state set T-1 --settle P-1=pr-body:x']] as const) deny(role, `scribe ${name}`, bash(cmd), /--settle \/ --decide/);
+    for (const [name, cmd] of [['--settle', 'orchestra fanout state set T-1 --settle F-1=fixed:abc1234'], ['--decide', 'orchestra fanout state set T-1 --decide "F-1=fine"'], ['--settle after ;', 'cd /r; orchestra fanout state set T-1 --settle P-1=pr-body:x'], ['--spec-text (replaces the captured spec text)', 'orchestra fanout state set T-1 --spec-text spec.md']] as const) deny(role, `scribe ${name}`, bash(cmd), /--settle \/ --decide \/ --spec-text/);
   }
   deny(role, 'fanout state init (after &&)', bash('cd /r && orchestra fanout state init --run r1 --target master'), /state file/);
   deny(role, 'bare state init in bash -c', bash('bash -c "orchestra fanout state init"'), /state file/);
@@ -406,8 +405,8 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['edit_mode none no longer denies', '      none)\n        deny', '      none)\n        exit 0; deny'],
     ['fanout deliver rule removed', 'orchestra[[:space:]]+fanout[[:space:]]+deliver(', 'orchestra[[:space:]]+NOFANOUTVERB('],
     ['fanout state write rule removed', 'fanout[[:space:]]+state[[:space:]]+(init|set)', 'fanout[[:space:]]+state[[:space:]]+NOVERB'],
-    ['#514: --forget-merge / forgetMerge no longer denied to a scribe', '(--accept-merged|--forget-merge|--settle|--decide|--json|mergedAccepted|forgetMerge)', '(--accept-merged|--json|mergedAccepted)'],
-    ['#552: --settle / --decide no longer denied to a scribe', '--forget-merge|--settle|--decide|--json', '--forget-merge|--json'],
+    ['#514: --forget-merge / forgetMerge no longer denied to a scribe', '(--accept-merged|--forget-merge|--settle|--decide|--spec-text|--json|mergedAccepted|forgetMerge)', '(--accept-merged|--json|mergedAccepted)'],
+    ['#552: --settle / --decide no longer denied to a scribe', '--settle|--decide|--spec-text|--json', '--json'],
     ['scratch exemption admits ..', '*/../*|*/..) scratch=0 ;;', '*/../*|*/..) scratch=1 ;;'],
     ['unquote after ANY -c (grep -c ">" reads as a redirect)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh" || nm == "grep" || nm == "psql" || nm == "python3" || nm == "rg") code_operand'],
     ['shell wrappers are never unquoted (bash -c "… > f" invisible)', 'nm == "dash" || nm == "ksh") code_operand', 'nm == "dash" || nm == "ksh") nm = nm'],
