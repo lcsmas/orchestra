@@ -102,6 +102,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout } from './fanout-state.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
+import { runCloseout } from './fanout-closeout.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2470,7 +2471,7 @@ async function main(argv: string[]): Promise<void> {
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
       }
       const fanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps);
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());

@@ -40,6 +40,10 @@ Prose-level editing rules for every durable artifact (PR bodies, tickets,
 ledger comments, docs) — banned filler, mandatory substitutions, numbers
 over adjectives — live in `references/prose.md`.
 
+## A measured MINOR is never lost (#553)
+
+Record a MINOR you **measured** on product code with its report: `state set <ticket> --json '{"findings":{"<id>":{"severity":"MINOR","evidence":"measured","report":{"input":…,"happens":…,"where":…,"proof":…}}}}'` — a part missing is refused at recording. At close, `orchestra fanout closeout` (read-only) prints one ready-to-file ticket text per such finding: paste the list into the closing report. An *argued* MINOR and a `kind: process` finding create nothing. Filing in a tracker is `--file`, off by default, never waited on — the OPS decides.
+
 ## Specify gates that can fail
 
 A verdict is worth the precision of the ask: "verify this branch" yields
