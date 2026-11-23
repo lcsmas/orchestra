@@ -1,0 +1,66 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 1,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [
+      {
+       "message": "expect(received).rejects.toThrow()\n\nReceived promise resolved instead of rejected\nResolved to value: \"Received promise rejected instead of resolved\""
+      }
+     ],
+     "failureMessages": [
+      "Error: expect(received).rejects.toThrow()\n\nReceived promise resolved instead of rejected\nResolved to value: \"Received promise rejected instead of resolved\"\n    at expect (/scratch/node_modules/expect/build/index.js:2116:15)\n    at Object.expect (/scratch/t/phrase.test.js:1:103)\n    at Promise.finally.completed (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1834:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1774:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1167:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTestInContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1103:3)\n    at runTestWithContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:996:5)\n    at _runTestsForDescribeBlockOnce (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1008:11)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:824:5)\n    at run (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:789:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/runner.js:111:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/scratch/node_modules/jest-runner/build/index.js:315:7)"
+     ],
+     "fullName": "rejects on a resolved promise whose VALUE quotes the phrase (a legit RED)",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "failed",
+     "title": "rejects on a resolved promise whose VALUE quotes the phrase (a legit RED)",
+     "startAt": 1795392857615
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf rejects on a resolved promise whose VALUE quotes the phrase (a legit RED)\n\n    expect(received).rejects.toThrow()\n\n    Received promise resolved instead of rejected\n    Resolved to value: \"Received promise rejected instead of resolved\"\n\n    > 1 | test('rejects on a resolved promise whose VALUE quotes the phrase (a legit RED)', async () => { await expect(Promise.resolve('Received promise rejected instead of resolved')).rejects.toThrow(); });\n        |                                                                                                       ^\n      2 |\n\n      at expect (node_modules/expect/build/index.js:2116:15)\n      at Object.expect (t/phrase.test.js:1:103)\n",
+   "name": "/scratch/t/phrase.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

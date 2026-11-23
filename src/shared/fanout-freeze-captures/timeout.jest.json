@@ -1,0 +1,80 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 1,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 2,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [
+      {}
+     ],
+     "failureMessages": [
+      "Error: thrown: \"Exceeded timeout of 200 ms for a test.\nAdd a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout.\"\n    at _getError (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1985:12)\n    at Array.map (<anonymous>)\n    at makeSingleTestResult (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1915:38)\n    at makeTestResults (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1945:26)\n    at makeRunResult (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1876:18)\n    at run (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:797:35)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/runner.js:111:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/scratch/node_modules/jest-runner/build/index.js:315:7)\n\n[cause]: Error: thrown: \"Exceeded timeout of 200 ms for a test.\nAdd a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout.\"\n    at Object.test (/scratch/t/timeout.test.js:1:1)\n    at ModuleExecutor.exec (/scratch/node_modules/jest-runtime/build/index.js:3055:26)\n    at CjsLoader.loadModule (/scratch/node_modules/jest-runtime/build/index.js:440:36)\n    at CjsLoader.requireModule (/scratch/node_modules/jest-runtime/build/index.js:335:12)\n    at Runtime.requireModule (/scratch/node_modules/jest-runtime/build/index.js:4981:27)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/runner.js:96:13)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/scratch/node_modules/jest-runner/build/index.js:315:7)"
+     ],
+     "fullName": "slow",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "failed",
+     "title": "slow",
+     "startAt": 1795388638421
+    },
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [],
+     "failureMessages": [],
+     "fullName": "fine",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "passed",
+     "title": "fine",
+     "startAt": 1795388638624
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf slow\n\n    thrown: \"Exceeded timeout of 200 ms for a test.\n    Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout.\"\n\n      at _getError (node_modules/jest-circus/build/jestAdapterInit.js:1985:12)\n          at Array.map (<anonymous>)\n\n    Cause:\n        thrown: \"Exceeded timeout of 200 ms for a test.\n        Add a timeout value to this test to increase the timeout, if this is a long-running test. See https://jestjs.io/docs/api#testname-fn-timeout.\"\n\n        > 1 | test('slow', () => new Promise((r) => setTimeout(r, 3000)), 200);\n            | ^\n          2 | test('fine', () => {});\n          3 |\n\n          at Object.test (t/timeout.test.js:1:1)\n",
+   "name": "/scratch/t/timeout.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

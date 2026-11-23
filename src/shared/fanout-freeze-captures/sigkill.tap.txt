@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: sigkill.test.mjs
+not ok 1 - sigkill.test.mjs
+  ---
+  duration_ms: 82.043265
+  type: 'test'
+  location: '/scratch/sigkill.test.mjs:1:1'
+  failureType: 'testCodeFailure'
+  exitCode: ~
+  signal: 'SIGKILL'
+  error: 'test failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 88.71561

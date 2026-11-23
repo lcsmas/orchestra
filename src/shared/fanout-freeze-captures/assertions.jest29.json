@@ -1,0 +1,82 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 2,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 2,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failureDetails": [
+      {
+       "message": "expect.assertions(2)\n\nExpected two assertions to be called but received one assertion call."
+      }
+     ],
+     "failureMessages": [
+      "Error: expect.assertions(2)\n\nExpected two assertions to be called but received one assertion call.\n    at Object.assertions (/scratch/t/assertions.test.js:1:42)\n    at Promise.then.completed (/scratch/node_modules/jest-circus/build/utils.js:298:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/utils.js:231:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/run.js:316:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (/scratch/node_modules/jest-circus/build/run.js:252:3)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/run.js:126:9)\n    at run (/scratch/node_modules/jest-circus/build/run.js:71:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/runTest.js:367:16)\n    at runTest (/scratch/node_modules/jest-runner/build/runTest.js:444:34)"
+     ],
+     "fullName": "expect.assertions",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 1,
+     "retryReasons": [],
+     "status": "failed",
+     "title": "expect.assertions"
+    },
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failureDetails": [
+      {
+       "message": "expect.hasAssertions()\n\nExpected at least one assertion to be called but received none."
+      }
+     ],
+     "failureMessages": [
+      "Error: expect.hasAssertions()\n\nExpected at least one assertion to be called but received none.\n    at Object.hasAssertions (/scratch/t/assertions.test.js:2:38)\n    at Promise.then.completed (/scratch/node_modules/jest-circus/build/utils.js:298:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/utils.js:231:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/run.js:316:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (/scratch/node_modules/jest-circus/build/run.js:252:3)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/run.js:126:9)\n    at run (/scratch/node_modules/jest-circus/build/run.js:71:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/runTest.js:367:16)\n    at runTest (/scratch/node_modules/jest-runner/build/runTest.js:444:34)"
+     ],
+     "fullName": "hasAssertions",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryReasons": [],
+     "status": "failed",
+     "title": "hasAssertions"
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf expect.assertions\n\n    expect.assertions(2)\n\n    Expected two assertions to be called but received one assertion call.\n\n    > 1 | test('expect.assertions', () => { expect.assertions(2); expect(1).toBe(1); });\n        |                                          ^\n      2 | test('hasAssertions', () => { expect.hasAssertions(); });\n      3 |\n\n      at Object.assertions (t/assertions.test.js:1:42)\n\n  \u25cf hasAssertions\n\n    expect.hasAssertions()\n\n    Expected at least one assertion to be called but received none.\n\n      1 | test('expect.assertions', () => { expect.assertions(2); expect(1).toBe(1); });\n    > 2 | test('hasAssertions', () => { expect.hasAssertions(); });\n        |                                      ^\n      3 |\n\n      at Object.hasAssertions (t/assertions.test.js:2:38)\n",
+   "name": "/scratch/t/assertions.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

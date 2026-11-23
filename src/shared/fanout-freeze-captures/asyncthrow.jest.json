@@ -1,0 +1,64 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 1,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [
+      {}
+     ],
+     "failureMessages": [
+      "Error: late async\n    at Timeout._onTimeout (/scratch/t/asyncthrow.test.js:1:48)\n    at listOnTimeout (node:internal/timers:588:17)\n    at processTimers (node:internal/timers:523:7)"
+     ],
+     "fullName": "a",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "failed",
+     "title": "a",
+     "startAt": 1795388631612
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf a\n\n    late async\n\n    > 1 | test('a', (done) => { setTimeout(() => { throw new Error('late async'); }, 5); setTimeout(done, 100); });\n        |                                                ^\n      2 |\n\n      at Timeout._onTimeout (t/asyncthrow.test.js:1:48)\n",
+   "name": "/scratch/t/asyncthrow.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

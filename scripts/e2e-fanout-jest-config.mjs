@@ -140,7 +140,7 @@ function world(cliPath) {
   const ghState = () => JSON.parse(fs.readFileSync(state, 'utf8'));
   const patchGh = (fn) => { const s = ghState(); fn(s); fs.writeFileSync(state, JSON.stringify(s)); };
   cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
-  const freeze = (run = RUN, extra = []) => cli(['acceptance', 'freeze', 'T-1', '--run', 'rig', '--files', TEST, '--run-cmd', run, '--from', 'origin/writer-542', ...extra]);
+  const freeze = (run = RUN, extra = []) => cli(['acceptance', 'freeze', 'T-1', '--run', 'rig', '--files', TEST, '--run-cmd', run, '--from', 'origin/writer-542', '--accept-unclassified', 'no jest here: this suite pins the config record (#542); the freeze check itself is #539', ...extra]); // #539: no jest on this rig's PATH ⇒ the freeze check is unclassified ⇒ the coordinator's recorded escape
   const acc = () => readState().tickets['T-1']?.acceptance ?? null;
   const gate = (v) => { fs.rmSync(path.join(dir, 'jest-called.json'), { force: true }); return cli(['gate', '--branch', v.branch, '--into', 'master', '--head', v.head, '--ticket', 'T-1', '--run', 'rig', '--cwd', cand]); };
   const called = () => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'jest-called.json'), 'utf8')); } catch { return null; } };
@@ -295,7 +295,7 @@ const mutants = [
   { name: 'deliver: the config at the PR head is not re-read', find: 'if (acc.config) {', put: () => 'if (false) {' },
   { name: 'deliver: a config that is gone at the head counts as unchanged', find: "status: r.code !== 0 ? \"missing\" : ", put: () => 'status: r.code !== 0 ? "same" : ' },
   { name: 'amend: the config is not re-recorded (the old sha256 is kept via the stale record)', find: '...config ? { config } : {}, now: deps.now() });', put: () => 'now: deps.now() });' },
-  { name: 'freeze: the config is not recorded (the command names one, the state does not)', find: 'return freezeInto(cur, ticket, { files: frozen.files, run, ...config ? { config } : {}, source, now: deps.now() });', put: () => 'return freezeInto(cur, ticket, { files: frozen.files, run, source, now: deps.now() });' },
+  { name: 'freeze: the config is not recorded (the command names one, the state does not)', find: 'return freezeInto(cur, ticket, { files: frozen.files, run, ...config ? { config } : {}, source, now: deps.now(), freezeCheck });', put: () => 'return freezeInto(cur, ticket, { files: frozen.files, run, source, now: deps.now(), freezeCheck });' },
 ];
 
 if (!fs.existsSync(CLI)) { console.error(`${CLI} missing — run \`pnpm run build:cli\` first (a rig on a stale or absent bundle proves nothing)`); process.exit(1); }

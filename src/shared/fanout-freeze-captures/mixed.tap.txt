@@ -1,0 +1,61 @@
+TAP version 13
+# Subtest: suite
+    # Subtest: real assertion
+    not ok 1 - real assertion
+      ---
+      duration_ms: 1.347086
+      type: 'test'
+      location: '/scratch/mixed.test.mjs:4:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+        
+        1 !== 2
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: 2
+      actual: 1
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> (file:///scratch/mixed.test.mjs:4:39)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        node:internal/test_runner/test:1440:71
+        node:internal/per_context/primordials:464:82
+        new Promise (<anonymous>)
+        new SafePromise (node:internal/per_context/primordials:433:3)
+        node:internal/per_context/primordials:464:9
+        Array.map (<anonymous>)
+      ...
+    1..1
+not ok 1 - suite
+  ---
+  duration_ms: 2.231379
+  type: 'suite'
+  location: '/scratch/mixed.test.mjs:2:1'
+  failureType: 'hookFailed'
+  error: 'AssertionError: teardown said ERR_ASSERTION'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    SuiteContext.<anonymous> (file:///scratch/mixed.test.mjs:3:23)
+    TestHook.runInAsyncScope (node:async_hooks:214:14)
+    TestHook.run (node:internal/test_runner/test:1047:25)
+    TestHook.run (node:internal/test_runner/test:1354:18)
+    TestHook.run (node:internal/util:564:20)
+    Suite.runHook (node:internal/test_runner/test:965:20)
+    node:internal/test_runner/test:1420:38
+    node:internal/util:564:20
+    Suite.run (node:internal/test_runner/test:1443:13)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 1
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 91.182822

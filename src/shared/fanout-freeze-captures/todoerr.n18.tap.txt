@@ -1,0 +1,31 @@
+TAP version 13
+# Subtest: todo broken
+not ok 1 - todo broken # TODO
+  ---
+  duration_ms: 0.544293
+  location: 'file:///scratch/todoerr.test.mjs:2:1'
+  failureType: 'testCodeFailure'
+  error: 'globalThis.nope is not a function'
+  code: 'ERR_TEST_FAILURE'
+  name: 'TypeError'
+  stack: |-
+    TestContext.<anonymous> (file:///scratch/todoerr.test.mjs:2:56)
+    Test.runInAsyncScope (node:async_hooks:203:9)
+    Test.run (node:internal/test_runner/test:631:25)
+    Test.start (node:internal/test_runner/test:542:17)
+    startSubtest (node:internal/test_runner/harness:214:17)
+  ...
+# Subtest: p
+ok 2 - p
+  ---
+  duration_ms: 0.198542
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 1
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 1
+# duration_ms 34.015871

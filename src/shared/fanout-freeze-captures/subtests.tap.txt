@@ -1,0 +1,54 @@
+TAP version 13
+# Subtest: parent
+    # Subtest: child-pass
+    ok 1 - child-pass
+      ---
+      duration_ms: 0.55546
+      type: 'test'
+      ...
+    # Subtest: child-assert
+    not ok 2 - child-assert
+      ---
+      duration_ms: 0.86921
+      type: 'test'
+      location: '/scratch/subtests.test.mjs:4:11'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+        
+        1 !== 2
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: 2
+      actual: 1
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> (file:///scratch/subtests.test.mjs:4:47)
+        Test.runInAsyncScope (node:async_hooks:214:14)
+        Test.run (node:internal/test_runner/test:1047:25)
+        Test.start (node:internal/test_runner/test:944:17)
+        TestContext.test (node:internal/test_runner/test:373:20)
+        TestContext.<anonymous> (file:///scratch/subtests.test.mjs:4:11)
+        async Test.run (node:internal/test_runner/test:1054:7)
+        async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+      ...
+    1..2
+not ok 1 - parent
+  ---
+  duration_ms: 2.389504
+  type: 'test'
+  location: '/scratch/subtests.test.mjs:2:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 3
+# suites 0
+# pass 1
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 92.820616

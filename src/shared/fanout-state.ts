@@ -25,7 +25,10 @@ export interface Acceptance {
   frozenAt: string;
   /** `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
   amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string }>;
+  /** #539 — what the freeze's one run on the target tip found (never a refusal: those record nothing): `clean` = no ERROR (assertion FAILs accepted), `escaped` = the coordinator's recorded `--accept-unclassified` (the output could not be classified). */
+  freezeCheck?: FreezeCheck;
 }
+export interface FreezeCheck { at: string; target: string; targetSha: string; result: 'clean' | 'escaped'; pass?: number; assertionFail?: number; skipped?: number; escape?: { by: string; reason: string; unclassified: string } }
 
 /** #514 — a finding's severity as the verifier / review report grades it. Only BLOCKING and MAJOR justify a follow-up candidate on a merged ticket. */
 export const FINDING_SEVERITIES = ['BLOCKING', 'MAJOR', 'MINOR'] as const;
@@ -374,7 +377,7 @@ export const sha256Hex = (b: Buffer | string): string => crypto.createHash('sha2
 function acceptanceOf(v: unknown, where: string): Acceptance | null {
   if (v === undefined || v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: acceptance must be an object or null`);
-  refuseUnknown(v, new Set(['files', 'hash', 'run', 'config', 'source', 'frozenAt', 'amendments']), `${where} acceptance`);
+  refuseUnknown(v, new Set(['files', 'hash', 'run', 'config', 'source', 'frozenAt', 'amendments', 'freezeCheck']), `${where} acceptance`);
   if (!isObj(v.files) || Object.keys(v.files).length === 0) throw new FanoutStateError(`${where}: acceptance.files must be a non-empty {path: sha256}`);
   const files: Record<string, string> = {};
   for (const [k, h] of Object.entries(v.files)) {
@@ -407,7 +410,25 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
     if (a.runAfter !== undefined && (typeof a.runAfter !== 'string' || !a.runAfter.trim() || /[\r\n\0]/.test(a.runAfter))) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].runAfter must be a single-line command`);
     return { at: a.at as string, decision: a.decision as string, specSentence: a.specSentence as string, bodySha256: a.bodySha256 as string, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(a.runAfter !== undefined ? { runAfter: a.runAfter as string } : {}) };
   });
-  return { files, hash: v.hash, run: v.run, ...(config ? { config } : {}), source: { branch, head }, frozenAt: v.frozenAt, amendments };
+  return { files, hash: v.hash, run: v.run, ...(config ? { config } : {}), source: { branch, head }, frozenAt: v.frozenAt, amendments, ...(v.freezeCheck !== undefined ? { freezeCheck: freezeCheckOf(v.freezeCheck, where) } : {}) };
+}
+
+function freezeCheckOf(v: unknown, where: string): FreezeCheck {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: acceptance.freezeCheck must be an object`);
+  refuseUnknown(v, new Set(['at', 'target', 'targetSha', 'result', 'pass', 'assertionFail', 'skipped', 'escape']), `${where} acceptance.freezeCheck`);
+  for (const k of ['at', 'target'] as const) if (typeof v[k] !== 'string' || !(v[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.freezeCheck.${k} missing`);
+  if (typeof v.targetSha !== 'string' || !HEX_SHA.test(v.targetSha)) throw new FanoutStateError(`${where}: acceptance.freezeCheck.targetSha must be a full commit sha`);
+  if (v.result !== 'clean' && v.result !== 'escaped') throw new FanoutStateError(`${where}: acceptance.freezeCheck.result must be clean|escaped`);
+  for (const k of ['pass', 'assertionFail', 'skipped'] as const) if (v[k] !== undefined && (!Number.isInteger(v[k]) || (v[k] as number) < 0)) throw new FanoutStateError(`${where}: acceptance.freezeCheck.${k} must be a count`);
+  let escape: FreezeCheck['escape'];
+  if (v.escape !== undefined) {
+    if (!isObj(v.escape)) throw new FanoutStateError(`${where}: acceptance.freezeCheck.escape must be an object`);
+    refuseUnknown(v.escape, new Set(['by', 'reason', 'unclassified']), `${where} acceptance.freezeCheck.escape`);
+    for (const k of ['by', 'reason', 'unclassified'] as const) if (typeof v.escape[k] !== 'string' || !(v.escape[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.freezeCheck.escape.${k} missing`);
+    escape = { by: v.escape.by as string, reason: v.escape.reason as string, unclassified: v.escape.unclassified as string };
+  }
+  if ((v.result === 'escaped') !== (escape !== undefined)) throw new FanoutStateError(`${where}: acceptance.freezeCheck.escape is present exactly when result is escaped`);
+  return { at: v.at as string, target: v.target as string, targetSha: v.targetSha, result: v.result, ...(v.pass !== undefined ? { pass: v.pass as number } : {}), ...(v.assertionFail !== undefined ? { assertionFail: v.assertionFail as number } : {}), ...(v.skipped !== undefined ? { skipped: v.skipped as number } : {}), ...(escape ? { escape } : {}) };
 }
 
 /** Parse + validate a whole state document. Unknown field (top level or per ticket) is REFUSED; so is a dependency cycle. */
