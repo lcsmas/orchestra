@@ -843,7 +843,6 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
       if (f.specSentence !== undefined && !sentenceAccepted(specNow, f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
       }
-      if (had?.severity === 'MINOR' && had.evidence === 'measured' && had.kind !== 'process' && f.kind === 'process') throw new FanoutStateError(`${id}: finding ${k} is a recorded measured MINOR — it is not re-kinded to process afterwards (its close-out ticket text would vanish)`);
       next.findings[k] = { ...(had ?? {}), ...f };
       const gap = reportGap(next.findings[k]);
       if (gap) throw new FanoutStateError(`${id}: finding ${k}: ${gap}`);

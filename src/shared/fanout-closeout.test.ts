@@ -63,7 +63,7 @@ test('a measured MINOR missing ANY part (or blank) is refused at recording and n
 test('a recorded grade is not rewritten: evidence / kind stay; a bare repeat keeps the report; legacy → record upgrades', () => {
   const s = rec({ 'F-1': { severity: 'MINOR', evidence: 'measured', report: REP }, 'F-L': 'MINOR' });
   assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-1': { severity: 'MINOR', evidence: 'argued' } } }, NOW), /not rewritten/);
-  assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-1': { severity: 'MINOR', evidence: 'measured', kind: 'process', report: REP } } }, NOW), /not re-kinded/);
+  assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-1': { severity: 'MINOR', evidence: 'measured', kind: 'process', report: REP } } }, NOW), /not rewritten/);
   assert.throws(() => applyTicketPatch(s, 'T-1', { findings: { 'F-1': 'MAJOR' } }, NOW), /already recorded as MINOR/);
   const kept = applyTicketPatch(s, 'T-1', { findings: { 'F-1': 'MINOR' } }, NOW);
   assert.equal(closeoutTexts(kept).texts.length, 1);

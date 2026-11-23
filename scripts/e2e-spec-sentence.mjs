@@ -191,7 +191,7 @@ function scenarios(cliPath) {
   { const A = world(cliPath); try {
     A.register(); A.setCi(A.heads.t1);
     A.finding('F-1', { severity: 'MINOR', specSentence: A.SENT });
-    A.finding('F-2', { severity: 'MINOR', evidence: 'measured' });
+    A.finding('F-2', { severity: 'MINOR', evidence: 'measured', report: { input: 'i', happens: 'h', where: 'w', proof: 'p' } });
     A.finding('F-3', { severity: 'MINOR', evidence: 'argued' });
     const rg = A.set('T-1', '--finding', 'F-1=MAJOR');
     arm('record must-FAIL: a recorded severity is never re-graded (rc 1, still MINOR)', rg.code === 1 && /not re-graded/.test(rg.stderr) && T1(A).findings['F-1'].severity === 'MINOR', `${rg.code} ${rg.stderr}`);
@@ -219,7 +219,7 @@ function scenarios(cliPath) {
   } catch (e) { crash(arm)(e); } finally { A.cleanup(); } }
   { const A = world(cliPath); try {
     A.register(); A.setCi(A.heads.t1);
-    A.finding('F-1', { severity: 'MINOR', evidence: 'measured' });
+    A.finding('F-1', { severity: 'MINOR', evidence: 'measured', report: { input: 'i', happens: 'h', where: 'w', proof: 'p' } });
     A.handEdit((s) => { s.tickets['T-1'].findings['F-1'] = { severity: 'MINOR', specSentence: 'a sentence the spec never contained' }; });
     const g = A.gate('T-1', 't1', A.heads.t1);
     arm('gate must-PASS: a hand-edited sentence that is NOT in the captured spec does not block (the substring is re-checked where it is acted on)', g.code === 0 && g.json?.verdict === 'gate', `${g.code} ${g.stdout}`);
@@ -260,7 +260,7 @@ function scenarios(cliPath) {
   { const A = world(cliPath); try {
     A.register();
     A.finding('F-S', { severity: 'MINOR', specSentence: A.SENT });
-    A.finding('F-M', { severity: 'MINOR', evidence: 'measured' });
+    A.finding('F-M', { severity: 'MINOR', evidence: 'measured', report: { input: 'i', happens: 'h', where: 'w', proof: 'p' } });
     A.finding('F-ARG', { severity: 'MINOR', evidence: 'argued' });
     A.finding('F-SARG', { severity: 'MINOR', evidence: 'argued', specSentence: A.SENT });
     A.finding('P-1', { severity: 'MINOR', kind: 'process', specSentence: A.PROC });
