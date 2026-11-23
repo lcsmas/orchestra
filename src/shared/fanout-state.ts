@@ -60,6 +60,15 @@ export interface FindingRecord {
   decision?: FindingDecision;
   settled?: FindingSettled;
 }
+/** #553 (T2) — the four parts a measured MINOR on product code carries: T1's `findingOf` validates each when `report` is present; this is the rule that it IS present. */
+export const REPORT_PARTS = ['input', 'happens', 'where', 'proof'] as const;
+/** #553 — why this MINOR cannot be recorded (null = fine). A measured non-process MINOR becomes a ticket text at close-out, so it needs its report; a report with no `evidence` is refused too (it would count as argued and lose its text for good: evidence is never re-graded). */
+export function reportGap(f: FindingRecord): string | null {
+  if (f.severity !== 'MINOR' || f.kind === 'process') return null;
+  if (f.evidence === 'measured' && !f.report) return `a measured MINOR on product code becomes a ticket text at close-out and needs report.{${REPORT_PARTS.join(', ')}} (or record it as evidence: "argued", which creates nothing)`;
+  if (f.report && f.evidence === undefined) return 'a report needs evidence: "measured" (evidence is not re-graded afterwards) — drop the report, or record the MINOR as measured';
+  return null;
+}
 /** What a state file holds for one finding: the legacy string (still read, and still WRITTEN while a record carries only its severity) or the normalized record. */
 export type StoredFinding = FindingSeverity | FindingRecord;
 /** #515 — the code-written half of the acceptance flow (never settable by `state set`): who writes the tests, how long a gate waits for them, the recorded waiver. */
@@ -834,7 +843,10 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
       if (f.specSentence !== undefined && !sentenceAccepted(specNow, f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
       }
+      if (had?.severity === 'MINOR' && had.evidence === 'measured' && had.kind !== 'process' && f.kind === 'process') throw new FanoutStateError(`${id}: finding ${k} is a recorded measured MINOR — it is not re-kinded to process afterwards (its close-out ticket text would vanish)`);
       next.findings[k] = { ...(had ?? {}), ...f };
+      const gap = reportGap(next.findings[k]);
+      if (gap) throw new FanoutStateError(`${id}: finding ${k}: ${gap}`);
     }
   }
   for (const [k, v] of Object.entries(isObj(patch.settle) ? patch.settle : {})) {

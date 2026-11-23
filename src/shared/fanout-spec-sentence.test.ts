@@ -87,7 +87,7 @@ test('#552 re-capturing the spec text cannot silently un-block a merge: refused 
 });
 
 test('#552 a recorded finding is not rewritten: severity, kind, evidence, specSentence keep their first value; decision/settled only through the verbs', () => {
-  const s = rec(open552(), { 'F-1': { severity: 'MINOR', kind: 'code', evidence: 'measured' } });
+  const s = rec(open552(), { 'F-1': { severity: 'MINOR', kind: 'code', evidence: 'measured', report: { input: 'i', happens: 'h', where: 'w', proof: 'p' } } });
   assert.throws(() => rec(s, { 'F-1': 'MAJOR' }), /not re-graded/);
   assert.throws(() => rec(s, { 'F-1': { severity: 'MINOR', kind: 'process' } }), /already records kind/);
   assert.throws(() => rec(s, { 'F-1': { severity: 'MINOR', evidence: 'argued' } }), /already records evidence/);
@@ -151,7 +151,7 @@ function mergedWith(findings: Record<string, unknown>): FanoutState {
 const fuOf = (s: FanoutState, fixes: string[]) => applyTicketPatch(s, 'T-1-fu', { status: 'started', branch: 'fu', followUpOf: 'T-1', fixes }, T);
 
 test('#552 follow-up rule under spec: BLOCKING | MAJOR | MINOR-with-accepted-sentence qualify; a MINOR with no sentence, an argued MINOR, or a sentence NOT in the spec ⇒ followup-minor-only', () => {
-  const s = mergedWith({ 'F-S': { severity: 'MINOR', specSentence: SENT }, 'F-M': { severity: 'MINOR', evidence: 'measured' }, 'F-ARG': { severity: 'MINOR', evidence: 'argued' }, 'F-MAJ': 'MAJOR' });
+  const s = mergedWith({ 'F-S': { severity: 'MINOR', specSentence: SENT }, 'F-M': { severity: 'MINOR', evidence: 'measured', report: { input: 'i', happens: 'h', where: 'w', proof: 'p' } }, 'F-ARG': { severity: 'MINOR', evidence: 'argued' }, 'F-MAJ': 'MAJOR' });
   assert.doesNotThrow(() => fuOf(s, ['F-S']));
   assert.doesNotThrow(() => fuOf(s, ['F-MAJ']));
   assert.throws(() => fuOf(s, ['F-M']), /only MINOR finding\(s\)/);
