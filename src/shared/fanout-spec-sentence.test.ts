@@ -185,9 +185,13 @@ test('#552 minorPolicy refuse (= #514 as it was): no merge block, a MINOR with a
   assert.equal(followUpRefusal(fu({ ...s, switches: { minorPolicy: 'refuse' } } as FanoutState, ['F-MAJ']), 'T-1-fu'), null, 'a MAJOR is enough under refuse');
 });
 
-test('#552 D5: fewer than 3 words is no sentence; CRLF capture is normalised; a follow-up candidate inherits the base spec text; an ARGUED MINOR with an accepted sentence is a valid --fixes target', () => {
-  for (const sentence of ['a', 'endpoint', 'The endpoint']) assert.throws(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: sentence } }), /at least 3 words/, sentence);
+test('#552 D5: fewer than 15 trimmed characters is no sentence (CJK counts characters, a rule line `- - -` is too short); CRLF capture is normalised; a follow-up candidate inherits the base spec text; an ARGUED MINOR with an accepted sentence is a valid --fixes target', () => {
+  for (const sentence of ['a', 'endpoint', 'The endpoint']) assert.throws(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: sentence } }), /at least 15 characters/, sentence);
   assert.doesNotThrow(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: 'returns 404 for' } }));
+  assert.throws(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: '- - -' } }), /at least 15 characters/);
+  const cjk = '出力にはidを表示する必要があります。出力にはidを表示する。';
+  const cj = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: `${cjk}\n` });
+  assert.doesNotThrow(() => rec(cj, { 'F-1': { severity: 'MINOR', specSentence: cjk } }), 'a CJK sentence is long enough');
   const crlf = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: SPEC.replace(/\n/g, '\r\n') });
   assert.equal(crlf.tickets['T-1'].specText, SPEC);
   assert.doesNotThrow(() => rec(crlf, { 'F-1': { severity: 'MINOR', specSentence: 'pull request.\nThe endpoint returns 404' } }));
@@ -216,4 +220,17 @@ test('#552 D5 review: inherited sentences cannot be silently un-blocked, the cha
   const d = applyTicketPatch(cm, 'D', { status: 'started', branch: 'd', followUpOf: 'C', fixes: ['G'] }, T);
   assert.deepEqual(d.tickets.D.fixes, ['G']);
   assert.doesNotThrow(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: 'pull request.\r\nThe endpoint returns 404' } }), 'a CRLF-quoted sentence is normalised');
+});
+
+test('#552 review delta M1: the lost-sentence guard covers EVERY ticket whose chain passes through the change — depth 2, `spec` null, a re-parent', () => {
+  const b = mergedWith({ 'F-MAJ': 'MAJOR' });
+  const c = applyTicketPatch(b, 'C', { status: 'merged', head: 'c'.repeat(40), branch: 'c', followUpOf: 'T-1', fixes: ['F-MAJ'], findings: { G: 'MAJOR' } }, T);
+  const d = applyTicketPatch(c, 'D', { status: 'started', branch: 'd', followUpOf: 'C', fixes: ['G'], findings: { f1: { severity: 'MINOR', specSentence: SENT } } }, T);
+  assert.deepEqual(blockingMinors(d, 'D'), ['f1']);
+  assert.throws(() => applyTicketPatch(d, 'T-1', {}, T, { specText: 'a text without the sentence' }), /no longer contains the specSentence of D\/f1/, 'B re-capture, two hops up');
+  assert.throws(() => applyTicketPatch(d, 'T-1', { spec: null }, T), /no longer contains the specSentence of D\/f1/, 'B --spec null');
+  const e = applyTicketPatch(applyTicketPatch(d, 'E', { status: 'started', spec: 'e.md' }, T, { specText: 'E has another text entirely.' }), 'E', { status: 'merged', head: 'e'.repeat(40), branch: 'e' }, T);
+  assert.throws(() => applyTicketPatch(e, 'C', { followUpOf: 'E' }, T), /no longer contains the specSentence of D\/f1/, 'C re-parented to E');
+  const settled = applyTicketPatch(d, 'D', { settle: { f1: { how: 'fixed', ref: 'abc1234' } } }, T);
+  assert.doesNotThrow(() => applyTicketPatch(settled, 'T-1', {}, T, { specText: 'a text without the sentence' }), 'a settled sentence no longer pins the text');
 });

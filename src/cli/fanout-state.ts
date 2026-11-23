@@ -84,7 +84,7 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            Findings are the coordinator's own record (no report reference): one finding may justify more than one follow-up, and a brand-new branch under a fresh ticket id cannot
            be told from a new ticket — the rule catches the same branch/PR as a merged ticket, any head change on it, and every un-merge/--forget-merge path (the reason is kept in forgottenMerges, denied to a scribe).
   A MINOR that breaks a sentence of the ticket (#552, minorPolicy spec): --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>","kind":"code|process","evidence":"measured|argued"}}'.
-           Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only / fewer than 3 words refused; CRLF captured as LF) of the spec TEXT captured at registration — --spec <file>
+           Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only / fewer than 15 characters refused; CRLF captured as LF) of the spec TEXT captured at registration — --spec <file>
            reads the file; for a URL / ledger spec give the text: --spec-text <file|-> (derived, never settable by --json). An accepted, unsettled MINOR BLOCKS \`gate\` + \`deliver\`
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
            round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
@@ -296,7 +296,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
     const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {};
     const notes: string[] = specRead?.note ? [specRead.note] : [];
-    if (specRead && (specRead.isFile || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // m5: re-reading a spec FILE that returns nothing (too big…) CLEARS the stored text, never keeps a stale one; a non-file reference (URL / ledger) is left as it is — a CHANGED reference clears it in applyTicketPatch
+    if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const repo = readState(file)?.repo ?? null;
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);

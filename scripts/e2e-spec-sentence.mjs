@@ -145,9 +145,9 @@ function scenarios(cliPath) {
       const r = A.finding('F-X', { severity: 'MINOR', specSentence: sentence });
       arm(`sentence must-FAIL: ${label} ⇒ refused (rc 1), nothing recorded`, r.code === 1 && !T1(A).findings['F-X'], `${r.code} ${r.stderr}`);
     }
-    for (const [label, sentence] of [['one character', 'a'], ['one word', 'endpoint'], ['two words', 'The endpoint']]) {
+    for (const [label, sentence] of [['one character', 'a'], ['one word', 'endpoint'], ['two words', 'The endpoint'], ['a rule line', '- - -']]) {
       const r = A.finding('F-X', { severity: 'MINOR', specSentence: sentence });
-      arm(`sentence must-FAIL (D5 m2): ${label} is no sentence (fewer than 3 words) ⇒ refused (rc 1), nothing recorded`, r.code === 1 && /at least 3 words/.test(r.stderr) && !T1(A).findings['F-X'], `${r.code} ${r.stderr}`);
+      arm(`sentence must-FAIL (D5 m2): ${label} is no sentence (fewer than 15 characters) ⇒ refused (rc 1), nothing recorded`, r.code === 1 && /at least 15 characters/.test(r.stderr) && !T1(A).findings['F-X'], `${r.code} ${r.stderr}`);
     }
     const fg = A.cli(['state', 'set', 'T-1', '--run', 'rig', '--json', JSON.stringify({ specText: 'forged' })]);
     arm('capture must-FAIL: specText is derived — `state set --json {specText}` is refused and the captured text is unchanged', fg.code === 1 && T1(A).specText === A.SPEC, `${fg.code} ${fg.stderr}`);
@@ -172,12 +172,13 @@ function scenarios(cliPath) {
     A.set('T-2', '--spec-text', path.join(A.work, 'spec.md'));
     A.set('T-2', '--spec', 'https://example.invalid/ticket/3');
     arm('capture must-PASS (review): re-passing the SAME URL spec keeps the text a --spec-text gave it (nothing to re-read ⇒ nothing cleared)', A.readState().tickets['T-2'].specText === A.SPEC, JSON.stringify(A.readState().tickets['T-2'].specText));
-    fs.writeFileSync(path.join(A.work, 'grow.md'), A.SPEC);
-    A.set('T-4', '--status', 'started', '--spec', 'grow.md');
-    const had = A.readState().tickets['T-4'].specText === A.SPEC;
     fs.writeFileSync(path.join(A.work, 'grow.md'), 'x'.repeat(200_001));
-    const grown = A.set('T-4', '--spec', 'grow.md');
-    arm('capture must-PASS (D5 m5): the SAME spec file re-read and now too big to capture CLEARS the stored text (never a stale one), with the note', had && grown.code === 0 && (A.readState().tickets['T-4'].specText ?? null) === null && /NOT captured|larger than/.test(grown.stderr), `${grown.code} ${grown.stderr}`);
+    const big = A.set('T-4', '--status', 'started', '--spec', 'grow.md', '--spec-text', path.join(A.work, 'spec.md'));
+    const excerpt = A.readState().tickets['T-4'].specText === A.SPEC;
+    const again = A.set('T-4', '--spec', 'grow.md');
+    arm('capture must-PASS (review m2): re-passing the SAME too-big spec file keeps the --spec-text excerpt the note told the user to give', big.code === 0 && excerpt && again.code === 0 && A.readState().tickets['T-4'].specText === A.SPEC, `${big.code} ${again.code} ${again.stderr} ${JSON.stringify(A.readState().tickets['T-4'].specText)}`);
+    const moved = A.set('T-4', '--spec', 'other-spec.md');
+    arm('capture must-PASS (D5 m5): a CHANGED reference re-captures — the excerpt of the old reference is not kept', moved.code === 0 && A.readState().tickets['T-4'].specText === 'A different spec.\n', `${moved.code} ${moved.stderr}`);
     fs.writeFileSync(path.join(A.work, 'crlf-spec.md'), A.SPEC.replace(/\n/g, '\r\n'));
     A.set('T-3', '--status', 'started', '--spec', 'crlf-spec.md');
     arm('capture must-PASS (D5 m3): a CRLF spec is captured with LF line endings', A.readState().tickets['T-3'].specText === A.SPEC, JSON.stringify(A.readState().tickets['T-3'].specText).slice(0, 80));
@@ -222,7 +223,7 @@ function scenarios(cliPath) {
     A.handEdit((s) => { s.tickets['T-1'].findings['F-1'] = { severity: 'MINOR', specSentence: 'a sentence the spec never contained' }; });
     const g = A.gate('T-1', 't1', A.heads.t1);
     arm('gate must-PASS: a hand-edited sentence that is NOT in the captured spec does not block (the substring is re-checked where it is acted on)', g.code === 0 && g.json?.verdict === 'gate', `${g.code} ${g.stdout}`);
-    A.handEdit((s) => { s.tickets['T-1'].specText = null; s.tickets['T-1'].findings['F-1'] = { severity: 'MINOR', specSentence: 'x y z' }; });
+    A.handEdit((s) => { s.tickets['T-1'].specText = null; s.tickets['T-1'].findings['F-1'] = { severity: 'MINOR', specSentence: 'x y z x y z x y z' }; });
     const g2 = A.gate('T-1', 't1', A.heads.t1);
     arm('gate must-PASS: a sentence with NO captured spec text does not block', g2.code === 0, `${g2.code} ${g2.stdout}`);
   } catch (e) { crash(arm)(e); } finally { A.cleanup(); } }
@@ -300,6 +301,14 @@ function scenarios(cliPath) {
     arm('follow-up gate must-FAIL (D5 m4): …and, unsettled, it blocks the follow-up candidate ⇒ rc 2 finding-unsettled', blk.code === 2 && blk.json?.reason === 'finding-unsettled' && /N-1/.test(blk.json?.detail ?? ''), `${blk.code} ${blk.stdout}`);
     const own2 = A.set('T-1-fu', '--spec', 'other-spec.md');
     arm('follow-up must-FAIL (review): giving the candidate a spec of its own that lacks the inherited sentence is refused (it must not silently un-block), rc 1', own2.code === 1 && /no longer contains the specSentence of N-1/.test(own2.stderr), `${own2.code} ${own2.stderr}`);
+    // review delta M1: a depth-2 chain — D follows the (merged) candidate T-1-fu which follows T-1; re-capturing / clearing T-1's spec must not silently un-block D
+    A.handEdit((st) => { st.tickets['T-1-fu'].status = 'merged'; st.tickets['T-1-fu'].mergedHead = A.heads.fu; st.tickets['T-1-fu'].mergedTree = null; });
+    const dd = A.set('T-1-fu-d', '--status', 'started', '--branch', 'dd', '--follow-up-of', 'T-1-fu', '--fixes', 'N-1', '--finding-json', JSON.stringify({ 'D-1': { severity: 'MINOR', specSentence: A.SENT } }));
+    arm('follow-up must-PASS (review M1): a follow-up of a follow-up records a sentence MINOR against the text inherited two hops up (rc 0)', dd.code === 0, `${dd.code} ${dd.stderr}`);
+    const rc2 = A.set('T-1', '--spec-text', path.join(A.work, 'other-spec.md'));
+    arm('capture must-FAIL (review M1): re-capturing the base spec is refused while a depth-2 candidate holds an open accepted sentence (names T-1-fu-d/D-1)', rc2.code === 1 && /T-1-fu-d\/D-1/.test(rc2.stderr) && A.readState().tickets['T-1'].specText === A.SPEC, `${rc2.code} ${rc2.stderr}`);
+    const nul = A.cli(['state', 'set', 'T-1', '--run', 'rig', '--json', JSON.stringify({ spec: null })]);
+    arm('capture must-FAIL (review M1): clearing the base ticket\'s spec (`spec` null) is refused too, nothing changed', nul.code === 1 && /T-1-fu-d\/D-1/.test(nul.stderr) && A.readState().tickets['T-1'].spec === 'spec.md', `${nul.code} ${nul.stderr}`);
     arm('merged ticket must-PASS: a MINOR raised AFTER the merge does not block a retry of the merge at its own head (the follow-up is its way)', A.gate('T-1', 't1', A.heads.t1).code === 0);
   } catch (e) { crash(arm)(e); } finally { A.cleanup(); } }
   return res;
@@ -318,7 +327,7 @@ const mutants = [
   { name: 'sentence: ANY quoted text is accepted (the substring test is off)', find: 'return f.specSentence !== void 0 && f.specSentence.trim() !== "" && t.specText !== null && t.specText.includes(f.specSentence);', put: () => 'return f.specSentence !== void 0;' },
   { name: 'sentence: the sentence is trimmed before the match', find: 't.specText.includes(f.specSentence);', put: () => 't.specText.includes(f.specSentence.trim());' },
   { name: 'sentence: the match is case-folded', find: 't.specText.includes(f.specSentence);', put: () => 't.specText.toLowerCase().includes(f.specSentence.toLowerCase());' },
-  { name: 'sentence: whitespace-only is accepted (both the match guard and the parse guard off)', find: 'f.specSentence.trim() !== "" && ', put: () => '', extra: [{ find: 'if (typeof v !== "string" || !v.trim()) throw new FanoutStateError(`${where}: specSentence', put: () => 'if (typeof v !== "string") throw new FanoutStateError(`${where}: specSentence' }, { find: '.filter(Boolean).length < SPEC_SENTENCE_MIN_WORDS', put: () => '.filter(Boolean).length < 0' }] },
+  { name: 'sentence: whitespace-only is accepted (both the match guard and the parse guard off)', find: 'f.specSentence.trim() !== "" && ', put: () => '', extra: [{ find: 'if (typeof v !== "string" || !v.trim()) throw new FanoutStateError(`${where}: specSentence', put: () => 'if (typeof v !== "string") throw new FanoutStateError(`${where}: specSentence' }, { find: 'v.trim().length < SPEC_SENTENCE_MIN_CHARS', put: () => 'v.trim().length < 0' }] },
   { name: 'sentence: with NO captured spec text every sentence is accepted', find: 't.specText !== null && t.specText.includes(f.specSentence);', put: () => '(t.specText === null || t.specText.includes(f.specSentence));' },
   { name: 'record: the sentence is not checked against the spec at registration', find: 'if (f.specSentence !== void 0 && !sentenceAccepted(specNow, f)) {', put: () => 'if (false) {' },
   { name: 'record: a recorded severity may be re-graded', find: 'if (had && had.severity !== f.severity) throw', put: () => 'if (false) throw' },
@@ -341,12 +350,13 @@ const mutants = [
   { name: 'follow-up: a MINOR with an accepted sentence is not enough', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ';' },
   { name: 'follow-up: every MINOR is enough', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ' || true;' },
   { name: 'follow-up: a MINOR\'s sentence is not re-checked against the spec', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ' || base.findings[f].specSentence !== void 0;' },
-  { name: 'D5 m2: a one-character / one-word / two-word fragment is accepted as a sentence', find: 'const SPEC_SENTENCE_MIN_WORDS = 3;', put: () => 'const SPEC_SENTENCE_MIN_WORDS = 0;' },
+  { name: 'D5 m2/m3: a one-character / one-word / rule-line fragment is accepted as a sentence', find: 'const SPEC_SENTENCE_MIN_CHARS = 15;', put: () => 'const SPEC_SENTENCE_MIN_CHARS = 0;' },
   { name: 'D5 m3: a CRLF spec is captured as is (no LF normalisation)', find: 'derived.specText.replace(/\\r\\n/g, "\\n")', put: () => 'derived.specText' },
   { name: 'D5 m4: a follow-up candidate does not inherit the base ticket\'s spec text', find: 'let up = t.followUpOf;', put: () => 'let up = null;' },
-  { name: 'D5 m5: a registration whose capture returned nothing keeps the stale text', find: 'if (specRead && (specRead.isFile || p.vals["--spec-text"] !== void 0)) derived.specText = specRead.text;', put: () => 'if (specRead && (specRead.text !== null || p.vals["--spec-text"] !== void 0)) derived.specText = specRead.text;' },
+  { name: 'D5 m5: a registration whose capture returned nothing keeps the stale text', find: 'if (specRead && (specRead.isFile && specRead.text !== null || p.vals["--spec-text"] !== void 0)) derived.specText = specRead.text;', put: () => 'if (specRead && (specRead.isFile || p.vals["--spec-text"] !== void 0)) derived.specText = specRead.text;' },
   { name: 'D5 pin: an ARGUED MINOR with an accepted sentence is refused as a follow-up target', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ' || policy === "spec" && base.findings[f].evidence !== "argued" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);' },
-  { name: 'review: the lost-sentence guard ignores the text a follow-up candidate inherited', find: 'lostOf(prev.findings, effectiveSpec(state, prev), specNow, "")', put: () => 'lostOf(prev.findings, prev, { specText: next.specText }, "")' },
+  { name: 'review: the lost-sentence guard ignores the text a follow-up candidate inherited', find: 'sentenceAccepted(effectiveSpec(state, before), f)', put: () => 'sentenceAccepted(before, f)' },
+  { name: 'review M1: the lost-sentence guard ignores dependants more than one hop away (effective spec read from the BEFORE state)', find: 'effectiveSpec(after, after.tickets[tid])', put: () => 'effectiveSpec(state, after.tickets[tid])' },
   { name: 'limit: the refusal no longer states what code does NOT check', find: ' (Code checks the sentence is in the spec, not that it is really broken: the reviewer judges that.)', put: () => '' },
 ];
 

@@ -247,14 +247,14 @@ function builtOnTreeOf(v: unknown): Record<string, string> {
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 /** #552 — a sentence quoted from a spec: non-empty after trim (the sentence itself is kept verbatim — no trim, no case-fold: it is matched LITERALLY), printable (newline / tab allowed). */
 export const SPEC_SENTENCE_MAX = 2000;
-/** A quoted fragment shorter than this matches nearly any spec: not a sentence. */
-export const SPEC_SENTENCE_MIN_WORDS = 3;
+/** A quoted fragment shorter than this (trimmed, in characters — works for CJK too) matches nearly any spec: not a sentence. */
+export const SPEC_SENTENCE_MIN_CHARS = 15;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
 function specSentenceOf(v: unknown, where: string): string {
   if (typeof v === 'string') v = v.replace(/\r\n/g, '\n'); // the spec text is captured with LF line endings: a sentence quoted with CRLF is the same sentence
   if (typeof v !== 'string' || !v.trim()) throw new FanoutStateError(`${where}: specSentence must be a non-empty text quoted from the ticket's spec (empty / whitespace-only is refused)`);
   if (v.length > SPEC_SENTENCE_MAX || CTRL.test(v)) throw new FanoutStateError(`${where}: specSentence must be printable text of at most ${SPEC_SENTENCE_MAX} characters`);
-  if (v.split(/\s+/).filter(Boolean).length < SPEC_SENTENCE_MIN_WORDS) throw new FanoutStateError(`${where}: specSentence must quote at least ${SPEC_SENTENCE_MIN_WORDS} words of the spec (a one-character or one-word fragment matches almost any spec) — refused`);
+  if (v.trim().length < SPEC_SENTENCE_MIN_CHARS) throw new FanoutStateError(`${where}: specSentence must quote at least ${SPEC_SENTENCE_MIN_CHARS} characters of the spec (a short fragment matches almost any spec) — refused`);
   return v;
 }
 function lineOf(v: unknown, where: string, max = 2000): string {
@@ -812,11 +812,14 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   const followUpNow = 'followUpOf' in patch ? (typeof patch.followUpOf === 'string' ? patch.followUpOf : null) : next.followUpOf;
   const specNow = effectiveSpec(state, { specText: next.specText, followUpOf: followUpNow });
   if (next.specText !== prev.specText || followUpNow !== prev.followUpOf) {
-    // the ticket's own findings, matched against the text it had (own or inherited) and the one it has now …
-    const lostOf = (findings: Record<string, FindingRecord>, before: { specText: string | null }, after: { specText: string | null }, who: string): string[] => Object.entries(findings).filter(([, f]) => f.specSentence !== undefined && sentenceAccepted(before, f) && !sentenceAccepted(after, f) && !findingClosed(f)).map(([k]) => (who ? `${who}/${k}` : k));
-    const lost = lostOf(prev.findings, effectiveSpec(state, prev), specNow, '');
-    // … and the follow-up candidates that inherit this ticket's text
-    if (next.specText !== prev.specText) for (const [cid, c] of Object.entries(state.tickets)) if (cid !== id && c.followUpOf === id && c.specText === null) lost.push(...lostOf(c.findings, effectiveSpec(state, c), { specText: next.specText }, cid));
+    // EVERY ticket whose effective spec (own text, or the one inherited through the follow-up chain) passes through this change: the open accepted sentences it held must still be in the text it has now
+    const after: FanoutState = { ...state, tickets: { ...state.tickets, [id]: { ...next, followUpOf: followUpNow } } };
+    const lost: string[] = [];
+    for (const [tid, before] of Object.entries({ ...state.tickets, [id]: prev })) {
+      for (const [k, f] of Object.entries(before.findings)) {
+        if (f.specSentence !== undefined && !findingClosed(f) && sentenceAccepted(effectiveSpec(state, before), f) && !sentenceAccepted(effectiveSpec(after, after.tickets[tid]), f)) lost.push(tid === id ? k : `${tid}/${k}`);
+      }
+    }
     if (lost.length) throw new FanoutStateError(`${id}: the new spec text no longer contains the specSentence of ${lost.join(', ')} — settle or decide ${lost.length > 1 ? 'them' : 'it'} first (re-capturing the spec must not silently un-block a merge)`);
   }
   next.findings = { ...prev.findings }; // never mutate the previous state's record (settle / decide write into it below)
