@@ -1,11 +1,15 @@
 // #469 — `orchestra fanout state init|set|show` and `orchestra fanout resume`. Pure of process globals: argv + deps in, {code,stdout,stderr} out,
 // so index.ts only forwards and the tests drive it with a fake git/gh runner. Resume = 5 steps: load, reconcile, classify, next action, write back.
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
   FanoutStateError,
   SETTABLE_KEYS,
+  SPEC_SENTENCE_LIMIT,
+  SPEC_TEXT_MAX,
+  sentenceAccepted,
   applyTicketPatch,
   applyWriteBack,
   newState,
@@ -16,6 +20,7 @@ import {
   stateFile,
   updateState,
   type FanoutState,
+  type FindingRecord,
   type Reality,
   type TicketReality,
   type TicketState,
@@ -134,6 +139,44 @@ function findingsArg(v: string): Record<string, string> {
   }
   return out;
 }
+/** The state of a recorded finding, for `state set` / `show`: `(spec,unsettled)` = blocks the merge, `(process)`, `(settled:fixed)`, `(decided)`. */
+function findingTags(f: FindingRecord, t: TicketState): string {
+  const tags = [f.kind === 'process' ? 'process' : '', f.specSentence !== undefined ? (sentenceAccepted(t, f) ? 'spec' : 'sentence-not-in-spec') : '', f.settled ? `settled:${f.settled.how}` : f.decision ? 'decided' : f.specSentence !== undefined && f.severity === 'MINOR' && sentenceAccepted(t, f) ? 'unsettled' : ''].filter(Boolean);
+  return tags.length ? `(${tags.join(',')})` : '';
+}
+/** `--settle ID=fixed:<ref>` | `ID=pr-body:<ref>` → {ID: {how, ref}}. */
+function settleArg(v: string): Record<string, { how: string; ref: string }> {
+  const m = /^([^=]+)=(fixed|pr-body):([\s\S]+)$/.exec(v.trim());
+  if (!m) throw new FanoutStateError(`--settle expects <finding id>=fixed:<head or commit> (a code finding) or <finding id>=pr-body:<what the PR body says now> (a process finding) (got ${JSON.stringify(v)})`);
+  return { [m[1]]: { how: m[2], ref: m[3].trim() } };
+}
+/** `--decide ID=<text>` → {ID: {text}} (the recording workspace is added by the caller). */
+function decideArg(v: string): Record<string, { text: string }> {
+  const i = v.indexOf('=');
+  if (i < 1 || !v.slice(i + 1).trim()) throw new FanoutStateError(`--decide expects <finding id>=<the decision> (got ${JSON.stringify(v)})`);
+  return { [v.slice(0, i).trim()]: { text: v.slice(i + 1).trim() } };
+}
+/** #552 — the spec text read at registration: `--spec-text <file|->` (a file, or stdin: a ticket / ledger text), else `--spec <ref>` when the reference IS a readable file. Anything else (a URL, a ledger section) is NOT read: null. */
+function readSpecText(ref: string | undefined, explicit: string | undefined, deps: FanoutDeps): { text: string | null; note: string } {
+  const read = (file: string): string => {
+    const abs = path.resolve(deps.cwd, file);
+    let st: fs.Stats;
+    try { st = fs.statSync(abs); } catch (e) { throw new FanoutStateError(`cannot read the spec text ${file}: ${(e as Error).message}`); }
+    if (!st.isFile() || st.size > SPEC_TEXT_MAX) throw new FanoutStateError(`spec text ${file} is not a regular file of at most ${SPEC_TEXT_MAX} bytes`);
+    return fs.readFileSync(abs, 'utf8');
+  };
+  if (explicit !== undefined) {
+    const text = explicit === '-' ? deps.readStdin() : read(explicit);
+    if (!text.trim()) throw new FanoutStateError('--spec-text is empty: nothing to capture');
+    return { text, note: '' };
+  }
+  if (ref === undefined) return { text: null, note: '' };
+  let isFile = false;
+  try { isFile = fs.statSync(path.resolve(deps.cwd, ref)).isFile(); } catch { /* not a file: a URL / a ledger section */ }
+  if (isFile) return { text: read(ref), note: '' };
+  return { text: null, note: `note: the spec text of ${JSON.stringify(ref.slice(0, 80))} was NOT captured (not a readable file): a finding's specSentence is refused until \`state set <ticket> --spec-text <file|->\` records it\n` };
+}
+
 /** #515 — does this ticket owe a writer spawn? spec registered, nothing frozen, not waived, and no live writer (a failed spawn and a claim older than CLAIM_STALE_SEC — the app died mid-spawn — are retried). */
 export function needsAcceptor(t: TicketState | undefined, nowIso?: string): boolean {
   if (!t || acceptancePhase(t) !== 'pending') return false;
@@ -196,7 +239,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--implementer', '--verifier', '--json', '--harness'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--spec-text', '--finding-json', '--settle', '--decide', '--implementer', '--verifier', '--json', '--harness'], []);
     const [ticket, ...extra] = p.pos;
     if (p.vals['--harness'] !== undefined) {
       // #538 — run-level: the declared integration harness (no ticket); `-` clears it
@@ -224,12 +267,26 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (v === undefined) continue;
       patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' || key === 'fixes' ? v.split(',').map((x) => x.trim()).filter(Boolean) : key === 'findings' ? findingsArg(v) : key === 'builtOn' ? builtOnArg(v) : v;
     }
-    if (Object.keys(patch).length === 0) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
+    if (p.vals['--finding-json'] !== undefined) {
+      const text = p.vals['--finding-json'] === '-' ? deps.readStdin() : p.vals['--finding-json'];
+      let obj: unknown;
+      try { obj = JSON.parse(text); } catch { throw new FanoutStateError('--finding-json is not valid JSON'); }
+      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--finding-json must be an object {<finding id>: {severity, evidence?, kind?, specSentence?, report?}}');
+      patch.findings = { ...(typeof patch.findings === 'object' && patch.findings !== null ? patch.findings : {}), ...obj };
+    }
+    if (p.vals['--settle'] !== undefined) patch.settle = settleArg(p.vals['--settle']);
+    if (p.vals['--decide'] !== undefined) {
+      const d = decideArg(p.vals['--decide']);
+      patch.decide = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, { ...v, by: deps.env.ORCHESTRA_WS_ID?.trim() || 'coordinator' }]));
+    }
+    const specRead = p.vals['--spec-text'] !== undefined || typeof patch.spec === 'string' ? readSpecText(typeof patch.spec === 'string' ? patch.spec : undefined, p.vals['--spec-text'], deps) : null;
+    if (Object.keys(patch).length === 0 && !specRead?.text) throw new FanoutStateError(`nothing to set (settable: ${SETTABLE_KEYS.join(', ')})`);
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
-    const derived: { tree?: string | null; builtOnTree?: Record<string, string> } = {};
-    const notes: string[] = [];
+    const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {};
+    const notes: string[] = specRead?.note ? [specRead.note] : [];
+    if (specRead && (specRead.text !== null || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text;
     const repo = readState(file)?.repo ?? null;
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
@@ -256,7 +313,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });
     // an unspecified ticket will be refused by `deliver` (acceptance-pending): say so now, not at merge time (#515 review M3)
     const notice = acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t)}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
