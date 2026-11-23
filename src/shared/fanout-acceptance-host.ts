@@ -5,7 +5,7 @@ import {
 } from './fanout-state.ts';
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
-import { acceptanceBranch, acceptorBrief, acceptorName, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
+import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
 export interface AcceptanceHostDeps {
   home: string;
@@ -24,7 +24,7 @@ export interface AcceptanceHostDeps {
 
 export type AcceptanceHostResult =
   | { ok: true; op: 'spawn'; id: string; name: string }
-  | { ok: true; op: 'frozen'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
+  | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
@@ -75,7 +75,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       settle({ id: res.id });
       return { ok: true, op: 'spawn', id: res.id, name };
     }
-    if (input.op === 'frozen') {
+    if (input.op === 'frozen' || input.op === 'amended') {
       const state = readState(file);
       const t = state?.tickets[ticket];
       if (!state || !t) return { ok: false, error: `ticket ${ticket} is not in the fanout state of run ${run}` };
@@ -83,14 +83,16 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const writer = t.accept?.acceptor?.id ?? null;
       const retro = Array.isArray(input.to) ? (input.to as unknown[]).filter((x): x is string => typeof x === 'string') : null; // a recipient recorded after the freeze: the recorded status goes to those ids only
       if (!retro && from && from !== writer && from !== run) return { ok: false, error: `${from} is neither ${ticket}'s writer nor the run's coordinator: the freeze status is not posted on its word` };
-      const body = frozenStatusText({ run, ticket, files: Object.keys(t.acceptance.files), runCmd: t.acceptance.run, branch: t.acceptance.source.branch ?? acceptanceBranch(run), head: t.acceptance.source.head });
+      const last = t.acceptance.amendments.at(-1);
+      const where = { run, ticket, files: Object.keys(t.acceptance.files), branch: t.acceptance.source.branch ?? acceptanceBranch(run), head: t.acceptance.source.head };
+      const body = input.op === 'amended' && last?.kind === 'harness-only' ? amendedStatusText({ ...where, reason: last.reason }) : frozenStatusText({ ...where, runCmd: t.acceptance.run });
       const to = frozenRecipients(t, writer).filter((id) => !retro || retro.includes(id));
       const notified: string[] = [];
       const failed: Array<{ id: string; error: string }> = [];
       for (const id of to) {
         try { deps.post({ to: id, sender: from ?? run, body }); notified.push(id); } catch (e) { failed.push({ id, error: e instanceof Error ? e.message : String(e) }); }
       }
-      return { ok: true, op: 'frozen', notified, failed, ...(to.length === 0 ? { note: `no --implementer / --verifier recorded on ${ticket} (state set ${ticket} --implementer <id> --verifier <id>): nobody was told` } : {}) };
+      return { ok: true, op: input.op, notified, failed, ...(to.length === 0 ? { note: `no --implementer / --verifier recorded on ${ticket} (state set ${ticket} --implementer <id> --verifier <id>): nobody was told` } : {}) };
     }
     return { ok: false, error: `unknown op ${JSON.stringify(input.op)}` };
   } catch (e) {
