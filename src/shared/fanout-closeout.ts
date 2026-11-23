@@ -58,7 +58,7 @@ export function ticketBody(run: string, ticket: string, finding: string, report:
   ].join('\n\n');
 }
 
-/** Every ticket text of `state`, in ticket then finding order. Nothing is dropped silently: a measured MINOR with an incomplete report (recording refuses it; an older or hand-edited state may hold one) is listed in `malformed` and the valid texts still come out. */
+/** Every ticket text of `state`, in ticket then finding order. Nothing is dropped silently: a measured MINOR with NO report (recording refuses it; an older or hand-edited state may hold one) is listed in `malformed` — a report OBJECT missing a part is refused by `parseState` before this runs (accepted gap: hand-edit only) and the valid texts still come out. */
 export function closeoutTexts(state: FanoutState): CloseoutResult {
   const texts: TicketText[] = [];
   const skipped: Record<CloseoutSkip, number> = { 'not-minor': 0, argued: 0, 'no-evidence': 0, process: 0, 'settled-fixed': 0 };

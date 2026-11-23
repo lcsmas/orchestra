@@ -7,7 +7,7 @@ import { homeOf, loadOrFail, parseArgs, runOf, type FanoutDeps, type RunResult }
 
 export const CLOSEOUT_USAGE = `       orchestra fanout closeout [--run <id>] [--json] [--file [--repo <owner/name>]]
                                   (#553, read-only: ONE ready-to-file ticket text — input / what happens / where / proof — per MEASURED MINOR on product code recorded on
-                                  the vague's tickets; an argued MINOR, a \`kind: process\` finding and an already-fixed one create nothing. Paste the list into the ledger
+                                  the vague's tickets; an argued MINOR, a \`kind: process\` finding and one settled \`fixed\` create nothing — after a follow-up fixed a MINOR, settle it (\`state set <ticket> --settle <id>=fixed:<ref>\`), else its text stays. Paste the list into the ledger
                                   closing report. Filing in a tracker is --file, OFF by default: best effort via gh (dedupe by a hidden marker), never changes the exit code,
                                   never waited on. Exit 0 always when the state reads.)`;
 

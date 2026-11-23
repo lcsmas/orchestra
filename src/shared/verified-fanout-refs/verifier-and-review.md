@@ -81,7 +81,7 @@ each and change nothing).
 **A MINOR that breaks a sentence of the ticket (#552, `minorPolicy: spec`).** A finding may carry
 `specSentence` — text quoted from the ticket's spec — and `kind: process` when the sentence is about how
 the work is REPORTED ("write the list in the pull request"). Record it with
-`state set <ticket> --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>"}}'`
+`state set <ticket> --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>"}}'` (add `"evidence":"measured","report":{"input":…,"happens":…,"where":…,"proof":…}` when you measured it: a measured code MINOR is refused without its report)
 (the spec text is captured by `state set --spec <file>`, or `--spec-text <file|->` for a URL / ledger spec).
 Code accepts the sentence only if it is a literal substring of that captured text (no trim, no
 case-fold; empty refused). An accepted, unsettled MINOR blocks `gate` + `deliver` (`finding-unsettled`)
