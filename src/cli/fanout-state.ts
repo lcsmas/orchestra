@@ -52,7 +52,7 @@ export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--ta
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
                                   [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
-                                  [--spec <file|url|ledger section>] [--implementer <ws id>] [--verifier <ws id>]
+                                  [--spec <file|url|ledger section>] [--spec-text <file|->] [--finding-json <json|->] [--settle <id>=fixed|pr-body:<ref>] [--decide <id>=<text>] [--implementer <ws id>] [--verifier <ws id>]
        orchestra fanout state show [--run <id>] [--json]
        orchestra fanout acceptance freeze|amend|waive|spawn|show <ticket> …   (frozen acceptance tests, #510/#515 — orchestra fanout acceptance --help)
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
@@ -82,6 +82,12 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            to nominate/gate a ticket that ever merged on another head (the merged head outlives an un-merge; --forget-merge <reason> clears it when the merge was never real).
            Findings are the coordinator's own record (no report reference): one finding may justify more than one follow-up, and a brand-new branch under a fresh ticket id cannot
            be told from a new ticket — the rule catches the same branch/PR as a merged ticket, any head change on it, and every un-merge/--forget-merge path (the reason is kept in forgottenMerges, denied to a scribe).
+  A MINOR that breaks a sentence of the ticket (#552, minorPolicy spec): --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>","kind":"code|process","evidence":"measured|argued"}}'.
+           Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only refused) of the spec TEXT captured at registration — --spec <file>
+           reads the file; for a URL / ledger spec give the text: --spec-text <file|-> (derived, never settable by --json). An accepted, unsettled MINOR BLOCKS \`gate\` + \`deliver\`
+           (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
+           round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide denied). It may be named in --fixes (a process finding never).
+           LIMIT: code checks the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
 const SHA_ARG = /^[0-9a-f]{7,40}$/;

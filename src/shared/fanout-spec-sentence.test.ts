@@ -156,3 +156,19 @@ test('#552 follow-up rule: a process finding never starts a code round — namin
   for (const fixes of [['P-1'], ['P-1', 'F-MAJ'], ['P-2']]) assert.throws(() => fuOf(s, fixes), /process finding \(how the work is reported\)/, fixes.join());
   assert.equal(followUpRefusal({ ...s, tickets: { ...s.tickets, 'T-1-fu': { ...s.tickets['T-1'], status: 'started', followUpOf: 'T-1', fixes: ['P-1'], mergedHead: null, mergedTree: null, head: null, tree: null } } }, 'T-1-fu')?.reason, 'followup-process-finding');
 });
+
+test('#552 minorPolicy refuse (= #514 as it was): no merge block, a MINOR with an accepted sentence is NOT enough for a follow-up, the refusal says MINOR findings get no action', () => {
+  const open = rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: SENT } });
+  assert.deepEqual(blockingMinors(open, 'T-1'), ['F-1']);
+  const refuse = { ...open, switches: { minorPolicy: 'refuse' } } as FanoutState;
+  assert.deepEqual(blockingMinors(refuse, 'T-1'), []);
+  assert.equal(mergeBlockRefusal(refuse, 'T-1'), null);
+  const s = mergedWith({ 'F-S': { severity: 'MINOR', specSentence: SENT }, 'F-MAJ': 'MAJOR' });
+  const fu = (st: FanoutState, fixes: string[]) => ({ ...st, tickets: { ...st.tickets, 'T-1-fu': { ...st.tickets['T-1'], status: 'started' as const, followUpOf: 'T-1', fixes, mergedHead: null, mergedTree: null, head: null, tree: null, findings: {} } } });
+  assert.equal(followUpRefusal(fu(s, ['F-S']), 'T-1-fu'), null, 'spec: accepted');
+  const r = followUpRefusal(fu({ ...s, switches: { minorPolicy: 'refuse' } } as FanoutState, ['F-S']), 'T-1-fu');
+  assert.equal(r?.reason, 'followup-minor-only');
+  assert.match(r!.detail, /MINOR findings get no action \(no follow-up PR/);
+  assert.doesNotMatch(r!.detail, /specSentence is a literal/, 'the refuse wording is the #514 sentence');
+  assert.equal(followUpRefusal(fu({ ...s, switches: { minorPolicy: 'refuse' } } as FanoutState, ['F-MAJ']), 'T-1-fu'), null, 'a MAJOR is enough under refuse');
+});

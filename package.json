@@ -55,6 +55,8 @@
     "test:fanout-open-mutants": "node scripts/e2e-fanout-open.mjs --mutants",
     "test:fanout-followup": "node scripts/e2e-fanout-followup.mjs",
     "test:fanout-followup-mutants": "node scripts/e2e-fanout-followup.mjs --mutants",
+    "test:spec-sentence": "node scripts/e2e-spec-sentence.mjs",
+    "test:spec-sentence-mutants": "node scripts/e2e-spec-sentence.mjs --mutants",
     "test:fanout-acceptance": "node scripts/e2e-fanout-acceptance-mutants.mjs",
     "test:fanout-acceptance-mutants": "node scripts/e2e-fanout-acceptance-mutants.mjs --mutants",
     "test:fanout-jest-config": "pnpm run build:cli && node scripts/e2e-fanout-jest-config.mjs",

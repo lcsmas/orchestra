@@ -676,7 +676,10 @@ export type FollowUpReason = 'followup-undeclared' | 'followup-base-not-merged' 
 // ── #552 — the MINOR policy. `switchesOf` is the T3 seam (#554 owns the switches, their storage and their freeze): until it lands this STUB answers the defaults, `minorPolicy: 'spec'`. ──
 export type MinorPolicy = 'legacy' | 'refuse' | 'spec';
 export interface FanoutSwitches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: MinorPolicy }
-export function switchesOf(_state: FanoutState): FanoutSwitches { return { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' }; }
+export function switchesOf(state: FanoutState): FanoutSwitches {
+  // STUB (T3 replaces this body): the defaults; an in-memory `switches` field (never persisted — parseState refuses it) lets a test drive the other policies.
+  return { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', ...((state as { switches?: Partial<FanoutSwitches> }).switches ?? {}) };
+}
 const followUpRuleOf = (policy: MinorPolicy): string => (policy === 'spec' ? FOLLOWUP_RULE : FOLLOWUP_RULE_REFUSE);
 
 /** #552 — is the finding's `specSentence` ACCEPTED: present and a LITERAL substring (no trim, no case-fold) of the spec text captured at registration? Code checks the sentence is IN the spec, never that it is really broken — the reviewer judges that. Re-checked wherever it is acted on (a hand-edited state cannot smuggle one in). */
