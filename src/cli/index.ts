@@ -100,7 +100,7 @@ import {
   type AgentTabView,
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
-import { defaultRunner as fanoutRunner, runFanout } from './fanout-state.ts';
+import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
 import { runCloseout } from './fanout-closeout.ts';
 
@@ -2470,7 +2470,15 @@ async function main(argv: string[]): Promise<void> {
         await settleHostIdentity();
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
       }
-      const fanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
+      const fanoutDeps: FanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
+      // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
+      const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);
+      if (switchRun) {
+        try {
+          const q = await request('/fanoutAcceptance', { op: 'children', run: switchRun, from: (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || undefined }, { timeoutMs: 15_000 });
+          fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
+        } catch { fanoutDeps.spawned = null; }
+      }
       const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
@@ -2481,7 +2489,10 @@ async function main(argv: string[]): Promise<void> {
         const ticket = String(call.body.ticket);
         let res: OrchestraResponse;
         try { res = await request(call.route, call.body, { timeoutMs: 180_000 }); } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
-        if (call.body.op === 'spawn') {
+        if (call.body.op === 'skills') { // #554: best effort — the state is the truth, the skill re-render is a courtesy
+          if (!res.ok) process.stderr.write(`note: the host did not re-render the verified-fanout skill (${String(res.error ?? 'refused')}): it follows the switches at the next session start\n`);
+          else if (((res.refreshed as string[] | undefined) ?? []).length) process.stdout.write('verified-fanout skill re-rendered from the switches\n');
+        } else if (call.body.op === 'spawn') {
           if (!res.ok) fail(`ticket ${ticket} is registered but its test writer was NOT spawned: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout acceptance spawn ${ticket}`);
           process.stdout.write(`${ticket}: Orchestra spawned its test writer ${String(res.name)} (${String(res.id)}) — it freezes the tests to the shared acceptance branch\n`);
         } else if (!res.ok) {

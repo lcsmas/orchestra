@@ -12,6 +12,7 @@ import {
   readState,
   resolveFanoutRun,
   stateFile,
+  switchesOf,
   updateState,
 } from '../shared/fanout-state.ts';
 import {
@@ -217,9 +218,10 @@ export function upstreamsFromState(opts: { ticket: string; run?: string }, env: 
   }
   const t = state.tickets[opts.ticket];
   if (!t) throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run} (known: ${Object.keys(state.tickets).slice(0, 12).join(', ') || 'none'}): a mistyped --ticket would skip the order rule`);
+  const early = switchesOf(state).earlyGate === 'on'; // #554: earlyGate off = before #506: the order rule stays (the upstream must be merged), the built-on content check (upstream-changed) is absent
   return t.dependsOn.map((id) => {
     const u = state.tickets[id];
-    return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: t.builtOn[id] ?? null, builtOnTree: t.builtOnTree[id] ?? null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
+    return { id, branch: u?.branch ?? null, pr: u?.pr ?? null, builtOn: early ? t.builtOn[id] ?? null : null, builtOnTree: early ? t.builtOnTree[id] ?? null : null, accepted: !!u?.mergedAccepted && u.status === 'merged' };
   });
 }
 

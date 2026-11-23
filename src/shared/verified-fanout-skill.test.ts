@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../cli/help.ts';
 import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from './verified-fanout-skill.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
+import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
 import { mkHomeScratch } from './home-scratch.ts';
 import { FLEET_ROLES, roleOfName, roleSpec, resolveSpawnRoleDefaults, type FleetRole } from './fleet-roles.ts';
@@ -466,7 +467,7 @@ test('wiring: workspaces.ts calls the guarded installer and hashes the text AND 
   };
   assert.deepEqual(check(workspacesSrc), []);
   // must-FAIL: each deletion is seen
-  assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
+  assert.ok(check(workspacesSrc.replace('      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e), fanoutSwitches),\n', '')).includes('installVerifiedFanoutSkill(skillsDir) call missing'));
   assert.ok(check(workspacesSrc.replace('      VERIFIED_FANOUT_SKILL,\n', '')).some((p) => /VERIFIED_FANOUT_SKILL not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_FILES),\n', '')).some((p) => /VERIFIED_FANOUT_FILES not hashed/.test(p)));
   assert.ok(check(workspacesSrc.replace('      JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),\n', '')).some((p) => /VERIFIED_FANOUT_V2_REFERENCES not hashed/.test(p)));
@@ -560,7 +561,7 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
     assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
     assert.equal(fs.readFileSync(path.join(dir, 'references', 'traps.md'), 'utf8'), VERIFIED_FANOUT_FILES.find((f) => f.path === 'references/traps.md')!.content);
     // #474: the v2 references land too (every pointer of SKILL.md resolves in the installed dir)
-    for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.equal(fs.readFileSync(path.join(dir, f.path), 'utf8'), f.content, f.path);
+    for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.equal(fs.readFileSync(path.join(dir, f.path), 'utf8'), renderSwitchBlocks(f.content, {}), f.path); // #554: the default-switch render
     for (const m of VERIFIED_FANOUT_SKILL.matchAll(/(?<![\w/-])(references\/[a-z][a-z-]*\.md|scripts\/ledger-set)(?![\w-])/g)) assert.ok(fs.existsSync(path.join(dir, m[1])), `${m[1]} (pointed at by SKILL.md) exists on disk after the install`);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0);
     // a previous generated copy + a corrupted reference + a lost exec bit → all restored
