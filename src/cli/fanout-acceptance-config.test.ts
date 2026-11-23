@@ -237,7 +237,7 @@ test('gate: config byte-identical ⇒ the command runs (argv as frozen) and the 
     assert.equal(res.receipt.ok, false);
     assert.equal(res.config?.status, status, label);
     assert.match(res.detail ?? '', /runner config packages\/api-v2\/jest\.e2e\.config\.ts/);
-    assert.match(res.detail ?? '', /target moved the config since the freeze/);
+    assert.match(res.detail ?? '', /stale base: rebase onto the target/);
     assert.deepEqual(ran, [], `${label}: the changed config is never executed`);
   };
   refused('candidate edits the config', () => fs.writeFileSync(path.join(r.cand, CFG), "export default { testRegex: '.*' };\n"), 'changed');

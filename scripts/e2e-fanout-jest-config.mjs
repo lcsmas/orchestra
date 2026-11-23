@@ -187,6 +187,21 @@ function scenarios(cliPath) {
     arm('P0 must-PASS `jest --config <tracked file> <frozen file>` freezes, records {path, sha256 of the target-tip bytes}, the hash covers it', f.code === 0 && a?.run === RUN && a.config?.path === CFG && a.config.sha256 === want && /runner config/.test(f.stdout), J(f));
   } finally { F.cleanup(); }
 
+  // stale base (review c/7088686640 MAJOR): the target moved the config BEFORE the freeze, the candidate was never rebased ⇒ refused, and a plain rebase (no config edit) is the fix
+  const B = world(cliPath);
+  try {
+    B.gw(['checkout', '-q', 'master']); fs.writeFileSync(path.join(B.work, CFG), 'export default { testRegex: ".e2e.test.js$", moved: 1 };\n');
+    B.gw(['add', '.']); B.gw(['commit', '-q', '-m', 'target moves the config BEFORE the freeze']); B.gw(['push', '-q', 'origin', 'master']);
+    const fb = B.freeze();
+    const stale = B.variant('g-stale', () => {}); // branched from the OLD base: carries the old config
+    const g1 = B.gate(stale);
+    arm('B1 must-FAIL a stale-base candidate (target moved the config BEFORE the freeze, candidate not rebased): exit 2, frozen-config-changed, the detail says rebase and does NOT claim a move "since the freeze"',
+      fb.code === 0 && g1.code === 2 && g1.json?.reason === 'frozen-config-changed' && /rebase onto the target/.test(g1.json.detail ?? '') && !/since the freeze|rebasing cannot/.test(g1.json.detail ?? ''), J(g1));
+    const rebased = B.variant('g-stale-rebased', (c) => fs.writeFileSync(path.join(c, CFG), 'export default { testRegex: ".e2e.test.js$", moved: 1 };\n')); // the rebase: the target's config, no edit of its own
+    const g2 = B.gate(rebased);
+    arm('B2 must-PASS the same candidate once rebased onto the target (no config edit of its own): exit 0, acceptance.ok, config same', g2.code === 0 && g2.json?.acceptance?.ok === true && g2.json.acceptance.config?.status === 'same', J(g2));
+  } finally { B.cleanup(); }
+
   const E = world(cliPath);
   try {
     const f = E.freeze(`jest --config=${CFG} ${TEST}`);
@@ -250,7 +265,7 @@ function scenarios(cliPath) {
     W.gw(['add', '.']); W.gw(['commit', '-q', '-m', 'target moves the config']); W.gw(['push', '-q', 'origin', 'master']);
     const rebased = W.variant('g-rebased', (c) => fs.writeFileSync(path.join(c, CFG), 'export default { testRegex: ".e2e.test.js$", bail: 1 };\n')); // the candidate rebased onto the moved target: NO edit of its own
     const g8 = W.gate(rebased);
-    arm('G8 must-FAIL a candidate carrying the TARGET\'s newer config (target drift, no edit by the candidate): exit 2, frozen-config-changed, the detail names target drift + `amend`', g8.code === 2 && g8.json?.reason === 'frozen-config-changed' && /target moved the config/.test(g8.json.detail ?? '') && /acceptance amend/.test(g8.json.detail ?? ''), J(g8));
+    arm('G8 must-FAIL a candidate carrying the TARGET\'s newer config (target drift, no edit by the candidate): exit 2, frozen-config-changed, the detail names the three causes (revert / stale base: rebase / amend after a target move)', g8.code === 2 && g8.json?.reason === 'frozen-config-changed' && /stale base: rebase onto the target/.test(g8.json.detail ?? '') && /acceptance amend/.test(g8.json.detail ?? '') && !/since the freeze|rebasing cannot/.test(g8.json.detail ?? ''), J(g8));
     const a1 = W.amend('900', 'the e2e config now bails early', []);
     const acc1 = W.acc();
     const am1 = acc1.amendments[0];
@@ -292,7 +307,7 @@ const mutants = [
   { name: '--config without a value: accepted', find: 'if (v === void 0 || v === "" || v.startsWith("-")) why(', put: () => 'if (false) why(' },
   { name: 'the --config file may also be a frozen test', find: 'if (config !== null && paths.includes(config)) why(', put: () => 'if (false) why(' },
   { name: 'amend: configAfter is not recorded in the amendment row', find: '...a.config ? { configAfter: a.config } : {}', put: () => '' },
-  { name: 'gate: the refusal detail no longer names target drift', find: 'the target moved the config since the freeze', put: () => 'the candidate edited it' },
+  { name: 'gate: the refusal detail no longer names target drift', find: 'stale base: rebase onto the target', put: () => 'the candidate edited it' },
   { name: 'other flags: any jest flag accepted', find: 'if (!runner.flags.some((re) => re.test(t))) why(', put: () => 'if (false) why(' },
   { name: '--config accepted on EVERY runner (node / vitest / mocha …), not jest only', find: 'runner.config && t === "--config"', put: () => 't === "--config"', extra: [{ find: 'runner.config && t.startsWith("--config=")', put: () => 't.startsWith("--config=")' }] },
   { name: 'hash: the config bytes are not part of the frozen hash', find: '(config ? `config\\0${config.path}\\0${config.sha256}\n` : "")', put: () => '""' },
