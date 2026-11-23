@@ -22,7 +22,8 @@ export type DeliverAcceptanceReason = 'frozen-test-changed' | 'frozen-config-cha
 
 /** The gate's proof for ONE head. #512: it is keyed on CONTENT — `tree` (git tree of `head`) and `ticket` bind it to what was run; both optional so an older receipt (head-only) still parses and stays head-keyed. */
 export interface Receipt { head: string; hash: string; ok: boolean; tree?: string; ticket?: string }
-export interface FileStatus { path: string; status: 'same' | 'changed' | 'missing'; /** #542: this entry is the command's runner config, not a frozen test */ config?: true }
+/** `previous` (#540) = the file holds an OLDER recorded version of a harness-only-amended set (`acceptableBytes`): accepted, the amended bytes are the ones run. */
+export interface FileStatus { path: string; status: 'same' | 'previous' | 'changed' | 'missing'; /** #542: this entry is the command's runner config, not a frozen test */ config?: true }
 /** What `fanout gate` prints under `acceptance` (frozen interface, #511). */
 export interface GateAcceptance {
   ok: boolean;
@@ -34,6 +35,8 @@ export interface GateAcceptance {
   receipt: Receipt;
   reason?: AcceptanceReason;
   detail?: string;
+  /** #540 — the files that held a previous harness-only version: the gate ran the amended bytes from `source`, not the candidate's. */
+  amendedFrom?: { branch: string | null; head: string; files: string[] };
 }
 
 /** Whitespace-normalised, for matching a spec sentence inside a decision body. */
@@ -190,7 +193,7 @@ export function amendInto(
   if (hashAfter === acc.hash) throw new FanoutStateError(`${id}: the amendment changes nothing (same files, same command: hash ${acc.hash.slice(0, 12)})`);
   // one decision = one comment, however its URL is spelled (issues/pull, case, number): keyed on lower-cased repo + NUMERIC comment id (`-0900` ≡ `-900`)
   const key = (u: string): string => { const m = /^repos\/([^/]+\/[^/]+)\/issues\/comments\/(\d+)$/.exec(decisionApiPath(u) ?? ''); return m ? `${m[1].toLowerCase()}#${Number(m[2])}` : u.toLowerCase(); };
-  if (acc.amendments.some((m) => key(m.decision) === key(a.decision))) throw new FanoutStateError(`${id}: this decision already authorised an amendment (${a.decision}) — one decision, one amendment: record a new ledger decision`);
+  if (acc.amendments.some((m) => m.kind !== 'harness-only' && key(m.decision) === key(a.decision))) throw new FanoutStateError(`${id}: this decision already authorised an amendment (${a.decision}) — one decision, one amendment: record a new ledger decision`);
   parseRunArgv(run, Object.keys(a.files));
   const { config: _oldConfig, ...accRest } = acc; // the amended set carries ITS config (or none), never the old one
   const next: Acceptance = {
@@ -198,6 +201,44 @@ export function amendInto(
     amendments: [...acc.amendments, { at: a.now, decision: a.decision, specSentence: a.specSentence, bodySha256: a.bodySha256, hashBefore: acc.hash, hashAfter, ...(run !== acc.run ? { runAfter: run } : {}), ...(a.config ? { configAfter: a.config } : {}) }],
   };
   return { ...state, tickets: { ...state.tickets, [id]: { ...cur, acceptance: next, updatedAt: a.now } }, updatedAt: a.now };
+}
+
+/** #540 — the bytes a candidate may still hold for each frozen path: the CURRENT sha256 plus the versions before it, back through an UNBROKEN chain of harness-only amendments
+ *  (the assertions are proven identical along the chain; a decision amend ends it — a candidate older than that changed the assertions and must re-copy). */
+export function acceptableBytes(acc: Acceptance): Record<string, Set<string>> {
+  const out: Record<string, Set<string>> = {};
+  for (const [p, h] of Object.entries(acc.files)) out[p] = new Set([h]);
+  for (let i = acc.amendments.length - 1; i >= 0; i--) {
+    const m = acc.amendments[i];
+    if (m.kind !== 'harness-only') break;
+    for (const [p, h] of Object.entries(m.filesBefore)) out[p]?.add(h);
+  }
+  return out;
+}
+
+/** #540 — record a harness-only amend: new bytes for the SAME paths and the SAME command; the caller proved the assertion statements identical (`assertionsHash`). A no-op is refused. */
+export function amendHarnessInto(
+  state: FanoutState, id: string,
+  a: { files: Record<string, string>; reason: string; assertionsHash: string; source: Acceptance['source']; now: string; lines?: { added: number; removed: number; reorderOnly?: true } },
+): FanoutState {
+  const cur = ticketOf(state, id);
+  const acc = cur?.acceptance;
+  if (!cur || !acc) throw new FanoutStateError(`${id}: no frozen acceptance tests to amend — freeze first (\`orchestra fanout acceptance freeze\`)`);
+  if (Object.keys(a.files).sort().join('\0') !== Object.keys(acc.files).sort().join('\0')) throw new FanoutStateError(`${id}: a harness-only amend keeps the frozen file set (${Object.keys(acc.files).join(', ')}): another set changes what is asserted — use the decision amend`);
+  const reason = a.reason.trim();
+  if (!reason || reason.length > 300 || /[\r\n\0]/.test(reason)) throw new FanoutStateError('--reason must be one short line (≤ 300 chars): why the harness had to change');
+  const hashAfter = acceptanceHash(a.files, acc.run, acc.config); // #542: the runner config recorded at freeze stays part of the identity (a config-only change is a decision amend)
+  if (hashAfter === acc.hash) throw new FanoutStateError(`${id}: the amendment changes nothing (same files, same command: hash ${acc.hash.slice(0, 12)})`);
+  const next: Acceptance = {
+    ...acc, files: a.files, hash: hashAfter, source: a.source,
+    amendments: [...acc.amendments, { kind: 'harness-only', at: a.now, reason, assertionsHash: a.assertionsHash, filesBefore: acc.files, hashBefore: acc.hash, hashAfter, ...(a.lines ? { lines: a.lines } : {}) }],
+  };
+  return { ...state, tickets: { ...state.tickets, [id]: { ...cur, acceptance: next, updatedAt: a.now } }, updatedAt: a.now };
+}
+
+/** The bus status the host posts to the implementer / verifier when a harness-only amend lands (#540): no manual copy needed. */
+export function amendedStatusText(o: { run: string; ticket: string; files: string[]; branch: string; head: string; reason: string }): string {
+  return `acceptance tests of ${o.ticket}: HARNESS-ONLY amend @ ${o.head.slice(0, 12)} on ${o.branch} (${o.files.join(', ')}) — ${o.reason}. NOTHING to copy: the assertions are byte-identical; \`fanout gate\` / \`deliver\` accept a candidate still holding the previous recorded bytes and run the amended ones from ${o.branch}. A receipt gated before this amend is acceptance-stale: re-gate (verifier).`;
 }
 
 /** `https://github.com/<o>/<r>/(issues|pull)/<n>#issuecomment-<id>` → the API path of that comment. null = not a ledger comment URL. */
@@ -222,6 +263,8 @@ export function decideGateAcceptance(acc: Acceptance, facts: {
   cwdTree?: string | null; ticket?: string;
   /** #542 — the runner config the frozen command names, read in the checkout against the sha256 recorded at freeze (absent = the command names none). */
   config?: FileStatus;
+  /** #540 — files holding a previous harness-only version are run with the amended bytes: set when those bytes could not be obtained + proven (⇒ acceptance-unproven). */
+  overlayError?: string;
 }): GateAcceptance {
   const receipt = (ok: boolean): Receipt => ({ head: facts.head, hash: acc.hash, ok, ...(facts.cwdTree ? { tree: facts.cwdTree } : {}), ...(facts.ticket ? { ticket: facts.ticket } : {}) });
   const refuse = (reason: AcceptanceReason, detail: string, files: FileStatus[] = facts.files, ran: GateAcceptance['ran'] = null): GateAcceptance =>
@@ -230,14 +273,16 @@ export function decideGateAcceptance(acc: Acceptance, facts: {
   if (!facts.cwdHead) return refuse('acceptance-unproven', '--cwd is not the root of a git checkout (git rev-parse HEAD / --show-toplevel): the head it holds cannot be proven', []);
   if (facts.cwdHead !== facts.head) return refuse('acceptance-stale-checkout', `--cwd is at ${facts.cwdHead.slice(0, 12)}, not --head ${facts.head.slice(0, 12)}: check out the verified head`, []);
   if (facts.dirty.length) return refuse('acceptance-stale-checkout', `--cwd has uncommitted changes to tracked files (${facts.dirty.slice(0, 5).join(', ')}): the run would not be of --head`, []);
-  const bad = facts.files.filter((f) => f.status !== 'same');
+  const bad = facts.files.filter((f) => f.status !== 'same' && f.status !== 'previous');
   if (bad.length) return refuse('frozen-test-changed', `frozen test file(s) differ from the frozen bytes at ${facts.head.slice(0, 12)}: ${bad.slice(0, 8).map((f) => `${f.path} (${f.status})`).join(', ')}`);
   // #542: the runner config is NOT a frozen test but it decides what runs (testMatch, setupFiles, moduleNameMapper…): a candidate whose copy differs from the bytes recorded at freeze is REFUSED, never run.
   // A legitimate config change is accepted by the coordinator with `acceptance amend` (a ledger decision), which re-records it.
   if (facts.config && facts.config.status !== 'same') return refuse('frozen-config-changed', `the runner config ${facts.config.path} (named by the frozen command) ${facts.config.status === 'missing' ? 'is missing or not a regular tracked file at' : 'differs from the bytes recorded at freeze in'} ${facts.head.slice(0, 12)}: if the candidate's diff edits it, revert that edit; if its diff does not touch it, the candidate sits on a base whose config differs (a stale base: rebase onto the target) — and if the target itself moved the config after the freeze, the coordinator re-records it with \`acceptance amend\` (ledger decision)`);
+  const prev = facts.files.filter((f) => f.status === 'previous').map((f) => f.path);
+  if (prev.length && facts.overlayError) return refuse('acceptance-unproven', facts.overlayError);
   const ran = facts.run(); // only after the bytes are proven: a changed test is never executed
   if (ran.exit !== 0) return refuse('frozen-test-failed', `\`${ran.cmd}\` exited ${ran.exit}`, facts.files, ran);
-  return { ok: true, hash: acc.hash, files: facts.files, ...(facts.config ? { config: facts.config } : {}), ran, receipt: receipt(true) };
+  return { ok: true, hash: acc.hash, files: facts.files, ...(facts.config ? { config: facts.config } : {}), ran, receipt: receipt(true), ...(prev.length ? { amendedFrom: { branch: acc.source.branch, head: acc.source.head, files: prev }, detail: `${prev.join(', ')} held a previous recorded (harness-only) version: the amended bytes were run from ${acc.source.branch ?? acc.source.head.slice(0, 12)}` } : {}) };
 }
 
 /** A receipt file: the gate's `acceptance.receipt` itself, or the whole gate JSON line (its `acceptance.receipt`). */

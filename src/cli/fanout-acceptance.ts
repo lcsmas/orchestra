@@ -9,8 +9,9 @@ import {
   FanoutStateError, SAFE_BRANCH, parseRunArgv, readState, runConfigOf, resolveFanoutRun, sha256Hex, stateFile, updateState,
   type Acceptance, type FanoutState, type FreezeCheck, type TicketState,
 } from '../shared/fanout-state.ts';
+import { changedLines, compareFrozenSets } from '../shared/fanout-assertions.ts';
 import {
-  acceptanceBranch, acceptancePhase, amendInto, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
+  acceptableBytes, acceptanceBranch, acceptancePhase, amendHarnessInto, amendInto, amendedStatusText, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
   type AcceptancePhase, type FileStatus, type GateAcceptance,
 } from '../shared/fanout-acceptance.ts';
 import { checkOnTargetTip, freezeTimeoutMs, realFreezeIo, type FreezeIo } from './fanout-freeze-check.ts';
@@ -19,6 +20,7 @@ import { acceptanceLine, homeOf, loadOrFail, needsAcceptor, parseArgs, runOf, sp
 
 export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" [--from <ref|dir>] [--accept-unclassified "<why>"]
        orchestra fanout acceptance amend  <ticket> [--run <id>] --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2,…> [--from <ref|dir>] [--run-cmd "<cmd>"]
+       orchestra fanout acceptance amend  <ticket> [--run <id>] --harness-only --reason "<why the harness changed>" --files <p1,p2,…> [--from <ref|dir>]
        orchestra fanout acceptance waive  <ticket> [--run <id>] --decision <ledger comment url> --reason "<why this ticket cannot have tests>"
        orchestra fanout acceptance spawn  <ticket> [--run <id>] [--replace]
        orchestra fanout acceptance show   <ticket> [--run <id>] [--json | --brief]
@@ -52,6 +54,15 @@ and recorded in the ticket's fanout state with the targeted command (--run-cmd, 
   amend   coordinator only; --decision = a GitHub ledger comment URL whose body (read through gh, fail closed) quotes --spec-sentence (≥ 12 chars,
           whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision comment (repo + id,
           however the URL is spelled, leading zeros included) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
+  amend --harness-only (#540)  coordinator only, NO decision: the same file set + command, setup / teardown / context changed, the assertions NOT. Orchestra extracts, from the recorded bytes and from --from,
+          the contract statements and requires them byte-identical in order (JS/TS and Python; any other file, an unlexable one or one with no assertion = unknown shape ⇒ REFUSED, use the decision amend):
+          assertions (expect / assert / should / t.* / any assert*|expect*|verify* call, e.g. supertest .expect) with the control prefix on their line (if (false), 0 &&, setTimeout(() =>) and the
+          non-test blocks enclosing them (try, a function, a label); test declarations (title, { skip } options, callback parameters); imports / bindings of the runner and assert identifiers; return / throw /
+          break / continue inside a test body; assertion-NAMED definitions (function expectOk, def assertEqual) pinned in full, and X.assert* assignments / mock.patch of assert*; skip / exit neutralisers (.skip, this.skip(), pytestmark, process.on). Comments, indentation and spacing between statements are ignored; text inside a string is not.
+          Records {kind:harness-only, assertionsHash, reason, filesBefore, lines}, publishes the new bytes to ${'`'}acceptance/<run>${'`'} (rolled back if the state write fails) and tells the implementer + verifier.
+          It PRINTS the non-assertion lines it changed: that is what you attest. NOT proven: a VALUE an assertion references that a setup line defines (const expected = 2, run = async () => 5), what a helper the
+          tests call does, a runner config file, alias forms of patching an assert (Object.defineProperty(assert…), assert['equal']=, jest.spyOn / vi.mock of the assert module, process.once / exitCode) — a best-effort denylist; read the printed diff (capped at 40 lines; a reorder-only change is announced as such). Known limit: after a DECISION amend of a forced ticket the shared branch no longer holds the recorded bytes, so --harness-only is refused for it. \`fanout gate\` / \`deliver\` then ACCEPT a candidate still holding a previous recorded version (gate: the amended bytes are run from
+          the shared branch, hash-proven, the candidate's file restored; no copy); other bytes stay \`frozen-test-changed\`; a receipt for the old hash is \`acceptance-stale\`.
   show    read-only, every role. \`fanout gate --ticket <id> --cwd <checkout>\` runs + hashes them; \`fanout deliver --acceptance <receipt>\` demands the receipt.
   freeze check (#539): freeze first RUNS the frozen command ONCE on the current tip of the state's target (fetched fresh, in a clean scratch checkout with the frozen files laid over it —
           not the writer's tree) and classifies each test from the runner's STRUCTURED output (node --test: its TAP reporter; jest: ${'`'}--json --outputFile${'`'} — forced for that run only; the frozen command and its hash are unchanged).
@@ -83,7 +94,7 @@ function treeModes(out: string): Map<string, string> {
 
 // ── reading the frozen files ──────────────────────────────────────────────────────────────────────────────
 
-interface Frozen { files: Record<string, string>; source: Acceptance['source']; /** the checkout the blobs were read in + their git modes (the publish reuses them) */ repo: string; modes: Map<string, string> }
+interface Frozen { files: Record<string, string>; /** the UTF-8 text of each file (the #540 assertion check reads it) */ texts: Record<string, string>; source: Acceptance['source']; /** the checkout the blobs were read in + their git modes (the publish reuses them) */ repo: string; modes: Map<string, string> }
 
 /** Hash `paths` as committed at `from`: a checkout DIR (HEAD, tracked files unmodified) or a git ref resolved in `cwd` with the runner. */
 export function readFrozen(paths: string[], from: string, cwd: string, runner: Runner): Frozen {
@@ -112,6 +123,7 @@ export function readFrozen(paths: string[], from: string, cwd: string, runner: R
   if (tree.code !== 0) throw new FanoutStateError(`git ls-tree ${head.slice(0, 12)}: exit ${tree.code}`);
   const modes = treeModes(tree.stdout);
   const files: Record<string, string> = {};
+  const texts: Record<string, string> = {};
   for (const p of paths) {
     const mode = modes.get(p);
     if (!mode) throw new FanoutStateError(`${p}: not in ${from} (${head.slice(0, 12)}) — a frozen test is a committed file of the writer's branch`);
@@ -120,8 +132,9 @@ export function readFrozen(paths: string[], from: string, cwd: string, runner: R
     if (blob.code !== 0) throw new FanoutStateError(`git show ${head.slice(0, 12)}:${p}: exit ${blob.code}`);
     if (blob.stdout.includes('�')) throw new FanoutStateError(`${p}: not valid UTF-8 text (the byte re-read cannot be exact) — freeze text files only`);
     files[p] = sha256Hex(Buffer.from(blob.stdout, 'utf8'));
+    texts[p] = blob.stdout;
   }
-  return { files, source: { branch, head }, repo, modes };
+  return { files, texts, source: { branch, head }, repo, modes };
 }
 
 // ── #542: the runner config a `jest --config <path>` command names ────────────────────────────────────────
@@ -149,7 +162,7 @@ export function readRunnerConfig(runner: Runner, repo: string, target: string, c
 
 /** Add the frozen blobs to branch `acceptance/<run>` as ONE new commit on its remote tip (git plumbing on a scratch index: the writer's worktree and branch are untouched),
  *  pushed WITHOUT force; a lost race re-reads the tip and retries. A path another ticket already froze on that branch with other bytes is refused. */
-export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticket: string; paths: string[] }): Acceptance['source'] {
+export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticket: string; paths: string[]; /** #540: path → sha256 the branch may currently hold for it (this ticket's own recorded bytes), replaced by the amended ones */ replace?: Record<string, string>; verb?: string }): Acceptance['source'] {
   const branch = acceptanceBranch(o.run);
   const git = (args: string[], env?: Record<string, string>) => runner('git', args, f.repo, env);
   const idx = path.join(process.env.TMPDIR || os.tmpdir(), `orchestra-accept-idx-${process.pid}-${Math.random().toString(36).slice(2)}`);
@@ -166,7 +179,9 @@ export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticke
         const blob = git(['rev-parse', '--verify', '-q', `${f.source.head}:${p}`]).stdout.trim();
         if (!/^[0-9a-f]{40,64}$/.test(blob)) throw new FanoutStateError(`${p}: no blob at ${f.source.head.slice(0, 12)}`);
         if (tip) {
-          const there = git(['rev-parse', '--verify', '-q', `${tip}:${p}`]).stdout.trim();
+          let there = git(['rev-parse', '--verify', '-q', `${tip}:${p}`]).stdout.trim();
+          // #540: the ticket's OWN recorded bytes on the branch (`o.replace`) may be replaced by its harness-only amend; anything else there stays refused
+          if (there && there !== blob && o.replace?.[p] !== undefined && (() => { const t = git(['show', `${tip}:${p}`]); return t.code === 0 && sha256Hex(Buffer.from(t.stdout, 'utf8')) === o.replace![p]; })()) there = blob;
           if (there && there !== blob) throw new Refusal(`${p} is already on ${branch} with other bytes (another ticket froze it): a frozen path belongs to ONE ticket — choose another path`);
         }
         if (git(['update-index', '--add', '--cacheinfo', f.modes.get(p) ?? '100644', blob, p], env).code !== 0) throw new FanoutStateError(`git update-index ${p} failed`);
@@ -174,7 +189,7 @@ export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticke
       const tree = git(['write-tree'], env).stdout.trim();
       if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new FanoutStateError('git write-tree failed');
       if (tip && git(['rev-parse', `${tip}^{tree}`]).stdout.trim() === tree) return { branch, head: tip }; // same bytes already published
-      const c = git(['commit-tree', tree, ...(tip ? ['-p', tip] : []), '-m', `acceptance(${o.ticket}): freeze ${o.paths.length} file(s) [${o.run}]`]);
+      const c = git(['commit-tree', tree, ...(tip ? ['-p', tip] : []), '-m', `acceptance(${o.ticket}): ${o.verb ?? 'freeze'} ${o.paths.length} file(s) [${o.run}]`]);
       const commit = c.stdout.trim();
       if (c.code !== 0 || !/^[0-9a-f]{40}$/.test(commit)) throw new FanoutStateError(`git commit-tree failed: ${c.stderr.trim().slice(0, 200)}`);
       if (git(['push', '--quiet', 'origin', `${commit}:refs/heads/${branch}`]).code === 0) return { branch, head: commit };
@@ -291,8 +306,10 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     return { code: 0, stdout: `${ticket}: requesting its accept- writer from Orchestra\n`, stderr: r.note, hostCalls: [spawnCall(r.run, ticket, deps, replace)] };
   }
   if (verb === 'amend') {
-    const p = parseArgs(rest, ['--run', '--decision', '--spec-sentence', '--files', '--from', '--run-cmd'], []);
+    const p = parseArgs(rest, ['--run', '--decision', '--spec-sentence', '--files', '--from', '--run-cmd', '--reason'], ['--harness-only']);
     const ticket = oneTicket(p.pos, 'amend');
+    if (p.bools.has('--harness-only')) return harnessAmend(ticket, p, deps);
+    if (p.vals['--reason'] !== undefined) throw new FanoutStateError('--reason belongs to `amend --harness-only`; the decision amend records --decision + --spec-sentence');
     const decision = p.vals['--decision']?.trim();
     if (!decision) throw new Refusal('an amendment needs --decision <ledger comment url> (the coordinator\'s recorded decision) — none given');
     const sentence = p.vals['--spec-sentence'];
@@ -360,7 +377,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
       ...Object.entries(a.files).map(([f, h]) => `  ${h.slice(0, 12)}  ${f}`),
       ...(a.freezeCheck ? [`  ${freezeCheckLine(a.freezeCheck)}${a.amendments.length ? ` — STALE: ${a.amendments.length} amendment(s) since; the amended files/command were NOT re-checked on a target tip` : ''}`] : []),
       `  amendments: ${a.amendments.length}`,
-      ...a.amendments.map((m) => `    ${m.at} ${m.hashBefore.slice(0, 12)} → ${m.hashAfter.slice(0, 12)} ${m.decision}${m.configAfter ? ` (config ${m.configAfter.sha256.slice(0, 12)})` : ''}`),
+      ...a.amendments.map((m) => `    ${m.at} ${m.hashBefore.slice(0, 12)} → ${m.hashAfter.slice(0, 12)} ${m.kind === 'harness-only' ? `harness-only (assertions ${m.assertionsHash.slice(0, 12)}): ${m.reason}` : `${m.decision}${m.configAfter ? ` (config ${m.configAfter.sha256.slice(0, 12)})` : ''}`}`),
     ];
     return { code: 0, stdout: `${lines.join('\n')}\n`, stderr: r.note };
   }
@@ -373,6 +390,71 @@ export function freezeCheckLine(c: FreezeCheck): string {
   return c.result === 'escaped'
     ? `freeze check: NOT classified on ${at} — escape recorded by ${c.escape?.by}: ${c.escape?.reason} (${c.escape?.unclassified})`
     : `freeze check: on ${at}: ${c.pass ?? 0} pass, ${c.assertionFail ?? 0} assertion-fail (accepted: not built yet), ${c.skipped ?? 0} skipped — no ERROR`;
+}
+
+/** Make sure `head` (a commit of the shared acceptance branch / the recorded source) is present in `cwd`: fetch the recorded branch, then the sha. */
+function ensureCommit(runner: Runner, cwd: string, head: string, branch: string | null): void {
+  if (runner('git', ['cat-file', '-e', `${head}^{commit}`], cwd).code === 0) return;
+  if (branch && runner('git', ['fetch', '--quiet', 'origin', `refs/heads/${branch}`], cwd).code === 0 && runner('git', ['cat-file', '-e', `${head}^{commit}`], cwd).code === 0) return;
+  if (runner('git', ['fetch', '--quiet', 'origin', head], cwd).code === 0 && runner('git', ['cat-file', '-e', `${head}^{commit}`], cwd).code === 0) return;
+  throw new FanoutStateError(`the recorded source ${head.slice(0, 12)}${branch ? ` (${branch})` : ''} is not in ${cwd} and could not be fetched: the frozen bytes cannot be re-read`);
+}
+
+/** #540 — `amend --harness-only`: assertion statements of the recorded bytes vs the new ones byte-identical ⇒ record + publish + notify; anything else is refused (the decision amend). */
+function harnessAmend(ticket: string, p: ReturnType<typeof parseArgs>, deps: FanoutDeps): RunResult {
+  for (const f of ['--decision', '--spec-sentence', '--run-cmd']) if (p.vals[f] !== undefined) throw new Refusal(`${f} cannot go with --harness-only: that mode changes neither what is asserted (no decision) nor the command — use the decision amend for either`);
+  const reason = p.vals['--reason']?.trim();
+  if (!reason) throw new Refusal('a harness-only amend needs --reason "<why the harness had to change>" (one short line) — none given');
+  if (reason.length > 300 || /[\r\n\0]/.test(reason)) throw new Refusal('--reason must be one short line (≤ 300 chars): checked BEFORE anything is published');
+  if (!p.vals['--files']) throw new FanoutStateError(`--files is required\n${ACCEPTANCE_USAGE}`);
+  const paths = parseFileList(p.vals['--files']);
+  const r = runOf(p, deps, 'write');
+  // no ledger decision stands between this mode and the frozen bytes, so the CLI itself (not only the role-guard hook) holds it to the run's coordinator
+  const caller = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+  if (caller !== r.run) throw new Refusal(`${ticket}: only the run's coordinator (${r.run}) may amend frozen tests${caller ? `, not ${caller}` : ' (no workspace identity: ORCHESTRA_WS_ID is empty)'}`);
+  const file = stateFile(homeOf(deps.env), r.run);
+  const st0 = loadOrFail(file);
+  const cur = st0.tickets[ticket];
+  if (!cur) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
+  const acc = cur.acceptance;
+  if (!acc) throw new FanoutStateError(`${ticket}: no frozen acceptance tests to amend — freeze first`);
+  const from = p.vals['--from'] ?? acc.source.branch;
+  if (!from) throw new FanoutStateError('--from is required: the recorded source has no branch');
+  // the recorded bytes, re-read at the recorded source and PROVEN to be the frozen ones (a moved branch / a pruned commit must not stand in for them)
+  ensureCommit(deps.runner, deps.cwd, acc.source.head, acc.source.branch);
+  const old = readFrozen(Object.keys(acc.files), acc.source.head, deps.cwd, deps.runner);
+  const drift = Object.keys(acc.files).filter((f) => old.files[f] !== acc.files[f]);
+  if (drift.length) throw new FanoutStateError(`${ticket}: the recorded source ${acc.source.head.slice(0, 12)} no longer holds the frozen bytes of ${drift.join(', ')} — cannot compare the assertions`);
+  const next = readFrozen(paths, from, deps.cwd, deps.runner);
+  const cmp = compareFrozenSets(old.texts, next.texts);
+  if (!cmp.ok) throw new Refusal(`not a harness-only change (${cmp.kind}): ${cmp.why} — a change to what is asserted needs the decision amend (--decision <ledger comment url> --spec-sentence "<text>")`);
+  const diff = changedLines(old.texts, next.texts);
+  const forced = !!cur.spec || acc.source.branch === acceptanceBranch(r.run);
+  const source = forced ? publishFrozen(deps.runner, next, { run: r.run, ticket, paths, replace: acc.files, verb: 'harness-only amend' }) : next.source;
+  let hashes: { before: string; after: string } | null = null;
+  try {
+  updateState(file, (c) => {
+    if (!c) throw new FanoutStateError(`no state at ${file}`);
+    try {
+      if (c.tickets[ticket]?.acceptance?.hash !== acc.hash) throw new FanoutStateError(`${ticket}: the frozen set changed while this amend ran (another amend?) — re-read it and retry`);
+      const n = amendHarnessInto(c, ticket, { files: next.files, reason, assertionsHash: cmp.assertionsHash, source, now: deps.now(), lines: { added: diff.added, removed: diff.removed, ...(diff.reorderOnly ? { reorderOnly: true as const } : {}) } });
+      const am = n.tickets[ticket].acceptance!.amendments.at(-1)!;
+      hashes = { before: am.hashBefore, after: am.hashAfter };
+      return n;
+    } catch (e) {
+      if (e instanceof FanoutStateError && /changes nothing/.test(e.message)) throw new Refusal(e.message);
+      throw e;
+    }
+  });
+  } catch (e) {
+    // the bytes are already on the shared branch: put the recorded ones back, or the next amend meets a path no record explains
+    if (forced && source.head !== acc.source.head) { try { publishFrozen(deps.runner, old, { run: r.run, ticket, paths: Object.keys(acc.files), replace: next.files, verb: 'rollback of a failed harness-only amend' }); } catch { /* reported by the original error below */ } }
+    throw e;
+  }
+  const h = hashes as { before: string; after: string } | null;
+  const changed = paths.filter((f) => next.files[f] !== acc.files[f]);
+  const hostCalls: HostCall[] = [{ route: '/fanoutAcceptance', body: { op: 'amended', run: r.run, ticket, ...(caller ? { from: caller } : {}) } }];
+  return { code: 0, stdout: `${ticket}: harness-only amend ${h?.before.slice(0, 12)} → ${h?.after.slice(0, 12)}: ${cmp.statements} assertion statement(s) byte-identical (assertions ${cmp.assertionsHash.slice(0, 12)}); changed: ${changed.join(', ') || '-'} @ ${source.head.slice(0, 12)}${source.branch ? ` (${source.branch})` : ''}\nWHAT YOU ATTEST (not proven — values the assertions reference, helpers they call): ${diff.reorderOnly ? 'the non-assertion lines are the SAME SET — only their ORDER or INDENTATION changed (the bytes differ: read the two files)' : `${diff.added} line(s) added, ${diff.removed} removed outside the assertions`}\n${diff.sample.slice(0, 40).join('\n')}${diff.sample.length > 40 ? `\n… ${diff.sample.length - 40} more` : ''}\n`, stderr: r.note, hostCalls };
 }
 
 function oneTicket(pos: string[], verb: string): string {
@@ -415,11 +497,14 @@ export interface CheckoutIo {
   readFile: (abs: string) => Buffer | null;
   /** Executes `argv` directly (NO shell). */
   run: (argv: string[], cwd: string) => { exit: number; tail: string };
+  /** #540 — write a regular file's bytes (the amended frozen bytes laid over a candidate holding a previous version for the run, then the candidate's own restored). Absent ⇒ that pickup fails closed. */
+  writeFile?: (abs: string, bytes: Buffer) => void;
 }
 
 export const realCheckoutIo: CheckoutIo = {
   git: (args, cwd) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 60_000, maxBuffer: 16 * 1024 * 1024 }); return { code: r.status ?? 1, stdout: r.stdout ?? '' }; },
   readFile: (abs) => { try { return fs.lstatSync(abs).isFile() ? fs.readFileSync(abs) : null; } catch { return null; } },
+  writeFile: (abs, bytes) => fs.writeFileSync(abs, bytes),
   run: (argv, cwd) => {
     // NODE_TEST_CONTEXT (set when the gate itself runs under `node --test`) turns a nested `node --test` into a silent exit-0 child: scrub it.
     const env = { ...process.env };
@@ -450,6 +535,7 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
   let dirty: string[] = [];
   let files: FileStatus[] = [];
   let config: FileStatus | undefined;
+  let overlay: { got: Map<string, Buffer>; why?: string } | null = null;
   if (cwd) {
     const top = io.git(['rev-parse', '--show-toplevel'], cwd);
     const hd = io.git(['rev-parse', 'HEAD'], cwd);
@@ -462,20 +548,53 @@ export function checkAcceptanceInCheckout(acc: Acceptance, o: { cwd?: string; he
       dirty = st.code === 0 ? st.stdout.split('\n').map((l) => l.slice(3).trim()).filter(Boolean) : ['(git status failed)'];
       const paths = Object.keys(acc.files);
       const modes = treeModes(io.git(['ls-tree', '-r', '-z', '--full-tree', 'HEAD', '--', ...paths], root).stdout);
+      const acceptable = acceptableBytes(acc);
       files = paths.map((p) => {
         const bytes = REGULAR_MODES.has(modes.get(p) ?? '') ? io.readFile(path.join(root!, p)) : null;
         if (bytes === null) return { path: p, status: 'missing' as const };
-        // the bytes the command will run AND the blob at HEAD must both be the frozen ones (a skip-worktree / assume-unchanged file can hide the former from `git status`)
+        // the bytes the command will run AND the blob at HEAD must both be the same recorded ones (a skip-worktree / assume-unchanged file can hide the former from `git status`)
         const blob = io.git(['show', `HEAD:${p}`], root!);
         const atHead = blob.code === 0 && !blob.stdout.includes('\uFFFD') && sha256Hex(Buffer.from(blob.stdout, 'utf8')) === acc.files[p];
-        return { path: p, status: sha256Hex(bytes) === acc.files[p] && atHead ? 'same' as const : 'changed' as const };
+        const st = sha256Hex(bytes) === acc.files[p] && atHead ? 'same' as const : 'changed' as const;
+        if (st === 'same') return { path: p, status: st };
+        // #540: a PREVIOUS recorded version of a harness-only-amended set (the worktree bytes AND the blob at HEAD) — the amended bytes are laid over it for the run
+        const sha = sha256Hex(bytes);
+        const headSha = blob.code === 0 && !blob.stdout.includes('\uFFFD') ? sha256Hex(Buffer.from(blob.stdout, 'utf8')) : null;
+        return { path: p, status: sha === headSha && acceptable[p]?.has(sha) ? 'previous' as const : 'changed' as const };
       });
+      const stale = files.filter((f) => f.status === 'previous');
+      if (stale.length) {
+        const got = new Map<string, Buffer>();
+        let why: string | undefined;
+        if (!io.writeFile) why = 'this gate cannot lay the amended bytes over the candidate (no write access)';
+        else if (io.git(['cat-file', '-e', `${acc.source.head}^{commit}`], root).code !== 0 && !(acc.source.branch && io.git(['fetch', '--quiet', 'origin', `refs/heads/${acc.source.branch}`], root).code === 0 && io.git(['cat-file', '-e', `${acc.source.head}^{commit}`], root).code === 0) && io.git(['fetch', '--quiet', 'origin', acc.source.head], root).code !== 0) why = `the amended frozen bytes (${acc.source.branch ?? acc.source.head.slice(0, 12)}@${acc.source.head.slice(0, 12)}) are not in --cwd and could not be fetched`;
+        else {
+          for (const f of stale) {
+            const b = io.git(['show', `${acc.source.head}:${f.path}`], root);
+            if (b.code !== 0 || b.stdout.includes('\uFFFD') || sha256Hex(Buffer.from(b.stdout, 'utf8')) !== acc.files[f.path]) { why = `${f.path}: the shared source ${acc.source.head.slice(0, 12)} does not hold the recorded amended bytes`; break; }
+            got.set(f.path, Buffer.from(b.stdout, 'utf8'));
+          }
+        }
+        overlay = { got, why };
+      }
       if (acc.config) config = configStatus(io, root, acc.config); // #542
     }
   }
   return decideGateAcceptance(acc, {
     cwdGiven: !!cwd, cwdHead, head: o.head, dirty, files, ...(config ? { config } : {}), cwdTree, ...(o.ticket ? { ticket: o.ticket } : {}),
-    run: () => { const r = io.run(parseRunArgv(acc.run, Object.keys(acc.files)), root!); if (r.exit !== 0 && r.tail) o.log?.(`frozen tests (${acc.run}) exit ${r.exit}:\n${r.tail}`); return { cmd: acc.run, exit: r.exit }; },
+    ...(overlay?.why ? { overlayError: overlay.why } : {}),
+    run: () => {
+      // #540: a candidate holding a previous version runs the AMENDED bytes (hash-proven above), then gets its own back — whatever the run does
+      const kept = new Map<string, Buffer>();
+      try {
+        for (const [f, b] of overlay?.got ?? []) { kept.set(f, io.readFile(path.join(root!, f))!); io.writeFile!(path.join(root!, f), b); }
+        const r = io.run(parseRunArgv(acc.run, Object.keys(acc.files)), root!);
+        if (r.exit !== 0 && r.tail) o.log?.(`frozen tests (${acc.run}) exit ${r.exit}:\n${r.tail}`);
+        return { cmd: acc.run, exit: r.exit };
+      } finally {
+        for (const [f, b] of kept) io.writeFile!(path.join(root!, f), b);
+      }
+    },
   });
 }
 
@@ -490,13 +609,15 @@ export async function rereadFrozenAtHead(
   const c = await gh(['api', `repos/${repo ?? '{owner}/{repo}'}/commits/${head}`]);
   if (c.code !== 0) throw new Error(`gh api commits/${head.slice(0, 12)} failed (exit ${c.code}): ${c.stderr.trim().slice(0, 300)} — is the head pushed to that repo?`);
   const out: FileStatus[] = [];
+  const acceptable = acceptableBytes(acc);
   for (const [p, want] of Object.entries(acc.files)) {
     const r = await gh(['api', '-H', 'Accept: application/vnd.github.raw+json', `${base}/${p.split('/').map(encodeURIComponent).join('/')}?ref=${head}`]);
     if (r.code !== 0) {
       if (/404|Not Found/i.test(r.stderr)) { out.push({ path: p, status: 'missing' }); continue; }
       throw new Error(`gh api contents/${p}@${head.slice(0, 12)} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 300)}`);
     }
-    out.push({ path: p, status: !r.stdout.includes('�') && sha256Hex(Buffer.from(r.stdout, 'utf8')) === want ? 'same' : 'changed' });
+    const got = r.stdout.includes('�') ? null : sha256Hex(Buffer.from(r.stdout, 'utf8'));
+    out.push({ path: p, status: got !== null && (got === want || acceptable[p]?.has(got)) ? 'same' : 'changed' }); // #540: a previous recorded harness-only version is not an edit (deliver proved the receipt for the CURRENT set)
   }
   if (acc.config) { // #542: the runner config at the PR head must still be the bytes recorded at freeze
     const p = acc.config.path;

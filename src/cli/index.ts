@@ -2484,7 +2484,7 @@ async function main(argv: string[]): Promise<void> {
           if (!res.ok) fail(`ticket ${ticket} is registered but its test writer was NOT spawned: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout acceptance spawn ${ticket}`);
           process.stdout.write(`${ticket}: Orchestra spawned its test writer ${String(res.name)} (${String(res.id)}) — it freezes the tests to the shared acceptance branch\n`);
         } else if (!res.ok) {
-          process.stderr.write(`WARNING: ${ticket} is frozen, but the host did not post the status: ${String(res.error ?? 'refused')} — tell the implementer and verifier yourself (orchestra fanout acceptance show ${ticket} --brief)\n`);
+          process.stderr.write(`WARNING: ${ticket} is ${call.body.op === 'amended' ? 'amended' : 'frozen'}, but the host did not post the status: ${String(res.error ?? 'refused')} — tell the implementer and verifier yourself (orchestra fanout acceptance show ${ticket} --brief)\n`);
         } else {
           const failed = (res.failed as Array<{ id: string; error: string }> | undefined) ?? [];
           process.stdout.write(`${ticket}: told ${(res.notified as string[] | undefined)?.join(', ') || 'nobody'} (bus status: path + command)\n`);

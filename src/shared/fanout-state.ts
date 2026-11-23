@@ -23,12 +23,17 @@ export interface Acceptance {
   config?: { path: string; sha256: string };
   source: { branch: string | null; head: string };
   frozenAt: string;
-  /** `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
-  amendments: Array<{ at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string; /** #542-fu: the runner config (path + sha256 from the target tip) the amended set carries, when its command names one */ configAfter?: { path: string; sha256: string } }>;
+  amendments: AcceptanceAmendment[];
   /** #539 — what the freeze's one run on the target tip found (never a refusal: those record nothing): `clean` = no ERROR (assertion FAILs accepted), `escaped` = the coordinator's recorded `--accept-unclassified` (the output could not be classified). */
   freezeCheck?: FreezeCheck;
 }
 export interface FreezeCheck { at: string; target: string; targetSha: string; result: 'clean' | 'escaped'; pass?: number; assertionFail?: number; skipped?: number; escape?: { by: string; reason: string; unclassified: string } }
+/** The full amend: a ledger decision naming a spec sentence. `bodySha256` = sha256 of the decision comment body read at amend time; `runAfter` only when the amend changed the command. */
+export interface DecisionAmendment { kind?: 'decision'; at: string; decision: string; specSentence: string; bodySha256: string; hashBefore: string; hashAfter: string; runAfter?: string; /** #542-fu: the runner config (path + sha256 from the target tip) the amended command names */ configAfter?: { path: string; sha256: string } }
+/** #540 — `amend --harness-only`: setup / teardown / context only, the assertion statements proven byte-identical (`assertionsHash`). `filesBefore` = the per-file sha256 the set held BEFORE: a candidate still holding
+ *  one of them (an unbroken chain of harness-only amendments up to the current set — `acceptableBytes`) is accepted, the amended bytes run from the shared branch. No decision: the coordinator's `reason` is the record. */
+export interface HarnessAmendment { kind: 'harness-only'; at: string; reason: string; assertionsHash: string; filesBefore: Record<string, string>; hashBefore: string; hashAfter: string; /** the non-assertion lines the amend changed (what the coordinator attests) */ lines?: { added: number; removed: number; reorderOnly?: true } }
+export type AcceptanceAmendment = DecisionAmendment | HarnessAmendment;
 
 /** #514 — a finding's severity as the verifier / review report grades it. Only BLOCKING and MAJOR justify a follow-up candidate on a merged ticket. */
 export const FINDING_SEVERITIES = ['BLOCKING', 'MAJOR', 'MINOR'] as const;
@@ -402,9 +407,31 @@ function acceptanceOf(v: unknown, where: string): Acceptance | null {
   const branch = checked(strOrNull(v.source.branch, 'acceptance.source.branch'), SAFE_BRANCH, 'acceptance.source.branch');
   if (typeof v.frozenAt !== 'string') throw new FanoutStateError(`${where}: acceptance.frozenAt missing`);
   if (!Array.isArray(v.amendments)) throw new FanoutStateError(`${where}: acceptance.amendments must be an array`);
-  const amendments = v.amendments.map((a, i) => {
+  const amendments = v.amendments.map((a, i): AcceptanceAmendment => {
     if (!isObj(a)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}] is not an object`);
-    refuseUnknown(a, new Set(['at', 'decision', 'specSentence', 'bodySha256', 'hashBefore', 'hashAfter', 'runAfter', 'configAfter']), `${where} acceptance.amendments[${i}]`);
+    const at = `${where} acceptance.amendments[${i}]`;
+    if (a.kind === 'harness-only') {
+      refuseUnknown(a, new Set(['kind', 'at', 'reason', 'assertionsHash', 'filesBefore', 'hashBefore', 'hashAfter', 'lines']), at);
+      let lines: { added: number; removed: number; reorderOnly?: true } | undefined;
+      if (a.lines !== undefined) {
+        if (!isObj(a.lines) || !Number.isInteger(a.lines.added) || !Number.isInteger(a.lines.removed) || (a.lines.added as number) < 0 || (a.lines.removed as number) < 0) throw new FanoutStateError(`${at}.lines must be {added, removed} non-negative integers`);
+        refuseUnknown(a.lines, new Set(['added', 'removed', 'reorderOnly']), `${at}.lines`);
+        if (a.lines.reorderOnly !== undefined && a.lines.reorderOnly !== true) throw new FanoutStateError(`${at}.lines.reorderOnly must be true when present`);
+        lines = { added: a.lines.added as number, removed: a.lines.removed as number, ...(a.lines.reorderOnly ? { reorderOnly: true as const } : {}) };
+      }
+      for (const k of ['at', 'reason'] as const) if (typeof a[k] !== 'string' || !(a[k] as string).trim()) throw new FanoutStateError(`${at}.${k} missing`);
+      for (const k of ['assertionsHash', 'hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${at}.${k} must be a sha256`);
+      if (!isObj(a.filesBefore) || Object.keys(a.filesBefore).length === 0) throw new FanoutStateError(`${at}.filesBefore must be a non-empty {path: sha256}`);
+      const filesBefore: Record<string, string> = {};
+      for (const [k, h] of Object.entries(a.filesBefore)) {
+        assertAcceptancePath(k);
+        if (typeof h !== 'string' || !SHA256.test(h)) throw new FanoutStateError(`${at}.filesBefore[${k}] must be a 64-hex sha256`);
+        filesBefore[k] = h;
+      }
+      return { kind: 'harness-only', at: a.at as string, reason: a.reason as string, assertionsHash: a.assertionsHash as string, filesBefore, hashBefore: a.hashBefore as string, hashAfter: a.hashAfter as string, ...(lines ? { lines } : {}) };
+    }
+    if (a.kind !== undefined && a.kind !== 'decision') throw new FanoutStateError(`${at}.kind must be "harness-only" or "decision"`);
+    refuseUnknown(a, new Set(['kind', 'at', 'decision', 'specSentence', 'bodySha256', 'hashBefore', 'hashAfter', 'runAfter', 'configAfter']), at);
     for (const k of ['at', 'decision', 'specSentence'] as const) if (typeof a[k] !== 'string' || !(a[k] as string).trim()) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} missing`);
     for (const k of ['bodySha256', 'hashBefore', 'hashAfter'] as const) if (typeof a[k] !== 'string' || !SHA256.test(a[k] as string)) throw new FanoutStateError(`${where}: acceptance.amendments[${i}].${k} must be a sha256`);
     let configAfter: { path: string; sha256: string } | undefined;
