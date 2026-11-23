@@ -152,7 +152,7 @@ function scenarios(cliPath) {
     arm('must-FAIL: nor re-kinded to process', proc.code === 1 && nTexts(A.closeout().stdout) === 1, `${proc.code} ${proc.stderr}`);
     A.setFindings('T-1', { 'F-U': mea(5, { kind: undefined }) });
     const unset = A.setFindings('T-1', { 'F-U': { severity: 'MINOR', evidence: 'measured', kind: 'process' } });
-    arm('must-FAIL: a measured MINOR recorded with no kind cannot be re-kinded to process either', unset.code === 1 && /re-kinded/.test(unset.stderr) && nTexts(A.closeout().stdout) === 2, `${unset.code} ${unset.stderr}`);
+    arm('must-FAIL: a measured MINOR recorded with no kind cannot be re-kinded to process either', unset.code === 1 && /not rewritten/.test(unset.stderr) && nTexts(A.closeout().stdout) === 2, `${unset.code} ${unset.stderr}`);
     const bare = A.cli(['state', 'set', 'T-1', '--run', 'rig', '--finding', 'F-1=MINOR']);
     arm('must-PASS: the bare `--finding F-1=MINOR` repeat keeps the recorded report', bare.code === 0 && nTexts(A.closeout().stdout) === 2, `${bare.code} ${bare.stderr}`);
     const up = A.cli(['state', 'set', 'T-1', '--run', 'rig', '--finding', 'F-2=MINOR']);
@@ -218,8 +218,7 @@ const mutants = [
   { name: 'recording: the happens part is not required', find: 'happens: lineOf(v.report.happens, `${where}.report.happens`)', put: () => 'happens: String(v.report.happens ?? "x")' },
   { name: 'recording: the where part is not required', find: 'where: lineOf(v.report.where, `${where}.report.where`)', put: () => 'where: String(v.report.where ?? "x")' },
   { name: 'recording: the proof part is not required', find: 'proof: lineOf(v.report.proof, `${where}.report.proof`)', put: () => 'proof: String(v.report.proof ?? "x")' },
-  { name: 'recording: evidence / kind may be re-graded', find: 'for (const field of ["evidence", "kind", "specSentence"]) if (had && had[field] !== void 0 && f[field] !== void 0 && had[field] !== f[field]) throw', put: () => 'for (const field of ["specSentence"]) if (had && had[field] !== void 0 && f[field] !== void 0 && had[field] !== f[field]) throw' },
-  { name: 'recording: a measured MINOR may be re-kinded to process', find: 'if (had?.severity === "MINOR" && had.evidence === "measured" && had.kind !== "process" && f.kind === "process") throw', put: () => 'if (false) throw' },
+  { name: 'recording: evidence / kind may be re-graded', find: 'for (const field of ["evidence", "kind", "specSentence"]) if (had && f[field] !== void 0', put: () => 'for (const field of ["specSentence"]) if (had && f[field] !== void 0' },
   { name: 'recording: a repeat record erases the recorded report', find: 'next.findings[k] = { ...had ?? {}, ...f };', put: () => 'next.findings[k] = { ...f };' },
   { name: 'filing: --file is ON by default', find: 'if (!p.bools.has("--file")) return { code: 0, stdout: out, stderr: r.note };', put: () => '' },
   { name: 'filing: --file ignored (never files)', find: 'if (!p.bools.has("--file")) return { code: 0, stdout: out, stderr: r.note };', put: () => 'if (true) return { code: 0, stdout: out, stderr: r.note };' },
