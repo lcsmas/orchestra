@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, rm, appendFile, readdir, rename, cp, realpa
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { platform } from './platform';
+import { platform, orchestraHome } from './platform';
 import { store } from './store';
 import { hasSessionKey, forgetSessionKey, sessionKeys } from './session-identity-host.ts';
 import { decideSpawnProfile, type SpawnProfileDecision } from '../shared/spawn-profile.ts';
@@ -53,7 +53,8 @@ import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_MATCHER, ROLE_GUARD_SCRIPT } from '../s
 import { writeRoleSentinel } from './role-sentinel';
 import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
-import { VERIFIED_FANOUT_SKILL } from '../shared/verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE } from '../shared/verified-fanout-skill.ts';
+import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanout-state.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
@@ -4492,6 +4493,7 @@ const HOOKS_VERSION = createHash('sha256')
       STATUS_SKILL,
       BROWSER_SKILL,
       VERIFIED_FANOUT_SKILL,
+      VERIFIED_FANOUT_SKILL_TEMPLATE, // #554: the per-switch variants (an edit to an off-only block must force the reinstall too)
       JSON.stringify(VERIFIED_FANOUT_FILES),
       JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),
       HOOK_ACTIVITY_SUBMIT_CMD,
@@ -4803,9 +4805,12 @@ export async function installOrchestraHooks(
     const roleWs = store.workspaces.find((w) => w.worktreePath === worktreePath);
     if (roleWs && roleWs.host?.kind !== 'sandbox') await writeRoleSentinel(worktreePath, roleWs.branch, roleWs.spawnRole);
     const stamp = path.join(dir, '.hooks-version');
+    // #554 (ledger D2): the verified-fanout skill is rendered from the switches frozen on the run's fanout state; the stamp carries a non-default set so a flip re-renders once.
+    const fanoutSwitches = roleWs ? switchesForRun(orchestraHome(), resolveWaveRunId(roleWs)) : { ...DEFAULT_SWITCHES };
+    const stampValue = switchesStamp(HOOKS_VERSION, fanoutSwitches);
     if (existsSync(stamp)) {
       try {
-        if ((await readFile(stamp, 'utf8')).trim() === HOOKS_VERSION) return;
+        if ((await readFile(stamp, 'utf8')).trim() === stampValue) return;
       } catch {
         /* unreadable stamp — fall through and reinstall */
       }
@@ -4892,7 +4897,7 @@ export async function installOrchestraHooks(
       // #399: how to drive the Browser pane with `orchestra browser` (the in-process mcp__browser__* tools are gone)
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
       // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
-      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e)),
+      installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e), fanoutSwitches),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');
@@ -5033,7 +5038,7 @@ export async function installOrchestraHooks(
 
     // Record the installed bundle version last, so a crash mid-install leaves
     // a missing/stale stamp and the next spawn redoes the work.
-    await writeFile(path.join(worktreePath, '.orchestra', '.hooks-version'), HOOKS_VERSION).catch(
+    await writeFile(path.join(worktreePath, '.orchestra', '.hooks-version'), stampValue).catch(
       () => {},
     );
   } catch {

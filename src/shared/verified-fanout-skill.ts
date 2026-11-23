@@ -9,12 +9,15 @@
  * Written with `String.raw`; `¤` stands for a backtick (the text is full of them). v1 is FROZEN (tag `verified-fanout-v1-prose`);
  * `docs/evidence/470-v1-vs-v2.diff` is the full-context `diff -u` of v1 against this text.
  */
+import { renderSwitchBlocks } from './fanout-switch-render.ts';
+import { DEFAULT_SWITCHES, switchesOf, type Switches } from './fanout-state.ts';
+
 export const VERIFIED_FANOUT_SKILL_NAME = 'verified-fanout';
 
 /** Substring of the generated-file marker line in the text: the installer overwrites a SKILL.md only if it carries it (a repo's own skill never does). */
 export const VERIFIED_FANOUT_MARKER = 'orchestra-generated: bundled verified-fanout v2';
 
-export const VERIFIED_FANOUT_SKILL = String.raw`---
+export const VERIFIED_FANOUT_SKILL_TEMPLATE = String.raw`---
 name: verified-fanout
 description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
 ---
@@ -166,8 +169,13 @@ Break the feature into 2–4 self-contained subtasks, disjoint files. Each brief
 pings with ¤worker_done --cap "$(orchestra token)"¤", "outward actions stay with the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
 the Briefing section of ledger #N — pull it first".
 
+<!--sw earlyGate=on-->
 **A dependent track starts at dispatch and is gated on its upstream's candidate, not merge.** Freeze the interface in the ledger; it builds on a stub. ¤orchestra fanout state set <ticket> --depends-on
 <upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤. Once the upstream has a verified candidate, rebase on it, ¤--built-on <upstream>=<head>¤, nominate: ¤fanout gate --ticket <id>¤ / ¤resume¤ say wait or re-gate; ¤deliver¤ enforces order and content. An upstream changing the frozen interface posts one "what changed" line to its dependents.
+<!--/sw-->
+<!--sw earlyGate=off-->
+**A dependent track waits for its upstream's MERGE.** Freeze the interface in the ledger; ¤orchestra fanout state set <ticket> --depends-on <upstream> --frozen-interface <ref>¤ lets it build on a stub (¤--status started¤), but it is nominated, gated and merged only after every upstream is merged (¤state set¤ refuses earlier): rebase on the merged target, then nominate. An upstream changing the frozen interface posts one "what changed" line to its dependents.
+<!--/sw-->
 
 **Routing rule: a gap found in an upstream is fixed by a follow-up ON the upstream, never by changing the dependent's spec interface (the one it was specified and tested against); a follow-up that must change the frozen interface goes through a ledger decision first.**
 
@@ -177,6 +185,7 @@ the Briefing section of ledger #N — pull it first".
 
 **Done when:** every brief names your literal workspace id and its file set, shared files marked as seams (§4).
 
+<!--sw acceptance=on-->
 ## 1b. Acceptance tests: written blind, frozen, copied unchanged
 
 Code forces it; you do not spawn the writer.
@@ -187,6 +196,7 @@ Code forces it; you do not spawn the writer.
 
 → **Read ¤references/acceptance-tests.md¤ when you register a spec, amend or waive.**
 
+<!--/sw-->
 ## 2. Spawn the implementers
 
 One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per subtask (flags: ¤orchestra-spawn¤
@@ -233,8 +243,17 @@ review, follow-ups included. The coordinator NEVER reviews (it wrote the specs);
 
 **The merge rule — apply it the moment a review comment lands, before any order to the implementer** (it rides verbatim in the ledger's gate checklist):
 
+<!--sw minorPolicy=spec-->
 *A review round with 0 BLOCKING, 0 MAJOR and no unsettled spec-sentence MINOR merges on its
 current gate; every other MINOR is ¤noted¤ — no follow-up PR.*
+<!--/sw-->
+<!--sw minorPolicy=refuse-->
+*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every
+MINOR is ¤noted¤ — no follow-up PR.*
+<!--/sw-->
+<!--sw minorPolicy=legacy-->
+*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate.*
+<!--/sw-->
 
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
@@ -247,14 +266,30 @@ conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back
 for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
 ¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
 ¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
+<!--sw minorPolicy=spec-->
 refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR refuses only when it quotes a spec sentence (¤finding-unsettled¤).
+<!--/sw-->
+<!--sw minorPolicy=refuse|legacy-->
+refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never refuses: its disposition stays yours.
+<!--/sw-->
 
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
   (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
+<!--sw minorPolicy=spec-->
 - **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR (or a spec-sentence MINOR, ¤references/verifier-and-review.md¤): ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other MINOR-only or finding-less one.
+<!--/sw-->
+<!--sw minorPolicy=refuse-->
+- **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
+<!--/sw-->
 
+<!--sw minorPolicy=refuse|spec-->
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
 measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ (BLOCKING/MAJOR) or ¤noted¤ (MINOR/NIT).
+<!--/sw-->
+<!--sw minorPolicy=legacy-->
+MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
+measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ or ¤noted¤.
+<!--/sw-->
 
 **Serialize merges that touch a shared seam.** Same-file branches merge one at a time in dependency order,
 each remaining agent rebasing onto the new tip. Re-verify each **merged tip**, not just each branch:
@@ -326,3 +361,12 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 - **A personal-level copy shadows it** (measured on Claude Code 2.1.325 only; re-run ¤scripts/skill-precedence/measure-skill-precedence.mjs¤ after a CLI update).
 - **VPS install:** an AppImage release carries this skill; no personal copy there ⇒ nothing shadows it.
 `.replaceAll('¤', '`');
+
+/** #554 (ledger D2) — the text for a run's switches: a feature that is off leaves NO sentence behind (its blocks are removed whole). */
+export const renderVerifiedFanoutSkill = (switches: Partial<Switches> = DEFAULT_SWITCHES): string => renderSwitchBlocks(VERIFIED_FANOUT_SKILL_TEMPLATE, switches);
+/** The default render (every switch at its default): what a run that sets none reads. */
+export const VERIFIED_FANOUT_SKILL = renderVerifiedFanoutSkill(DEFAULT_SWITCHES);
+
+/** The one bundled reference that is a feature's whole text: with `acceptance` off it is not installed (and an earlier install's copy is removed). */
+export const ACCEPTANCE_REFERENCE_PATH = 'references/acceptance-tests.md';
+export const verifiedFanoutReferenceWanted = (path: string, switches: Partial<Switches> = DEFAULT_SWITCHES): boolean => path !== ACCEPTANCE_REFERENCE_PATH || switchesOf({ switches }).acceptance === 'on';

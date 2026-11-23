@@ -6,6 +6,8 @@ import {
   assertAcceptancePath,
   blankTicket,
   assertConfigMatchesRun,
+  freezeAtFirstSpawn,
+  switchesOf,
   parseRunArgv,
   type AcceptFlow,
   type Acceptance,
@@ -66,6 +68,15 @@ export function acceptancePhase(t: TicketState | undefined): AcceptancePhase {
   return t.spec ? 'pending' : 'unspecified';
 }
 
+/** #554 — is the acceptance feature (#510 frozen tests + #515 forced flow + the auto-spawned writer) ON for this run? Off = no writer is spawned, no gate / deliver / `state` asks for a frozen test. */
+export const acceptanceOn = (state: FanoutState): boolean => switchesOf(state).acceptance === 'on';
+export const ACCEPTANCE_OFF = 'the acceptance switch is OFF for this run (state show prints the switches): no test writer is spawned and no frozen test is asked of any ticket';
+/** A refusal (exit 2 at the verbs), not a usage error: the verb is well-formed, the run just has the feature off. */
+export class AcceptanceOffError extends FanoutStateError {}
+export function assertAcceptanceOn(state: FanoutState, what: string): void {
+  if (!acceptanceOn(state)) throw new AcceptanceOffError(`cannot ${what}: ${ACCEPTANCE_OFF}`);
+}
+
 /** How long a gate waits for the freeze by default (s): under the 10-minute ceiling of a foreground tool call. `--accept-wait <s>` overrides (0 = do not wait). */
 export const GATE_WAIT_DEFAULT_SEC = 480;
 export const GATE_WAIT_MAX_SEC = 3600;
@@ -118,6 +129,7 @@ export function claimIsStale(a: { id: string | null; error?: string; at: string 
 /** Claim the ticket's writer slot (id null = spawn in flight). Throws when a live writer already exists / the tests are frozen / waived / no spec.
  *  A failed or stale claim is retaken; `replace` (the coordinator's `acceptance spawn --replace`: its writer died, was archived…) retakes a settled one too. */
 export function claimAcceptor(state: FanoutState, id: string, name: string, now: string, o: { replace?: boolean } = {}): FanoutState {
+  assertAcceptanceOn(state, `claim a writer for ${id}`); // #554: the spawn is ABSENT with the switch off — the host's only door is this claim
   const t = state.tickets[id];
   if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   if (!t.spec) throw new FanoutStateError(`${id}: no spec registered (\`state set ${id} --spec <file|url|ledger section>\`) — the writer's brief is the spec`);
@@ -125,7 +137,7 @@ export function claimAcceptor(state: FanoutState, id: string, name: string, now:
   if (t.accept?.waived) throw new FanoutStateError(`${id}: acceptance is waived (${t.accept.waived.decision})`);
   const a = t.accept?.acceptor;
   if (a && !a.error && !o.replace && !claimIsStale(a, now)) throw new FanoutStateError(`${id}: a writer was already spawned (${a.name}${a.id ? ` ${a.id}` : ', spawn in flight'})`);
-  return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor: { id: null, name, at: now } }), updatedAt: now } }, updatedAt: now };
+  return freezeAtFirstSpawn({ ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor: { id: null, name, at: now } }), updatedAt: now } }, updatedAt: now }, now); // #554: a writer spawn is a spawn of the run
 }
 /** Record the spawn's outcome: the writer's id, or the error (the slot stays retryable). */
 export function settleAcceptor(state: FanoutState, id: string, r: { id: string } | { error: string }, now: string): FanoutState {
@@ -138,6 +150,7 @@ export function settleAcceptor(state: FanoutState, id: string, r: { id: string }
 
 /** Coordinator-only escape for a ticket that cannot have acceptance tests (with or without a registered spec). Refused once tests are frozen. */
 export function waiveInto(state: FanoutState, id: string, w: { decision: string; reason: string; now: string }): FanoutState {
+  assertAcceptanceOn(state, `waive acceptance for ${id}`);
   const t = state.tickets[id];
   if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   if (t.acceptance) throw new FanoutStateError(`${id}: acceptance tests are frozen — there is nothing to waive (amend them with a ledger decision)`);
@@ -168,6 +181,7 @@ export function freezeInto(
   state: FanoutState, id: string,
   f: { files: Record<string, string>; run: string; config?: Acceptance['config']; source: Acceptance['source']; now: string; freezeCheck?: FreezeCheck },
 ): FanoutState {
+  assertAcceptanceOn(state, `freeze tests for ${id}`);
   const cur = ticketOf(state, id);
   if (cur?.acceptance) throw new FanoutStateError(`${id}: acceptance tests are already frozen (hash ${cur.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
@@ -183,6 +197,7 @@ export function amendInto(
   state: FanoutState, id: string,
   a: { files: Record<string, string>; decision: string; specSentence: string; bodySha256: string; source: Acceptance['source']; run?: string; config?: Acceptance['config']; now: string },
 ): FanoutState {
+  assertAcceptanceOn(state, `amend the tests of ${id}`);
   const cur = ticketOf(state, id);
   if (!cur) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   const acc = cur.acceptance;
@@ -221,6 +236,7 @@ export function amendHarnessInto(
   state: FanoutState, id: string,
   a: { files: Record<string, string>; reason: string; assertionsHash: string; source: Acceptance['source']; now: string; lines?: { added: number; removed: number; reorderOnly?: true } },
 ): FanoutState {
+  assertAcceptanceOn(state, `amend the tests of ${id}`);
   const cur = ticketOf(state, id);
   const acc = cur?.acceptance;
   if (!cur || !acc) throw new FanoutStateError(`${id}: no frozen acceptance tests to amend — freeze first (\`orchestra fanout acceptance freeze\`)`);

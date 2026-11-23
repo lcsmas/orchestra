@@ -21,10 +21,17 @@ home of mutable state until it ships.)
   the ledger. Rule on an axis only when you hold — or have verified in
   source — its evidence; otherwise route the question to the evidence-holder.
 
+<!--sw earlyGate=on-->
 - **A stack's order is the verbs' answer** (`fanout gate --ticket`, `fanout resume`, `deliver`):
   a dependent is gated on its upstream's candidate and re-gates when that moves (measured:
   eight rebases of a dependent, six changing only the parent sha); merge base follow-ups
   first when a drive would read differently on each side of the pair.
+<!--/sw-->
+<!--sw earlyGate=off-->
+- **A stack's order is the verbs' answer** (`fanout resume`, `deliver`): a dependent is nominated and
+  gated only after its upstream is merged (`earlyGate=off`); merge base follow-ups first when a drive
+  would read differently on each side of the pair.
+<!--/sw-->
 
 - **Edit a ledger table row with `scripts/ledger-set`, never ad-hoc `str.replace`** (27 hand edits on one wave pasted Tickets rows into Seams and Roster): `ledger-set [--add-row] REPO ISSUE SECTION KEY ROW` — one row, refuses on absent/duplicate key, absent section, or a body changed since its read; tests `scripts/test_ledger_set.py`.
 

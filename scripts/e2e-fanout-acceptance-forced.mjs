@@ -359,7 +359,7 @@ const BUNDLE_MUTANTS = [
   { name: 'freeze: a freeze with no workspace identity is accepted (M1b)', find: 'if (!caller) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
   { name: 'freeze: any caller may freeze in the run it addresses (M1a)', find: 'if (caller !== r.run && caller !== had?.accept?.acceptor?.id) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
   { name: 'deliver: an UNSPECIFIED ticket (no spec / frozen / waiver) merges (M3)', find: '} else if (got.phase === "pending" || got.phase === "unspecified") {', put: () => '} else if (got.phase === "pending") {' },
-  { name: 'state set: no up-front notice for an unspecified ticket (M3)', find: 'const notice = acceptancePhase(t) === "unspecified" &&', put: () => 'const notice = false &&' },
+  { name: 'state set: no up-front notice for an unspecified ticket (M3)', find: 'const notice = accOn && acceptancePhase(t) === "unspecified" &&', put: () => 'const notice = false &&' },
   { name: 'waive: needs a spec again (M3)', find: 'if (t.accept?.waived) throw new FanoutStateError(`${id}: already waived', put: () => 'if (!t.spec) throw new FanoutStateError("no spec registered");\n  if (t.accept?.waived) throw new FanoutStateError(`${id}: already waived' },
   { name: 'gate: waits for a freeze it cannot run (no --cwd, m4)', find: 'if (!opts.cwd) {', put: () => 'if (false) {' },
   { name: 'state set: a recipient recorded after the freeze is not told (m7)', find: 'if (t.acceptance && t.spec && late.length)', put: () => 'if (false)' },

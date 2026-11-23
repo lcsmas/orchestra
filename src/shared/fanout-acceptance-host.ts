@@ -18,12 +18,18 @@ export interface AcceptanceHostDeps {
   spawn: (i: { from?: string; name: string; task: string; repoPath?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
   /** #538 — the facts the harness discovery reads, from the TARGET ref of the repo at `repoPath` (null = cannot inspect). Default: git on that path (fanout-harness-facts.ts). */
   repoFacts?: (repoPath: string | undefined, target: string) => RepoFacts | null;
+  /** #554 (review T3 m1) — the workspaces the run's owner spawned (direct children): the bus/host-side first-spawn signal, beside the state-side one. Absent = none known. */
+  childrenOf?: (run: string) => string[];
+  /** #554 — re-render the verified-fanout skill of these workspaces from their run's switches (the coordinator that just set them reads the text without a restart). Absent = nothing to refresh. */
+  refreshSkills?: (ids: string[]) => Promise<string[]>;
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
 
 export type AcceptanceHostResult =
   | { ok: true; op: 'spawn'; id: string; name: string }
+  | { ok: true; op: 'skills'; refreshed: string[] }
+  | { ok: true; op: 'children'; children: string[] }
   | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
 
@@ -41,6 +47,14 @@ function harnessFor(state: FanoutState, repoPath: string | undefined, deps: Acce
 export async function dispatchFanoutAcceptance(input: Record<string, unknown>, deps: AcceptanceHostDeps): Promise<AcceptanceHostResult> {
   try {
     const run = assertRunId(str(input.run) ?? '');
+    if (input.op === 'children') { // #554 (review T3 delta m1): a custom `--run <id>` is no workspace — its owner is the caller (`from`)
+      const owner = deps.isWorkspace(run) ? run : (str(input.from) && deps.isWorkspace(str(input.from)!) ? str(input.from)! : null);
+      return { ok: true, op: 'children', children: owner && deps.childrenOf ? deps.childrenOf(owner) : [] };
+    }
+    if (input.op === 'skills') { // #554: `state init|set --switch` asks the host to re-render the caller's (and the run owner's) skill from the switches it just wrote
+      const ids = [...new Set([str(input.from), deps.isWorkspace(run) ? run : undefined].filter((x): x is string => !!x && deps.isWorkspace(x)))];
+      return { ok: true, op: 'skills', refreshed: deps.refreshSkills ? await deps.refreshSkills(ids) : [] };
+    }
     const ticket = str(input.ticket);
     if (!ticket) return { ok: false, error: 'missing ticket' };
     const from = str(input.from);

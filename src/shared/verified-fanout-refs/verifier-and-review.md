@@ -78,6 +78,7 @@ each and change nothing).
   test that lets a mutant survive).
 - **NIT** — cosmetic (comment, doc, naming) — not reported by the spawned reviewer.
 
+<!--sw minorPolicy=spec-->
 **A MINOR that breaks a sentence of the ticket (#552, `minorPolicy: spec`).** A finding may carry
 `specSentence` — text quoted from the ticket's spec — and `kind: process` when the sentence is about how
 the work is REPORTED ("write the list in the pull request"). Record it with
@@ -89,6 +90,7 @@ until `state set <ticket> --settle <id>=fixed:<head>` (code) / `--settle <id>=pr
 says now>` (process) or the coordinator records `--decide <id>=<text>`; it may be named in `--fixes`
 (a process finding never: its fix is the PR-body edit). **Limit: code checks the sentence is IN the spec,
 not that it is really broken — judging that stays with the reviewer.** A MINOR with no sentence stays `noted`.
+<!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code**
 (tests, comments, docs, rigs only): the implementer's pre-review + the

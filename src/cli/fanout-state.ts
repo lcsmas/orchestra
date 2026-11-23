@@ -14,11 +14,14 @@ import {
   applyTicketPatch,
   applyWriteBack,
   newState,
+  parseSwitchAssignments,
   readState,
   reconcile,
   resolveFanoutRun,
   setHarness,
+  setSwitches,
   stateFile,
+  switchesLine,
   updateState,
   type FanoutState,
   type FindingRecord,
@@ -26,7 +29,7 @@ import {
   type TicketReality,
   type TicketState,
 } from '../shared/fanout-state.ts';
-import { acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
+import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
 export interface HostCall { route: '/fanoutAcceptance'; body: Record<string, unknown> }
@@ -40,6 +43,21 @@ export interface FanoutDeps {
   runner: Runner;
   now: () => string;
   readStdin: () => string;
+  /** #554 (review T3 m1) — the run owner's children as the HOST sees them, asked by index.ts before a `--switch` write (the bus-side first-spawn signal: an agent spawned by hand is not in the state yet).
+   *  undefined = not asked · null = the host could not answer (the state-side detector alone then decides, said on stderr). */
+  spawned?: string[] | null;
+}
+
+/** #554 — is this `fanout state init|set … --switch …`? Returns the run it acts on (for the host question), else null. */
+export function switchVerbRun(args: string[], env: NodeJS.ProcessEnv): string | null {
+  if (args[0] !== 'state' || (args[1] !== 'set' && args[1] !== 'init') || !args.includes('--switch')) return null;
+  const i = args.indexOf('--run');
+  return resolveFanoutRun(i >= 0 ? args[i + 1] : undefined, env).run;
+}
+/** Refuse a switch write once the host reports children of the run owner (the first spawn happened, recorded in the state or not). Returns the stderr note when the host could not answer. */
+function checkSpawned(deps: FanoutDeps, run: string): string {
+  if (deps.spawned && deps.spawned.length) throw new FanoutStateError(`the switches of run ${run} cannot change: the run owner already spawned ${deps.spawned.length} workspace(s) (${deps.spawned.slice(0, 4).join(', ')}${deps.spawned.length > 4 ? ', …' : ''}) — a switch is fixed for the run from its first spawn (start a new run to change one)`);
+  return deps.spawned === null ? 'note: the host could not say whether the run has spawned; only the state was checked for the first spawn\n' : '';
 }
 
 export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string, env?: Record<string, string>): { code: number; stdout: string; stderr: string } {
@@ -48,8 +66,9 @@ export function defaultRunner(cmd: 'git' | 'gh', args: string[], cwd: string, en
   return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>] [--harness <ref>]
+export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--target <branch>] [--repo <owner/name>] [--harness <ref>] [--switch <name>=<value>[,…]]
        orchestra fanout state set --harness <ref|-> [--run <id>]     (run-level: the repo's integration harness, #538; "-" clears it)
+       orchestra fanout state set --switch <name>=<value>[,…] [--run <id>]   (run-level: one switch per feature, #554 — frozen at the run's first spawn)
        orchestra fanout state set <ticket> [--run <id>] [--status s] [--branch b] [--pr n] [--head sha] [--verdict v]
                                   [--depends-on a,b] [--built-on a=sha,b=sha] [--frozen-interface ref] [--accept-merged <reason>] [--json <object|->]
                                   [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
@@ -89,6 +108,14 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
            round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
            LIMIT: code checks the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.
+  --switch (#554) one switch per feature, printed by \`state show\` and FROZEN for the run at its first spawn (the first ticket past todo, the first implementer / verifier / accept- writer recorded;
+           after that any change is refused with the reason; an unknown name or value is refused):
+             earlyGate=on|off      on (default): a dependent is nominated/gated on its upstream's verified candidate (#506); off: it waits for the upstream's MERGE.
+             acceptance=on|off     on (default): --spec spawns the accept- writer, the gate / deliver ask for the frozen tests (#510, #515); off: no writer spawned, no frozen test asked.
+             minorPolicy=legacy|refuse|spec   legacy: follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec (default): #552.
+           The installed skill follows the switches of the coordinator's DEFAULT run id (its own workspace id); a second vague under \`--run <other id>\` obeys its switches in every verb, but its members' skill text is rendered from the default run's.
+           Accepted gap: a run on the defaults persists no freeze record, so a ticket moved back to todo (nothing recorded, no child) lets a switch change again; a real spawned child still refuses it (host check + recorded implementer).
+           Choose them BEFORE the first spawn (\`state init --switch …\` or \`state set --switch …\`): an agent spawned by hand and not yet recorded in the state is not seen by the freeze.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 
 const SHA_ARG = /^[0-9a-f]{7,40}$/;
@@ -198,6 +225,12 @@ export function spawnCall(run: string, ticket: string, deps: Pick<FanoutDeps, 'e
   return { route: '/fanoutAcceptance', body: { op: 'spawn', run, ticket, ...(from ? { from } : {}), ...(replace ? { replace: true } : {}) } };
 }
 
+/** #554 — after a switch is written: the host re-renders the caller's verified-fanout skill from the switches (best effort; a children's skill is rendered at ITS session start). */
+export function skillsCall(run: string, deps: Pick<FanoutDeps, 'env'>): HostCall {
+  const from = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+  return { route: '/fanoutAcceptance', body: { op: 'skills', run, ...(from ? { from } : {}) } };
+}
+
 export function homeOf(env: NodeJS.ProcessEnv): string {
   return env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
 }
@@ -238,19 +271,33 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
 function runState(args: string[], deps: FanoutDeps): RunResult {
   const [verb, ...rest] = args;
   if (verb === 'init') {
-    const p = parseArgs(rest, ['--run', '--target', '--repo', '--harness'], []);
+    const p = parseArgs(rest, ['--run', '--target', '--repo', '--harness', '--switch'], []);
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]}`);
     const { run } = runOf(p, deps, 'init');
     const file = stateFile(homeOf(deps.env), run);
+    const initNote = p.vals['--switch'] !== undefined ? checkSpawned(deps, run) : '';
     updateState(file, (cur) => {
       if (cur) throw new FanoutStateError(`state already exists at ${file} (run ${cur.run}, ${Object.keys(cur.tickets).length} ticket(s), updated ${cur.updatedAt}) — an earlier vague's, or another coordinator's. Continue it: \`orchestra fanout resume --run ${run}\`; start a fresh one: \`orchestra fanout state init --run <new id>\` (default is your own run ${resolveFanoutRun(undefined, deps.env).run ?? '<id>'}).`);
-      return newState(run, { target: p.vals['--target'], repo: p.vals['--repo'] ?? null, harness: p.vals['--harness'], now: deps.now() });
+      return newState(run, { target: p.vals['--target'], repo: p.vals['--repo'] ?? null, ...(p.vals['--switch'] !== undefined ? { switches: parseSwitchAssignments(p.vals['--switch']) } : {}), harness: p.vals['--harness'], now: deps.now() });
     });
-    return { code: 0, stdout: `initialised ${file}\n`, stderr: '' };
+    return { code: 0, stdout: `initialised ${file}\n`, stderr: initNote, ...(p.vals['--switch'] !== undefined ? { hostCalls: [skillsCall(run, deps)] } : {}) };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--spec-text', '--finding-json', '--settle', '--decide', '--implementer', '--verifier', '--json', '--harness'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--spec-text', '--finding-json', '--settle', '--decide', '--implementer', '--verifier', '--json', '--harness', '--switch'], []);
     const [ticket, ...extra] = p.pos;
+    if (p.vals['--switch'] !== undefined) {
+      // #554 — run-level: the switches (no ticket, no other flag); refused once the run has spawned
+      if (ticket || Object.keys(p.vals).some((k) => k !== '--switch' && k !== '--run')) throw new FanoutStateError('--switch is run-level: `orchestra fanout state set --switch <name>=<value>[,…] [--run <id>]` takes no ticket and no other flag');
+      const assign = parseSwitchAssignments(p.vals['--switch']);
+      const sr = runOf(p, deps, 'write');
+      const sfile = stateFile(homeOf(deps.env), sr.run);
+      const spawnNote = checkSpawned(deps, sr.run);
+      const snext = updateState(sfile, (cur) => {
+        if (!cur) throw new FanoutStateError(`no state at ${sfile} — run \`orchestra fanout state init\` first`);
+        return setSwitches(cur, assign, deps.now());
+      });
+      return { code: 0, stdout: `${switchesLine(snext)}\n`, stderr: sr.note + spawnNote, hostCalls: [skillsCall(sr.run, deps)] };
+    }
     if (p.vals['--harness'] !== undefined) {
       // #538 — run-level: the declared integration harness (no ticket); `-` clears it
       if (ticket || Object.keys(p.vals).some((k) => k !== '--harness' && k !== '--run')) throw new FanoutStateError('--harness is run-level: `orchestra fanout state set --harness <ref|-> [--run <id>]` takes no ticket and no other flag');
@@ -317,12 +364,13 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     });
     const t = next.tickets[ticket];
     // #515: a ticket that carries a spec and has no live writer, no frozen tests and no waiver gets its `accept-` writer from the HOST (the call is made after the state is on disk).
-    const hostCalls: HostCall[] = needsAcceptor(t, deps.now()) ? [spawnCall(r.run, ticket, deps)] : [];
+    const accOn = acceptanceOn(next); // #554: acceptance off — no writer spawn, no frozen-status post, no pending notice
+    const hostCalls: HostCall[] = accOn && needsAcceptor(t, deps.now()) ? [spawnCall(r.run, ticket, deps)] : [];
     // a recipient recorded AFTER the freeze (the implementer does not exist at dispatch) still gets the frozen status (path + command), once (#515 review m7)
     const late = (['implementer', 'verifier'] as const).map((k) => t[k]).filter((id, i): id is string => !!id && id !== (prev?.[(['implementer', 'verifier'] as const)[i]] ?? null));
     if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });
     // an unspecified ticket will be refused by `deliver` (acceptance-pending): say so now, not at merge time (#515 review M3)
-    const notice = acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
+    const notice = accOn && acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
     return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t, effectiveSpec(next, t))}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
   }
   if (verb === 'show') {
@@ -337,8 +385,8 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();
     const harnessLine = s.harness ? `harness (#538): ${s.harness}\n` : '';
-    const acc = Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null);
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    const acc = acceptanceOn(s) ? Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null) : [];
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
 }

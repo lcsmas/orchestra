@@ -137,12 +137,29 @@ export interface FanoutState {
   repo: string | null;
   /** #538 — the repo's own integration test entry, DECLARED by the coordinator (a path and/or the command that runs it; one line). Absent = not declared (the key is never written as null, so an older binary reads a state that declares nothing): the writer's brief falls back to discovery (shared/fanout-harness.ts). */
   harness?: string;
+  /** #554 — one switch per feature, frozen for the run (see `switchesOf`). Absent = every default (never written as null: an older binary reads a state that sets none). */
+  switches?: Switches;
+  /** #554 — set at the run's FIRST SPAWN (first ticket past `todo`, first implementer/verifier/acceptor recorded — `firstSpawnSignal`): from then on no switch can change. */
+  switchesFrozen?: { at: string; by: string };
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'tickets', 'updatedAt', 'reconciledAt']);
+// ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
+export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'] } as const;
+export type SwitchName = keyof typeof SWITCH_VALUES;
+export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
+export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' }
+/** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
+ *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default). */
+export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' };
+/** The switches in force for `state`: the stored ones over the defaults (a state that sets none = all defaults). The ONE reader — every gate / spawn / skill render goes through it. */
+export function switchesOf(state: { switches?: Partial<Switches> } | null | undefined): Switches {
+  return { ...DEFAULT_SWITCHES, ...(state?.switches ?? {}) };
+}
+
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchesFrozen', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
@@ -182,8 +199,9 @@ export function stateFile(home: string, run: string): string {
   return path.join(home, 'fanout', assertRunId(run), 'state.json');
 }
 
-export function newState(run: string, opts: { target?: string; repo?: string | null; harness?: string | null; now: string }): FanoutState {
-  return { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, ...withHarness(harnessOf(opts.harness ?? null)), tickets: {}, updatedAt: opts.now, reconciledAt: null };
+export function newState(run: string, opts: { target?: string; repo?: string | null; harness?: string | null; switches?: Partial<Switches>; now: string }): FanoutState {
+  const base: FanoutState = { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, ...withHarness(harnessOf(opts.harness ?? null)), tickets: {}, updatedAt: opts.now, reconciledAt: null };
+  return opts.switches && Object.keys(opts.switches).length ? setSwitches(base, opts.switches, opts.now) : base; // #554: `init --switch` is the earliest moment to choose
 }
 
 /** #538 — a declared harness: ONE printable line, ≤ 300 chars (a path and/or the command that runs the repo's integration tests); `-` / empty / null = none. */
@@ -200,6 +218,90 @@ const withHarness = (h: string | null): { harness?: string } => (h === null ? {}
 export function setHarness(state: FanoutState, v: string, now: string): FanoutState {
   const { harness: _prev, ...rest } = state;
   return { ...rest, ...withHarness(harnessOf(v)), updatedAt: now };
+}
+
+/** #554 — a switch value: the NAME and the VALUE are each checked against the closed table; anything else is refused naming what is allowed. */
+function switchValueOf(name: string, v: unknown): Switches[SwitchName] {
+  if (!(SWITCH_NAMES as string[]).includes(name)) throw new FanoutStateError(`unknown switch ${JSON.stringify(name)} (switches: ${SWITCH_NAMES.map((n) => `${n}=${SWITCH_VALUES[n].join('|')}`).join(', ')})`);
+  const allowed = SWITCH_VALUES[name as SwitchName] as readonly string[];
+  if (typeof v !== 'string' || !allowed.includes(v)) throw new FanoutStateError(`switch ${name} must be ${allowed.join('|')} (got ${JSON.stringify(v)})`);
+  return v as Switches[SwitchName];
+}
+/** A stored `switches` object: every key known, every value in its table, the missing ones filled with the default. */
+function switchesParse(v: unknown): Switches {
+  if (!isObj(v)) throw new FanoutStateError('switches must be an object {earlyGate, acceptance, minorPolicy}');
+  const out: Record<string, unknown> = { ...DEFAULT_SWITCHES };
+  for (const [k, val] of Object.entries(v)) out[k] = switchValueOf(k, val);
+  return out as unknown as Switches;
+}
+function switchesFrozenOf(v: unknown): { at: string; by: string } {
+  if (!isObj(v)) throw new FanoutStateError('switchesFrozen must be {at, by}');
+  refuseUnknown(v, new Set(['at', 'by']), 'switchesFrozen');
+  if (typeof v.at !== 'string' || Number.isNaN(Date.parse(v.at)) || typeof v.by !== 'string' || !v.by.trim()) throw new FanoutStateError('switchesFrozen needs {at: ISO date, by: non-empty string}');
+  return { at: v.at, by: v.by };
+}
+/** `earlyGate=off,acceptance=on` (the CLI's `--switch`) → a partial switches object. Unknown name / unknown value / a name twice / an empty list: refused. */
+export function parseSwitchAssignments(arg: string): Partial<Switches> {
+  const out: Record<string, unknown> = {};
+  const parts = arg.split(',').map((x) => x.trim()).filter(Boolean);
+  if (parts.length === 0) throw new FanoutStateError(`--switch expects <name>=<value>[,…] (${SWITCH_NAMES.map((n) => `${n}=${SWITCH_VALUES[n].join('|')}`).join(', ')})`);
+  for (const part of parts) {
+    const i = part.indexOf('=');
+    if (i < 1) throw new FanoutStateError(`--switch expects <name>=<value> (got ${JSON.stringify(part)}; ${SWITCH_NAMES.map((n) => `${n}=${SWITCH_VALUES[n].join('|')}`).join(', ')})`);
+    const name = part.slice(0, i);
+    if (name in out) throw new FanoutStateError(`switch ${name} given twice`);
+    out[name] = switchValueOf(name, part.slice(i + 1));
+  }
+  return out as Partial<Switches>;
+}
+/** #554 (ledger D1) — the first-spawn detector: the STATE-side signal, the one every CLI verb can read. A run has spawned once a ticket is past `todo` (started|nominated|gated|merged),
+ *  or an implementer / verifier workspace id or a `accept-` writer is recorded. null = nothing spawned yet. (An agent spawned by hand and not yet recorded in the state is not seen: set the switches BEFORE the first spawn.) */
+export function firstSpawnSignal(state: FanoutState): string | null {
+  for (const [id, t] of Object.entries(state.tickets)) {
+    if (t.status === 'started' || t.status === 'nominated' || t.status === 'gated' || t.status === 'merged') return `ticket ${id} is ${t.status}`;
+    if (t.implementer) return `ticket ${id} has an implementer (${t.implementer})`;
+    if (t.verifier) return `ticket ${id} has a verifier (${t.verifier})`;
+    if (t.accept?.acceptor) return `ticket ${id} has an acceptance writer (${t.accept.acceptor.name})`;
+  }
+  return null;
+}
+/** Freeze the switches (the full set, defaults filled in) at the first spawn; a no-op once frozen or while nothing has spawned. Applied by every state writer a spawn goes through (applyTicketPatch, claimAcceptor). */
+export function freezeAtFirstSpawn(state: FanoutState, now: string): FanoutState {
+  if (state.switchesFrozen) return state;
+  const signal = firstSpawnSignal(state);
+  if (signal && isDefaultSwitches(switchesOf(state))) return state; // a run on the defaults persists NOTHING (a pre-#554 binary still reads its state; the lock is recomputed from the tickets by `switchesLockedWhy`)
+  return signal ? { ...state, switches: switchesOf(state), switchesFrozen: { at: now, by: `first spawn of the run: ${signal}` } } : state;
+}
+export const isDefaultSwitches = (sw: Switches): boolean => SWITCH_NAMES.every((n) => sw[n] === DEFAULT_SWITCHES[n]);
+/** Why the switches cannot change now (null = they can): frozen on record, or the run already spawned (a state older than #554 has no record). */
+export function switchesLockedWhy(state: FanoutState): string | null {
+  if (state.switchesFrozen) return `frozen ${state.switchesFrozen.at} (${state.switchesFrozen.by})`;
+  const signal = firstSpawnSignal(state);
+  return signal ? `the run already spawned (${signal})` : null;
+}
+/** `state set --switch …` / `state init --switch …`: pure. Refused after the first spawn (whatever the value, even an unchanged one) and for an unknown name / value. */
+export function setSwitches(state: FanoutState, assign: Partial<Switches>, now: string): FanoutState {
+  for (const [k, v] of Object.entries(assign)) switchValueOf(k, v);
+  const locked = switchesLockedWhy(state);
+  if (locked) throw new FanoutStateError(`the switches of run ${state.run} cannot change: ${locked} — a switch is fixed for the run from its first spawn (start a new run to change one)`);
+  const { switches: _prev, ...rest } = state;
+  const next = { ...switchesOf(state), ...assign };
+  return { ...rest, ...(isDefaultSwitches(next) ? {} : { switches: next }), updatedAt: now }; // all defaults = nothing stored (an older binary reads it)
+}
+/** #554 — the switches in force for run `run` under `home`: the state file's, or the defaults when there is none / it cannot be read (a skill render must never fail an install). */
+export function switchesForRun(home: string, run: string): Switches {
+  try { return switchesOf(readState(stateFile(home, run))); } catch { return { ...DEFAULT_SWITCHES }; }
+}
+/** The stamp value of an install: the hook bundle version, plus the run's switches when any is off its default (so a default run keeps the plain version and a switch flip forces ONE re-render). */
+export function switchesStamp(version: string, sw: Switches): string {
+  const diff = SWITCH_NAMES.filter((n) => sw[n] !== DEFAULT_SWITCHES[n]).map((n) => `${n}=${sw[n]}`);
+  return diff.length ? `${version}+sw:${diff.join(',')}` : version;
+}
+/** One line for `state show`: the values in force and whether they can still change. */
+export function switchesLine(state: FanoutState): string {
+  const sw = switchesOf(state);
+  const locked = switchesLockedWhy(state);
+  return `switches (#554): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]}`).join(' ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -613,6 +715,8 @@ export function parseState(raw: unknown): FanoutState {
     target: raw.target,
     repo: strOrNull(raw.repo, 'repo'),
     ...withHarness(harnessOf(raw.harness)),
+    ...(raw.switches !== undefined ? { switches: switchesParse(raw.switches) } : {}),
+    ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,
@@ -646,6 +750,7 @@ export const sameContent = (aSha: string, aTree: string | null | undefined, bSha
 export function upstreamBlocker(state: FanoutState, dep: TicketState, up: string, upHead?: string | null, upTree?: string | null): { kind: 'ineligible' | 'changed'; why: string } | null {
   const u = state.tickets[up];
   if (!u) return { kind: 'ineligible', why: `${up} is unknown to the state` };
+  if (switchesOf(state).earlyGate === 'off') return { kind: 'ineligible', why: `${up} is ${u.status}, not merged (earlyGate=off for this run: a dependent waits for its upstream's MERGE)` }; // #554: no candidate is admissible, only the merge
   if (u.status !== 'nominated' && u.status !== 'gated') return { kind: 'ineligible', why: `${up} is ${u.status} (it needs a nominated|gated candidate)` };
   if (u.verdict === 'fail' || u.verdict === 'changes-requested') return { kind: 'ineligible', why: `${up}'s verdict is ${u.verdict}` };
   const head = upHead ?? u.head;
@@ -669,7 +774,7 @@ export function stackView(state: FanoutState, id: string): StackView | null {
     const ut = state.tickets[u];
     const head = ut?.head ?? null;
     const builtOn = t.builtOn[u] ?? null;
-    if (upstreamMerged(state, u)) return builtOn && head && !sameContent(builtOn, t.builtOnTree[u], head, ut?.tree) ? { id: u, state: 'changed' as const, builtOn, head, why: `built on ${u}@${builtOn.slice(0, 8)} but ${u} merged at ${head.slice(0, 8)}` } : { id: u, state: 'merged' as const, builtOn, head };
+    if (upstreamMerged(state, u)) return builtOn && head && switchesOf(state).earlyGate === 'on' && !sameContent(builtOn, t.builtOnTree[u], head, ut?.tree) ? { id: u, state: 'changed' as const, builtOn, head, why: `built on ${u}@${builtOn.slice(0, 8)} but ${u} merged at ${head.slice(0, 8)}` } : { id: u, state: 'merged' as const, builtOn, head };
     const b = upstreamBlocker(state, t, u);
     return b ? { id: u, state: b.kind, builtOn, head, why: b.why } : { id: u, state: 'candidate' as const, builtOn, head };
   });
@@ -691,13 +796,9 @@ export const FOLLOWUP_RULE = 'A follow-up candidate on an already-merged ticket 
 export const FOLLOWUP_RULE_REFUSE = 'A follow-up candidate on an already-merged ticket needs at least one BLOCKING or MAJOR finding of that ticket it fixes; MINOR findings get no action (no follow-up PR, no extra list).';
 export type FollowUpReason = 'followup-undeclared' | 'followup-base-not-merged' | 'followup-no-finding' | 'followup-unknown-finding' | 'followup-minor-only' | 'followup-process-finding' | 'finding-unsettled';
 
-// ── #552 — the MINOR policy. `switchesOf` is the T3 seam (#554 owns the switches, their storage and their freeze): until it lands this STUB answers the defaults, `minorPolicy: 'spec'`. ──
-export type MinorPolicy = 'legacy' | 'refuse' | 'spec';
-export interface FanoutSwitches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: MinorPolicy }
-export function switchesOf(state: FanoutState): FanoutSwitches {
-  // STUB (T3 replaces this body): the defaults; an in-memory `switches` field (never persisted — parseState refuses it) lets a test drive the other policies.
-  return { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', ...((state as { switches?: Partial<FanoutSwitches> }).switches ?? {}) };
-}
+// ── #552 — the MINOR policy. The switches themselves (storage, freeze, `switchesOf`) are #554's, above; these aliases keep #552's names. ──
+export type MinorPolicy = Switches['minorPolicy'];
+export type FanoutSwitches = Switches;
 const followUpRuleOf = (policy: MinorPolicy): string => (policy === 'spec' ? FOLLOWUP_RULE : FOLLOWUP_RULE_REFUSE);
 
 /** #552 — is the finding's `specSentence` ACCEPTED: present and a LITERAL substring (no trim, no case-fold) of the spec text captured at registration? Code checks the sentence is IN the spec, never that it is really broken — the reviewer judges that. Re-checked wherever it is acted on (a hand-edited state cannot smuggle one in). */
@@ -744,6 +845,7 @@ export interface FollowUpRefusal { reason: FollowUpReason; detail: string }
 export function followUpRefusal(state: FanoutState, id: string, head?: string | null, branch?: string | null, headTree?: string | null): FollowUpRefusal | null {
   const t = state.tickets[id];
   if (!t) return null;
+  if (switchesOf(state).minorPolicy === 'legacy') return null; // #554: legacy = before #514, follow-ups unrestricted
   const policy = switchesOf(state).minorPolicy;
   const refuse = (reason: FollowUpReason, why: string): FollowUpRefusal => ({ reason, detail: `${id}: ${why}. ${followUpRuleOf(policy)}` });
   // #512: the same git tree on another sha (rebase / author rewrite) is the same content — a retry, not a further candidate
@@ -820,7 +922,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if (next.specText !== null && next.spec === null) throw new FanoutStateError(`${id}: spec text without a spec reference (register --spec <ref> first)`);
   const followUpNow = 'followUpOf' in patch ? (typeof patch.followUpOf === 'string' ? patch.followUpOf : null) : next.followUpOf;
   const specNow = effectiveSpec(state, { specText: next.specText, followUpOf: followUpNow });
-  if (next.specText !== prev.specText || followUpNow !== prev.followUpOf) {
+  if (switchesOf(state).minorPolicy === 'spec' && (next.specText !== prev.specText || followUpNow !== prev.followUpOf)) { // #554 (review T1 delta2 m1): a sentence pins the merge only under `spec` — under refuse / legacy a re-capture protects nothing
     // EVERY ticket whose effective spec (own text, or the one inherited through the follow-up chain) passes through this change: the open accepted sentences it held must still be in the text it has now
     const after: FanoutState = { ...state, tickets: { ...state.tickets, [id]: { ...next, followUpOf: followUpNow } } };
     const lost: string[] = [];
@@ -871,7 +973,8 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
     next.mergedTree = null;
   }
   // the head a ticket merged at is the first one recorded with the merge; a plain head change on a merged ticket would launder a further candidate
-  if (prev.status === 'merged' && next.status === 'merged' && 'head' in patch && !('forgetMerge' in patch) && prev.head && next.head && !sameSha(prev.head, next.head)) {
+  const legacyMinor = switchesOf(state).minorPolicy === 'legacy'; // #554: before #514 a further candidate on a merged ticket was not a follow-up
+  if (!legacyMinor && prev.status === 'merged' && next.status === 'merged' && 'head' in patch && !('forgetMerge' in patch) && prev.head && next.head && !sameSha(prev.head, next.head)) {
     throw new FanoutStateError(`${id} is already merged at ${prev.head.slice(0, 8)}: ${next.head.slice(0, 8)} is a further candidate on it, i.e. a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (recording the head it REALLY merged at after a re-gate: add --forget-merge <reason>)`);
   }
   if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
@@ -890,11 +993,14 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   // #514 — a follow-up candidate must name a BLOCKING/MAJOR finding of the merged ticket it follows; a further candidate on a merged ticket is a follow-up.
   const fu = followUpRefusal(out, id, next.status === 'nominated' || next.status === 'gated' ? next.head : undefined, next.branch, next.tree); // a nominated|gated candidate on a ticket that ever merged
   if (fu) throw new FanoutStateError(fu.detail);
-  if (prev.status === 'merged' && (next.status === 'nominated' || next.status === 'gated')) { // (merged → started|todo|dropped is the explicit un-merge, not a candidate)
+  if (!legacyMinor && prev.status === 'merged' && (next.status === 'nominated' || next.status === 'gated')) { // (merged → started|todo|dropped is the explicit un-merge, not a candidate)
     throw new FanoutStateError(`${id} is already merged: a further candidate on it is a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (the findings are recorded with --finding <id>=BLOCKING|MAJOR|MINOR)`);
   }
   const open = unmergedUpstreams(out, id);
   if (open.length > 0) {
+    if (switchesOf(state).earlyGate === 'off' && (next.status === 'nominated' || next.status === 'gated')) { // #554: before #506 — nominated|gated|merged all wait for the upstream's merge
+      throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged yet — earlyGate is off for this run: a dependent may START against a frozen interface but is not nominated or gated before its upstream is MERGED`);
+    }
     if (next.status === 'started' && !next.frozenInterface) {
       throw new FanoutStateError(`${id} cannot start: upstream ${open.join(', ')} not merged and no frozen interface to build against (set --frozen-interface)`);
     }
@@ -909,7 +1015,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   if ((next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass' || next.verdict === 'approve') && !next.head) {
     throw new FanoutStateError(`${id}: ${next.status === 'nominated' || next.status === 'gated' ? next.status : `verdict ${next.verdict}`} needs a recorded head sha (--head): the gate and the head-moved check speak about one exact head`);
   }
-  return out;
+  return freezeAtFirstSpawn(out, now); // #554: the first spawn of the run fixes the switches
 }
 
 // ── persistence: one writer, atomic rewrite ───────────────────────────────────────────────────────────────
@@ -1108,7 +1214,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
         const moved = bl.filter((x) => x.b!.kind === 'changed');
         if (bad.length) add({ ticket: id, kind: 'nominated-before-upstream-merged', detail: `${t.status} while upstream ${bad.map((x) => x.u).join(', ')} is not merged and not an admissible candidate: ${bad.map((x) => x.b!.why).join('; ')}` });
         // an upstream that MERGED at a head other than the one recorded in builtOn: re-gate unless the trees match (only `deliver` can tell) — no write-back, the dependent may already be re-gated
-        const movedMerged = t.dependsOn.filter((d) => effMerged(d) && t.builtOn[d]).map((d) => ({ d, h: reality[d]?.pr?.state === 'MERGED' ? reality[d]!.pr!.headRefOid : state.tickets[d]?.head ?? null })).filter((x) => x.h && !sameContent(t.builtOn[x.d], t.builtOnTree[x.d], x.h!, reality[x.d]?.pr?.state === 'MERGED' ? reality[x.d]?.prTree : state.tickets[x.d]?.tree));
+        const movedMerged = t.dependsOn.filter((d) => switchesOf(state).earlyGate === 'on' && effMerged(d) && t.builtOn[d]).map((d) => ({ d, h: reality[d]?.pr?.state === 'MERGED' ? reality[d]!.pr!.headRefOid : state.tickets[d]?.head ?? null })).filter((x) => x.h && !sameContent(t.builtOn[x.d], t.builtOnTree[x.d], x.h!, reality[x.d]?.pr?.state === 'MERGED' ? reality[x.d]?.prTree : state.tickets[x.d]?.tree));
         if (movedMerged.length) add({ ticket: id, kind: 'upstream-changed', detail: `${movedMerged.map((x) => `built on ${x.d}@${t.builtOn[x.d].slice(0, 8)} but ${x.d} merged at ${x.h!.slice(0, 8)}`).join('; ')} — re-gate (unless the trees match; deliver decides), then \`state set ${id} --built-on …\`` });
         if (moved.length) {
           add({ ticket: id, kind: 'upstream-changed', detail: `${moved.map((x) => x.b!.why).join('; ')} — verdict ${t.verdict} is void: rebase onto the new head, \`state set ${id} --built-on …\`, re-gate` });
@@ -1124,12 +1230,12 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
   for (const [id, t] of Object.entries(state.tickets)) {
     const own = perTicket[id] ?? [];
     const open = t.dependsOn.filter((d) => !effMerged(d));
-    tickets[id] = { ...planTicket(id, t, own, open), divergences: own };
+    tickets[id] = { ...planTicket(id, t, own, open, switchesOf(state).earlyGate === 'on'), divergences: own };
   }
   return { tickets, divergences, writeBack };
 }
 
-function planTicket(id: string, t: TicketState, own: Divergence[], open: string[]): { class: TicketClass; next: NextAction } {
+function planTicket(id: string, t: TicketState, own: Divergence[], open: string[], early = true): { class: TicketClass; next: NextAction } {
   const has = (k: DivergenceKind): boolean => own.some((d) => d.kind === k);
   if (has('merged-at-ungated-head')) return { class: 'diverged', next: { action: 'investigate', detail: 'merged at a head the verdict did not cover: re-gate the merged tree on the target before releasing dependents' } };
   if (has('reality-merged-state-not')) return { class: 'diverged', next: { action: 'record-merged', detail: 'reality shows it merged: write it back (resume does), then release its dependents' } };
@@ -1147,10 +1253,10 @@ function planTicket(id: string, t: TicketState, own: Divergence[], open: string[
     case 'dropped': return { class: 'dropped', next: { action: 'none', detail: 'dropped' } };
     case 'todo':
       if (open.length === 0) return { class: 'startable', next: { action: 'start', detail: t.dependsOn.length ? 'every upstream is merged' : 'no upstream' } };
-      if (t.frozenInterface) return { class: 'startable', next: { action: 'start-against-frozen-interface', detail: `build against ${t.frozenInterface}; nominate only once ${open.join(', ')} has a verified candidate (nominated|gated) and you rebased onto its head` } };
+      if (t.frozenInterface) return { class: 'startable', next: { action: 'start-against-frozen-interface', detail: `build against ${t.frozenInterface}; ${early ? `nominate only once ${open.join(', ')} has a verified candidate (nominated|gated) and you rebased onto its head` : `nominate only once ${open.join(', ')} is MERGED (earlyGate=off)`}` } };
       return { class: 'waiting', next: { action: 'wait-upstream', detail: `waiting for ${open.join(', ')} (no frozen interface to start against)` } };
     case 'started':
-      return { class: 'in-progress', next: { action: 'continue', detail: open.length ? `finish and self-gate; nomination needs ${open.join(', ')} merged or nominated|gated (rebase onto its head, --built-on)` : 'finish, self-gate, nominate' } };
+      return { class: 'in-progress', next: { action: 'continue', detail: open.length ? (early ? `finish and self-gate; nomination needs ${open.join(', ')} merged or nominated|gated (rebase onto its head, --built-on)` : `finish and self-gate; nomination needs ${open.join(', ')} MERGED (earlyGate=off)`) : 'finish, self-gate, nominate' } };
     case 'nominated':
       return { class: 'awaiting-gate', next: { action: 'gate', detail: `gate head ${t.head?.slice(0, 8) ?? '(unrecorded)'} on the merge result${open.length ? ` (stacked on ${open.join(', ')}: merges only after it)` : ''}` } };
     case 'gated':

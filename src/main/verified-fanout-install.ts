@@ -4,7 +4,9 @@
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from '../shared/verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL_NAME, renderVerifiedFanoutSkill, verifiedFanoutReferenceWanted } from '../shared/verified-fanout-skill.ts';
+import { renderSwitchBlocks } from '../shared/fanout-switch-render.ts';
+import { DEFAULT_SWITCHES, type Switches } from '../shared/fanout-state.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 
 /** 'written' = SKILL.md + files (re)written; 'skipped-foreign' = the repo's own skill (unmarked SKILL.md, or the dir is a symlink), nothing touched; 'skipped-error' = an fs error, reported to `onError`. */
@@ -21,7 +23,8 @@ async function writeAtomic(dest: string, body: string, mode?: number): Promise<v
   } catch (e) { await rm(tmp, { force: true }).catch(() => {}); throw e; }
 }
 
-export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e: unknown) => void): Promise<VerifiedFanoutInstall> {
+/** `switches` (#554, ledger D2): the run's switches — a feature that is off leaves no sentence in SKILL.md and no reference file. Default = every default. */
+export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e: unknown) => void, switches: Partial<Switches> = DEFAULT_SWITCHES): Promise<VerifiedFanoutInstall> {
   try {
     const dir = path.join(skillsDir, VERIFIED_FANOUT_SKILL_NAME);
     const skillFile = path.join(dir, 'SKILL.md');
@@ -34,12 +37,13 @@ export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e
     await mkdir(dir, { recursive: true });
     for (const f of [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES]) {
       const dest = path.join(dir, f.path);
+      if (!verifiedFanoutReferenceWanted(f.path, switches)) { await rm(dest, { force: true }); continue; } // #554: a feature that is off ships none of its text (and a copy left by an earlier install goes)
       await mkdir(path.dirname(dest), { recursive: true });
-      await writeAtomic(dest, f.content, f.mode);
+      await writeAtomic(dest, f.path.endsWith('.md') ? renderSwitchBlocks(f.content, switches) : f.content, f.mode); // #554: every reference is rendered by the run's switches, not only SKILL.md
       await chmod(dest, f.mode); // the exact mode whatever the umask
     }
     // SKILL.md LAST (#474 review): a failure part-way never leaves a NEW SKILL.md pointing at references that did not land.
-    await writeAtomic(skillFile, VERIFIED_FANOUT_SKILL);
+    await writeAtomic(skillFile, renderVerifiedFanoutSkill(switches));
     return 'written';
   } catch (e) {
     try { onError?.(e); } catch { /* the reporter must not throw either */ }

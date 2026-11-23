@@ -11,7 +11,7 @@ import {
 } from '../shared/fanout-state.ts';
 import { changedLines, compareFrozenSets } from '../shared/fanout-assertions.ts';
 import {
-  acceptableBytes, acceptanceBranch, acceptancePhase, amendHarnessInto, amendInto, amendedStatusText, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
+  AcceptanceOffError, acceptableBytes, acceptanceBranch, acceptanceOn, acceptancePhase, assertAcceptanceOn, amendHarnessInto, amendInto, amendedStatusText, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
   type AcceptancePhase, type FileStatus, type GateAcceptance,
 } from '../shared/fanout-acceptance.ts';
 import { checkOnTargetTip, freezeTimeoutMs, realFreezeIo, type FreezeIo } from './fanout-freeze-check.ts';
@@ -206,7 +206,7 @@ export function runAcceptance(args: string[], deps: FanoutDeps, io: FreezeIo = r
   try {
     return runAcceptanceInner(args, deps, io);
   } catch (e) {
-    if (e instanceof Refusal) return { code: 2, stdout: '', stderr: `refused: ${e.message}\n` };
+    if (e instanceof Refusal || e instanceof AcceptanceOffError) return { code: 2, stdout: '', stderr: `refused: ${e.message}\n` };
     if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };
     throw e;
   }
@@ -225,6 +225,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     const st0 = loadOrFail(file);
+    assertAcceptanceOn(st0, 'run an acceptance verb'); // #554: refused up front (before any git / test work) when the run has the feature off
     const had = st0.tickets[ticket];
     const caller = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
     // #515: the writer is role-limited to ITS OWN ticket — a workspace recorded as another ticket's writer may not freeze this one.
@@ -275,6 +276,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     const st0 = loadOrFail(file);
+    assertAcceptanceOn(st0, 'run an acceptance verb'); // #554: refused up front (before any git / test work) when the run has the feature off
     if (!st0.tickets[ticket]) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
     const decisionRepo = /^repos\/([^/]+\/[^/]+)\//.exec(api)?.[1] ?? '';
     if (st0.repo !== null && st0.repo.toLowerCase() !== decisionRepo.toLowerCase()) throw new Refusal(`the decision is a comment of ${decisionRepo}, not of this vague's repo ${st0.repo}`);
@@ -299,7 +301,9 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     const p = parseArgs(rest, ['--run'], ['--replace']);
     const ticket = oneTicket(p.pos, 'spawn');
     const r = runOf(p, deps, 'use');
-    const t = loadOrFail(stateFile(homeOf(deps.env), r.run)).tickets[ticket];
+    const st = loadOrFail(stateFile(homeOf(deps.env), r.run));
+    assertAcceptanceOn(st, `spawn a writer for ${ticket}`); // #554
+    const t = st.tickets[ticket];
     if (!t) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
     const replace = p.bools.has('--replace');
     if (replace ? acceptancePhase(t) !== 'pending' : !needsAcceptor(t, deps.now())) throw new Refusal(`${ticket}: no writer is owed (${t.accept?.acceptor && !t.accept.acceptor.error ? `writer ${t.accept.acceptor.name} exists` : acceptancePhase(t) === 'pending' ? 'nothing to do' : `acceptance is ${acceptancePhase(t)}`})`);
@@ -321,6 +325,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     const st0 = loadOrFail(file);
+    assertAcceptanceOn(st0, 'run an acceptance verb'); // #554: refused up front (before any git / test work) when the run has the feature off
     const cur = st0.tickets[ticket];
     const decisionRepo = /^repos\/([^/]+\/[^/]+)\//.exec(api)?.[1] ?? '';
     if (st0.repo && decisionRepo.toLowerCase() !== st0.repo.toLowerCase()) throw new Refusal(`the decision is a comment of ${decisionRepo}, not of this vague's repo ${st0.repo}`);
@@ -366,7 +371,7 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): Run
     const t = s.tickets[ticket];
     if (!t) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
     const a = t.acceptance;
-    if (p.bools.has('--brief')) return { code: 0, stdout: `${acceptanceLine(ticket, t) ?? `${ticket}  no acceptance flow (no spec registered, nothing frozen)`}\n`, stderr: r.note };
+    if (p.bools.has('--brief')) return { code: 0, stdout: `${(acceptanceOn(s) ? acceptanceLine(ticket, t) : null) ?? `${ticket}  no acceptance flow (${acceptanceOn(s) ? 'no spec registered, nothing frozen' : 'the acceptance switch is OFF for this run'})`}\n`, stderr: r.note };
     if (p.bools.has('--json')) return { code: 0, stdout: `${JSON.stringify(a, null, 2)}\n`, stderr: r.note };
     if (!a) return { code: 0, stdout: `${ticket}: no frozen acceptance tests\n`, stderr: r.note };
     const lines = [
@@ -414,6 +419,7 @@ function harnessAmend(ticket: string, p: ReturnType<typeof parseArgs>, deps: Fan
   if (caller !== r.run) throw new Refusal(`${ticket}: only the run's coordinator (${r.run}) may amend frozen tests${caller ? `, not ${caller}` : ' (no workspace identity: ORCHESTRA_WS_ID is empty)'}`);
   const file = stateFile(homeOf(deps.env), r.run);
   const st0 = loadOrFail(file);
+    assertAcceptanceOn(st0, 'run an acceptance verb'); // #554: refused up front (before any git / test work) when the run has the feature off
   const cur = st0.tickets[ticket];
   if (!cur) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${r.run}`);
   const acc = cur.acceptance;
@@ -479,7 +485,10 @@ export function acceptanceFromState(opts: { ticket: string; run?: string; lenien
     if (!state) continue;
     sawState = true;
     const t = state.tickets[opts.ticket];
-    if (t) return { consulted: true, known: true, acceptance: t.acceptance, phase: acceptancePhase(t), ticket: t, run: r };
+    if (t) {
+      if (!acceptanceOn(state)) return { consulted: true, known: true, acceptance: null, phase: 'none', ticket: t, run: r }; // #554: acceptance off — the gate and deliver ask for no frozen test, wait for none
+      return { consulted: true, known: true, acceptance: t.acceptance, phase: acceptancePhase(t), ticket: t, run: r };
+    }
   }
   if (!sawState) {
     if (opts.run && !opts.lenient) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the acceptance clause`);
