@@ -10,6 +10,7 @@ import {
   type AcceptFlow,
   type Acceptance,
   type FanoutState,
+  type FreezeCheck,
   type TicketState,
 } from './fanout-state.ts';
 import { harnessBriefLines, type ResolvedHarness } from './fanout-harness.ts';
@@ -162,14 +163,14 @@ export function openWait(state: FanoutState, id: string, boundSec: number, nowMs
 /** Record the frozen set on `id` (creating the ticket, like `state set`). Refused when one is already frozen: that is an amend. */
 export function freezeInto(
   state: FanoutState, id: string,
-  f: { files: Record<string, string>; run: string; config?: Acceptance['config']; source: Acceptance['source']; now: string },
+  f: { files: Record<string, string>; run: string; config?: Acceptance['config']; source: Acceptance['source']; now: string; freezeCheck?: FreezeCheck },
 ): FanoutState {
   const cur = ticketOf(state, id);
   if (cur?.acceptance) throw new FanoutStateError(`${id}: acceptance tests are already frozen (hash ${cur.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
   if (Object.keys(f.files).length === 0) throw new FanoutStateError('no files to freeze');
   parseRunArgv(f.run, Object.keys(f.files));
   assertConfigMatchesRun(f.run, Object.keys(f.files), f.config, id);
-  const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run, f.config), run: f.run, ...(f.config ? { config: f.config } : {}), source: f.source, frozenAt: f.now, amendments: [] };
+  const acceptance: Acceptance = { files: f.files, hash: acceptanceHash(f.files, f.run, f.config), run: f.run, ...(f.config ? { config: f.config } : {}), source: f.source, frozenAt: f.now, amendments: [], ...(f.freezeCheck ? { freezeCheck: f.freezeCheck } : {}) };
   const base: TicketState = cur ?? blankTicket(f.now);
   return { ...state, tickets: { ...state.tickets, [id]: { ...base, acceptance, ...(base.accept?.wait ? { accept: { ...base.accept, wait: null } } : {}), updatedAt: f.now } }, updatedAt: f.now };
 }

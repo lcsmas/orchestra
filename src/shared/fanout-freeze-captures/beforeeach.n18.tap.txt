@@ -1,0 +1,41 @@
+TAP version 13
+# Subtest: suite
+    # Subtest: a
+    not ok 1 - a
+      ---
+      duration_ms: 0.430794
+      location: 'file:///scratch/beforeeach.test.mjs:4:3'
+      failureType: 'hookFailed'
+      error: 'each boom'
+      code: 'ERR_TEST_FAILURE'
+      stack: |-
+        TestContext.<anonymous> (file:///scratch/beforeeach.test.mjs:3:28)
+        TestHook.runInAsyncScope (node:async_hooks:203:9)
+        TestHook.run (node:internal/test_runner/test:631:25)
+        TestHook.run (node:internal/test_runner/test:856:18)
+        node:internal/test_runner/test:565:20
+        async Suite.runHook (node:internal/test_runner/test:563:7)
+        async Test.run (node:internal/test_runner/test:607:9)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:948:7)
+        async startSubtest (node:internal/test_runner/harness:214:3)
+      ...
+    1..1
+not ok 1 - suite
+  ---
+  duration_ms: 1.274713
+  type: 'suite'
+  location: 'file:///scratch/beforeeach.test.mjs:2:1'
+  failureType: 'subtestsFailed'
+  error: '1 subtest failed'
+  code: 'ERR_TEST_FAILURE'
+  ...
+1..1
+# tests 1
+# suites 1
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 38.470637

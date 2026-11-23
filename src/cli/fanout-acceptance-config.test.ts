@@ -130,7 +130,7 @@ function rig(t: { after: (fn: () => void) => void }, o: { target?: string; noTar
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
   writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW, ...(o.target ? { target: o.target } : {}) }), 'T542', { branch: 'impl-542' }, NOW));
   const deps: FanoutDeps = { env, cwd: writer, runner: ((c, a, d) => defaultRunner(c, a, d)) as Runner, now: () => NOW, readStdin: () => '' };
-  const freeze = (run = RUN, extra: string[] = []) => runAcceptance(['freeze', 'T542', '--files', TEST, '--run-cmd', run, '--from', 'writer-542', ...extra], deps);
+  const freeze = (run = RUN, extra: string[] = []) => runAcceptance(['freeze', 'T542', '--files', TEST, '--run-cmd', run, '--from', 'writer-542', '--accept-unclassified', 'no jest here: this suite pins the config record (#542); the freeze check itself is #539', ...extra], deps); // #539: the freeze also runs the command on the target tip — no jest in this scratch repo ⇒ unclassified ⇒ the coordinator's recorded escape
   return { root, home, writer, cand, deps, w, g, freeze, acc: () => readState(stateFile(home, 'r1'))!.tickets.T542.acceptance };
 }
 

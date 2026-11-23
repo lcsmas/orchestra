@@ -1,0 +1,7 @@
+TAP version 13
+# Subtest: a
+ok 1 - a
+  ---
+  duration_ms: 0.943752
+  type: 'test'
+  ...

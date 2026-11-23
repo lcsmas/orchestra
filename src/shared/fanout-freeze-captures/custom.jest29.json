@@ -1,0 +1,61 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 1,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failureDetails": [
+      {}
+     ],
+     "failureMessages": [
+      "Error: custom matcher blew up\n    at Object.toBeX (/scratch/t/custom.test.js:1:33)\n    at __EXTERNAL_MATCHER_TRAP__ (/scratch/node_modules/expect/build/index.js:325:30)\n    at Object.throwingMatcher [as toBeX] (/scratch/node_modules/expect/build/index.js:326:15)\n    at Object.toBeX (/scratch/t/custom.test.js:2:41)\n    at Promise.then.completed (/scratch/node_modules/jest-circus/build/utils.js:298:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/utils.js:231:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/run.js:316:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (/scratch/node_modules/jest-circus/build/run.js:252:3)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/run.js:126:9)\n    at run (/scratch/node_modules/jest-circus/build/run.js:71:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/runTest.js:367:16)\n    at runTest (/scratch/node_modules/jest-runner/build/runTest.js:444:34)"
+     ],
+     "fullName": "custom throws",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryReasons": [],
+     "status": "failed",
+     "title": "custom throws"
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf custom throws\n\n    custom matcher blew up\n\n    > 1 | expect.extend({ toBeX() { throw new Error('custom matcher blew up'); } });\n        |                                 ^\n      2 | test('custom throws', () => { expect(1).toBeX(); });\n      3 |\n\n      at Object.toBeX (t/custom.test.js:1:33)\n      at __EXTERNAL_MATCHER_TRAP__ (node_modules/expect/build/index.js:325:30)\n      at Object.throwingMatcher [as toBeX] (node_modules/expect/build/index.js:326:15)\n      at Object.toBeX (t/custom.test.js:2:41)\n",
+   "name": "/scratch/t/custom.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

@@ -1,0 +1,82 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 2,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 2,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failureDetails": [
+      {
+       "message": "expect(received).rejects.toThrow()\n\nReceived promise resolved instead of rejected\nResolved to value: 1"
+      }
+     ],
+     "failureMessages": [
+      "Error: expect(received).rejects.toThrow()\n\nReceived promise resolved instead of rejected\nResolved to value: 1\n    at expect (/scratch/node_modules/expect/build/index.js:113:15)\n    at Object.expect (/scratch/t/rejects.test.js:1:50)\n    at Promise.then.completed (/scratch/node_modules/jest-circus/build/utils.js:298:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/utils.js:231:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/run.js:316:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (/scratch/node_modules/jest-circus/build/run.js:252:3)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/run.js:126:9)\n    at run (/scratch/node_modules/jest-circus/build/run.js:71:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/runTest.js:367:16)\n    at runTest (/scratch/node_modules/jest-runner/build/runTest.js:444:34)"
+     ],
+     "fullName": "rejects but resolves",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryReasons": [],
+     "status": "failed",
+     "title": "rejects but resolves"
+    },
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failureDetails": [
+      {
+       "message": "expect(received).rejects.toEqual()\n\nReceived promise resolved instead of rejected\nResolved to value: 1"
+      }
+     ],
+     "failureMessages": [
+      "Error: expect(received).rejects.toEqual()\n\nReceived promise resolved instead of rejected\nResolved to value: 1\n    at expect (/scratch/node_modules/expect/build/index.js:113:15)\n    at Object.expect (/scratch/t/rejects.test.js:2:45)\n    at Promise.then.completed (/scratch/node_modules/jest-circus/build/utils.js:298:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/utils.js:231:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/run.js:316:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTest (/scratch/node_modules/jest-circus/build/run.js:252:3)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/run.js:126:9)\n    at run (/scratch/node_modules/jest-circus/build/run.js:71:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapterInit.js:122:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/legacy-code-todo-rewrite/jestAdapter.js:79:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/runTest.js:367:16)\n    at runTest (/scratch/node_modules/jest-runner/build/runTest.js:444:34)"
+     ],
+     "fullName": "rejects toEqual",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryReasons": [],
+     "status": "failed",
+     "title": "rejects toEqual"
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf rejects but resolves\n\n    expect(received).rejects.toThrow()\n\n    Received promise resolved instead of rejected\n    Resolved to value: 1\n\n    > 1 | test('rejects but resolves', async () => { await expect(Promise.resolve(1)).rejects.toThrow(); });\n        |                                                  ^\n      2 | test('rejects toEqual', async () => { await expect(Promise.resolve(1)).rejects.toEqual(new Error('x')); });\n      3 |\n\n      at expect (node_modules/expect/build/index.js:113:15)\n      at Object.expect (t/rejects.test.js:1:50)\n\n  \u25cf rejects toEqual\n\n    expect(received).rejects.toEqual()\n\n    Received promise resolved instead of rejected\n    Resolved to value: 1\n\n      1 | test('rejects but resolves', async () => { await expect(Promise.resolve(1)).rejects.toThrow(); });\n    > 2 | test('rejects toEqual', async () => { await expect(Promise.resolve(1)).rejects.toEqual(new Error('x')); });\n        |                                             ^\n      3 |\n\n      at expect (node_modules/expect/build/index.js:113:15)\n      at Object.expect (t/rejects.test.js:2:45)\n",
+   "name": "/scratch/t/rejects.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

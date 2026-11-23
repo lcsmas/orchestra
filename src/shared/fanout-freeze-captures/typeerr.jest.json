@@ -1,0 +1,64 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 0,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 0,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 1,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [
+      {}
+     ],
+     "failureMessages": [
+      "TypeError: globalThis.missing is not a function\n    at Object.missing (/scratch/t/typeerr.test.js:1:44)\n    at Promise.finally.completed (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1834:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1774:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1167:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTestInContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1103:3)\n    at runTestWithContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:996:5)\n    at _runTestsForDescribeBlockOnce (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1008:11)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:824:5)\n    at run (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:789:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/runner.js:111:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/scratch/node_modules/jest-runner/build/index.js:315:7)"
+     ],
+     "fullName": "calls undefined",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "failed",
+     "title": "calls undefined",
+     "startAt": 1795388642562
+    }
+   ],
+   "endTime": 0,
+   "message": "  \u25cf calls undefined\n\n    TypeError: globalThis.missing is not a function\n\n    > 1 | test('calls undefined', () => { globalThis.missing(); });\n        |                                            ^\n      2 |\n\n      at Object.missing (t/typeerr.test.js:1:44)\n",
+   "name": "/scratch/t/typeerr.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

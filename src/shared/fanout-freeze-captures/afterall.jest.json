@@ -1,0 +1,93 @@
+{
+ "numFailedTestSuites": 1,
+ "numFailedTests": 1,
+ "numPassedTestSuites": 0,
+ "numPassedTests": 1,
+ "numPendingTestSuites": 0,
+ "numPendingTests": 0,
+ "numRuntimeErrorTestSuites": 1,
+ "numTodoTests": 0,
+ "numTotalTestSuites": 1,
+ "numTotalTests": 2,
+ "openHandles": [],
+ "snapshot": {
+  "added": 0,
+  "didUpdate": false,
+  "failure": false,
+  "filesAdded": 0,
+  "filesRemoved": 0,
+  "filesRemovedList": [],
+  "filesUnmatched": 0,
+  "filesUpdated": 0,
+  "matched": 0,
+  "total": 0,
+  "unchecked": 0,
+  "uncheckedKeysByFile": [],
+  "unmatched": 0,
+  "updated": 0
+ },
+ "startTime": 0,
+ "success": false,
+ "testResults": [
+  {
+   "assertionResults": [
+    {
+     "ancestorTitles": [
+      "s"
+     ],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [],
+     "failureMessages": [],
+     "fullName": "s a",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "passed",
+     "title": "a",
+     "startAt": 1795388629719
+    },
+    {
+     "ancestorTitles": [
+      "s"
+     ],
+     "duration": null,
+     "failing": false,
+     "failureDetails": [
+      {
+       "matcherResult": {
+        "actual": 1,
+        "expected": 2,
+        "message": "expect(received).toBe(expected) // Object.is equality\n\nExpected: 2\nReceived: 1",
+        "name": "toBe",
+        "pass": false
+       }
+      }
+     ],
+     "failureMessages": [
+      "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 2\nReceived: 1\n    at Object.toBe (/scratch/t/afterall.test.js:1:127)\n    at Promise.finally.completed (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1834:28)\n    at new Promise (<anonymous>)\n    at callAsyncCircusFn (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1774:10)\n    at _callCircusTest (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1167:40)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at _runTestInContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1103:3)\n    at runTestWithContext (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:996:5)\n    at _runTestsForDescribeBlockOnce (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1008:11)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:824:5)\n    at _runTestsForDescribeBlockOnce (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:1003:11)\n    at _runTestsForDescribeBlock (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:824:5)\n    at run (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:789:3)\n    at runAndTransformResultsToJestFormat (/scratch/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)\n    at jestAdapter (/scratch/node_modules/jest-circus/build/runner.js:111:19)\n    at runTestInternal (/scratch/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/scratch/node_modules/jest-runner/build/index.js:315:7)"
+     ],
+     "fullName": "s b",
+     "invocations": 1,
+     "location": null,
+     "numPassingAsserts": 0,
+     "retryMessages": [],
+     "retryReasons": [],
+     "status": "failed",
+     "title": "b",
+     "startAt": 1795388629720
+    }
+   ],
+   "coverage": {},
+   "endTime": 0,
+   "message": "  \u25cf s \u203a b\n\n    expect(received).toBe(expected) // Object.is equality\n\n    Expected: 2\n    Received: 1\n\n    > 1 | describe('s', () => { afterAll(() => { throw new Error('teardown boom'); }); test('a', () => {}); test('b', () => { expect(1).toBe(2); }); });\n        |                                                                                                                               ^\n      2 |\n\n      at Object.toBe (t/afterall.test.js:1:127)\n\n\n  \u25cf Test suite failed to run\n\n    teardown boom\n\n    > 1 | describe('s', () => { afterAll(() => { throw new Error('teardown boom'); }); test('a', () => {}); test('b', () => { expect(1).toBe(2); }); });\n        |                                              ^\n      2 |\n\n      at Object.<anonymous> (t/afterall.test.js:1:46)\n",
+   "name": "/scratch/t/afterall.test.js",
+   "startTime": 0,
+   "status": "failed",
+   "summary": ""
+  }
+ ],
+ "wasInterrupted": false
+}

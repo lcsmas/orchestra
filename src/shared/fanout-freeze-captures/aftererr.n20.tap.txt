@@ -1,0 +1,64 @@
+TAP version 13
+# Subtest: suite
+    # Subtest: a
+    ok 1 - a
+      ---
+      duration_ms: 0.415835
+      ...
+    # Subtest: b
+    not ok 2 - b
+      ---
+      duration_ms: 0.688002
+      location: '/scratch/aftererr.test.mjs:5:3'
+      failureType: 'testCodeFailure'
+      error: |-
+        Expected values to be strictly equal:
+        
+        1 !== 2
+        
+      code: 'ERR_ASSERTION'
+      name: 'AssertionError'
+      expected: 2
+      actual: 1
+      operator: 'strictEqual'
+      stack: |-
+        TestContext.<anonymous> (file:///scratch/aftererr.test.mjs:5:26)
+        Test.runInAsyncScope (node:async_hooks:206:9)
+        Test.run (node:internal/test_runner/test:796:25)
+        Suite.processPendingSubtests (node:internal/test_runner/test:526:18)
+        Test.postRun (node:internal/test_runner/test:889:19)
+        Test.run (node:internal/test_runner/test:835:12)
+        async Promise.all (index 0)
+        async Suite.run (node:internal/test_runner/test:1135:7)
+        async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+      ...
+    1..2
+not ok 1 - suite
+  ---
+  duration_ms: 1.785631
+  type: 'suite'
+  location: '/scratch/aftererr.test.mjs:2:1'
+  failureType: 'hookFailed'
+  error: 'teardown boom'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    SuiteContext.<anonymous> (file:///scratch/aftererr.test.mjs:3:23)
+    TestHook.runInAsyncScope (node:async_hooks:206:9)
+    TestHook.run (node:internal/test_runner/test:796:25)
+    TestHook.run (node:internal/test_runner/test:1041:18)
+    TestHook.run (node:internal/util:527:20)
+    Suite.runHook (node:internal/test_runner/test:723:20)
+    node:internal/test_runner/test:1113:38
+    node:internal/util:527:20
+    Suite.run (node:internal/test_runner/test:1136:13)
+    async Test.processPendingSubtests (node:internal/test_runner/test:526:7)
+  ...
+1..1
+# tests 2
+# suites 1
+# pass 1
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 31.712738

@@ -7,15 +7,17 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FanoutStateError, SAFE_BRANCH, parseRunArgv, readState, runConfigOf, resolveFanoutRun, sha256Hex, stateFile, updateState,
-  type Acceptance, type FanoutState, type TicketState,
+  type Acceptance, type FanoutState, type FreezeCheck, type TicketState,
 } from '../shared/fanout-state.ts';
 import {
   acceptanceBranch, acceptancePhase, amendInto, decideGateAcceptance, decisionApiPath, decisionNamesSentence, freezeInto, normaliseSentence, parseFileList, waiveInto,
   type AcceptancePhase, type FileStatus, type GateAcceptance,
 } from '../shared/fanout-acceptance.ts';
+import { checkOnTargetTip, freezeTimeoutMs, realFreezeIo, type FreezeIo } from './fanout-freeze-check.ts';
+import { formatErrors } from '../shared/fanout-freeze-classify.ts';
 import { acceptanceLine, homeOf, loadOrFail, needsAcceptor, parseArgs, runOf, spawnCall, type FanoutDeps, type HostCall, type RunResult, type Runner } from './fanout-state.ts';
 
-export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" [--from <ref|dir>]
+export const ACCEPTANCE_USAGE = `usage: orchestra fanout acceptance freeze <ticket> [--run <id>] --files <p1,p2,…> --run-cmd "<cmd>" [--from <ref|dir>] [--accept-unclassified "<why>"]
        orchestra fanout acceptance amend  <ticket> [--run <id>] --decision <ledger comment url> --spec-sentence "<text>" --files <p1,p2,…> [--from <ref|dir>] [--run-cmd "<cmd>"]
        orchestra fanout acceptance waive  <ticket> [--run <id>] --decision <ledger comment url> --reason "<why this ticket cannot have tests>"
        orchestra fanout acceptance spawn  <ticket> [--run <id>] [--replace]
@@ -51,6 +53,17 @@ and recorded in the ticket's fanout state with the targeted command (--run-cmd, 
           whitespace-normalised); appends {decision, specSentence, bodySha256, hashBefore, hashAfter}; refused (exit 2) without them, or when that decision comment (repo + id,
           however the URL is spelled, leading zeros included) already authorised an amendment of the ticket. --run-cmd replaces the command (same decision rules, same must-name-a-frozen-file rule). --from defaults to the recorded source branch.
   show    read-only, every role. \`fanout gate --ticket <id> --cwd <checkout>\` runs + hashes them; \`fanout deliver --acceptance <receipt>\` demands the receipt.
+  freeze check (#539): freeze first RUNS the frozen command ONCE on the current tip of the state's target (fetched fresh, in a clean scratch checkout with the frozen files laid over it —
+          not the writer's tree) and classifies each test from the runner's STRUCTURED output (node --test: its TAP reporter; jest: ${'`'}--json --outputFile${'`'} — forced for that run only; the frozen command and its hash are unchanged).
+          pass or an assertion FAIL (the behaviour is not built yet) = accepted. ERROR = REFUSED (exit 2), nothing published or recorded, the test + its error named: a setup / teardown /
+          hook failure, a non-assertion exception, a crash, a file that does not load (import / syntax error, top-level throw), a timeout (the runner's own, or ${'`'}ORCHESTRA_FREEZE_CHECK_TIMEOUT_MS${'`'},
+          default 10 min). Fix the tests and re-freeze. Output that cannot be classified (a runner without an adapter — node --test and jest have one — truncated or inconsistent output) FAILS CLOSED
+          with the reason; the coordinator alone may record an escape: ${'`'}--accept-unclassified "<why>"${'`'} (kept in the ticket's acceptance.freezeCheck; it never lifts a classified ERROR).
+          jest: an assertion FAIL = an ${'`'}expect${'`'} failure (a matcher, ${'`'}.rejects/.resolves${'`'} on a promise that settles the other way, ${'`'}expect.assertions/hasAssertions${'`'}); anything else — a hook, a thrown
+          exception, a timeout, a ${'`'}node:assert${'`'} failure — is an ERROR. LIMITS: an ${'`'}expect()${'`'} failing inside beforeAll / beforeEach / afterEach is indistinguishable from one in the test body (jest exposes
+          no field) and reads as an assertion FAIL; ${'`'}.resolves${'`'} on a promise that REJECTED is an ERROR (the one fixed jest phrase read); an error whose stack is forged to look like the expect library's (or a custom error thrown from a directory named expect/build) reads as an assertion FAIL — that fails toward a frozen RED test the gate still runs. The runner (argv[0]) is resolved on the PATH the freeze INHERITS — the gate resolves it the same way; not found ⇒ "could not be started".
+          RESIDUE of the scratch: it is ${'`'}git archive${'`'} of the tip (no export-ignored path, submodule, LFS content or gitignored build output) + the writer repo's TOP-LEVEL ${'`'}node_modules${'`'}
+          linked in (a workspace package's own node_modules is absent ⇒ a load failure ⇒ refused; root links into a workspace package resolve into the WRITER's tree). ${'`'}amend${'`'} does not re-run the check.
 Exit 0 = ok, 2 = refused (policy), 1 = usage / could not check. A frozen file cannot be set by \`fanout state set\` (--json included).`;
 
 /** A policy refusal (exit 2), as opposed to a usage error / could-not-check (exit 1). */
@@ -174,9 +187,9 @@ export function publishFrozen(runner: Runner, f: Frozen, o: { run: string; ticke
 
 // ── freeze | amend | show ─────────────────────────────────────────────────────────────────────────────────
 
-export function runAcceptance(args: string[], deps: FanoutDeps): RunResult {
+export function runAcceptance(args: string[], deps: FanoutDeps, io: FreezeIo = realFreezeIo): RunResult {
   try {
-    return runAcceptanceInner(args, deps);
+    return runAcceptanceInner(args, deps, io);
   } catch (e) {
     if (e instanceof Refusal) return { code: 2, stdout: '', stderr: `refused: ${e.message}\n` };
     if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };
@@ -184,11 +197,11 @@ export function runAcceptance(args: string[], deps: FanoutDeps): RunResult {
   }
 }
 
-function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
+function runAcceptanceInner(args: string[], deps: FanoutDeps, io: FreezeIo): RunResult {
   const [verb, ...rest] = args;
   if (!verb || verb === '--help' || verb === '-h') return { code: verb ? 0 : 1, stdout: verb ? `${ACCEPTANCE_USAGE}\n` : '', stderr: verb ? '' : `${ACCEPTANCE_USAGE}\n` };
   if (verb === 'freeze') {
-    const p = parseArgs(rest, ['--run', '--files', '--run-cmd', '--from'], []);
+    const p = parseArgs(rest, ['--run', '--files', '--run-cmd', '--from', '--accept-unclassified'], []);
     const ticket = oneTicket(p.pos, 'freeze');
     for (const f of ['--files', '--run-cmd']) if (!p.vals[f]) throw new FanoutStateError(`${f} is required\n${ACCEPTANCE_USAGE}`);
     const run = p.vals['--run-cmd'].trim();
@@ -207,19 +220,33 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
     if (caller !== r.run && caller !== had?.accept?.acceptor?.id) throw new Refusal(`${ticket}: only its test writer${had?.accept?.acceptor?.id ? ` (${had.accept.acceptor.id})` : ' (none recorded in this run)'} or the run's coordinator (${r.run}) may freeze it, not ${caller}`);
     if (had?.acceptance) throw new Refusal(`${ticket}: acceptance tests are already frozen (hash ${had.acceptance.hash.slice(0, 12)}) — change them with \`orchestra fanout acceptance amend\` (coordinator, ledger decision)`);
     if (had?.accept?.waived) throw new Refusal(`${ticket}: acceptance is waived (${had.accept.waived.decision}) — nothing to freeze`);
+    const escape = p.vals['--accept-unclassified']?.trim();
+    if (p.vals['--accept-unclassified'] !== undefined) {
+      if (caller !== r.run) throw new Refusal(`--accept-unclassified is the run's coordinator's alone (${r.run}), not ${caller}: report the unclassifiable output to the coordinator`);
+      if (!escape) throw new Refusal('--accept-unclassified needs a reason: the escape is recorded in the ticket');
+    }
     const cfgPath = runConfigOf(run, paths); // #542: also validates the command BEFORE anything is published
     const frozen = readFrozen(paths, p.vals['--from'] ?? '.', deps.cwd, deps.runner);
     const config = cfgPath ? readRunnerConfig(deps.runner, frozen.repo, st0.target, cfgPath) : undefined;
+    // #539: the frozen tests run ONCE on the current target tip BEFORE anything is published or recorded: an ERROR refuses, an assertion FAIL is the expected red.
+    const chk = checkOnTargetTip({ repo: frozen.repo, head: frozen.source.head, paths, modes: frozen.modes, run, target: st0.target, runner: deps.runner, io, timeoutMs: freezeTimeoutMs(deps.env) });
+    const at = `${chk.target}@${chk.targetSha.slice(0, 12)}`;
+    if (chk.verdict.kind === 'error') throw new Refusal(`freeze check on ${at} (${chk.verdict.runner}): ${formatErrors(chk.verdict)}\n  nothing was published or recorded: fix the tests (an assertion that fails because the feature is not built is fine; an error is not) and freeze again`);
+    if (chk.verdict.kind === 'unclassified' && !escape) throw new Refusal(`freeze check on ${at}: the output of the frozen command cannot be classified — ${chk.verdict.why}\n  nothing was published or recorded (fail closed). The run's coordinator may record an escape: --accept-unclassified "<why>"`);
+    const verdict = chk.verdict;
+    const freezeCheck: FreezeCheck = verdict.kind === 'clean'
+      ? { at: deps.now(), target: chk.target, targetSha: chk.targetSha, result: 'clean', pass: verdict.pass, assertionFail: verdict.assertionFail, skipped: verdict.skipped }
+      : { at: deps.now(), target: chk.target, targetSha: chk.targetSha, result: 'escaped', escape: { by: caller, reason: escape!, unclassified: verdict.kind === 'unclassified' ? verdict.why : '' } };
     // #515: a ticket registered with a spec has its tests PUBLISHED to the one shared branch acceptance/<run>; the recorded source is that published commit.
     const forced = !!had?.spec;
     const source = forced ? publishFrozen(deps.runner, frozen, { run: r.run, ticket, paths }) : frozen.source;
     const next = updateState(file, (cur) => {
       if (!cur) throw new FanoutStateError(`no state at ${file} — run \`orchestra fanout state init\` first`);
-      return freezeInto(cur, ticket, { files: frozen.files, run, ...(config ? { config } : {}), source, now: deps.now() });
+      return freezeInto(cur, ticket, { files: frozen.files, run, ...(config ? { config } : {}), source, now: deps.now(), freezeCheck });
     });
     const a = next.tickets[ticket].acceptance!;
     const hostCalls: HostCall[] | undefined = forced ? [{ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, ...(caller ? { from: caller } : {}) } }] : undefined;
-    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${a.config ? `runner config ${a.config.path} recorded (sha256 ${a.config.sha256.slice(0, 12)}): a candidate whose copy differs is refused at the gate\n` : ''}${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\` lists the tickets\n`}`, stderr: r.note, ...(hostCalls ? { hostCalls } : {}) };
+    return { code: 0, stdout: `${ticket}: froze ${paths.length} file(s) hash=${a.hash.slice(0, 12)} @ ${a.source.head.slice(0, 12)}${a.source.branch ? ` (${a.source.branch})` : ''}\n${freezeCheckLine(freezeCheck)}\n${a.config ? `runner config ${a.config.path} recorded (sha256 ${a.config.sha256.slice(0, 12)}): a candidate whose copy differs is refused at the gate\n` : ''}${had ? '' : `note: ticket ${ticket} was not in the state of run ${r.run} — created (todo); a typo? \`orchestra fanout state show\` lists the tickets\n`}`, stderr: r.note, ...(hostCalls ? { hostCalls } : {}) };
   }
   if (verb === 'waive') {
     const p = parseArgs(rest, ['--run', '--decision', '--reason'], []);
@@ -330,12 +357,21 @@ function runAcceptanceInner(args: string[], deps: FanoutDeps): RunResult {
       ...(a.config ? [`  config: ${a.config.sha256.slice(0, 12)}  ${a.config.path}  (not a frozen test: the gate refuses a candidate whose copy differs)`] : []),
       `  source: ${a.source.branch ?? '-'}@${a.source.head.slice(0, 12)}`,
       ...Object.entries(a.files).map(([f, h]) => `  ${h.slice(0, 12)}  ${f}`),
+      ...(a.freezeCheck ? [`  ${freezeCheckLine(a.freezeCheck)}${a.amendments.length ? ` — STALE: ${a.amendments.length} amendment(s) since; the amended files/command were NOT re-checked on a target tip` : ''}`] : []),
       `  amendments: ${a.amendments.length}`,
       ...a.amendments.map((m) => `    ${m.at} ${m.hashBefore.slice(0, 12)} → ${m.hashAfter.slice(0, 12)} ${m.decision}`),
     ];
     return { code: 0, stdout: `${lines.join('\n')}\n`, stderr: r.note };
   }
   throw new FanoutStateError(`unknown acceptance verb "${verb}"\n${ACCEPTANCE_USAGE}`);
+}
+
+/** One line for the freeze output / `show`: what the freeze's run on the target tip found. */
+export function freezeCheckLine(c: FreezeCheck): string {
+  const at = `${c.target}@${c.targetSha.slice(0, 12)}`;
+  return c.result === 'escaped'
+    ? `freeze check: NOT classified on ${at} — escape recorded by ${c.escape?.by}: ${c.escape?.reason} (${c.escape?.unclassified})`
+    : `freeze check: on ${at}: ${c.pass ?? 0} pass, ${c.assertionFail ?? 0} assertion-fail (accepted: not built yet), ${c.skipped ?? 0} skipped — no ERROR`;
 }
 
 function oneTicket(pos: string[], verb: string): string {
