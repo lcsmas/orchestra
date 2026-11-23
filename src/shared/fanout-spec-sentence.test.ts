@@ -184,3 +184,21 @@ test('#552 minorPolicy refuse (= #514 as it was): no merge block, a MINOR with a
   assert.doesNotMatch(r!.detail, /specSentence is a literal/, 'the refuse wording is the #514 sentence');
   assert.equal(followUpRefusal(fu({ ...s, switches: { minorPolicy: 'refuse' } } as FanoutState, ['F-MAJ']), 'T-1-fu'), null, 'a MAJOR is enough under refuse');
 });
+
+test('#552 D5: fewer than 3 words is no sentence; CRLF capture is normalised; a follow-up candidate inherits the base spec text; an ARGUED MINOR with an accepted sentence is a valid --fixes target', () => {
+  for (const sentence of ['a', 'endpoint', 'The endpoint']) assert.throws(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: sentence } }), /at least 3 words/, sentence);
+  assert.doesNotThrow(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: 'returns 404 for' } }));
+  const crlf = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: SPEC.replace(/\n/g, '\r\n') });
+  assert.equal(crlf.tickets['T-1'].specText, SPEC);
+  assert.doesNotThrow(() => rec(crlf, { 'F-1': { severity: 'MINOR', specSentence: 'pull request.\nThe endpoint returns 404' } }));
+  // follow-up candidate: no spec of its own → the base's text; it records a sentence MINOR and is blocked by it
+  const base = mergedWith({ 'F-MAJ': 'MAJOR' });
+  const fuS = applyTicketPatch(base, 'T-1-fu', { status: 'started', branch: 'fu', followUpOf: 'T-1', fixes: ['F-MAJ'], findings: { 'N-1': { severity: 'MINOR', specSentence: SENT } } }, T);
+  assert.equal(fuS.tickets['T-1-fu'].specText, null);
+  assert.deepEqual(blockingMinors(fuS, 'T-1-fu'), ['N-1']);
+  assert.throws(() => applyTicketPatch(base, 'T-5', { status: 'started', findings: { 'N-1': { severity: 'MINOR', specSentence: SENT } } }, T), /no spec text was captured/, 'a plain ticket with no spec of its own does not inherit');
+  // D5 pin
+  const arg = mergedWith({ 'F-A': { severity: 'MINOR', evidence: 'argued', specSentence: SENT }, 'F-B': { severity: 'MINOR', evidence: 'argued' } });
+  assert.doesNotThrow(() => fuOf(arg, ['F-A']));
+  assert.throws(() => fuOf(arg, ['F-B']), /only MINOR finding\(s\)/);
+});

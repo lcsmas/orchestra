@@ -9,6 +9,7 @@ import {
   SETTABLE_KEYS,
   SPEC_SENTENCE_LIMIT,
   SPEC_TEXT_MAX,
+  effectiveSpec,
   sentenceAccepted,
   applyTicketPatch,
   applyWriteBack,
@@ -83,7 +84,7 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            Findings are the coordinator's own record (no report reference): one finding may justify more than one follow-up, and a brand-new branch under a fresh ticket id cannot
            be told from a new ticket — the rule catches the same branch/PR as a merged ticket, any head change on it, and every un-merge/--forget-merge path (the reason is kept in forgottenMerges, denied to a scribe).
   A MINOR that breaks a sentence of the ticket (#552, minorPolicy spec): --finding-json '{"<id>":{"severity":"MINOR","specSentence":"<verbatim>","kind":"code|process","evidence":"measured|argued"}}'.
-           Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only refused) of the spec TEXT captured at registration — --spec <file>
+           Code accepts specSentence ONLY if it is a literal substring (no trim, no case-fold; empty / whitespace-only / fewer than 3 words refused; CRLF captured as LF) of the spec TEXT captured at registration — --spec <file>
            reads the file; for a URL / ledger spec give the text: --spec-text <file|-> (derived, never settable by --json). An accepted, unsettled MINOR BLOCKS \`gate\` + \`deliver\`
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
            round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
@@ -146,8 +147,8 @@ function findingsArg(v: string): Record<string, string> {
   return out;
 }
 /** The state of a recorded finding, for `state set` / `show`: `(spec,unsettled)` = blocks the merge, `(process)`, `(settled:fixed)`, `(decided)`. */
-function findingTags(f: FindingRecord, t: TicketState): string {
-  const tags = [f.kind === 'process' ? 'process' : '', f.specSentence !== undefined ? (sentenceAccepted(t, f) ? 'spec' : 'sentence-not-in-spec') : '', f.settled ? `settled:${f.settled.how}` : f.decision ? 'decided' : f.specSentence !== undefined && f.severity === 'MINOR' && sentenceAccepted(t, f) ? 'unsettled' : ''].filter(Boolean);
+function findingTags(f: FindingRecord, t: TicketState, spec: { specText: string | null } = t): string {
+  const tags = [f.kind === 'process' ? 'process' : '', f.specSentence !== undefined ? (sentenceAccepted(spec, f) ? 'spec' : 'sentence-not-in-spec') : '', f.settled ? `settled:${f.settled.how}` : f.decision ? 'decided' : f.specSentence !== undefined && f.severity === 'MINOR' && sentenceAccepted(spec, f) ? 'unsettled' : ''].filter(Boolean);
   return tags.length ? `(${tags.join(',')})` : '';
 }
 /** `--settle ID=fixed:<ref>` | `ID=pr-body:<ref>` → {ID: {how, ref}}. */
@@ -295,7 +296,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
     const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {};
     const notes: string[] = specRead?.note ? [specRead.note] : [];
-    if (specRead && (specRead.text !== null || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text;
+    if (specRead && (typeof patch.spec === 'string' || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // m5: a registration whose capture returned nothing CLEARS the stored text (never a stale one)
     const repo = readState(file)?.repo ?? null;
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
@@ -322,7 +323,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });
     // an unspecified ticket will be refused by `deliver` (acceptance-pending): say so now, not at merge time (#515 review M3)
     const notice = acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t)}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t, effectiveSpec(next, t))}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);

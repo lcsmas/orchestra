@@ -247,10 +247,13 @@ function builtOnTreeOf(v: unknown): Record<string, string> {
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 /** #552 — a sentence quoted from a spec: non-empty after trim (the sentence itself is kept verbatim — no trim, no case-fold: it is matched LITERALLY), printable (newline / tab allowed). */
 export const SPEC_SENTENCE_MAX = 2000;
+/** A quoted fragment shorter than this matches nearly any spec: not a sentence. */
+export const SPEC_SENTENCE_MIN_WORDS = 3;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
 function specSentenceOf(v: unknown, where: string): string {
   if (typeof v !== 'string' || !v.trim()) throw new FanoutStateError(`${where}: specSentence must be a non-empty text quoted from the ticket's spec (empty / whitespace-only is refused)`);
   if (v.length > SPEC_SENTENCE_MAX || CTRL.test(v)) throw new FanoutStateError(`${where}: specSentence must be printable text of at most ${SPEC_SENTENCE_MAX} characters`);
+  if (v.split(/\s+/).filter(Boolean).length < SPEC_SENTENCE_MIN_WORDS) throw new FanoutStateError(`${where}: specSentence must quote at least ${SPEC_SENTENCE_MIN_WORDS} words of the spec (a one-character or one-word fragment matches almost any spec) — refused`);
   return v;
 }
 function lineOf(v: unknown, where: string, max = 2000): string {
@@ -691,6 +694,10 @@ const followUpRuleOf = (policy: MinorPolicy): string => (policy === 'spec' ? FOL
 export function sentenceAccepted(t: Pick<TicketState, 'specText'>, f: FindingRecord): boolean {
   return f.specSentence !== undefined && f.specSentence.trim() !== '' && t.specText !== null && t.specText.includes(f.specSentence);
 }
+/** #552 (D5 m4) — the spec text a ticket's sentences are matched against: its own, else — a follow-up candidate has no spec of its own — the base ticket's. */
+export function effectiveSpec(state: FanoutState, t: Pick<TicketState, 'specText' | 'followUpOf'>): { specText: string | null } {
+  return { specText: t.specText ?? (t.followUpOf ? state.tickets[t.followUpOf]?.specText ?? null : null) };
+}
 /** Is the finding closed: settled (fixed / pr-body) or decided by the coordinator. */
 export const findingClosed = (f: FindingRecord): boolean => !!f.settled || !!f.decision;
 /**
@@ -700,7 +707,7 @@ export const findingClosed = (f: FindingRecord): boolean => !!f.settled || !!f.d
 export function blockingMinors(state: FanoutState, id: string): string[] {
   const t = state.tickets[id];
   if (!t || switchesOf(state).minorPolicy !== 'spec' || t.status === 'merged' || t.mergedHead) return [];
-  return Object.entries(t.findings).filter(([, f]) => f.severity === 'MINOR' && sentenceAccepted(t, f) && !findingClosed(f)).map(([k]) => k);
+  return Object.entries(t.findings).filter(([, f]) => f.severity === 'MINOR' && sentenceAccepted(effectiveSpec(state, t), f) && !findingClosed(f)).map(([k]) => k);
 }
 export function mergeBlockRefusal(state: FanoutState, id: string): FollowUpRefusal | null {
   const ids = blockingMinors(state, id);
@@ -795,7 +802,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
   }
   // #552 — the spec text is DERIVED (the CLI read it at registration); a new spec reference with nothing read = NOT captured, never the old spec's text
   if ('spec' in patch) next.spec = specOf(patch.spec);
-  if (derived.specText !== undefined) next.specText = specTextOf(derived.specText);
+  if (derived.specText !== undefined) next.specText = specTextOf(typeof derived.specText === 'string' ? derived.specText.replace(/\r\n/g, '\n') : derived.specText); // CRLF → LF: a sentence is quoted with LF
   else if ('spec' in patch && next.spec !== prev.spec) next.specText = null;
   if (next.specText !== null && next.spec === null) throw new FanoutStateError(`${id}: spec text without a spec reference (register --spec <ref> first)`);
   if (next.specText !== prev.specText) {
@@ -811,7 +818,7 @@ export function applyTicketPatch(state: FanoutState, id: string, patch: Record<s
       if (had && had.severity !== f.severity) throw new FanoutStateError(`${id}: finding ${k} is already recorded as ${had.severity} — a recorded severity is not re-graded (a MINOR cannot be promoted to justify a follow-up)`);
       for (const field of ['evidence', 'kind', 'specSentence'] as const) if (had && f[field] !== undefined && (field === 'kind' ? (had.kind ?? 'code') : had[field]) !== undefined && (field === 'kind' ? (had.kind ?? 'code') : had[field]) !== f[field]) throw new FanoutStateError(`${id}: finding ${k} already records ${field} ${JSON.stringify(field === 'kind' ? (had.kind ?? 'code') : had[field])} — a recorded finding is not rewritten (the kind is fixed when the finding is recorded: a code finding cannot become a process one to be settled by a PR-body edit)`);
       if (had?.report && f.report && JSON.stringify(had.report) !== JSON.stringify(f.report)) throw new FanoutStateError(`${id}: finding ${k} already records its report — a recorded finding is not rewritten`);
-      if (f.specSentence !== undefined && !sentenceAccepted({ specText: next.specText }, f)) {
+      if (f.specSentence !== undefined && !sentenceAccepted(effectiveSpec(state, { specText: next.specText, followUpOf: 'followUpOf' in patch && typeof patch.followUpOf === 'string' ? patch.followUpOf : next.followUpOf }), f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
       }
       next.findings[k] = { ...(had ?? {}), ...f };
