@@ -25,7 +25,7 @@ function closeout(args: string[], deps: FanoutDeps): RunResult {
   const r = runOf(p, deps, 'use');
   const state = loadOrFail(stateFile(homeOf(deps.env), r.run));
   const res = closeoutTexts(state);
-  const out = p.bools.has('--json') ? `${JSON.stringify({ run: state.run, texts: res.texts, skipped: res.skipped }, null, 2)}\n` : renderCloseout(res, state.run);
+  const out = p.bools.has('--json') ? `${JSON.stringify({ run: state.run, texts: res.texts, skipped: res.skipped, noEvidence: res.noEvidence, settledFixed: res.settledFixed, malformed: res.malformed }, null, 2)}\n` : renderCloseout(res, state.run);
   if (!p.bools.has('--file')) return { code: 0, stdout: out, stderr: r.note };
   const repo = p.vals['--repo'] ?? state.repo ?? null;
   const lines = res.texts.map((t) => fileOne(t, repo, deps));
