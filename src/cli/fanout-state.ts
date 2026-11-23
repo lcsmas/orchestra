@@ -164,7 +164,7 @@ function decideArg(v: string): Record<string, { text: string }> {
   return { [v.slice(0, i).trim()]: { text: v.slice(i + 1).trim() } };
 }
 /** #552 — the spec text read at registration: `--spec-text <file|->` (a file, or stdin: a ticket / ledger text), else `--spec <ref>` when the reference IS a readable file. Anything else (a URL, a ledger section) is NOT read: null. */
-function readSpecText(ref: string | undefined, explicit: string | undefined, deps: FanoutDeps): { text: string | null; note: string } {
+function readSpecText(ref: string | undefined, explicit: string | undefined, deps: FanoutDeps): { text: string | null; note: string; isFile?: boolean } {
   const read = (file: string): string => {
     const abs = path.resolve(deps.cwd, file);
     let st: fs.Stats;
@@ -181,8 +181,8 @@ function readSpecText(ref: string | undefined, explicit: string | undefined, dep
   let isFile = false;
   try { isFile = fs.statSync(path.resolve(deps.cwd, ref)).isFile(); } catch { /* not a file: a URL / a ledger section */ }
   if (isFile) {
-    if (fs.statSync(path.resolve(deps.cwd, ref)).size > SPEC_TEXT_MAX) return { text: null, note: `note: the spec file ${JSON.stringify(ref.slice(0, 80))} is larger than ${SPEC_TEXT_MAX} bytes: its text was NOT captured (give the relevant part with \`state set <ticket> --spec-text <file|->\`)\n` };
-    return { text: read(ref), note: '' };
+    if (fs.statSync(path.resolve(deps.cwd, ref)).size > SPEC_TEXT_MAX) return { isFile: true, text: null, note: `note: the spec file ${JSON.stringify(ref.slice(0, 80))} is larger than ${SPEC_TEXT_MAX} bytes: its text was NOT captured (give the relevant part with \`state set <ticket> --spec-text <file|->\`)\n` };
+    return { isFile: true, text: read(ref), note: '' };
   }
   return { text: null, note: `note: the spec text of ${JSON.stringify(ref.slice(0, 80))} was NOT captured (not a readable file): a finding's specSentence is refused until \`state set <ticket> --spec-text <file|->\` records it\n` };
 }
@@ -296,7 +296,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
     const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {};
     const notes: string[] = specRead?.note ? [specRead.note] : [];
-    if (specRead && (typeof patch.spec === 'string' || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // m5: a registration whose capture returned nothing CLEARS the stored text (never a stale one)
+    if (specRead && (specRead.isFile || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // m5: re-reading a spec FILE that returns nothing (too big…) CLEARS the stored text, never keeps a stale one; a non-file reference (URL / ledger) is left as it is — a CHANGED reference clears it in applyTicketPatch
     const repo = readState(file)?.repo ?? null;
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);

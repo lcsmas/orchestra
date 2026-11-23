@@ -202,3 +202,18 @@ test('#552 D5: fewer than 3 words is no sentence; CRLF capture is normalised; a 
   assert.doesNotThrow(() => fuOf(arg, ['F-A']));
   assert.throws(() => fuOf(arg, ['F-B']), /only MINOR finding\(s\)/);
 });
+
+test('#552 D5 review: inherited sentences cannot be silently un-blocked, the chain inherits, a CRLF sentence is the same sentence', () => {
+  const base = mergedWith({ 'F-MAJ': 'MAJOR' });
+  const c = applyTicketPatch(base, 'C', { status: 'started', branch: 'c', followUpOf: 'T-1', fixes: ['F-MAJ'], findings: { G: { severity: 'MINOR', specSentence: SENT } } }, T);
+  assert.deepEqual(blockingMinors(c, 'C'), ['G']);
+  // giving the candidate its OWN, different spec must not drop the inherited sentence unnoticed
+  assert.throws(() => applyTicketPatch(c, 'C', { spec: 'own.md' }, T, { specText: 'a different spec of its own' }), /no longer contains the specSentence of G/);
+  // …and re-capturing the BASE's text is guarded by the candidates that inherit it
+  assert.throws(() => applyTicketPatch(c, 'T-1', {}, T, { specText: 'another text' }), /no longer contains the specSentence of C\/G/);
+  // chain: D follows C (merged), C's inherited-sentence MINOR G is a valid target
+  const cm = applyTicketPatch(c, 'C', { status: 'merged', head: 'c'.repeat(40) }, T);
+  const d = applyTicketPatch(cm, 'D', { status: 'started', branch: 'd', followUpOf: 'C', fixes: ['G'] }, T);
+  assert.deepEqual(d.tickets.D.fixes, ['G']);
+  assert.doesNotThrow(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: 'pull request.\r\nThe endpoint returns 404' } }), 'a CRLF-quoted sentence is normalised');
+});
