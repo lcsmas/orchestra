@@ -30,7 +30,7 @@ test('default: one text per measured MINOR, NO tracker call, state untouched', (
     const r = runCloseout(['--run', 'rig'], w.deps);
     assert.equal(r.code, 0, r.stderr);
     assert.equal((r.stdout.match(/^--- ticket text /gm) ?? []).length, 1);
-    assert.match(r.stdout, /1 argued MINOR, 1 process finding/);
+    assert.match(r.stdout, /1 argued MINOR \(declared\), 0 MINOR with no evidence recorded, 1 process finding/);
     assert.deepEqual(w.calls, [], 'the default close-out must not call git or gh');
     assert.equal(fs.readFileSync(file, 'utf8'), before);
   } finally { w.done(); }

@@ -32,8 +32,15 @@ test('argued MINOR, process finding, BLOCKING/MAJOR, legacy string, already-fixe
     F: { severity: 'MINOR', evidence: 'measured', report: REP },
   }, 'T-1', { F: { how: 'fixed', ref: 'abc1234' } }));
   assert.equal(r.texts.length, 0);
-  assert.deepEqual(r.skipped, { 'not-minor': 2, argued: 2, process: 1, 'settled-fixed': 1 });
-  assert.equal(closeoutSkip({ severity: 'MINOR' }), 'argued');
+  assert.deepEqual(r.skipped, { 'not-minor': 2, argued: 1, 'no-evidence': 1, process: 1, 'settled-fixed': 1 });
+  assert.deepEqual(r.noEvidence, ['T-1/L']); // m1: the bare MINOR is named, not folded into « argued »
+  assert.deepEqual(r.settledFixed, [{ id: 'T-1/F', ref: 'abc1234' }]); // m2: every settled-fixed is listed with its ref
+  const out = renderCloseout(r, 'r');
+  assert.match(out, /1 argued MINOR \(declared\), 1 MINOR with no evidence recorded/);
+  assert.match(out, /NO EVIDENCE RECORDED[^\n]*T-1\/L/);
+  assert.match(out, /T-1\/F settled:abc1234/);
+  assert.equal(closeoutSkip({ severity: 'MINOR' }), 'no-evidence');
+  assert.equal(closeoutSkip({ severity: 'MINOR', evidence: 'argued' }), 'argued');
   assert.equal(closeoutSkip({ severity: 'MINOR', evidence: 'measured', kind: 'code', report: REP }), null);
 });
 
@@ -70,8 +77,20 @@ test('texts come in ticket order, one per finding, across tickets', () => {
   assert.deepEqual(closeoutTexts(s).texts.map((t) => `${t.ticket}/${t.finding}`), ['T-1/F-1', 'T-2/F-2', 'T-2/F-3']);
 });
 
-test('a state edited by hand to hold a measured MINOR without a part is loud, not a silent drop', () => {
-  const s = rec({ 'F-1': { severity: 'MINOR', evidence: 'measured', report: REP } });
-  (s.tickets['T-1'].findings['F-1'] as { report: Record<string, string> }).report.proof = '';
-  assert.throws(() => closeoutTexts(s), /no proof/);
+test('m4: one malformed measured MINOR is listed, the valid texts still come out', () => {
+  const s = rec({ 'F-1': { severity: 'MINOR', evidence: 'measured', report: REP }, 'F-2': { severity: 'MINOR', evidence: 'measured', report: REP } });
+  (s.tickets['T-1'].findings['F-2'] as { report?: unknown }).report = undefined; // a state written before the recording refusal / edited by hand
+  const r = closeoutTexts(s);
+  assert.deepEqual(r.texts.map((t) => t.finding), ['F-1']);
+  assert.equal(r.malformed.length, 1);
+  assert.equal(r.malformed[0].id, 'T-1/F-2');
+  assert.match(renderCloseout(r, 'r'), /NOT a ticket text: malformed[^\n]*T-1\/F-2/);
+});
+
+test('m3: the text carries no head (it would be the close-out head, not the measured one) and says it was measured earlier', () => {
+  let s = rec({ 'F-1': { severity: 'MINOR', evidence: 'measured', report: REP } });
+  s = applyTicketPatch(s, 'T-1', { head: 'a'.repeat(40) }, NOW);
+  const body = closeoutTexts(s).texts[0].body;
+  assert.ok(!body.includes('aaaaaaaa'));
+  assert.match(body, /earlier round.*re-check before acting/s);
 });

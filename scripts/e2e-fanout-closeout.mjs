@@ -52,11 +52,12 @@ function world(cliPath) {
   const closeout = (...a) => cli(['closeout', '--run', 'rig', ...a]);
   const readGh = () => JSON.parse(fs.readFileSync(ghFile, 'utf8'));
   const stateBytes = () => fs.readFileSync(statePath, 'utf8');
+  const handEdit = (fn) => { const st = JSON.parse(fs.readFileSync(statePath, 'utf8')); fn(st); fs.writeFileSync(statePath, JSON.stringify(st)); };
   const stateFindings = (t) => JSON.parse(stateBytes()).tickets[t]?.findings ?? {};
   cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
   const t = cli(['state', 'set', 'T-1', '--run', 'rig', '--status', 'started', '--branch', 'b1']);
   if (t.code !== 0) throw new Error(`rig setup failed: ${t.stdout}${t.stderr}`);
-  return { cli, setFindings, closeout, readGh, stateBytes, stateFindings, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
+  return { cli, setFindings, closeout, readGh, stateBytes, stateFindings, handEdit, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 const nTexts = (out) => (out.match(/^--- ticket text /gm) ?? []).length;
 
@@ -115,10 +116,25 @@ function scenarios(cliPath) {
     arm('setup: the mixed findings record (argued/process need no report) and F-FIX settled by a fix', s.code === 0 && settle.code === 0, `${s.stdout}${s.stderr}${settle.stdout}${settle.stderr}`);
     const c = A.closeout();
     arm('must-FAIL: argued MINOR (with or without report), process finding, BLOCKING, MAJOR, legacy bare MINOR and an already-fixed one → NO ticket text', c.code === 0 && nTexts(c.stdout) === 0 && /0 ticket text\(s\)/.test(c.stdout), c.stdout);
-    arm('must-FAIL: the skipped ones are counted, never silent (3 argued incl. the legacy bare one, 1 process, 1 fixed, +2 BLOCKING/MAJOR)', /3 argued MINOR, 1 process finding\(s\), 1 measured MINOR already fixed \(\+2 BLOCKING\/MAJOR/.test(c.stdout), c.stdout.split('\n')[0]);
+    arm('must-FAIL: the skipped ones are counted, never silent (2 argued declared, 1 no evidence, 1 process, 1 settled fixed, +2 BLOCKING/MAJOR)', /2 argued MINOR \(declared\), 1 MINOR with no evidence recorded, 1 process finding\(s\), 1 measured MINOR settled fixed \(\+2 BLOCKING\/MAJOR/.test(c.stdout), c.stdout.split('\n')[0]);
+    arm('m1: the bare `--finding`-style MINOR is NAMED (T-1/F-OLD under NO EVIDENCE RECORDED), not folded into argued', /NO EVIDENCE RECORDED[^\n]*T-1\/F-OLD/.test(c.stdout) && !/T-1\/F-ARG\b[^\n]*NO EVIDENCE/.test(c.stdout), c.stdout);
+    arm('m2: the settled-fixed one is LISTED with its ref (T-1/F-FIX settled:abc1234), still no text', /T-1\/F-FIX settled:abc1234/.test(c.stdout) && !c.stdout.includes('ticket text 1/'), c.stdout);
     A.setFindings('T-1', { 'F-OK': mea(7) });
     const c2 = A.closeout();
     arm('must-PASS: beside all of those, ONE measured MINOR → exactly one text (F-OK)', nTexts(c2.stdout) === 1 && c2.stdout.includes('finding F-OK'), c2.stdout.split('\n')[0]);
+  });
+
+  block((A) => { // m3: no head in the text, said to be an earlier round
+    A.setFindings('T-1', { 'F-1': mea(1) });
+    A.cli(['state', 'set', 'T-1', '--run', 'rig', '--head', 'deadbeefcafe0123456789abcdef0123456789ab']);
+    const o = A.closeout().stdout;
+    arm('m3: the origin line prints NO head (the close-out head is not the one the MINOR was measured on) and says « earlier round … re-check »', nTexts(o) === 1 && !/deadbeef/.test(o) && /earlier round[^\n]*re-check before acting/.test(o), o);
+  });
+  block((A) => { // m4: one malformed record does not void the list
+    A.setFindings('T-1', { 'F-GOOD': mea(1), 'F-BAD': mea(2) });
+    A.handEdit((s) => { delete s.tickets['T-1'].findings['F-BAD'].report; });
+    const c = A.closeout();
+    arm('m4: a malformed measured MINOR is listed (NOT a ticket text: malformed … F-BAD) and the valid text STILL comes out, rc 0', c.code === 0 && nTexts(c.stdout) === 1 && c.stdout.includes('finding F-GOOD') && /NOT a ticket text: malformed[^\n]*T-1\/F-BAD/.test(c.stdout), `${c.code} ${c.stdout}${c.stderr}`);
   });
 
   block((A) => { // two tickets / two findings → two texts, ticket order
@@ -178,9 +194,16 @@ const mutants = [
   { name: 'close-out: a process finding becomes a ticket text', find: 'if (r.kind === "process") return "process";', put: () => '' },
   { name: 'close-out: a BLOCKING/MAJOR becomes a ticket text', find: 'if (r.severity !== "MINOR") return "not-minor";', put: () => '' },
   { name: 'close-out: an already-fixed measured MINOR still becomes a ticket text', find: 'if (r.settled?.how === "fixed") return "settled-fixed";', put: () => '' },
-  { name: 'close-out: a MINOR with no evidence (legacy bare) counts as measured', find: 'if (r.evidence !== "measured") return "argued";', put: () => 'if (r.evidence === "argued") return "argued";' },
+  { name: 'close-out: a MINOR with no evidence (legacy bare) counts as measured', find: 'if (r.evidence === void 0) return "no-evidence";', put: () => '', extra: [{ find: 'if (r.evidence !== "measured") return "argued";', put: () => 'if (r.evidence === "argued") return "argued";' }] },
   { name: 'close-out: only the first measured MINOR of the vague is listed', find: 'texts.push({ run: state.run,', put: () => 'if (texts.length === 0) texts.push({ run: state.run,' },
   { name: 'close-out: every text is emitted twice', find: 'texts.push({ run: state.run,', put: () => 'texts.push({ dup: 1 }); texts.push({ run: state.run,' },
+  { name: 'm1: a no-evidence MINOR is folded into « argued » (not named)', find: 'if (r.evidence === void 0) return "no-evidence";', put: () => '' },
+  { name: 'm1: the no-evidence ids are not listed', find: 'if (why === "no-evidence") noEvidence.push(id);', put: () => '' },
+  { name: 'm2: settled-fixed ids / refs are not listed', find: 'if (why === "settled-fixed") settledFixed.push({ id, ref: f.settled.ref });', put: () => '' },
+  { name: 'm3: the text says nothing of an earlier round', find: 're-check before acting. Filed from', put: () => 'Filed from' },
+  { name: 'm3: the origin line prints the close-out head again', find: 'ctx.branch ? `branch ${ctx.branch}` : "",', put: () => 'ctx.branch ? `branch ${ctx.branch}` : "", ctx.head ? `head ${ctx.head.slice(0, 12)}` : "",' },
+  { name: 'm4: a malformed record voids the whole list (throws)', find: 'malformed.push({ id, why: `no ${missing.join(", ")}` });', put: () => 'throw new Error("malformed " + id);' },
+  { name: 'm4: a malformed record is listed but its good siblings are dropped', find: 'texts.push({ run: state.run,', put: () => 'if (malformed.length === 0 && state.tickets[ticket] && !Object.values(state.tickets[ticket].findings).some((x) => x.severity === "MINOR" && x.evidence === "measured" && !x.report)) texts.push({ run: state.run,' },
   { name: 'text: the input part is missing', find: '`**Input**\n${report.input.trim()}`,', put: () => '' },
   { name: 'text: the what-happens part is missing', find: '`**What happens**\n${report.happens.trim()}`,', put: () => '' },
   { name: 'text: the where part is missing', find: '`**Where**\n${report.where.trim()}`,', put: () => '' },
