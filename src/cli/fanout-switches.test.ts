@@ -747,9 +747,10 @@ test('#559 must-FAIL: a v0.5.378-shaped state (spawned, no marker, no explicit v
   const d = deps(home);
   assert.match(show(d), /earlyGate=on \(default\) · acceptance=on \(default kept from v0.5.378 \(run started before the defaults change\)\) · minorPolicy=spec \(default kept from v0.5.378 \(run started before the defaults change\)\) — the run already spawned/);
   assert.equal(switchSourceOf(st, 'earlyGate'), 'default', 'earlyGate is on in both profiles: nothing was kept');
-  // the new binary's FIRST WRITE pins the profile on the file, so no later write can flip it …
-  assert.equal(set(d, 'T2', '--status', 'todo').code, 0);
+  // the new binary's FIRST WRITE (any writer, here one that patches no ticket) pins the profile on the file, so no later write can flip it …
+  assert.equal(set(d, '--harness', 'test/e2e/boot.ts').code, 0);
   assert.equal(stateOf(home).switchDefaults, 'v0.5.378');
+  assert.equal(set(d, 'T2', '--status', 'todo').code, 0);
   // … not even one that takes the run back to "nothing spawned" (the signal that decided the profile is gone)
   assert.equal(set(d, 'T1', '--status', 'todo').code, 0);
   assert.equal(firstSpawnSignal(stateOf(home)), null, 'nothing recorded any more');
@@ -758,8 +759,16 @@ test('#559 must-FAIL: a v0.5.378-shaped state (spawned, no marker, no explicit v
   // the host-side reader (skill render, stamp) reads the same rule
   assert.deepEqual(switchesForRun(home, 'r1'), V378_DEFAULT_SWITCHES);
   assert.equal(switchesStamp('V', switchesForRun(home, 'r1')), 'V+sw:acceptance=on,minorPolicy=spec');
-  // an unspawned run, and a run with no state, read the new defaults
+  // an unspawned run, a run with no state, and a state that cannot be read (an install never fails on it) read the new defaults
   assert.deepEqual(switchesForRun(mkHome(t), 'r1'), DEFAULT_SWITCHES);
+  const broken = mkHome(t); fs.mkdirSync(path.dirname(stateFile(broken, 'r1')), { recursive: true }); fs.writeFileSync(stateFile(broken, 'r1'), '{not json');
+  assert.deepEqual(switchesForRun(broken, 'r1'), DEFAULT_SWITCHES);
+  // a v0.5.378 state FROZEN on a set it chose (full set stored) whose tickets no longer show a spawn: still a v0.5.378 run; a chosen value is explicit, an unchanged one is the kept default
+  const frozen = parseState({ version: 1, run: 'r1', target: 'master', repo: null, switches: { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec' }, switchesFrozen: { at: NOW, by: 'first spawn of the run: ticket A is started' }, tickets: {}, updatedAt: NOW, reconciledAt: null });
+  assert.equal(firstSpawnSignal(frozen), null);
+  assert.equal(defaultsProfileOf(frozen), 'v0.5.378');
+  assert.deepEqual(switchesOf(frozen), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec' });
+  assert.deepEqual(SWITCH_NAMES.map((n) => switchSourceOf(frozen, n)), ['default', 'explicit', 'default-kept-v0.5.378']);
 });
 
 test('#559: a v0.5.378 state that has NOT spawned reads the new defaults; its first spawn (the marker is stamped BEFORE the patch) never turns it into a legacy run; the stored explicit set of a v0.5.378 run is kept as written', (t) => {
@@ -781,6 +790,10 @@ test('#559: a v0.5.378 state that has NOT spawned reads the new defaults; its fi
   const stored = parseState({ ...raw, switches: { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' } });
   assert.deepEqual(switchesOf(stored), { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' });
   assert.equal(switchSourceOf(stored, 'acceptance'), 'explicit');
+  // the writer claim (acceptance explicitly on) is a spawn too: it stamps first
+  const claimed = claimAcceptor(parseState({ ...raw, switches: { acceptance: 'on' }, tickets: { T1: { spec: 's.md' } } }), 'T1', 'accept-T1', NOW);
+  assert.equal(claimed.switchDefaults, 'v0.5.375');
+  assert.deepEqual(switchesOf(claimed), { earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy' });
 });
 
 test('#559 must-FAIL: a switch changed after the first spawn is still refused — on a default run, on a run that kept the v0.5.378 defaults, even to the value it already has', (t) => {

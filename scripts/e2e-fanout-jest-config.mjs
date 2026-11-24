@@ -139,7 +139,7 @@ function world(cliPath) {
   const readState = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
   const ghState = () => JSON.parse(fs.readFileSync(state, 'utf8'));
   const patchGh = (fn) => { const s = ghState(); fn(s); fs.writeFileSync(state, JSON.stringify(s)); };
-  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
+  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
   const freeze = (run = RUN, extra = []) => cli(['acceptance', 'freeze', 'T-1', '--run', 'rig', '--files', TEST, '--run-cmd', run, '--from', 'origin/writer-542', '--accept-unclassified', 'no jest here: this suite pins the config record (#542); the freeze check itself is #539', ...extra]); // #539: no jest on this rig's PATH ⇒ the freeze check is unclassified ⇒ the coordinator's recorded escape
   const acc = () => readState().tickets['T-1']?.acceptance ?? null;
   const gate = (v) => { fs.rmSync(path.join(dir, 'jest-called.json'), { force: true }); return cli(['gate', '--branch', v.branch, '--into', 'master', '--head', v.head, '--ticket', 'T-1', '--run', 'rig', '--cwd', cand]); };

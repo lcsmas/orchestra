@@ -142,7 +142,7 @@ function world(cliPath, sharedDir) {
   const deliver = (v, ticket, extra = []) => cli('rig', ['fanout', 'deliver', '--branch', v.branch, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', v.head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', ...extra], work);
   const receipt = (name, json) => { const f = path.join(dir, `${name}.json`); fs.writeFileSync(f, JSON.stringify(json)); return f; };
   const register = (ticket, extra = []) => cli('rig', ['fanout', 'state', 'set', ticket, '--run', 'rig', '--spec', `docs/spec.md#${ticket}`, '--implementer', 'impl-1', '--verifier', 'verif-1', ...extra]);
-  cli('rig', ['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r']);
+  cli('rig', ['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
   return { dir, work, wr, cand, cli, env, readState, hostEvents, gh, patchGh, count, writerTests, freezeAs, candidate, gate, deliver, receipt, register, bare, gc, gr, kill: () => { hostProc.kill(); fs.rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -291,7 +291,7 @@ function scenarios(cliPath, sharedDir) {
       const rp2 = W.cli('rig', ['fanout', 'state', 'set', 'T-11', '--run', 'rig', '--status', 'started']);
       arm('X2 must-PASS a claim that never settled (app died mid-spawn, 1h old) is retaken by the next `state set`', rp2.code === 0 && spawns().length === n1 + 1, J(rp2));
       // ── review fix round: M1 (identity), M3 (unspecified), m4 (no --cwd), m7 (late recipient) ──
-      W.cli('rig2', ['fanout', 'state', 'init', '--run', 'rig2']); W.cli('rig2', ['fanout', 'state', 'set', 'TX', '--run', 'rig2', '--status', 'started']);
+      W.cli('rig2', ['fanout', 'state', 'init', '--run', 'rig2', '--switch', 'acceptance=on,minorPolicy=spec']); W.cli('rig2', ['fanout', 'state', 'set', 'TX', '--run', 'rig2', '--status', 'started']);
       const stateRig2 = fs.readFileSync(path.join(W.dir, 'home', 'fanout', 'rig2', 'state.json'), 'utf8');
       const xrun = W.cli('writer-1', ['fanout', 'acceptance', 'freeze', 'TX', '--run', 'rig2', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js'], W.wr);
       const xnew = W.cli('writer-1', ['fanout', 'acceptance', 'freeze', 'ZZ', '--run', 'rig2', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js'], W.wr);

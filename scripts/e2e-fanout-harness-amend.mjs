@@ -167,7 +167,7 @@ function scenarios(cliPath, sharedDir) {
   const W = world(cliPath, sharedDir);
   try {
     // ── setup: register T-1 with a spec (the host spawns its writer), the writer freezes V0 → acceptance/rig
-    W.cli('rig', ['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r']);
+    W.cli('rig', ['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
     const reg = W.cli('rig', ['fanout', 'state', 'set', 'T-1', '--run', 'rig', '--spec', 'docs/spec.md#T-1', '--implementer', 'impl-1', '--verifier', 'verif-1']);
     W.writerCommit('t/spec.test.js', V0);
     const fz = W.cli('writer-1', ['fanout', 'acceptance', 'freeze', 'T-1', '--run', 'rig', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js'], W.wr);

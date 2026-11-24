@@ -102,7 +102,7 @@ function world(cliPath, jest) {
     const r = spawnSync(process.execPath, [cliPath, 'fanout', ...args], { encoding: 'utf8', env: { ...env, ...envExtra }, timeout: 120_000, cwd: work });
     return { code: r.status, stdout: r.stdout, stderr: r.stderr };
   };
-  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
+  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
   const statePath = path.join(home, 'fanout', 'rig', 'state.json');
   const readState = () => JSON.parse(fs.readFileSync(statePath, 'utf8'));
   for (const name of Object.keys(SCENARIOS)) cli(['state', 'set', `T-${name}`, '--run', 'rig', '--status', 'todo']);
