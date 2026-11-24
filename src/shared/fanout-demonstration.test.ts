@@ -67,15 +67,20 @@ test('must-FAIL: `observed` on a file ABSENT from the head, an unreadable head, 
 });
 
 test('the product / test / docs rule: ONE classification', () => {
-  const product = ['src/orders/service.ts', 'lib/a.py', 'main.go', 'app/Latest.ts', 'src/integration/stripe.ts', 'src/testing-utils.ts', 'Dockerfile', 'package.json', 'src/contest.ts', 'scripts/release.sh'];
-  const test_ = ['src/a.test.ts', 'src/a.spec.tsx', 'test/helper.ts', 'tests/a.py', 'src/__tests__/a.ts', 'src/a.e2e-spec.ts', 'src/a.int-spec.ts', 'tests/test_x.py', 'pkg/x_test.go', 'spec/models/x_spec.rb', 'app/FooTest.java', 'app/FooTests.cs', 'conftest.py', 'src/a.stories.tsx', 'src/__snapshots__/a.snap', 'e2e/login.ts', 'src/fixtures/x.json', 'scripts/e2e-fanout.mjs', 'cypress/e2e/a.cy.ts'];
-  const docs = ['README.md', 'docs/codebase-map/git.md', 'CHANGELOG', 'src/notes.txt', 'docs/x.ts', 'LICENSE', 'guide.rst'];
+  const product = ['src/license.ts', 'src/notice.ts', 'src/changelog.ts', 'src/authors.ts', 'CMakeLists.txt', 'src/wiki/a.ts', 'requirements.txt', 'src/orders/service.ts', 'lib/a.py', 'main.go', 'app/Latest.ts', 'src/integration/stripe.ts', 'src/testing-utils.ts', 'Dockerfile', 'package.json', 'src/contest.ts', 'scripts/release.sh'];
+  const test_ = ['src/__test__/x.ts', 'src/e2e-tests/login.ts', 'tests-e2e/a.ts', 'src/test_helpers/a.ts', 'src/testutils/x.ts', 'foo.tests.ts', 'foo.test-d.ts', 'src/a.test.ts', 'src/a.spec.tsx', 'test/helper.ts', 'tests/a.py', 'src/__tests__/a.ts', 'src/a.e2e-spec.ts', 'src/a.int-spec.ts', 'tests/test_x.py', 'pkg/x_test.go', 'spec/models/x_spec.rb', 'app/FooTest.java', 'app/FooTests.cs', 'conftest.py', 'src/a.stories.tsx', 'src/__snapshots__/a.snap', 'e2e/login.ts', 'src/fixtures/x.json', 'scripts/e2e-fanout.mjs', 'cypress/e2e/a.cy.ts'];
+  const docs = ['README.md', 'LICENSE.md', 'notes/todo.txt', 'docs/codebase-map/git.md', 'CHANGELOG', 'src/notes.txt', 'docs/x.ts', 'LICENSE', 'guide.rst'];
   const vendored = ['node_modules/x/a.js', 'dist/a.js', 'src/vendor/a.js', 'coverage/a.js'];
   for (const p of product) assert.equal(classifyPath(p), 'product', p);
   for (const p of test_) assert.equal(classifyPath(p), 'test', p);
   for (const p of docs) assert.equal(classifyPath(p), 'docs', p);
   for (const p of vendored) assert.equal(classifyPath(p), 'vendored', p);
   assert.equal(isProductPath('./src/orders/service.ts'), true);
+});
+
+test('a Windows separator is read as a separator (never as the root file of the same name)', () => {
+  assert.deepEqual(citationsOf('src\\orders\\service.ts:4'), [{ path: 'src/orders/service.ts', line: 4 }]);
+  assert.match(cls({ observed: 'tests\\a.test.ts:3 returns every order instead of an empty page' }, { head: HEAD, fileOnHead: onHead('a.test.ts', 'a.ts') }).refusal ?? '', /cites only tests\/a\.test\.ts \(test\)/);
 });
 
 test('citations: file:line and file:a-b, relative only, deduped; `..` and prose that merely looks like one are not files', () => {
