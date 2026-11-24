@@ -137,6 +137,10 @@ test('verifier=off must-PASS: SKILL.md and every v2 reference name no verifier r
   const off = renderVerifiedFanoutSkill({ verifier: 'off' });
   assert.match(off, /## 3\. No gating seat: the CI and the reviewer/);
   assert.match(off, /--no-review-gate`\s+is refused too/);
+  assert.match(off, /Review verdict in and CI green/);
+  assert.doesNotMatch(off, /- PASS → apply|is the explicit ungated merge|back to the verifier/);
+  assert.match(renderVerifiedFanoutSkill({}), /- PASS → apply/);
+  assert.match(renderVerifiedFanoutSkill({}), /is the explicit ungated merge/);
   assert.notEqual(off, renderVerifiedFanoutSkill({}));
 });
 
@@ -246,11 +250,25 @@ test('verifier=off: the switch reader fails closed — an explicit --run with no
   assert.equal(bad.exit, 1);
   assert.equal(r.merged(), false);
   assert.equal(withEnv(home, () => verifierSwitchFromState({ ticket: 'T1' }, { ORCHESTRA_HOME: home })), null, 'no run id in the env, none given: no state consulted');
+  // the reader on its own (the other state readers would also fail such a deliver: pin THIS one)
+  const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
+  assert.throws(() => verifierSwitchFromState({ ticket: 'T1', run: 'nope' }, env), /no fanout state for --run nope/);
+  const home2 = runOf(t, 'verifier=off');
+  assert.throws(() => verifierSwitchFromState({ ticket: 'T9', run: 'r1' }, { ORCHESTRA_HOME: home2 }), /ticket T9 is not in the fanout state/);
+  assert.equal(verifierSwitchFromState({ ticket: 'T1', run: 'r1' }, { ORCHESTRA_HOME: home2 }), 'off');
+  // deliver with ONLY this reader wired: a reader that throws is could-not-check, never an ungated merge
+  const r3 = rig('green');
+  const lone = await deliver(dopts({ noReviewGate: true }), { ...r3.dd, upstreams: undefined, acceptance: undefined, followUp: undefined, verifierSwitch: () => { throw new Error('state unreadable'); } });
+  assert.equal(lone.exit, 1);
+  assert.equal(lone.result.reason, 'bad-state');
+  assert.equal(r3.merged(), false);
+  const loneOff = await deliver(dopts({ noReviewGate: true }), { ...rig('green').dd, upstreams: undefined, acceptance: undefined, followUp: undefined, verifierSwitch: () => 'off' });
+  assert.equal(loneOff.exit, 2);
 });
 
 test('help: `state --help` and `deliver --help` document the verifier switch', () => {
   const state = fs.readFileSync(new URL('./fanout-state.ts', import.meta.url), 'utf8');
   const dlv = fs.readFileSync(new URL('./fanout-deliver.ts', import.meta.url), 'utf8');
   assert.match(state, /verifier=on\|off\s+on \(default\)/);
-  assert.match(dlv, /verifier=off \(#563/);
+  assert.match(dlv, /DELIVER_HELP = `[\s\S]*verifier=off \(#563, \\`state set --switch verifier=off\\`\)[\s\S]*Refuses on:/);
 });
