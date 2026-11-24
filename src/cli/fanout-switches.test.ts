@@ -46,15 +46,15 @@ function withEnv<T>(home: string, fn: () => T): T {
 // ── the table, the verbs, the freeze ─────────────────────────────────────────────────────────────────────
 
 test('defaults (#559, the v0.5.375 profile): earlyGate on, acceptance off, minorPolicy legacy; a new state is stamped and stores no switch; `state show` prints each value as a default', (t) => {
-  assert.deepEqual(switchesOf(undefined), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' });
-  assert.deepEqual(DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' });
-  assert.deepEqual(V378_DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on' }, 'the v0.5.378 set stays as the named legacy constant');
+  assert.deepEqual(switchesOf(undefined), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' });
+  assert.deepEqual(DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' });
+  assert.deepEqual(V378_DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' }, 'the v0.5.378 set stays as the named legacy constant');
   const d = deps(mkHome(t));
   assert.equal(init(d).code, 0);
   const raw = JSON.parse(fs.readFileSync(stateFile(d.env.ORCHESTRA_HOME!, 'r1'), 'utf8')) as Record<string, unknown>;
   assert.equal('switches' in raw, false, 'an untouched state stores no switch');
   assert.equal(raw.switchDefaults, 'v0.5.375', 'a new run is stamped with the defaults profile it was born on');
-  assert.match(show(d), /switches \(#554, #559, #563\): earlyGate=on \(default\) · acceptance=off \(default\) · minorPolicy=legacy \(default\) · verifier=on \(default\) — not frozen yet/);
+  assert.match(show(d), /switches \(#554, #559, #563\): earlyGate=on \(default\) · acceptance=off \(default\) · minorPolicy=legacy \(default\) · verifier=on \(default\) · preNominationChecks=off \(default\) — not frozen yet/);
 });
 
 test('set --switch / init --switch: written, printed by `state show`; unknown name, unknown value, a name twice, an empty list, a ticket or another flag beside it: all REFUSED', (t) => {
@@ -63,7 +63,7 @@ test('set --switch / init --switch: written, printed by `state show`; unknown na
   assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off' }, 'only what was chosen is stored');
   const r = set(d, '--switch', 'acceptance=off,minorPolicy=legacy');
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /earlyGate=off \(explicit\) · acceptance=off \(explicit\) · minorPolicy=legacy \(explicit\) · verifier=on \(default\) — not frozen yet/, 'a value equal to the default is still reported explicit');
+  assert.match(r.stdout, /earlyGate=off \(explicit\) · acceptance=off \(explicit\) · minorPolicy=legacy \(explicit\) · verifier=on \(default\) · preNominationChecks=off \(default\) — not frozen yet/, 'a value equal to the default is still reported explicit');
   assert.match(show(d), /switches \(#554, #559, #563\): earlyGate=off \(explicit\) · acceptance=off \(explicit\) · minorPolicy=legacy \(explicit\)/);
   const bad: Array<[string[], RegExp]> = [
     [['--switch', 'earlyGaet=off'], /unknown switch "earlyGaet"/],
@@ -97,7 +97,7 @@ test('FREEZE at the first spawn: a ticket past todo records the freeze next to t
     assert.match(r.stderr, /cannot change: frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\) — a switch is fixed for the run/, v);
   }
   assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off', minorPolicy: 'refuse' });
-  assert.match(show(d), /earlyGate=off \(explicit\) · acceptance=off \(default\) · minorPolicy=refuse \(explicit\) · verifier=on \(default\) — frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\)/);
+  assert.match(show(d), /earlyGate=off \(explicit\) · acceptance=off \(default\) · minorPolicy=refuse \(explicit\) · verifier=on \(default\) · preNominationChecks=off \(default\) — frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\)/);
   assert.match(runFanout(['state', 'show', '--run', 'r1'], d).stdout, /switches/);
 });
 
@@ -551,9 +551,9 @@ test('installer: the SKILL.md and the reference files written for a run follow i
   assert.ok(fs.existsSync(path.join(skills, 'verified-fanout', 'references/fleet-bus.md')), 'the other references stay');
   assert.ok(VERIFIED_FANOUT_FILES.every((f) => fs.existsSync(path.join(skills, 'verified-fanout', f.path))));
   assert.equal(switchesStamp('V1', { ...DEFAULT_SWITCHES }), 'V1', 'a default run keeps the plain version');
-  assert.equal(switchesStamp('V1', { earlyGate: 'off', acceptance: 'off', minorPolicy: 'spec' }), 'V1+sw:earlyGate=off,minorPolicy=spec');
+  assert.equal(switchesStamp('V1', { earlyGate: 'off', acceptance: 'off', minorPolicy: 'spec', preNominationChecks: 'off' }), 'V1+sw:earlyGate=off,minorPolicy=spec');
   assert.equal(switchesStamp('V1', { ...V378_DEFAULT_SWITCHES }), 'V1+sw:acceptance=on,minorPolicy=spec', 'a run that keeps the v0.5.378 defaults is stamped (it re-renders once, the stamp names why)');
-  assert.deepEqual(SWITCH_NAMES, ['earlyGate', 'acceptance', 'minorPolicy', 'verifier']);
+  assert.deepEqual(SWITCH_NAMES, ['earlyGate', 'acceptance', 'minorPolicy', 'verifier', 'preNominationChecks']);
 });
 
 test('wiring (source-pinned): installOrchestraHooks renders from the run\'s frozen switches, stamps the non-default set, and the skills op re-installs through it', () => {
@@ -745,7 +745,7 @@ test('#559 must-FAIL: a v0.5.378-shaped state (spawned, no marker, no explicit v
   const home = mkHome(t);
   putRaw(home, raw);
   const d = deps(home);
-  assert.match(show(d), /earlyGate=on \(default\) · acceptance=on \(default kept from v0.5.378 \(run started before the defaults change\)\) · minorPolicy=spec \(default kept from v0.5.378 \(run started before the defaults change\)\) · verifier=on \(default\) — the run already spawned/);
+  assert.match(show(d), /earlyGate=on \(default\) · acceptance=on \(default kept from v0.5.378 \(run started before the defaults change\)\) · minorPolicy=spec \(default kept from v0.5.378 \(run started before the defaults change\)\) · verifier=on \(default\) · preNominationChecks=off \(default\) — the run already spawned/);
   assert.equal(switchSourceOf(st, 'earlyGate'), 'default', 'earlyGate is on in both profiles: nothing was kept');
   // the new binary's FIRST WRITE (any writer, here one that patches no ticket) pins the profile on the file, so no later write can flip it …
   assert.equal(set(d, '--harness', 'test/e2e/boot.ts').code, 0);
@@ -767,8 +767,8 @@ test('#559 must-FAIL: a v0.5.378-shaped state (spawned, no marker, no explicit v
   const frozen = parseState({ version: 1, run: 'r1', target: 'master', repo: null, switches: { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec' }, switchesFrozen: { at: NOW, by: 'first spawn of the run: ticket A is started' }, tickets: {}, updatedAt: NOW, reconciledAt: null });
   assert.equal(firstSpawnSignal(frozen), null);
   assert.equal(defaultsProfileOf(frozen), 'v0.5.378');
-  assert.deepEqual(switchesOf(frozen), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec', verifier: 'on' });
-  assert.deepEqual(SWITCH_NAMES.map((n) => switchSourceOf(frozen, n)), ['default', 'explicit', 'default-kept-v0.5.378', 'default']);
+  assert.deepEqual(switchesOf(frozen), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' });
+  assert.deepEqual(SWITCH_NAMES.map((n) => switchSourceOf(frozen, n)), ['default', 'explicit', 'default-kept-v0.5.378', 'default', 'default']);
 });
 
 test('#559: a v0.5.378 state that has NOT spawned reads the new defaults; its first spawn (the marker is stamped BEFORE the patch) never turns it into a legacy run; the stored explicit set of a v0.5.378 run is kept as written', (t) => {
@@ -788,12 +788,12 @@ test('#559: a v0.5.378 state that has NOT spawned reads the new defaults; its fi
   assert.equal(stampDefaults(pure), pure, 'idempotent');
   // a v0.5.378 state with an explicit full set stored and not spawned: the stored values stay (effective values unchanged), read as explicit
   const stored = parseState({ ...raw, switches: { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' } });
-  assert.deepEqual(switchesOf(stored), { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec', verifier: 'on' });
+  assert.deepEqual(switchesOf(stored), { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' });
   assert.equal(switchSourceOf(stored, 'acceptance'), 'explicit');
   // the writer claim (acceptance explicitly on) is a spawn too: it stamps first
   const claimed = claimAcceptor(parseState({ ...raw, switches: { acceptance: 'on' }, tickets: { T1: { spec: 's.md' } } }), 'T1', 'accept-T1', NOW);
   assert.equal(claimed.switchDefaults, 'v0.5.375');
-  assert.deepEqual(switchesOf(claimed), { earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy', verifier: 'on' });
+  assert.deepEqual(switchesOf(claimed), { earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' });
 });
 
 test('#559 must-FAIL: a switch changed after the first spawn is still refused — on a default run, on a run that kept the v0.5.378 defaults, even to the value it already has', (t) => {
@@ -816,7 +816,7 @@ test('#559 must-FAIL: a switch changed after the first spawn is still refused �
 
 test('#559 `state show` labels each switch: default / explicit (even a value equal to the default) / default kept from v0.5.378; `state --help` states the new defaults and the in-flight rule', (t) => {
   const d = deps(mkHome(t)); init(d, 'acceptance=off');
-  assert.match(show(d), /earlyGate=on \(default\) · acceptance=off \(explicit\) · minorPolicy=legacy \(default\) · verifier=on \(default\) — not frozen yet/);
+  assert.match(show(d), /earlyGate=on \(default\) · acceptance=off \(explicit\) · minorPolicy=legacy \(default\) · verifier=on \(default\) · preNominationChecks=off \(default\) — not frozen yet/);
   const help = runFanout(['--help'], d).stdout;
   assert.match(help, /earlyGate=on\|off {6}on \(default\)/);
   assert.match(help, /acceptance=on\|off {5}off \(default\): no writer spawned, no frozen test asked; on:/);

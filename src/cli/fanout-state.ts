@@ -22,6 +22,7 @@ import {
   setSwitches,
   stateFile,
   switchesLine,
+  switchesOf,
   updateState,
   type FanoutState,
   type FindingRecord,
@@ -29,6 +30,7 @@ import {
   type TicketReality,
   type TicketState,
 } from '../shared/fanout-state.ts';
+import type { CheckExec } from '../shared/fanout-checks.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
@@ -46,6 +48,8 @@ export interface FanoutDeps {
   /** #554 (review T3 m1) — the run owner's children as the HOST sees them, asked by index.ts before a `--switch` write (the bus-side first-spawn signal: an agent spawned by hand is not in the state yet).
    *  undefined = not asked · null = the host could not answer (the state-side detector alone then decides, said on stderr). */
   spawned?: string[] | null;
+  /** #564 — runs one shell command of `fanout check` (undefined = the real `sh -c`; tests hand a fake). */
+  exec?: CheckExec;
 }
 
 /** #554 — is this `fanout state init|set … --switch …`? Returns the run it acts on (for the host question), else null. */
@@ -74,6 +78,7 @@ export const FANOUT_USAGE = `usage: orchestra fanout state init --run <id> [--ta
                                   [--finding id=BLOCKING|MAJOR|MINOR[,…]] [--follow-up-of <merged ticket> --fixes <finding id>[,…]] [--forget-merge <reason>]
                                   [--spec <file|url|ledger section>] [--spec-text <file|->] [--finding-json <json|->] [--settle <id>=fixed|pr-body:<ref>] [--decide <id>=<text>] [--implementer <ws id>] [--verifier <ws id>]
        orchestra fanout state show [--run <id>] [--json]
+       orchestra fanout check <ticket> [--head <sha>] [--run <id>]   (#564: run the repo's pre-nomination checks, record them per git tree — orchestra fanout check --help)
        orchestra fanout acceptance freeze|amend|waive|spawn|show <ticket> …   (frozen acceptance tests, #510/#515 — orchestra fanout acceptance --help)
        orchestra fanout resume [--run <id>] [--cwd <repo dir>] [--no-fetch] [--no-write] [--json]
 
@@ -115,6 +120,9 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
              minorPolicy=legacy|refuse|spec   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552 (a MINOR quoting a spec sentence blocks).
              verifier=on|off       on (default): a verifier seat gates each candidate (#563); off: none is spawned, the skill text has no verifier role, \`state set --verifier\` is refused, and \`deliver\` merges on the reviewer's
                                    verdict (0 BLOCKING / 0 MAJOR on the head, tree-keyed) + a green CI on that head — \`deliver --no-review-gate\`, no verdict, an open BLOCKING|MAJOR, a red or missing CI are still refused.
+             preNominationChecks=on|off   off (default): none; on (#564): \`state set <ticket> --status nominated|gated\` (with a head) is REFUSED unless the state holds a PASSING record of \`orchestra fanout check <ticket>\` for the git tree of that head
+                                   (message: the failing command and its last lines, "no check record for this head", or "found NOTHING to run"). Commands are DISCOVERED (changed path → nearest package.json with a lint script, run from its dir);
+                                   the target repo's optional .orchestra/pre-nomination-checks.json {"checks":[{"run","cwd"?,"timeoutSec"?}]} OVERRIDES discovery ({"checks":[]} = explicit no-check, the only way to nominate when nothing is found).
            Defaults = the v0.5.375 profile (#559: they were acceptance=on, minorPolicy=spec in v0.5.378). A run that had ALREADY spawned when they changed keeps the old ones for every switch it never set (never re-read mid-run);
            \`state show\` prints each switch as <name>=<value> (default | explicit | default kept from v0.5.378 (run started before the defaults change)).
            The installed skill follows the switches of the coordinator's DEFAULT run id (its own workspace id); a second vague under \`--run <other id>\` obeys its switches in every verb, but its members' skill text is rendered from the default run's.
@@ -390,9 +398,20 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const fmt = (r: string[]): string => r.map((c, i) => c.padEnd(widths[i])).join('  ').trimEnd();
     const harnessLine = s.harness ? `harness (#538): ${s.harness}\n` : '';
     const acc = acceptanceOn(s) ? Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null) : [];
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    const chk = switchesOf(s).preNominationChecks === 'on' ? Object.entries(s.tickets).filter(([, t]) => t.status !== 'merged' && t.status !== 'dropped').map(([id, t]) => checksLine(id, t)) : [];
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
+}
+
+/** #564 — a ticket's pre-nomination check record for its CURRENT head's tree: passing / failing (the commands) / vacuous / none yet. */
+export function checksLine(id: string, t: TicketState): string {
+  const rec = t.tree ? t.checks?.[t.tree] : undefined;
+  if (!t.head) return `${id}  no head recorded`;
+  if (!rec) return `${id}  no record for ${t.head.slice(0, 8)}${t.tree ? ` (tree ${t.tree.slice(0, 8)})` : ' (tree unreadable)'}: \`orchestra fanout check ${id}\``;
+  if (rec.ok) return `${id}  pass  tree ${rec.tree.slice(0, 8)}  ${rec.vacuous ? 'vacuous (nothing to run)' : `${rec.results.length} command(s)`}  ${rec.at}${rec.overrideChanged ? '  [override file changed by this candidate]' : ''}${rec.uncovered.length ? `  [${rec.uncovered.length} changed file(s) not linted: ${rec.uncovered.slice(0, 3).join(', ')}${rec.uncovered.length > 3 ? ', …' : ''}]` : ''}`;
+  if (rec.nothingFound) return `${id}  FAIL  tree ${rec.tree.slice(0, 8)}  nothing found (${rec.changed} changed file(s), no lint script, no override file)`;
+  return `${id}  FAIL  tree ${rec.tree.slice(0, 8)}  ${rec.results.filter((r) => r.exit !== 0 || r.timedOut).map((r) => `${r.timedOut ? 'timeout' : `exit ${r.exit}`}: ${r.run}`).join('; ')}`;
 }
 
 /** One line per ticket with an acceptance story: where the frozen tests are + the run command, or what it waits for / why it is waived. null = nothing forced. */

@@ -103,6 +103,7 @@ import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
 import { runCloseout } from './fanout-closeout.ts';
+import { runCheck } from './fanout-check.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2479,7 +2480,7 @@ async function main(argv: string[]): Promise<void> {
           fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
         } catch { fanoutDeps.spawned = null; }
       }
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
