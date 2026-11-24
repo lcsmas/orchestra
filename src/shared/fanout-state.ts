@@ -1051,17 +1051,16 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
       if (f.specSentence !== undefined && !sentenceAccepted(specNow, f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
       }
-      const fr: FindingRecord = { ...f };
-      if (f.demonstration !== undefined) { // #572 — the verdict is code's, from the three texts only (a file / head / refusal typed in the patch is dropped)
+      if (f.demonstration !== undefined) { // #572 (f is this patch's own parsed copy, safe to complete in place) — the verdict is code's, from the three texts only (a file / head / refusal typed in the patch is dropped)
         if (switchesOf(state).minorPolicy !== 'demonstrated') throw new FanoutStateError(`${id}: finding ${k}: a demonstration is recorded only under minorPolicy=demonstrated (this run: ${switchesOf(state).minorPolicy}) — drop it, or start a run with --switch minorPolicy=demonstrated`);
         const hadD = had?.demonstration;
         if (hadD && demonstrationAccepted(hadD)) {
           if (!DEMONSTRATION_FIELDS.every((x) => hadD[x] === f.demonstration![x])) throw new FanoutStateError(`${id}: finding ${k} already records an accepted demonstration — a recorded finding is not rewritten`);
-          fr.demonstration = hadD; // the same texts again: the verdict (and the head it was read on) stand
+          f.demonstration = hadD; // the same texts again: the verdict (and the head it was read on) stand
         } else if (had && findingClosed(had)) throw new FanoutStateError(`${id}: finding ${k} is already ${had.settled ? 'settled' : 'decided'}: it takes no new demonstration`);
-        else fr.demonstration = classifyDemonstration(f.demonstration, { head: next.head, fileOnHead: derived.fileOnHead });
+        else f.demonstration = classifyDemonstration(f.demonstration, { head: next.head, fileOnHead: derived.fileOnHead });
       }
-      next.findings[k] = { ...(had ?? {}), ...fr };
+      next.findings[k] = { ...(had ?? {}), ...f };
       const gap = reportGap(next.findings[k]);
       if (gap) throw new FanoutStateError(`${id}: finding ${k}: ${gap}`);
     }
