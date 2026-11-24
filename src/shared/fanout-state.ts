@@ -1083,7 +1083,7 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
       if (why.length > 0) throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged and not an admissible candidate — ${why.join('; ')}`);
     }
   }
-  if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated' || next.status === 'gated') && next.head && ('status' in patch || 'head' in patch)) { // #564: the record of THIS head's tree, or no candidate
+  if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass' || next.verdict === 'approve') && next.head && ('status' in patch || 'head' in patch || 'verdict' in patch)) { // #564: the record of THIS head's tree, or no candidate (a pass verdict is a candidate's too)
     const refusal = nominationRefusal(next, id);
     if (refusal) throw new FanoutStateError(refusal);
   }
@@ -1263,8 +1263,10 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree }, why: `head moved to ${r.branchHead.slice(0, 8)}, same tree: ${t.verdict} verdict kept` });
     } else if (r && !r.error && t.head && r.branchHead && !sameSha(r.branchHead, t.head) && rm !== true && (t.status === 'nominated' || t.status === 'gated')) {
       add({ ticket: id, kind: 'head-moved', detail: `branch head ${r.branchHead.slice(0, 8)} != recorded ${t.head.slice(0, 8)} — verdict ${t.verdict} is stale` });
-      if (t.verdict !== 'none' || t.status === 'gated') {
-        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null, verdict: 'none', ...(t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: 'head moved: verdict reset' });
+      // #564: preNominationChecks on — a nominated|gated ticket moved onto a tree with no passing check record is no candidate any more: back to `started` (re-run `fanout check`, then nominate)
+      const demote = switchesOf(state).preNominationChecks === 'on' && !(r.branchTree && t.checks?.[r.branchTree]?.ok);
+      if (t.verdict !== 'none' || t.status === 'gated' || demote) {
+        writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null, verdict: 'none', ...(demote ? { status: 'started' as const } : t.status === 'gated' ? { status: 'nominated' as const } : {}) }, why: demote ? 'head moved onto a tree with no passing pre-nomination check record: verdict reset, back to started' : 'head moved: verdict reset' });
       } else {
         writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null }, why: 'head moved' });
       }

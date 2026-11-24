@@ -35,8 +35,8 @@ const mutants = [
   ['default preNominationChecks flipped on (v0.5.375 profile)', S, "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559", "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'on' }; // #559"],
   ['default preNominationChecks flipped on (v0.5.378 profile)', S, "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' };", "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'on' };"],
   ['the switch is not in the table (unknown name)', S, "verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;", "verifier: ['on', 'off'] } as const;"],
-  ['state set never asks for a record', S, "if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated' || next.status === 'gated')", `if (${F} && (next.status === 'nominated' || next.status === 'gated')`],
-  ['a direct gated status bypasses the record', S, "(next.status === 'nominated' || next.status === 'gated') && next.head && ('status' in patch || 'head' in patch)", "next.status === 'nominated' && next.head && ('status' in patch || 'head' in patch)"],
+  ['state set never asks for a record', S, "if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated'", "if (false as boolean && (next.status === 'nominated'"],
+  ['a direct gated status bypasses the record', S, "=== 'on' && (next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass'", "=== 'on' && (next.status === 'nominated' || next.verdict === 'pass'"],
   ['a failing record admits the nomination', K, "  if (rec.ok) return null;\n", "  return null;\n"],
   ['no record admits the nomination', K, "  if (!rec) return `${ticket}: no check record", `  if (${F}) return \`\${ticket}: no check record`],
   ['the record is looked up by sha, not by tree', K, "const rec = t.tree ? t.checks?.[t.tree] : undefined;", "const rec = t.head ? t.checks?.[t.head] : undefined;"],
@@ -78,11 +78,20 @@ const mutants = [
   ['a hand-forged ok is accepted on read', S, "if (r.ok !== ok || r.vacuous !== (results.length === 0 && !r.nothingFound) || (r.nothingFound && results.length > 0)) throw", `if (${F}) throw`],
   ['the records are not part of the known ticket keys', S, "'tree', 'builtOnTree', 'checks', 'findings',", "'tree', 'builtOnTree', 'findings',"],
   ['`checks` becomes settable by --json', S, "'spec', 'implementer', 'verifier'] as const;", "'spec', 'implementer', 'verifier', 'checks'] as const;"],
+  ['a verdict pass goes round the record rule', S, "|| next.verdict === 'pass' || next.verdict === 'approve') && next.head && ('status' in patch || 'head' in patch || 'verdict' in patch)) { // #564", "|| false as boolean) && next.head && ('status' in patch || 'head' in patch)) { // #564"],
+  ['a verdict-only patch is not checked', S, "('status' in patch || 'head' in patch || 'verdict' in patch)) { // #564", "('status' in patch || 'head' in patch)) { // #564"],
+  ['the resume write-back keeps a nominated ticket on a record-less tree', S, "const demote = switchesOf(state).preNominationChecks === 'on' && !(r.branchTree && t.checks?.[r.branchTree]?.ok);", "const demote = false;"],
+  ['the resume write-back demotes even onto a tree with a passing record', S, "!(r.branchTree && t.checks?.[r.branchTree]?.ok);", "true;"],
+  ['the nothing-found message drops the git add -f hint', K, "COMMIT it (the \\`.orchestra/\\` folder is gitignored in an Orchestra worktree: \\`git add -f ${CHECKS_FILE}\\`) and run", "and run"],
+  ['--help drops the git add -f hint', C, "The override must be COMMITTED (read from HEAD): \\`git add -f .orchestra/pre-nomination-checks.json\\`, as \\`.orchestra/\\` is gitignored in an Orchestra worktree.", ""],
+  ['a status-only patch is not checked', S, "&& next.head && ('status' in patch || 'head' in patch || 'verdict' in patch)) { // #564", "&& next.head && ('head' in patch || 'verdict' in patch)) { // #564"],
+  ['a FAILED same-tree record is not re-run', C, "if (have?.ok) return {", "if (have) return {"],
+  ['the time-limit kill is SIGTERM (ignorable)', C, "killSignal: 'SIGKILL'", "killSignal: 'SIGTERM'"],
   ['the skill says nothing when the switch is on', V, "<!--sw preNominationChecks=on-->", "<!--sw preNominationChecks=off-->"],
 ];
 
 const base = run();
-const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 25 && base.pass === base.tests;
+const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 28 && base.pass === base.tests;
 console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
 if (!baseOk) { console.log(base.out.slice(-3000)); fs.rmSync(scratch, { recursive: true, force: true }); process.exit(1); }
 if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }
