@@ -19,7 +19,12 @@ export const VERIFIED_FANOUT_MARKER = 'orchestra-generated: bundled verified-fan
 
 export const VERIFIED_FANOUT_SKILL_TEMPLATE = String.raw`---
 name: verified-fanout
+<!--sw verifier=on-->
 description: Mechanics of running a verified fan-out — N implementation agents in isolated worktrees plus one verifier that gates every branch on a real build before merge. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running — even if verification is never mentioned. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
+<!--/sw-->
+<!--sw verifier=off-->
+description: Mechanics of running a fan-out — N implementation agents in isolated worktrees, each candidate reviewed by a fresh reviewer and merged on the reviewer's verdict plus a green CI. Use once the decision to fan out is made, for MORE THAN ONE code subtask, and when re-spawning or growing a fan-out already running. Deciding WHETHER to fan out → delegate-or-do first. One self-contained task → orchestra-spawn.
+<!--/sw-->
 ---
 <!-- orchestra-generated: bundled verified-fanout v2 (#470) — Orchestra rewrites this file; never edit it in place -->
 
@@ -29,14 +34,26 @@ description: Mechanics of running a verified fan-out — N implementation agents
 > ¤delegate-or-do¤ decides *whether* to. A fan-out briefed on guesses turns one
 > spec bug into N implementation bugs.
 
+<!--sw verifier=on-->
 Three roles. N **implementers** work in fresh worktrees without ¤node_modules¤, so they cannot prove their own work builds. One **verifier**
 owns the fleet's only fully-installed environment; nothing merges until it
 reports green. You are the **coordinator**: you split, brief, relay and enforce the gate.
+<!--/sw-->
+<!--sw verifier=off-->
+Two standing roles. N **implementers** work in fresh worktrees without ¤node_modules¤, so they cannot prove their own work builds: the PR's CI is the build and the test suite,
+and nothing merges until it is green on the delivered head AND a fresh reviewer (§3b) has no open BLOCKING or MAJOR on it.
+You are the **coordinator**: you split, brief, relay and enforce the gate.
+<!--/sw-->
 
 ## Roles are typed — the name is the role (v2)
 
 The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
+<!--sw verifier=on-->
 ¤impl-¤ implementer, ¤verif-¤ verifier, ¤review-¤ reviewer, ¤explo-¤ explorer,
+<!--/sw-->
+<!--sw verifier=off-->
+¤impl-¤ implementer, ¤review-¤ reviewer, ¤explo-¤ explorer,
+<!--/sw-->
 ¤scribe-¤ mechanical steps. The one table is ¤roleSpec()¤ in
 ¤src/shared/fleet-roles.ts¤ — read it, never trust a summary of it.
 
@@ -50,8 +67,14 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   you delete it. A scribe's ¤state set¤ never carries ¤--accept-merged¤, ¤--json¤ or ¤mergedAccepted¤ (guard-denied).
 - **Tool limits — the PreToolUse role guard** (exit 2, ¤[orchestra] BLOCKED (role: …): <reason>¤)
   denies ¤AskUserQuestion¤ to every role, even as a probe; Edit/Write to the coordinator,
+<!--sw verifier=on-->
   reviewer, explorer and scribe (the verifier edits scratch only, an implementer its own
   worktree); push to the verifier, reviewer, explorer and scribe, and commit, merge,
+<!--/sw-->
+<!--sw verifier=off-->
+  reviewer, explorer and scribe (an implementer edits its own
+  worktree); push to the reviewer, explorer and scribe, and commit, merge,
+<!--/sw-->
   rebase and reset outside a scratch clone; a push of master/main to an implementer;
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
@@ -83,7 +106,12 @@ the run of an **OPS** (has a parent, spawned its own: one batch of tickets). Rol
   (STATE, NEXT STEPS, REFS, NOT VERIFIED, each non-empty), then END YOUR TURN: the host starts a fresh
   session in the SAME workspace, worktree, branch and run. Refused, nothing ended: ¤handoff-summary-invalid¤
   (fix the section), ¤handoff-outside-run¤ (not in an open run), ¤handoff-unvouched¤ (run it yourself).
+<!--sw verifier=on-->
   Hand off a heavy member (verifier, coordinator); the host nudges the coordinator at 30 turns.
+<!--/sw-->
+<!--sw verifier=off-->
+  Hand off a heavy member (the coordinator); the host nudges the coordinator at 30 turns.
+<!--/sw-->
 - **WALL-CLOCK IS A GOAL:** pipeline, never batch — gate/review each candidate the moment it exists; remove DEAD TIME, never thin verification.
 
 → **Read ¤references/lead-ops-tiers.md¤ when you are the LEAD or the OPS** (the LEAD's report format, dead-ops detection, closing a wave).
@@ -132,16 +160,27 @@ Gate rhythm:
 
 - **Write the full gate checklist into the ledger before the first gate** — each axis discovered
   mid-run costs one full cycle. Its review line is the §4 merge rule's verbatim sentence.
+<!--sw verifier=on-->
 - **The full suite and the build run on the verifier's seat, once per candidate, unless the target has PR CI:**
   ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ skip what CI runs, wait for
   ¤ciGreenOnHead¤ — the suite check is derived or pinned with ¤--require-check¤; a moved head's CI is never accepted).
+<!--/sw-->
+<!--sw verifier=off-->
+- **The PR's CI is the build and the full suite; nobody re-runs it by hand.** ¤deliver¤ refuses a head with no CI (¤no-checks¤), a red one (¤ci-red¤) or a check that ran nothing (¤zero-steps¤);
+  pin the suite check with ¤--require-check¤ when it is external; a moved head's CI is never accepted. A target with no PR CI cannot be delivered: fix the CI first.
+<!--/sw-->
 - **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**
 - **Self-gate BEFORE nominating — the implementer runs the adversarial checklist on their own candidate first**
   and answers in the nomination comment: for each headline claim, what observation would DIFFER on a broken
   build; did the unfixed arm actually FAIL through the same rig; does any test assert the thing the ticket
   promises. No answers, no nomination. **Then a fresh-context PRE-REVIEW:** ONE in-process reviewer
   subagent (Agent tool, not an ¤orchestra spawn¤) on its diff + the ticket, flagging only correctness/ticket-promise gaps; BLOCKING/MAJOR fixed before nominating, the rest listed in the nomination.
+<!--sw verifier=on-->
 - **Gate merge candidates, not pushes.** The verifier gates when the coordinator names a candidate ref.
+<!--/sw-->
+<!--sw verifier=off-->
+- **Review merge candidates, not pushes.** The reviewer reads when the coordinator names a candidate ref.
+<!--/sw-->
   **Rebase onto current master BEFORE nominating**; a nominated ref's NAME is frozen.
 - **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's tree object byte-equals the
   gated merged tree); the carry is VOID across any conflict resolution, squash-with-edits, or cherry-pick.
@@ -192,9 +231,18 @@ the Briefing section of ledger #N — pull it first".
 
 Code forces it; you do not spawn the writer.
 
+<!--/sw-->
+<!--sw acceptance=on verifier=on-->
 - **Register the spec**: ¤orchestra fanout state set <ticket> --spec <file|url|ledger section> --implementer <ws id> --verifier <ws id>¤. Orchestra spawns its ¤accept-¤ writer itself (Opus 5.5; brief = spec + ticket, never an implementer branch).
 - **The writer freezes** (own ticket only) to ¤acceptance/<run>¤; Orchestra tells implementer and verifier the path + command (¤orchestra fanout acceptance show <ticket> --brief¤). Implementers copy them UNCHANGED.
 - **Bytes decide**: ¤orchestra fanout gate … --ticket <id> --cwd <checkout>¤ runs them (unfrozen it WAITS, then ¤pending¤ exit 3: no round consumed); ¤orchestra fanout deliver … --acceptance <receipt.json>¤ re-reads them (¤acceptance-pending¤ while unfrozen). ¤frozen-test-changed¤ / ¤frozen-test-failed¤ go to the implementer; ¤acceptance-unproven¤ / ¤acceptance-stale¤ / ¤acceptance-stale-checkout¤ mean the verifier re-gates. Yours: ¤orchestra fanout acceptance amend <ticket> --decision <url> --spec-sentence "<text>" --files <p1,p2>¤, ¤orchestra fanout acceptance waive <ticket> --decision <url> --reason "<why>"¤.
+<!--/sw-->
+<!--sw acceptance=on verifier=off-->
+- **Register the spec**: ¤orchestra fanout state set <ticket> --spec <file|url|ledger section> --implementer <ws id>¤. Orchestra spawns its ¤accept-¤ writer itself (Opus 5.5; brief = spec + ticket, never an implementer branch).
+- **The writer freezes** (own ticket only) to ¤acceptance/<run>¤; Orchestra tells the implementer the path + command (¤orchestra fanout acceptance show <ticket> --brief¤). Implementers copy them UNCHANGED.
+- **Bytes decide**: ¤orchestra fanout gate … --ticket <id> --cwd <checkout>¤ runs them (unfrozen it WAITS, then ¤pending¤ exit 3: no round consumed); ¤orchestra fanout deliver … --acceptance <receipt.json>¤ re-reads them (¤acceptance-pending¤ while unfrozen). ¤frozen-test-changed¤ / ¤frozen-test-failed¤ go to the implementer; ¤acceptance-unproven¤ / ¤acceptance-stale¤ / ¤acceptance-stale-checkout¤ mean the receipt is missing, old or from the wrong checkout: re-run ¤fanout gate¤ on the candidate's checkout. Yours: ¤orchestra fanout acceptance amend <ticket> --decision <url> --spec-sentence "<text>" --files <p1,p2>¤, ¤orchestra fanout acceptance waive <ticket> --decision <url> --reason "<why>"¤.
+<!--/sw-->
+<!--sw acceptance=on-->
 
 → **Read ¤references/acceptance-tests.md¤ when you register a spec, amend or waive.**
 
@@ -204,6 +252,7 @@ Code forces it; you do not spawn the writer.
 One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per subtask (flags: ¤orchestra-spawn¤
 skill); record each printed workspace id + branch in the ledger.
 
+<!--sw verifier=on-->
 ## 3. Spawn the verifier
 
 One agent whose only job is verification. Its brief:
@@ -219,6 +268,17 @@ One agent whose only job is verification. Its brief:
 - **Audit the rig before filing any defect**; probes come from the repo's fixture library, never hand-written payloads.
 
 → **Read ¤references/verifier-and-review.md¤ when you write the verifier's or a reviewer's brief** (rig audit, fixtures, the account pin, a second seat).
+<!--/sw-->
+<!--sw verifier=off-->
+## 3. No gating seat: the CI and the reviewer
+
+No agent runs a gate for you: the build and the full suite are the PR's CI (§0b), the code is attacked by the reviewer (§3b).
+
+- The implementer's self-gate (§0b) and its pre-review stay: they are what the nomination rests on.
+- What neither the CI nor the reviewer covers (a user-facing flow, a rig the CI does not run) is NOT VERIFIED: the implementer names it in the nomination and the PR body.
+
+→ **Read ¤references/verifier-and-review.md¤ when you write a reviewer's brief** (severity scale, what the reviewer reports).
+<!--/sw-->
 
 ## 3b. Adversarial review: one fresh spawn per merge candidate
 
@@ -231,14 +291,34 @@ that touch correctness or a ticket promise — never NITs.**
 **Severity scale** (BLOCKING / MAJOR / MINOR / NIT — the §4 merge rule keys on it): ¤references/verifier-and-review.md¤, read when you grade a finding.
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
+<!--sw verifier=on-->
 only): the implementer's pre-review + the verifier's delta gate suffice. Any production-code line → spawned
+<!--/sw-->
+<!--sw verifier=off-->
+only): the implementer's pre-review + the CI suffice. Any production-code line → spawned
+<!--/sw-->
 review, follow-ups included. The coordinator NEVER reviews (it wrote the specs); the findings go through the §4 merge rule.
 
 ## 4. Coordinate and gate
 
+<!--sw verifier=on-->
 - Implementer reports done → send the verifier the branch **ref**; FAIL → relay its exact output to the implementer.
+<!--/sw-->
+<!--sw verifier=off-->
+- Implementer reports done → spawn the reviewer (§3b) on the branch **ref**; a red CI goes to the implementer with its exact output.
+<!--/sw-->
+<!--sw verifier=on-->
 - **At nomination, parallel with the gate: ¤orchestra fanout open --branch <b> --into <target> --ticket <id>¤** (idempotent, never merges): CI runs while the verifier gates; ¤deliver¤ reuses the PR, a later push ⇒ ¤head-moved¤.
+<!--/sw-->
+<!--sw verifier=off-->
+- **At nomination, parallel with the review: ¤orchestra fanout open --branch <b> --into <target> --ticket <id>¤** (idempotent, never merges): CI runs while the reviewer reads; ¤deliver¤ reuses the PR, a later push ⇒ ¤head-moved¤.
+<!--/sw-->
+<!--sw verifier=on-->
 - PASS → apply the **merge rule** below, through ¤orchestra fanout deliver¤ (one PR per
+<!--/sw-->
+<!--sw verifier=off-->
+- Review verdict in and CI green → apply the **merge rule** below, through ¤orchestra fanout deliver¤ (one PR per
+<!--/sw-->
   ticket: it opens or reuses ¤<branch> → <target>¤ and merges it). Record the outcome with
   ¤orchestra fanout state set <ticket> --pr <n> --head <sha> --status merged¤ and the PR url
   beside the implementer's workspace id in the ledger roster.
@@ -263,11 +343,23 @@ The count, the head and the CI are code: write the round's counts to a verdict f
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
 ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
 --verified-head <sha> --run <id>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
+<!--sw verifier=on-->
 ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤); ¤--no-review-gate¤
 is the explicit ungated merge (¤reviewGated:false¤), never your default. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
+<!--/sw-->
+<!--sw verifier=off-->
+ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤), and ¤--no-review-gate¤
+is refused too (¤no-verdict¤): the review verdict and the CI are the whole gate. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
+<!--/sw-->
 ¤ci-red¤, ¤no-checks¤, ¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a
+<!--sw verifier=on-->
 conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the verifier
 for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
+<!--/sw-->
+<!--sw verifier=off-->
+conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the reviewer
+for a new verdict on the head, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
+<!--/sw-->
 ¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
 ¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
 <!--sw minorPolicy=spec-->
@@ -277,7 +369,12 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR refus
 refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never refuses: its disposition stays yours.
 <!--/sw-->
 
+<!--sw verifier=on-->
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
+<!--/sw-->
+<!--sw verifier=off-->
+- **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the reviewer re-reads the delta
+<!--/sw-->
   (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
 <!--sw minorPolicy=spec-->
 - **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR (or a spec-sentence MINOR, ¤references/verifier-and-review.md¤): ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other MINOR-only or finding-less one.
@@ -355,7 +452,12 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 - **references/lead-ops-tiers.md** — read when you are the LEAD or the OPS of a vague.
 - **references/budget-and-gates.md** — read before the first gate (§0/§0b grounds, delta re-gates, coverage gaps).
 - **references/fleet-bus.md** — read when a message does not arrive, or before ¤ask¤ / ¤gate¤ / ¤token¤.
+<!--sw verifier=on-->
 - **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
+<!--/sw-->
+<!--sw verifier=off-->
+- **references/verifier-and-review.md** — read when briefing a reviewer (§3b detail).
+<!--/sw-->
 - **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
 - **references/traps.md** — the confident-wrong-answer catalogue: read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
 - **references/prose.md** — read before writing any durable artifact: banned filler, numbers over adjectives.

@@ -149,15 +149,16 @@ export interface FanoutState {
 }
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
-export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'] } as const;
+export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'], verifier: ['on', 'off'] } as const;
 export type SwitchName = keyof typeof SWITCH_VALUES;
 export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
-export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' }
+export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec'; verifier: 'on' | 'off' }
 /** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
- *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default). */
-export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile
+ *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default) ·
+ *  verifier (#563): off = no verifier seat; deliver on the reviewer's verdict + a green CI on the head (`--no-review-gate` refused, `state set --verifier` refused). */
+export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile
 /** #559 — the defaults of v0.5.378 (#554): kept for a run that had already spawned when the defaults changed (never re-read with other defaults mid-run). */
-export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' };
+export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on' };
 export type DefaultsProfile = 'v0.5.375' | 'v0.5.378';
 export const DEFAULTS_PROFILES: Readonly<Record<DefaultsProfile, Readonly<Switches>>> = { 'v0.5.375': DEFAULT_SWITCHES, 'v0.5.378': V378_DEFAULT_SWITCHES };
 type SwitchHolder = { switches?: Partial<Switches>; switchDefaults?: DefaultsProfile; switchesFrozen?: unknown; tickets?: FanoutState['tickets'] };
@@ -255,7 +256,7 @@ function switchValueOf(name: string, v: unknown): Switches[SwitchName] {
 }
 /** A stored `switches` object: every key known, every value in its table; a missing one stays missing (= the profile's default, #559). */
 function switchesParse(v: unknown): Partial<Switches> {
-  if (!isObj(v)) throw new FanoutStateError('switches must be an object {earlyGate, acceptance, minorPolicy}');
+  if (!isObj(v)) throw new FanoutStateError('switches must be an object {earlyGate, acceptance, minorPolicy, verifier}');
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v)) out[k] = switchValueOf(k, val);
   return out as Partial<Switches>;
@@ -325,7 +326,7 @@ export function switchesForRun(home: string, run: string): Switches {
 }
 /** The stamp value of an install: the hook bundle version, plus the run's switches when any is off its default (so a default run keeps the plain version and a switch flip forces ONE re-render). */
 export function switchesStamp(version: string, sw: Switches): string {
-  const diff = SWITCH_NAMES.filter((n) => sw[n] !== DEFAULT_SWITCHES[n]).map((n) => `${n}=${sw[n]}`);
+  const diff = SWITCH_NAMES.filter((n) => sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]).map((n) => `${n}=${sw[n]}`);
   return diff.length ? `${version}+sw:${diff.join(',')}` : version;
 }
 /** One line for `state show`: each switch's value in force and where it comes from (#559), then whether they can still change. */
@@ -333,7 +334,7 @@ export function switchesLine(state: FanoutState): string {
   const sw = switchesOf(state);
   const locked = switchesLockedWhy(state);
   const label = (n: SwitchName): string => { const src = switchSourceOf(state, n); return src === 'default-kept-v0.5.378' ? 'default kept from v0.5.378 (run started before the defaults change)' : src; };
-  return `switches (#554, #559): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]} (${label(n)})`).join(' · ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
+  return `switches (#554, #559, #563): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]} (${label(n)})`).join(' · ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -1013,7 +1014,10 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   }
   if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
   if ('implementer' in patch) next.implementer = wsIdOf(patch.implementer, 'implementer');
-  if ('verifier' in patch) next.verifier = wsIdOf(patch.verifier, 'verifier');
+  if ('verifier' in patch) {
+    next.verifier = wsIdOf(patch.verifier, 'verifier');
+    if (next.verifier && switchesOf(state).verifier === 'off') throw new FanoutStateError(`${id}: verifier=off (#563) — this run has no verifier seat, so no verifier workspace is recorded`);
+  }
   if (next.mergedAccepted && next.status !== 'merged') throw new FanoutStateError(`${id}: mergedAccepted only applies to a merged ticket (status is ${next.status})`);
   for (const k of Object.keys(next.builtOn)) if (!next.dependsOn.includes(k)) throw new FanoutStateError(`${id}: builtOn names ${k}, which is not in dependsOn`);
   // #506 review R2/D1: a patch that drops builtOn and LEAVES a pass/approve verdict (kept, swapped pass↔approve, or set in the same patch) would make it read as "built after the upstream merged" (deliver skips the content check).

@@ -113,6 +113,8 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
              earlyGate=on|off      on (default): a dependent is nominated/gated on its upstream's verified candidate (#506); off: it waits for the upstream's MERGE.
              acceptance=on|off     off (default): no writer spawned, no frozen test asked; on: --spec spawns the accept- writer, the gate / deliver ask for the frozen tests (#510, #515).
              minorPolicy=legacy|refuse|spec   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552 (a MINOR quoting a spec sentence blocks).
+             verifier=on|off       on (default): a verifier seat gates each candidate (#563); off: none is spawned, the skill text has no verifier role, \`state set --verifier\` is refused, and \`deliver\` merges on the reviewer's
+                                   verdict (0 BLOCKING / 0 MAJOR on the head, tree-keyed) + a green CI on that head — \`deliver --no-review-gate\`, no verdict, an open BLOCKING|MAJOR, a red or missing CI are still refused.
            Defaults = the v0.5.375 profile (#559: they were acceptance=on, minorPolicy=spec in v0.5.378). A run that had ALREADY spawned when they changed keeps the old ones for every switch it never set (never re-read mid-run);
            \`state show\` prints each switch as <name>=<value> (default | explicit | default kept from v0.5.378 (run started before the defaults change)).
            The installed skill follows the switches of the coordinator's DEFAULT run id (its own workspace id); a second vague under \`--run <other id>\` obeys its switches in every verb, but its members' skill text is rendered from the default run's.

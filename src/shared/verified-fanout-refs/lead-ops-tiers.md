@@ -8,7 +8,12 @@
 - A **mission** is the run of a top-level agent, born with it; the **LEAD**
   coordinates it and answers to the human. Its members are workers, OPS, or both.
 - A **vague** (wave) is the run of an **OPS** — an agent that has a parent and has
+<!--sw verifier=on-->
   spawned agents of its own: the set of workers and the verifier delivering one
+<!--/sw-->
+<!--sw verifier=off-->
+  spawned agents of its own: the set of workers delivering one
+<!--/sw-->
   batch of tickets. This is our extension — orca (the reference model) documents
   the single-coordinator run but not the nested mission/vague split.
 
@@ -115,7 +120,12 @@ Known failure modes, each with its counter:
   allows.** Waiting for a ping is never a plan when a pull answers now.
   Pipeline, never
   batch: gate/review each candidate the moment it exists, spawn reviewers
+<!--sw verifier=on-->
   as soon as a candidate is nominated (not after the verifier finishes),
+<!--/sw-->
+<!--sw verifier=off-->
+  as soon as a candidate is nominated (not after the CI finishes),
+<!--/sw-->
   and run independent gates concurrently. The quality bars are untouched —
   speed comes from removing DEAD TIME between steps, never from thinner
   verification.

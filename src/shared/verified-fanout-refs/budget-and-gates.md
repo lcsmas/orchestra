@@ -66,9 +66,15 @@ Gate rhythm:
 - **Write the full gate checklist into the ledger before the first gate** —
   each axis discovered mid-run costs one full cycle. Its review line is the §4
   merge rule's verbatim sentence, copied whole.
+<!--sw verifier=on-->
 - **The full suite and the build run on the verifier's seat, once per
   candidate — unless the target has PR CI** (`orchestra fanout gate` derives it;
   the verifier then waits for CI green on its head). An implementer's self-gate,
+<!--/sw-->
+<!--sw verifier=off-->
+- **The PR's CI is the build and the full suite; nobody re-runs it by hand**
+  (`deliver` refuses no CI, a red CI and a check that ran nothing). An implementer's self-gate,
+<!--/sw-->
   in the first round AND every fix round, is the typecheck, the test files its
   diff touches and its own rig arms; a red run is reported with the failing
   test names. N full suites share one host (measured, ledger orchestra#423:
@@ -95,8 +101,14 @@ Gate rhythm:
   of reaching the defect's layer (wave-8 #90: the policy tests could not
   reach any of the three review findings by construction); if not, the fix
   is DRIVING the module, never more coverage.
+<!--sw verifier=on-->
 - **Gate merge candidates, not pushes.** Implementers push checkpoints
   freely; the verifier gates when the coordinator names a candidate ref.
+<!--/sw-->
+<!--sw verifier=off-->
+- **Review merge candidates, not pushes.** Implementers push checkpoints
+  freely; the reviewer reads when the coordinator names a candidate ref.
+<!--/sw-->
   **Rebase onto current master BEFORE nominating** (measured: stale-based
   candidates cost gate-merged two-steps), and a nominated ref's NAME is
   frozen (a rename+delete hands everyone a dead pointer).

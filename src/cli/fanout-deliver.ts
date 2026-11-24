@@ -187,6 +187,9 @@ export interface DeliverDeps {
   /** #514 — the follow-up rule (a candidate on a merged ticket must name a BLOCKING|MAJOR finding it fixes). Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
   followUp?: FollowUpReader;
 
+  /** #563 — the run's `verifier` switch, read only when `--no-review-gate` is given (off = no verifier seat: the review verdict is the only gate, so the ungated merge is refused). null = no state consulted. Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
+  verifierSwitch?: (opts: { ticket: string; run?: string }) => 'on' | 'off' | null;
+
   /** #515 — leave the `--no-acceptance-gate` bypass on the ticket in the state (best effort; a failure is logged, the escape is also in the printed result). */
   recordBypass?: (o: { ticket: string; run: string; head: string }) => void;
 }
@@ -225,6 +228,25 @@ export function upstreamsFromState(opts: { ticket: string; run?: string }, env: 
   });
 }
 
+/** #563 — the `verifier` switch of the run that names `ticket`, with the same run resolution + fail-closed rules as `upstreamsFromState` (an explicit `--run` with no state / an unknown ticket throws). */
+export function verifierSwitchFromState(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): 'on' | 'off' | null {
+  const { run, inherited } = resolveFanoutRun(opts.run, env);
+  if (!run) return null;
+  const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+  let sawState = false;
+  for (const r of opts.run || !inherited ? [run] : [run, inherited]) {
+    const state = readState(stateFile(home, r));
+    if (!state) continue;
+    sawState = true;
+    if (state.tickets[opts.ticket]) return switchesOf(state).verifier;
+  }
+  if (!sawState) {
+    if (opts.run) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the verifier switch`);
+    return null;
+  }
+  throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run}: a mistyped --ticket would skip the verifier switch`);
+}
+
 export const realDeps = (): DeliverDeps => ({
   gh: realGh,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -234,6 +256,7 @@ export const realDeps = (): DeliverDeps => ({
   upstreams: (o) => upstreamsFromState(o),
   acceptance: (o) => acceptanceFromState(o),
   followUp: (o) => followUpFromState(o),
+  verifierSwitch: (o) => verifierSwitchFromState(o),
   recordBypass: (o) => {
     const home = process.env.ORCHESTRA_HOME && process.env.ORCHESTRA_HOME.trim() ? process.env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
     updateState(stateFile(home, o.run), (cur) => { if (!cur) throw new Error('no state'); return bypassInto(cur, o.ticket, { head: o.head, now: new Date().toISOString() }); });
@@ -393,6 +416,13 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   // 1. The review verdict (required unless `--no-review-gate`, #473) and the verified head.
   if (!opts.reviewVerdict && !opts.noReviewGate) {
     return done({ verdict: 'refused', reason: 'no-verdict', detail: 'no review verdict: pass --review-verdict <file> (the round\'s counts + head), or --no-review-gate to merge without a review round (reviewGated:false stays in the result)' }, false);
+  }
+  if (opts.noReviewGate && deps.verifierSwitch) { // #563: verifier=off — the reviewer's verdict is the only gate left, never skippable
+    let sw: 'on' | 'off' | null;
+    try { sw = deps.verifierSwitch({ ticket: opts.ticket, run: opts.run }); } catch (e) {
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s verifier switch: ${(e as Error).message}` }, false);
+    }
+    if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict', detail: 'verifier=off (#563): there is no verifier seat, the review verdict is the only gate — pass --review-verdict <file>; --no-review-gate is refused' }, false);
   }
   let verdict: ReviewVerdict | undefined;
   if (opts.reviewVerdict) {
@@ -597,6 +627,7 @@ Acceptance (#510): a ticket with frozen acceptance tests (the fanout state, \`fa
 acceptance.receipt {head,tree,ticket,hash,ok} for THIS verified head (or its tree) and THIS frozen set, ok:true — else acceptance-unproven | acceptance-stale | frozen-test-failed) AND every frozen file is re-read
 at the verified head through gh and must be byte-identical (else frozen-test-changed); so must the runner config of a \`jest --config\` command (else frozen-config-changed, #542). Unreadable state / unknown ticket with --acceptance ⇒ exit 1. A ticket without frozen tests is unchanged.
 Forced flow (#515): a ticket registered with --spec and NOT frozen is refused (exit 2, acceptance-pending) — the freeze lands, or the coordinator waives it (\`fanout acceptance waive\`) or passes --no-acceptance-gate (recorded in the state and in the result as acceptanceGate:"bypassed"). Neither lifts a refusal for an edited or red frozen test.
+verifier=off (#563, \`state set --switch verifier=off\`): no verifier seat — the reviewer's verdict (0 BLOCKING / 0 MAJOR on the delivered head, tree-keyed #512) AND a green CI on that head are the whole gate; --no-review-gate is refused (no-verdict) when the fanout state says off.
 Refuses on: no review verdict (pass --review-verdict <file>, or --no-review-gate to
 merge ungated: the result then says reviewGated:false), 0 checks, a passing check with 0 steps, red CI, BLOCKING/MAJOR > 0 in
 the verdict file, a head that is not the verified head, a conflict, a --require-check
