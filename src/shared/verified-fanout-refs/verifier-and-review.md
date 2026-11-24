@@ -100,6 +100,18 @@ says now>` (process) or the coordinator records `--decide <id>=<text>`; it may b
 (a process finding never: its fix is the PR-body edit). **Limit: code checks the sentence is IN the spec,
 not that it is really broken — judging that stays with the reviewer.** A MINOR with no sentence stays `noted`.
 <!--/sw-->
+<!--sw minorPolicy=demonstrated-->
+
+**A finding with a demonstration (#572, `minorPolicy: demonstrated`).** Reviewer: for each finding about product behaviour give
+`input` (the concrete situation), `observed` (what the code does, with a product `file:line`) and `expected` (what the ticket asks, or why the result is wrong for the user),
+or say plainly that you cannot; never invent an input you did not trace. Coordinator: record it with
+`state set <ticket> --finding-json '{"<id>":{"severity":"MINOR","evidence":"measured","demonstration":{"input":…,"observed":…,"expected":…}}}'`
+(a measured code MINOR still needs its `report`). Code accepts it only if the three fields are present, non-blank, at least 5 words each, different from each other,
+and `observed` cites a `file:line` that exists on the ticket's recorded head and is product code (not a test, spec or doc). A refused one is recorded with its reason and the finding stays an
+ordinary one (a MINOR is `noted`). An accepted one — of ANY severity — blocks `gate` + `deliver` (`finding-unsettled`) until `state set <ticket> --settle <id>=fixed:<head>` (a later head whose
+review no longer carries it) or the coordinator's `--decide <id>=<text>`; it may be named in `--fixes`. `state show` lists the open ones; `fanout closeout` lists each and how it ended.
+**Limit: code checks the demonstration is well formed, not that it is true — a wrong one costs one fix round or one coordinator decision.**
+<!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code**
 <!--sw verifier=on-->

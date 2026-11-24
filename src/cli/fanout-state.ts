@@ -12,6 +12,9 @@ import {
   effectiveSpec,
   sentenceAccepted,
   applyTicketPatch,
+  demonstratedFindings,
+  findingDemonstrated,
+  refusedDemonstrations,
   applyWriteBack,
   newState,
   parseSwitchAssignments,
@@ -31,6 +34,7 @@ import {
   type TicketState,
 } from '../shared/fanout-state.ts';
 import type { CheckExec } from '../shared/fanout-checks.ts';
+import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
@@ -113,11 +117,17 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
            round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
            LIMIT: code checks the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.
+  A finding with a demonstration (#572, minorPolicy demonstrated): --finding-json '{"<id>":{"severity":"MINOR|MAJOR|BLOCKING","evidence":"measured|argued","demonstration":{"input":"<the concrete situation>","observed":"<what the code does or returns, with a PRODUCT file:line>","expected":"<what the ticket asks, or why the result is wrong for the user>"}}}'.
+           Code accepts it ONLY if all three fields are present, non-blank, at least ${DEMONSTRATION_WORD_FLOOR} words each (observed: besides its file:line), pairwise different, and \`observed\` cites a file:line that EXISTS on the ticket's recorded head (--head) and is PRODUCT code
+           (not a test / spec file, not documentation, not vendored). A finding of ANY severity with an accepted demonstration BLOCKS \`gate\` + \`deliver\` (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (a later head whose review no longer carries it)
+           or the coordinator's --decide <id>=<text>; it may be named in --fixes. A refused demonstration is recorded WITH its reason and the finding stays an ordinary one (a MINOR is then noted, no block). A BLOCKING / MAJOR without one: as today.
+           \`state show\` lists the open demonstrated findings per ticket; \`fanout closeout\` lists each and how it ended. ${DEMONSTRATION_LIMIT}
   --switch (#554, defaults #559) one switch per feature, printed by \`state show\` and FROZEN for the run at its first spawn (the first ticket past todo, the first implementer / verifier / accept- writer recorded;
            after that any change is refused with the reason; an unknown name or value is refused):
              earlyGate=on|off      on (default): a dependent is nominated/gated on its upstream's verified candidate (#506); off: it waits for the upstream's MERGE.
              acceptance=on|off     off (default): no writer spawned, no frozen test asked; on: --spec spawns the accept- writer, the gate / deliver ask for the frozen tests (#510, #515).
-             minorPolicy=legacy|refuse|spec   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552 (a MINOR quoting a spec sentence blocks).
+             minorPolicy=legacy|refuse|spec|demonstrated   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552 (a MINOR quoting a spec sentence blocks);
+                                   demonstrated: #572 (a finding of any severity with an accepted demonstration blocks; follow-ups unrestricted as under legacy).
              verifier=on|off       on (default): a verifier seat gates each candidate (#563); off: none is spawned, the skill text has no verifier role, \`state set --verifier\` is refused, and \`deliver\` merges on the reviewer's
                                    verdict (0 BLOCKING / 0 MAJOR on the head, tree-keyed) + a green CI on that head — \`deliver --no-review-gate\`, no verdict, an open BLOCKING|MAJOR, a red or missing CI are still refused.
              preNominationChecks=on|off   off (default): none; on (#564): \`state set <ticket> --status nominated|gated\` (with a head) is REFUSED unless the state holds a PASSING record of \`orchestra fanout check <ticket>\` for the git tree of that head
@@ -143,6 +153,15 @@ export function treeOfSha(runner: Runner, sha: string, cwd: string, repo: string
     const t = ((JSON.parse(a.stdout) as { commit?: { tree?: { sha?: unknown } } }).commit?.tree?.sha);
     return typeof t === 'string' && TREE_OUT.test(t) ? t : null;
   } catch { return null; }
+}
+
+/** #572 — does `file` exist on `head`: the local object first (a commit we hold answers for sure), else GitHub's contents API. null = UNREADABLE (head not fetched, no gh): the demonstration is then refused saying so, never accepted. */
+export function fileOnHead(runner: Runner, head: string, file: string, cwd: string, repo: string | null): boolean | null {
+  if (!SHA_ARG.test(head) || file.startsWith('-') || file.startsWith('/')) return null;
+  if (runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0) return runner('git', ['cat-file', '-e', `${head}:${file}`], cwd).code === 0;
+  const a = runner('gh', ['api', `repos/${repo ?? '{owner}/{repo}'}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`, '--silent'], cwd);
+  if (a.code === 0) return true;
+  return /\b404\b|Not Found/i.test(a.stderr) ? false : null;
 }
 
 export interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
@@ -187,7 +206,7 @@ function findingsArg(v: string): Record<string, string> {
 }
 /** The state of a recorded finding, for `state set` / `show`: `(spec,unsettled)` = blocks the merge, `(process)`, `(settled:fixed)`, `(decided)`. */
 function findingTags(f: FindingRecord, t: TicketState, spec: { specText: string | null } = t): string {
-  const tags = [f.kind === 'process' ? 'process' : '', f.specSentence !== undefined ? (sentenceAccepted(spec, f) ? 'spec' : 'sentence-not-in-spec') : '', f.settled ? `settled:${f.settled.how}` : f.decision ? 'decided' : f.specSentence !== undefined && f.severity === 'MINOR' && sentenceAccepted(spec, f) ? 'unsettled' : ''].filter(Boolean);
+  const tags = [f.kind === 'process' ? 'process' : '', f.demonstration !== undefined ? (findingDemonstrated(f) ? 'demonstrated' : 'demonstration-refused') : '', f.specSentence !== undefined ? (sentenceAccepted(spec, f) ? 'spec' : 'sentence-not-in-spec') : '', f.settled ? `settled:${f.settled.how}` : f.decision ? 'decided' : (f.specSentence !== undefined && f.severity === 'MINOR' && sentenceAccepted(spec, f)) || findingDemonstrated(f) ? 'unsettled' : ''].filter(Boolean);
   return tags.length ? `(${tags.join(',')})` : '';
 }
 /** `--settle ID=fixed:<ref>` | `ID=pr-body:<ref>` → {ID: {how, ref}}. */
@@ -340,7 +359,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       const text = p.vals['--finding-json'] === '-' ? deps.readStdin() : p.vals['--finding-json'];
       let obj: unknown;
       try { obj = JSON.parse(text); } catch { throw new FanoutStateError('--finding-json is not valid JSON'); }
-      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--finding-json must be an object {<finding id>: {severity, evidence?, kind?, specSentence?, report?}}');
+      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) throw new FanoutStateError('--finding-json must be an object {<finding id>: {severity, evidence?, kind?, specSentence?, demonstration?, report?}}');
       patch.findings = { ...(typeof patch.findings === 'object' && patch.findings !== null ? patch.findings : {}), ...obj };
     }
     if (p.vals['--settle'] !== undefined) patch.settle = settleArg(p.vals['--settle']);
@@ -353,7 +372,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const r = runOf(p, deps, 'write');
     const file = stateFile(homeOf(deps.env), r.run);
     // #512 — the content keys are DERIVED here (git, then gh), never typed: the tree of the head and of each upstream head it was built on. Unreadable ⇒ unknown ⇒ sha-keyed.
-    const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {};
+    const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; fileOnHead?: (head: string, file: string) => boolean | null } = {};
     const notes: string[] = specRead?.note ? [specRead.note] : [];
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const repo = readState(file)?.repo ?? null;
@@ -361,6 +380,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
       if (!derived.tree) notes.push(`note: the tree of head ${patch.head.slice(0, 8)} is unreadable (not fetched? gh?): its verdict stays keyed on the sha, not the content\n`);
     }
+    if (typeof patch.findings === 'object' && patch.findings !== null && Object.values(patch.findings).some((f) => typeof f === 'object' && f !== null && 'demonstration' in f)) derived.fileOnHead = (head, file) => fileOnHead(deps.runner, head, file, deps.cwd, repo); // #572: only when a demonstration is being recorded
     if (patch.builtOn && typeof patch.builtOn === 'object') {
       derived.builtOnTree = {};
       for (const [up, sha] of Object.entries(patch.builtOn as Record<string, unknown>)) {
@@ -399,9 +419,20 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const harnessLine = s.harness ? `harness (#538): ${s.harness}\n` : '';
     const acc = acceptanceOn(s) ? Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null) : [];
     const chk = switchesOf(s).preNominationChecks === 'on' ? Object.entries(s.tickets).filter(([, t]) => t.status !== 'merged' && t.status !== 'dropped').map(([id, t]) => checksLine(id, t)) : [];
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    const dem = switchesOf(s).minorPolicy === 'demonstrated' ? demonstratedShow(s) : '';
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${dem}${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
+}
+
+/** #572 — `state show` under minorPolicy=demonstrated: per ticket the OPEN demonstrated findings (they block gate + deliver), then the demonstrations code refused (recorded with the reason). Empty text = nothing to say. */
+export function demonstratedShow(s: FanoutState): string {
+  const lines: string[] = [];
+  for (const [id, t] of Object.entries(s.tickets)) {
+    for (const d of demonstratedFindings(t).filter((x) => x.end === 'open')) lines.push(`${id}/${d.finding}  ${d.severity}  OPEN  ${d.file} @${d.head.slice(0, 8)}  input: ${d.input.replace(/\s+/g, ' ').trim().slice(0, 100)}  → state set ${id} --settle ${d.finding}=fixed:<head> | --decide ${d.finding}=<text>`);
+    for (const r of refusedDemonstrations(t)) lines.push(`${id}/${r.finding}  demonstration REFUSED (stays a plain ${t.findings[r.finding].severity}): ${r.refusal}`);
+  }
+  return lines.length ? `demonstrated findings (#572) — open ones block gate + deliver:\n${lines.map((l) => `  ${l}`).join('\n')}\n` : `demonstrated findings (#572): none open\n`;
 }
 
 /** #564 — a ticket's pre-nomination check record for its CURRENT head's tree: passing / failing (the commands) / vacuous / none yet. */

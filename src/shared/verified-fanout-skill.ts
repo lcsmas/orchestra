@@ -292,6 +292,9 @@ ledger comment with a per-finding measured/argued label, and dies. **It reports 
 that touch correctness or a ticket promise — never NITs.**
 
 **Severity scale** (BLOCKING / MAJOR / MINOR / NIT — the §4 merge rule keys on it): ¤references/verifier-and-review.md¤, read when you grade a finding.
+<!--sw minorPolicy=demonstrated-->
+**Reviewer brief (#572):** per product finding demand ¤input¤ / ¤observed¤ (¤file:line¤) / ¤expected¤, or ¤cannot¤ (see the reference).
+<!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
 <!--sw verifier=on-->
@@ -341,6 +344,11 @@ MINOR is ¤noted¤ — no follow-up PR.*
 MINOR that touches correctness or a ticket promise goes to the candidate's ONE
 follow-up branch, every other finding is ¤noted¤.*
 <!--/sw-->
+<!--sw minorPolicy=demonstrated-->
+*A review round with 0 BLOCKING, 0 MAJOR and no unsettled demonstrated finding merges on its
+current gate; a MINOR that touches correctness or a ticket promise goes to the ONE
+follow-up branch, every other finding is ¤noted¤.*
+<!--/sw-->
 
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
@@ -371,6 +379,9 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR refus
 <!--sw minorPolicy=refuse|legacy-->
 refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never refuses: its disposition stays yours.
 <!--/sw-->
+<!--sw minorPolicy=demonstrated-->
+refusal: inspect and retry. Never merge around either with ¤gh¤. Only an accepted demonstration refuses a finding (¤finding-unsettled¤).
+<!--/sw-->
 
 <!--sw verifier=on-->
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
@@ -388,12 +399,15 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never
 <!--sw minorPolicy=legacy-->
 - **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.
 <!--/sw-->
+<!--sw minorPolicy=demonstrated-->
+- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR or demonstrated finding in its own diff reopens it.
+<!--/sw-->
 
 <!--sw minorPolicy=refuse|spec-->
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
 measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ (BLOCKING/MAJOR) or ¤noted¤ (MINOR/NIT).
 <!--/sw-->
-<!--sw minorPolicy=legacy-->
+<!--sw minorPolicy=legacy|demonstrated-->
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
 measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ or ¤noted¤ (MINOR/NIT only).
 <!--/sw-->

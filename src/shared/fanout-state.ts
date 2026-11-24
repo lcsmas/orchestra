@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { nominationRefusal, withRecord, type CheckRecord } from './fanout-checks.ts';
+import { DEMONSTRATION_FIELDS, DEMONSTRATION_LIMIT, DEMONSTRATION_TEXT_MAX, classifyDemonstration, demonstrationAccepted, type Demonstration, type FileOnHead } from './fanout-demonstration.ts';
 
 export const STATE_VERSION = 1;
 
@@ -57,6 +58,8 @@ export interface FindingRecord {
   kind?: FindingKind;
   /** #552 — a literal substring of the ticket's captured spec text (`TicketState.specText`); code checks it is IN the spec, never that it is really broken (the reviewer judges that). */
   specSentence?: string;
+  /** #572 — `minorPolicy=demonstrated`: {input, observed, expected} + the verdict code gave it (accepted = `file`+`head`, else `refusal`). Written by `applyTicketPatch` from the three texts only. */
+  demonstration?: Demonstration;
   report?: FindingReport;
   decision?: FindingDecision;
   settled?: FindingSettled;
@@ -152,12 +155,12 @@ export interface FanoutState {
 }
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
-export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;
+export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;
 export type SwitchName = keyof typeof SWITCH_VALUES;
 export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
-export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec'; verifier: 'on' | 'off'; preNominationChecks: 'on' | 'off' }
+export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' | 'demonstrated'; verifier: 'on' | 'off'; preNominationChecks: 'on' | 'off' }
 /** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
- *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default) ·
+ *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 · demonstrated = #572 (a finding of ANY severity with an accepted demonstration blocks like a MAJOR; follow-ups unrestricted as under legacy) ·
  *  verifier (#563): off = no verifier seat; deliver on the reviewer's verdict + a green CI on the head (`--no-review-gate` refused, `state set --verifier` refused) ·
  *  preNominationChecks (#564): on = a nomination needs a passing `orchestra fanout check` record for the head's tree; off = none asked. */
 export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile; #564 (ledger #565 D3): off in both profiles
@@ -414,16 +417,32 @@ function isoOf(v: unknown, where: string): string {
   if (typeof v !== 'string' || !v.trim() || Number.isNaN(Date.parse(v))) throw new FanoutStateError(`${where} must be an ISO date`);
   return v;
 }
-const FINDING_KEYS = new Set(['severity', 'evidence', 'kind', 'specSentence', 'report', 'decision', 'settled']);
+const FINDING_KEYS = new Set(['severity', 'evidence', 'kind', 'specSentence', 'demonstration', 'report', 'decision', 'settled']);
+/** #572 — a stored / patched demonstration: SHAPE only (strings, printable, bounded). A blank / short / missing field is NOT an error here: it is recorded with its refusal reason (`classifyDemonstration`). */
+function demonstrationOf(v: unknown, where: string): Demonstration {
+  if (!isObj(v)) throw new FanoutStateError(`${where}.demonstration must be {${DEMONSTRATION_FIELDS.join(', ')}}`);
+  refuseUnknown(v, new Set([...DEMONSTRATION_FIELDS, 'file', 'head', 'refusal']), `${where}.demonstration`);
+  const text = (k: string): string => {
+    const x = v[k];
+    if (x === undefined || x === null) return '';
+    if (typeof x !== 'string') throw new FanoutStateError(`${where}.demonstration.${k} must be a text`);
+    if (x.length > DEMONSTRATION_TEXT_MAX || CTRL.test(x)) throw new FanoutStateError(`${where}.demonstration.${k} must be printable text of at most ${DEMONSTRATION_TEXT_MAX} characters`);
+    return x;
+  };
+  const out: Demonstration = { input: text('input'), observed: text('observed'), expected: text('expected') };
+  for (const k of ['file', 'head', 'refusal'] as const) if (v[k] !== undefined) out[k] = lineOf(v[k], `${where}.demonstration.${k}`, 500);
+  return out;
+}
 /** Parse ONE stored finding: the legacy string `BLOCKING|MAJOR|MINOR` or the normalized record (unknown key refused, every field shape-checked). Always returns the record form. */
 export function findingOf(v: unknown, where: string): FindingRecord {
   if (typeof v === 'string') return { severity: enumOf(v, FINDING_SEVERITIES, where) };
-  if (!isObj(v)) throw new FanoutStateError(`${where} must be BLOCKING|MAJOR|MINOR or a finding record {severity, evidence?, kind?, specSentence?, report?, decision?, settled?}`);
+  if (!isObj(v)) throw new FanoutStateError(`${where} must be BLOCKING|MAJOR|MINOR or a finding record {severity, evidence?, kind?, specSentence?, demonstration?, report?, decision?, settled?}`);
   refuseUnknown(v, FINDING_KEYS, where);
   const out: FindingRecord = { severity: enumOf(v.severity, FINDING_SEVERITIES, `${where}.severity`) };
   if (v.evidence !== undefined) out.evidence = enumOf(v.evidence, FINDING_EVIDENCE, `${where}.evidence`);
   if (v.kind !== undefined) out.kind = enumOf(v.kind, FINDING_KINDS, `${where}.kind`);
   if (v.specSentence !== undefined) out.specSentence = specSentenceOf(v.specSentence, where);
+  if (v.demonstration !== undefined) out.demonstration = demonstrationOf(v.demonstration, where);
   if (v.report !== undefined) {
     if (!isObj(v.report)) throw new FanoutStateError(`${where}.report must be {input, happens, where, proof}`);
     refuseUnknown(v.report, new Set(['input', 'happens', 'where', 'proof']), `${where}.report`);
@@ -881,21 +900,40 @@ export function effectiveSpec(state: FanoutState, t: Pick<TicketState, 'specText
 }
 /** Is the finding closed: settled (fixed / pr-body) or decided by the coordinator. */
 export const findingClosed = (f: FindingRecord): boolean => !!f.settled || !!f.decision;
+/** #572 — the finding's demonstration is ACCEPTED (re-checked wherever it is acted on: a hand-edited state cannot smuggle one in). */
+export const findingDemonstrated = (f: FindingRecord): boolean => demonstrationAccepted(f.demonstration);
 /**
  * #552 — a MINOR with an accepted specSentence, not settled and not decided, BLOCKS the merge under `minorPolicy: spec` (like a MAJOR): the ids, per ticket `id`.
+ * #572 — under `minorPolicy: demonstrated` a finding of ANY severity with an accepted demonstration blocks the same way (BLOCKING / MAJOR without one: as today — the review verdict carries them).
  * A merged ticket is not blocked (a finding raised after the merge goes through a follow-up). `process` findings block too — their way out is the PR-body edit (`settled.how = pr-body`), not a code round.
  */
 export function blockingMinors(state: FanoutState, id: string): string[] {
   const t = state.tickets[id];
-  if (!t || switchesOf(state).minorPolicy !== 'spec' || t.status === 'merged' || t.mergedHead) return [];
-  return Object.entries(t.findings).filter(([, f]) => f.severity === 'MINOR' && sentenceAccepted(effectiveSpec(state, t), f) && !findingClosed(f)).map(([k]) => k);
+  const policy = switchesOf(state).minorPolicy;
+  if (!t || (policy !== 'spec' && policy !== 'demonstrated') || t.status === 'merged' || t.mergedHead) return [];
+  const holds = (f: FindingRecord): boolean => (policy === 'demonstrated' ? findingDemonstrated(f) : f.severity === 'MINOR' && sentenceAccepted(effectiveSpec(state, t), f));
+  return Object.entries(t.findings).filter(([, f]) => holds(f) && !findingClosed(f)).map(([k]) => k);
 }
+const oneLineOf = (s: string, n: number): string => s.replace(/\s+/g, ' ').trim().slice(0, n);
 export function mergeBlockRefusal(state: FanoutState, id: string): FollowUpRefusal | null {
   const ids = blockingMinors(state, id);
   if (ids.length === 0) return null;
   const t = state.tickets[id];
   const how = (k: string): string => (t.findings[k].kind === 'process' ? `edit the PR body, then state set ${id} --settle ${k}=pr-body:<what it says now>` : `fix it, then state set ${id} --settle ${k}=fixed:<head>`);
+  if (switchesOf(state).minorPolicy === 'demonstrated') {
+    const said = (k: string): string => { const f = t.findings[k]; return `${k} (${f.severity}${f.kind === 'process' ? ', process' : ''}: “${oneLineOf(f.demonstration!.input, 70)}” → ${f.demonstration!.file})`; };
+    return { reason: 'finding-unsettled', detail: `${id}: ${ids.length} finding(s) carry an accepted demonstration (input / observed file:line / expected) and are neither settled nor decided: ${ids.map(said).join('; ')} — ${ids.map(how).join('; ')}; or the coordinator records a decision: state set ${id} --decide <finding>=<text>. (${DEMONSTRATION_LIMIT})` };
+  }
   return { reason: 'finding-unsettled', detail: `${id}: ${ids.length} MINOR finding(s) break a sentence of the ticket's spec and are neither settled nor decided: ${ids.map((k) => `${k} (“${t.findings[k].specSentence!.replace(/\s+/g, ' ').slice(0, 80)}”${t.findings[k].kind === 'process' ? ', process' : ''})`).join('; ')} — ${ids.map(how).join('; ')}; or the coordinator records a decision: state set ${id} --decide <finding>=<text>. (Code checks the sentence is in the spec, not that it is really broken: the reviewer judges that.)` };
+}
+/** #572 — every finding of `ticket` that carries an accepted demonstration, with how it ENDED: `fixed` (settled, ref = the head), `pr-body`, `decided` (text), or `open`. */
+export interface DemonstratedEnd { finding: string; severity: FindingSeverity; end: 'fixed' | 'pr-body' | 'decided' | 'open'; ref?: string; file: string; head: string; input: string }
+export function demonstratedFindings(t: TicketState): DemonstratedEnd[] {
+  return Object.entries(t.findings).filter(([, f]) => findingDemonstrated(f)).map(([k, f]) => ({ finding: k, severity: f.severity, end: f.settled ? f.settled.how : f.decision ? 'decided' : 'open', ...(f.settled ? { ref: f.settled.ref } : f.decision ? { ref: f.decision.text } : {}), file: f.demonstration!.file!, head: f.demonstration!.head!, input: f.demonstration!.input }));
+}
+/** #572 — the demonstrations code REFUSED (recorded with the reason): the finding stayed a plain finding. */
+export function refusedDemonstrations(t: TicketState): Array<{ finding: string; refusal: string }> {
+  return Object.entries(t.findings).filter(([, f]) => f.demonstration && !findingDemonstrated(f)).map(([k, f]) => ({ finding: k, refusal: f.demonstration!.refusal ?? 'not checked (no file / head recorded)' }));
 }
 export interface FollowUpRefusal { reason: FollowUpReason; detail: string }
 
@@ -912,8 +950,8 @@ export interface FollowUpRefusal { reason: FollowUpReason; detail: string }
 export function followUpRefusal(state: FanoutState, id: string, head?: string | null, branch?: string | null, headTree?: string | null): FollowUpRefusal | null {
   const t = state.tickets[id];
   if (!t) return null;
-  if (switchesOf(state).minorPolicy === 'legacy') return null; // #554: legacy = before #514, follow-ups unrestricted
   const policy = switchesOf(state).minorPolicy;
+  if (policy === 'legacy' || policy === 'demonstrated') return null; // #554: legacy = before #514, follow-ups unrestricted; #572: demonstrated keeps them (a demonstrated finding may be named in --fixes)
   const refuse = (reason: FollowUpReason, why: string): FollowUpRefusal => ({ reason, detail: `${id}: ${why}. ${followUpRuleOf(policy)}` });
   // #512: the same git tree on another sha (rebase / author rewrite) is the same content — a retry, not a further candidate
   const sameMerge = (mh: string, mt: string | null): boolean => !!head && (sameSha(mh, head) || (!!mt && !!headTree && mt === headTree));
@@ -960,7 +998,7 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
  *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
  *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
-export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {}): FanoutState {
+export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
@@ -1013,7 +1051,17 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
       if (f.specSentence !== undefined && !sentenceAccepted(specNow, f)) {
         throw new FanoutStateError(`${id}: finding ${k}: specSentence is not a literal sentence of ${id}'s captured spec${next.specText === null ? ' (no spec text was captured: register it with state set --spec <file> or --spec-text <file|->)' : ' (exact characters, no trim, no case-fold)'} — refused. ${SPEC_SENTENCE_LIMIT}`);
       }
-      next.findings[k] = { ...(had ?? {}), ...f };
+      const fr: FindingRecord = { ...f };
+      if (f.demonstration !== undefined) { // #572 — the verdict is code's, from the three texts only (a file / head / refusal typed in the patch is dropped)
+        if (switchesOf(state).minorPolicy !== 'demonstrated') throw new FanoutStateError(`${id}: finding ${k}: a demonstration is recorded only under minorPolicy=demonstrated (this run: ${switchesOf(state).minorPolicy}) — drop it, or start a run with --switch minorPolicy=demonstrated`);
+        const hadD = had?.demonstration;
+        if (hadD && demonstrationAccepted(hadD)) {
+          if (!DEMONSTRATION_FIELDS.every((x) => hadD[x] === f.demonstration![x])) throw new FanoutStateError(`${id}: finding ${k} already records an accepted demonstration — a recorded finding is not rewritten`);
+          fr.demonstration = hadD; // the same texts again: the verdict (and the head it was read on) stand
+        } else if (had && findingClosed(had)) throw new FanoutStateError(`${id}: finding ${k} is already ${had.settled ? 'settled' : 'decided'}: it takes no new demonstration`);
+        else fr.demonstration = classifyDemonstration(f.demonstration, { head: next.head, fileOnHead: derived.fileOnHead });
+      }
+      next.findings[k] = { ...(had ?? {}), ...fr };
       const gap = reportGap(next.findings[k]);
       if (gap) throw new FanoutStateError(`${id}: finding ${k}: ${gap}`);
     }
@@ -1041,7 +1089,7 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
     next.mergedTree = null;
   }
   // the head a ticket merged at is the first one recorded with the merge; a plain head change on a merged ticket would launder a further candidate
-  const legacyMinor = switchesOf(state).minorPolicy === 'legacy'; // #554: before #514 a further candidate on a merged ticket was not a follow-up
+  const legacyMinor = switchesOf(state).minorPolicy === 'legacy' || switchesOf(state).minorPolicy === 'demonstrated'; // #554: before #514 a further candidate on a merged ticket was not a follow-up
   if (!legacyMinor && prev.status === 'merged' && next.status === 'merged' && 'head' in patch && !('forgetMerge' in patch) && prev.head && next.head && !sameSha(prev.head, next.head)) {
     throw new FanoutStateError(`${id} is already merged at ${prev.head.slice(0, 8)}: ${next.head.slice(0, 8)} is a further candidate on it, i.e. a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (recording the head it REALLY merged at after a re-gate: add --forget-merge <reason>)`);
   }
