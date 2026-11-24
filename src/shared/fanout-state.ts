@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { nominationRefusal, withRecord, type CheckRecord } from './fanout-checks.ts';
 
 export const STATE_VERSION = 1;
 
@@ -125,6 +126,8 @@ export interface TicketState {
   verifier: string | null;
   /** #515 — see {@link AcceptFlow}. Written only by the acceptance verbs / the host, not by `state set`. */
   accept: AcceptFlow | null;
+  /** #564 — pre-nomination check records by git TREE of the head they ran on (DERIVED: only `orchestra fanout check` writes it; absent = none, never written empty). */
+  checks?: Record<string, CheckRecord>;
   updatedAt: string;
 }
 
@@ -149,16 +152,17 @@ export interface FanoutState {
 }
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
-export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'], verifier: ['on', 'off'] } as const;
+export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;
 export type SwitchName = keyof typeof SWITCH_VALUES;
 export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
-export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec'; verifier: 'on' | 'off' }
+export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec'; verifier: 'on' | 'off'; preNominationChecks: 'on' | 'off' }
 /** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
  *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default) ·
- *  verifier (#563): off = no verifier seat; deliver on the reviewer's verdict + a green CI on the head (`--no-review-gate` refused, `state set --verifier` refused). */
-export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile
+ *  verifier (#563): off = no verifier seat; deliver on the reviewer's verdict + a green CI on the head (`--no-review-gate` refused, `state set --verifier` refused) ·
+ *  preNominationChecks (#564): on = a nomination needs a passing `orchestra fanout check` record for the head's tree; off = none asked. */
+export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile; #564 (ledger #565 D3): off in both profiles
 /** #559 — the defaults of v0.5.378 (#554): kept for a run that had already spawned when the defaults changed (never re-read with other defaults mid-run). */
-export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on' };
+export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' };
 export type DefaultsProfile = 'v0.5.375' | 'v0.5.378';
 export const DEFAULTS_PROFILES: Readonly<Record<DefaultsProfile, Readonly<Switches>>> = { 'v0.5.375': DEFAULT_SWITCHES, 'v0.5.378': V378_DEFAULT_SWITCHES };
 type SwitchHolder = { switches?: Partial<Switches>; switchDefaults?: DefaultsProfile; switchesFrozen?: unknown; tickets?: FanoutState['tickets'] };
@@ -187,7 +191,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -256,7 +260,7 @@ function switchValueOf(name: string, v: unknown): Switches[SwitchName] {
 }
 /** A stored `switches` object: every key known, every value in its table; a missing one stays missing (= the profile's default, #559). */
 function switchesParse(v: unknown): Partial<Switches> {
-  if (!isObj(v)) throw new FanoutStateError('switches must be an object {earlyGate, acceptance, minorPolicy, verifier}');
+  if (!isObj(v)) throw new FanoutStateError(`switches must be an object {${SWITCH_NAMES.join(', ')}}`);
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v)) out[k] = switchValueOf(k, val);
   return out as Partial<Switches>;
@@ -477,6 +481,34 @@ function forgottenOf(v: unknown): Array<{ at: string; reason: string; was: strin
     if (!isObj(e) || typeof e.at !== 'string' || typeof e.reason !== 'string' || !e.reason.trim()) throw new FanoutStateError(`forgottenMerges[${i}] needs {at, reason, was}`);
     return { at: e.at, reason: e.reason, was: checked(strOrNull(e.was, 'was'), HEX_SHA, 'forgottenMerges.was') };
   });
+}
+/** #564 — the stored check records: {<tree>: {tree, head, at, vacuous, ok, results[]}}; the key IS the record's tree, `ok` must equal what the results say (a hand-edited pass is refused). */
+function checkRecordsOf(v: unknown, where: string): Record<string, CheckRecord> {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: checks must be an object {<tree sha>: record}`);
+  const out: Record<string, CheckRecord> = {};
+  for (const [tree, r] of Object.entries(v)) {
+    const at = `${where}: checks[${tree.slice(0, 8)}]`;
+    if (!TREE_SHA.test(tree) || !isObj(r)) throw new FanoutStateError(`${at} must be keyed by a full git tree sha and hold an object`);
+    refuseUnknown(r, new Set(['tree', 'head', 'at', 'source', 'vacuous', 'nothingFound', 'changed', 'ok', 'results', 'uncovered', 'overrideChanged']), at);
+    if (r.tree !== tree || typeof r.head !== 'string' || !HEX_SHA.test(r.head) || typeof r.at !== 'string' || (r.source !== 'override' && r.source !== 'discovered') || typeof r.vacuous !== 'boolean' || typeof r.nothingFound !== 'boolean' || !Number.isInteger(r.changed) || !Array.isArray(r.uncovered) || r.uncovered.some((u) => typeof u !== 'string') || typeof r.overrideChanged !== 'boolean' || typeof r.ok !== 'boolean' || !Array.isArray(r.results)) throw new FanoutStateError(`${at} needs {tree (= its key), head, at, source (override|discovered), vacuous, nothingFound, changed, uncovered[], overrideChanged, ok, results[]}`);
+    const results = r.results.map((x, i) => {
+      if (!isObj(x)) throw new FanoutStateError(`${at}.results[${i}] must be an object`);
+      refuseUnknown(x, new Set(['run', 'cwd', 'exit', 'timedOut', 'durationMs', 'tail', 'from']), `${at}.results[${i}]`);
+      if (typeof x.run !== 'string' || typeof x.cwd !== 'string' || !(x.exit === null || Number.isInteger(x.exit)) || typeof x.timedOut !== 'boolean' || typeof x.durationMs !== 'number' || typeof x.tail !== 'string' || (x.from !== undefined && typeof x.from !== 'string')) throw new FanoutStateError(`${at}.results[${i}] needs {run, cwd, exit (int|null), timedOut, durationMs, tail}`);
+      return { run: x.run, cwd: x.cwd, exit: x.exit as number | null, timedOut: x.timedOut, durationMs: x.durationMs, tail: x.tail, ...(x.from !== undefined ? { from: x.from as string } : {}) };
+    });
+    const ok = !r.nothingFound && results.every((x) => x.exit === 0 && !x.timedOut);
+    if (r.ok !== ok || r.vacuous !== (results.length === 0 && !r.nothingFound) || (r.nothingFound && results.length > 0)) throw new FanoutStateError(`${at}: ok / vacuous / nothingFound do not match its results`);
+    out[tree] = { tree, head: r.head, at: r.at, source: r.source, vacuous: r.vacuous, nothingFound: r.nothingFound, changed: r.changed as number, uncovered: r.uncovered as string[], overrideChanged: r.overrideChanged, ok, results };
+  }
+  return out;
+}
+/** #564 — `orchestra fanout check`: record a run of the pre-nomination checks on ticket `id` (creates the ticket as `todo` when new). Pure; the record is keyed by its own tree. */
+export function recordChecks(state: FanoutState, id: string, rec: CheckRecord, now: string): FanoutState {
+  if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
+  if (!TREE_SHA.test(rec.tree)) throw new FanoutStateError('a check record needs the full git tree sha of the head');
+  const prev = state.tickets[id] ?? blankTicket(now);
+  return { ...state, tickets: { ...state.tickets, [id]: { ...prev, checks: withRecord(prev.checks ?? {}, rec), updatedAt: now } }, updatedAt: now };
 }
 /** #515 — a spec reference: one printable line (a path, a URL, a ledger section). */
 function specOf(v: unknown): string | null {
@@ -739,6 +771,7 @@ export function parseState(raw: unknown): FanoutState {
       implementer: wsIdOf(t.implementer, 'implementer'),
       verifier: wsIdOf(t.verifier, 'verifier'),
       accept: acceptFlowOf(t.accept, `ticket ${id}`),
+      ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -1049,6 +1082,10 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
       const why = open.map((u) => upstreamBlocker(out, next, u)).filter((b) => b !== null).map((b) => b.why);
       if (why.length > 0) throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged and not an admissible candidate — ${why.join('; ')}`);
     }
+  }
+  if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated' || next.status === 'gated') && next.head && ('status' in patch || 'head' in patch)) { // #564: the record of THIS head's tree, or no candidate
+    const refusal = nominationRefusal(next, id);
+    if (refusal) throw new FanoutStateError(refusal);
   }
   if ((next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass' || next.verdict === 'approve') && !next.head) {
     throw new FanoutStateError(`${id}: ${next.status === 'nominated' || next.status === 'gated' ? next.status : `verdict ${next.verdict}`} needs a recorded head sha (--head): the gate and the head-moved check speak about one exact head`);

@@ -44,7 +44,7 @@ test('verifier: default on in BOTH defaults profiles; `state show` prints it wit
   assert.equal(switchesOf({ switchDefaults: 'v0.5.378' }).verifier, 'on', 'a run that kept the v0.5.378 defaults keeps verifier on');
   const d = deps(mkHome(t));
   init(d);
-  assert.match(show(d), /minorPolicy=legacy \(default\) · verifier=on \(default\) — not frozen yet/);
+  assert.match(show(d), /minorPolicy=legacy \(default\) · verifier=on \(default\) · preNominationChecks=off \(default\) — not frozen yet/);
   const r = set(d, '--switch', 'verifier=off');
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /verifier=off \(explicit\)/);

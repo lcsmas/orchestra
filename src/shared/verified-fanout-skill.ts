@@ -182,6 +182,9 @@ Gate rhythm:
 - **Review merge candidates, not pushes.** The reviewer reads when the coordinator names a candidate ref.
 <!--/sw-->
   **Rebase onto current master BEFORE nominating**; a nominated ref's NAME is frozen.
+<!--sw preNominationChecks=on-->
+- **Run the repo's fast checks before nominating:** from a clean worktree at the candidate head, ¤orchestra fanout check <ticket> --run <coordinator run>¤ (the commands are discovered from the files you changed — the nearest ¤package.json¤ ¤lint¤ script; the repo may override them in ¤.orchestra/pre-nomination-checks.json¤; nothing found = refused). ¤state set --status nominated¤ is refused without a passing record for that head's tree; a rebase that keeps the tree needs no re-run.
+<!--/sw-->
 - **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's tree object byte-equals the
   gated merged tree); the carry is VOID across any conflict resolution, squash-with-edits, or cherry-pick.
 - **Scope re-gates to the delta**; a docs/comment-only delta carries the verdict.
