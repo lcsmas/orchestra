@@ -1,7 +1,7 @@
 // #553 — the close-out: one ready-to-file ticket text per MEASURED, non-process MINOR recorded on a vague's tickets. Pure and read-only (the CLI is src/cli/fanout-closeout.ts).
 // Never lost: a measured MINOR on product code without a spec sentence has no follow-up (ledger #555 D3) — this list is its route. argued MINORs and `kind: process` findings create nothing.
 import crypto from 'node:crypto';
-import { REPORT_PARTS, type FanoutState, type FindingRecord, type FindingReport } from './fanout-state.ts';
+import { REPORT_PARTS, demonstratedFindings, refusedDemonstrations, type DemonstratedEnd, type FanoutState, type FindingRecord, type FindingReport } from './fanout-state.ts';
 
 /** Why a finding produces no ticket text. `settled-fixed` = already fixed (a follow-up landed it): filing it would duplicate a closed defect. */
 export type CloseoutSkip = 'not-minor' | 'argued' | 'no-evidence' | 'process' | 'settled-fixed';
@@ -95,4 +95,24 @@ export function renderCloseout(res: CloseoutResult, run: string): string {
   ].filter(Boolean);
   const blocks = res.texts.map((t, i) => `--- ticket text ${i + 1}/${res.texts.length} · ${t.ticket}/${t.finding} ---\nTitle: ${t.title}\n\n${t.body}`);
   return [head, ...notes, ...blocks].join('\n\n') + '\n';
+}
+
+// ── #572 — minorPolicy=demonstrated: every demonstrated finding and how it ENDED (fixed on head X / decision recorded / still open), then the demonstrations code refused. Printed only under that value. ──
+export interface DemonstratedCloseout { findings: Array<DemonstratedEnd & { ticket: string }>; refused: Array<{ ticket: string; finding: string; refusal: string }> }
+export function demonstratedCloseout(state: FanoutState): DemonstratedCloseout {
+  const findings: DemonstratedCloseout['findings'] = [];
+  const refused: DemonstratedCloseout['refused'] = [];
+  for (const [ticket, t] of Object.entries(state.tickets)) {
+    for (const d of demonstratedFindings(t)) findings.push({ ticket, ...d });
+    for (const r of refusedDemonstrations(t)) refused.push({ ticket, ...r });
+  }
+  return { findings, refused };
+}
+const endText = (d: DemonstratedEnd): string => (d.end === 'fixed' ? `fixed on head ${d.ref}` : d.end === 'pr-body' ? `settled in the PR body: ${d.ref}` : d.end === 'decided' ? `decision recorded: ${oneLine(d.ref ?? '', 160)}` : 'STILL OPEN');
+export function renderDemonstratedCloseout(c: DemonstratedCloseout): string {
+  const open = c.findings.filter((f) => f.end === 'open').length;
+  const head = `demonstrated findings (#572): ${c.findings.length} — ${c.findings.length - open} ended, ${open} still open; ${c.refused.length} demonstration(s) refused (those findings stayed plain)`;
+  const rows = c.findings.map((f) => `  ${f.ticket}/${f.finding}  ${f.severity}  ${f.file} @${f.head.slice(0, 8)}  — ${endText(f)}  (input: ${oneLine(f.input, 100)})`);
+  const refused = c.refused.map((r) => `  ${r.ticket}/${r.finding}  demonstration refused: ${r.refusal}`);
+  return [head, ...rows, ...refused].join('\n') + '\n';
 }

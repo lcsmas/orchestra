@@ -68,7 +68,7 @@ test('set --switch / init --switch: written, printed by `state show`; unknown na
   const bad: Array<[string[], RegExp]> = [
     [['--switch', 'earlyGaet=off'], /unknown switch "earlyGaet"/],
     [['--switch', 'earlyGate=maybe'], /switch earlyGate must be on\|off \(got "maybe"\)/],
-    [['--switch', 'minorPolicy=on'], /switch minorPolicy must be legacy\|refuse\|spec/],
+    [['--switch', 'minorPolicy=on'], /switch minorPolicy must be legacy\|refuse\|spec\|demonstrated/],
     [['--switch', 'acceptance=off,acceptance=on'], /given twice/],
     [['--switch', ''], /expects <name>=<value>/],
     [['--switch', 'acceptance'], /expects <name>=<value>/],
@@ -438,7 +438,7 @@ for (const e of SWITCH_VALUES.earlyGate) for (const a of SWITCH_VALUES.acceptanc
 const FULL_ON = { acceptance: 'on', minorPolicy: 'spec' } as const; // the v0.5.378 defaults for those two switches (earlyGate on in both profiles)
 
 test('skill render: every combination renders, leaves no directive behind, and the default render IS the bundled text — with NO acceptance section and no spec-sentence MINOR rule (#559)', () => {
-  assert.equal(COMBOS.length, 12);
+  assert.equal(COMBOS.length, 16); // 2 × 2 × 4 (#572: minorPolicy has four values)
   for (const c of COMBOS) {
     const text = renderVerifiedFanoutSkill(c);
     assert.doesNotMatch(text, /<!--\/?sw/, JSON.stringify(c));
@@ -820,7 +820,7 @@ test('#559 `state show` labels each switch: default / explicit (even a value equ
   const help = runFanout(['--help'], d).stdout;
   assert.match(help, /earlyGate=on\|off {6}on \(default\)/);
   assert.match(help, /acceptance=on\|off {5}off \(default\): no writer spawned, no frozen test asked; on:/);
-  assert.match(help, /minorPolicy=legacy\|refuse\|spec {3}legacy \(default\)/);
+  assert.match(help, /minorPolicy=legacy\|refuse\|spec\|demonstrated {3}legacy \(default\)/);
   assert.match(help, /spec: #552/);
   assert.doesNotMatch(help, /on \(default\): --spec spawns|spec \(default\)/, 'the old defaults are gone from the help');
   assert.match(help, /default kept from v0\.5\.378 \(run started before the defaults change\)/);
