@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// #554 rig — one switch per feature (earlyGate, acceptance, minorPolicy), frozen for the run: every clause of the switch table MUTATED in a scratch copy of src/ and the
-// test file src/cli/fanout-switches.test.ts (production paths: state verbs, host spawn, acceptance verbs, gate, deliver, follow-up reader, skill render + installer) must go RED.
+// #554 rig — one switch per feature (earlyGate, acceptance, minorPolicy, verifier #563), frozen for the run: every clause of the switch table MUTATED in a scratch copy of src/ and the
+// test files src/cli/fanout-switches.test.ts + fanout-verifier-switch.test.ts (production paths: state verbs, host spawn, acceptance verbs, gate, deliver, follow-up reader, skill render + installer) must go RED.
 // Light: no Electron, no network, no tokens; the scratch copy lives under $TMPDIR; the repo is never written.
 //   node scripts/e2e-fanout-switches.mjs            control: the unpatched copy must be GREEN (21+ tests, 0 fail, 0 skipped)
 //   node scripts/e2e-fanout-switches.mjs --mutants  each mutant (exact string, must occur ONCE in its file — else REFUSED as stale) must be KILLED (≥1 test FAILs)
@@ -16,10 +16,10 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-sw-rig-'));
 if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw new Error(`refusing scratch outside ${tmpBase}`);
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' })); // quiet the module-type reparse warning
-const TEST = path.join(scratch, 'src/cli/fanout-switches.test.ts');
+const TESTS = ['src/cli/fanout-switches.test.ts', 'src/cli/fanout-verifier-switch.test.ts'].map((f) => path.join(scratch, f)); // #563: the verifier arms live in their own file
 
 function run() {
-  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', TEST], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
+  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
   const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN);
   return { pass: n('pass'), fail: n('fail'), skipped: n('skipped'), tests: n('tests'), out };
@@ -30,10 +30,10 @@ const S = 'src/shared/fanout-state.ts';
 const A = 'src/shared/fanout-acceptance.ts';
 const W = 'src/main/workspaces.ts';
 const mutants = [
-  ['default earlyGate flipped to off', S, "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile", "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile"],
-  ['default acceptance flipped to on (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile"],
-  ['default minorPolicy flipped to spec (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec' }; // #559: the v0.5.375 profile"],
-  ['default minorPolicy flipped to refuse', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'refuse' }; // #559: the v0.5.375 profile"],
+  ['default earlyGate flipped to off', S, "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile"],
+  ['default acceptance flipped to on (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile"],
+  ['default minorPolicy flipped to spec (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec', verifier: 'on' }; // #559: the v0.5.375 profile"],
+  ['default minorPolicy flipped to refuse', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'refuse', verifier: 'on' }; // #559: the v0.5.375 profile"],
   ['switchesOf ignores the stored switches', S, "return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)], ...(state?.switches ?? {}) };", "return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)] };"],
   ['unknown switch name accepted', S, "if (!(SWITCH_NAMES as string[]).includes(name)) throw new FanoutStateError(`unknown switch", "if (false as boolean) throw new FanoutStateError(`unknown switch"],
   ['unknown switch value accepted', S, "if (typeof v !== 'string' || !allowed.includes(v)) throw new FanoutStateError(`switch ${name} must be", "if (typeof v !== 'string' || false as boolean) throw new FanoutStateError(`switch ${name} must be"],
@@ -46,7 +46,7 @@ const mutants = [
   ['a verifier record is not a spawn', S, "    if (t.verifier) return `ticket ${id} has a verifier (${t.verifier})`;\n", ""],
   ['an acceptance writer is not a spawn', S, "    if (t.accept?.acceptor) return `ticket ${id} has an acceptance writer (${t.accept.acceptor.name})`;\n", ""],
   ['a started ticket is not a spawn', S, "if (t.status === 'started' || t.status === 'nominated' || t.status === 'gated' || t.status === 'merged') return `ticket ${id} is ${t.status}`;", "if (t.status === 'nominated' || t.status === 'gated' || t.status === 'merged') return `ticket ${id} is ${t.status}`;"],
-  ['state show does not print the switches', S, "return `switches (#554, #559): ${SWITCH_NAMES.map(", "return `${SWITCH_NAMES.map("],
+  ['state show does not print the switches', S, "return `switches (#554, #559, #563): ${SWITCH_NAMES.map(", "return `${SWITCH_NAMES.map("],
   ['earlyGate off: upstreamBlocker still admits a verified candidate', S, "if (switchesOf(state).earlyGate === 'off') return { kind: 'ineligible', why:", "if (switchesOf(state).earlyGate === 'never') return { kind: 'ineligible', why:"],
   ['earlyGate off: state set still nominates a dependent on an open upstream', S, "if (switchesOf(state).earlyGate === 'off' && (next.status === 'nominated' || next.status === 'gated')) {", "if (false as boolean && (next.status === 'nominated' || next.status === 'gated')) {"],
   ['earlyGate off: the reason does not say the dependent waits for the MERGE', S, "earlyGate is off for this run: a dependent may START against a frozen interface but is not nominated or gated before its upstream is MERGED", "a dependent is not nominated here"],
@@ -70,8 +70,8 @@ const mutants = [
   ['state set --switch asks the host for no skill re-render', 'src/cli/fanout-state.ts', "stderr: sr.note + spawnNote, hostCalls: [skillsCall(sr.run, deps)] };", "stderr: sr.note + spawnNote };"],
   ['earlyGate off: deliver still reads the built-on content check', 'src/cli/fanout-deliver.ts', "const early = switchesOf(state).earlyGate === 'on';", "const early = true;"],
   ['host skills op refreshes nobody', 'src/shared/fanout-acceptance-host.ts', "refreshed: deps.refreshSkills ? await deps.refreshSkills(ids) : [] };", "refreshed: [] };"],
-  ['renderer keeps every block', 'src/shared/fanout-switch-render.ts', "keep = values.includes(sw[name]);", "keep = true;"],
-  ['renderer drops every block', 'src/shared/fanout-switch-render.ts', "keep = values.includes(sw[name]);", "keep = false;"],
+  ['renderer keeps every block', 'src/shared/fanout-switch-render.ts', "if (!values.includes(sw[name])) keep = false;", ""],
+  ['renderer drops every block', 'src/shared/fanout-switch-render.ts', "if (!values.includes(sw[name])) keep = false;", "keep = false;"],
   ['renderer accepts an unterminated block', 'src/shared/fanout-switch-render.ts', "if (keep !== null) throw new Error('unterminated switch block');", ""],
   ['skill: the acceptance section leaks with acceptance off', 'src/shared/verified-fanout-skill.ts', "<!--sw acceptance=on-->\n## 1b.", "<!--sw acceptance=on|off-->\n## 1b."],
   ['skill: the early-gate paragraph leaks with earlyGate off', 'src/shared/verified-fanout-skill.ts', "<!--sw earlyGate=on-->", "<!--sw earlyGate=on|off-->"],
@@ -122,7 +122,7 @@ const mutants = [
   ['559: show labels an explicit value as a default', S, "return stored !== undefined ? 'explicit' : 'default';", "return 'default';"],
   ['559: show never says a legacy default was kept', S, "return V378_DEFAULT_SWITCHES[name] === DEFAULT_SWITCHES[name] ? 'default' : 'default-kept-v0.5.378';", "return 'default';"],
   ['559: show labels a v0.5.378 stored value that differs from its default as kept, not explicit', S, "if (stored !== undefined && stored !== V378_DEFAULT_SWITCHES[name]) return 'explicit';\n", ""],
-  ['559: the stamp of a legacy-kept run is the plain version', S, "const diff = SWITCH_NAMES.filter((n) => sw[n] !== DEFAULT_SWITCHES[n])", "const diff = SWITCH_NAMES.filter((n) => sw[n] !== V378_DEFAULT_SWITCHES[n])"],
+  ['559: the stamp of a legacy-kept run is the plain version', S, "const diff = SWITCH_NAMES.filter((n) => sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n])", "const diff = SWITCH_NAMES.filter((n) => sw[n] !== undefined && sw[n] !== V378_DEFAULT_SWITCHES[n])"],
   ['559: the host reader falls back to the old defaults', S, "catch { return { ...DEFAULT_SWITCHES }; }", "catch { return { ...V378_DEFAULT_SWITCHES }; }"],
   ['559: an unknown defaults profile is accepted on read', S, "if (v !== 'v0.5.375' && v !== 'v0.5.378') throw new FanoutStateError(", "if (false as boolean) throw new FanoutStateError("],
   ['559: --help still says acceptance is on by default', 'src/cli/fanout-state.ts', "acceptance=on|off     off (default): no writer spawned, no frozen test asked; on:", "acceptance=on|off     on (default): no writer spawned, no frozen test asked; on:"],
@@ -136,10 +136,49 @@ const mutants = [
   ['m2: a run that set nothing persists the freeze record', S, "  if (!state.switches || Object.keys(state.switches).length === 0) return state;\n", ""],
   ['m2: an explicit value equal to the default is dropped (not reportable as explicit)', S, "return { ...rest, switches: { ...(prev ?? {}), ...assign }, updatedAt: now };", "return { ...rest, ...(Object.entries({ ...(prev ?? {}), ...assign }).every(([k, v]) => v === (DEFAULTS_PROFILES[defaultsProfileOf(rest)] as Record<string, string>)[k]) ? {} : { switches: { ...(prev ?? {}), ...assign } }), updatedAt: now };"],
   ['m2: the lock forgets the state signal once nothing is recorded', S, "  const signal = firstSpawnSignal(state);\n  return signal ? `the run already spawned", "  const signal = null as string | null;\n  return signal ? `the run already spawned"],
+  // #563 — the verifier switch
+  ["563: default verifier flipped to off", S, "minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "minorPolicy: 'legacy', verifier: 'off' }; // #559: the v0.5.375 profile"],
+  ["563: SWITCH_VALUES drops the verifier switch", S, ", verifier: ['on', 'off'] } as const;", " } as const;"],
+  ["563: state set --verifier records a seat under verifier=off", S, "if (next.verifier && switchesOf(state).verifier === 'off') throw", "if (next.verifier && switchesOf(state).verifier === 'never') throw"],
+  ["563: the stamp ignores a non-default verifier", S, "sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]", "n !== 'verifier' && sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]"],
+  ["563: deliver never reads the verifier switch", "src/cli/fanout-deliver.ts", "if (opts.noReviewGate && deps.verifierSwitch) {", "if (false as boolean && deps.verifierSwitch) {"],
+  ["563: deliver reads off as on", "src/cli/fanout-deliver.ts", "if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict'", "if (sw === 'never' as string) return done({ verdict: 'refused', reason: 'no-verdict'"],
+  ["563: deliver's off refusal is not the no-verdict answer", "src/cli/fanout-deliver.ts", "if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict'", "if (sw === 'off') return done({ verdict: 'refused', reason: 'bad-args' as never"],
+  ["563: production deliver wires no switch reader", "src/cli/fanout-deliver.ts", "  verifierSwitch: (o) => verifierSwitchFromState(o),\n", ""],
+  ["563: the switch reader fails open on an explicit --run with no state", "src/cli/fanout-deliver.ts", "    if (opts.run) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the verifier switch`);\n", ""],
+  ["563: the switch reader fails open on an unknown ticket", "src/cli/fanout-deliver.ts", "  throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run}: a mistyped --ticket would skip the verifier switch`);", "  return null;"],
+  ["563: the switch reader returns on whatever the state says", "src/cli/fanout-deliver.ts", "if (state.tickets[opts.ticket]) return switchesOf(state).verifier;", "if (state.tickets[opts.ticket]) return 'on';"],
+  ["563: a reader that throws is read as on", "src/cli/fanout-deliver.ts", "return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s verifier switch", "sw = 'on'; if (false as boolean) return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s verifier switch"],
+  ["563: --help forgets the verifier switch", "src/cli/fanout-state.ts", "verifier=on|off       on (default): a verifier seat", "verifier=on|off       off (default): a verifier seat"],
+  ["563: deliver --help forgets the verifier switch", "src/cli/fanout-deliver.ts", "verifier=off (#563, \\`state set --switch verifier=off\\`)", "the verifier switch"],
+  ["563: renderer: a multi-term directive keeps on ONE term", "src/shared/fanout-switch-render.ts", "if (!values.includes(sw[name])) keep = false;", "if (values.includes(sw[name])) keep = true;"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 description", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\ndescription: Mechanics of running a verified", "<!--sw verifier=on|off-->\ndescription: Mechanics of running a verified"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 roles paragraph", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\nThree roles.", "<!--sw verifier=on|off-->\nThree roles."],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 role prefixes", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n¤impl-¤ implementer, ¤verif-¤", "<!--sw verifier=on|off-->\n¤impl-¤ implementer, ¤verif-¤"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 tool limits", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n  reviewer, explorer and scribe (the verifier edits scratch only", "<!--sw verifier=on|off-->\n  reviewer, explorer and scribe (the verifier edits scratch only"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 handoff", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n  Hand off a heavy member (verifier, coordinator)", "<!--sw verifier=on|off-->\n  Hand off a heavy member (verifier, coordinator)"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 full suite on the verifier's seat", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- **The full suite and the build run on the verifier's seat", "<!--sw verifier=on|off-->\n- **The full suite and the build run on the verifier's seat"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 gate merge candidates", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- **Gate merge candidates, not pushes.**", "<!--sw verifier=on|off-->\n- **Gate merge candidates, not pushes.**"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 section 3 spawn the verifier", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n## 3. Spawn the verifier", "<!--sw verifier=on|off-->\n## 3. Spawn the verifier"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 section 3 delta-gate sentence", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\nonly): the implementer's pre-review + the verifier's delta gate suffice", "<!--sw verifier=on|off-->\nonly): the implementer's pre-review + the verifier's delta gate suffice"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 section 4 send the verifier the ref", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- Implementer reports done → send the verifier", "<!--sw verifier=on|off-->\n- Implementer reports done → send the verifier"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 section 4 CI runs while the verifier gates", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- **At nomination, parallel with the gate:", "<!--sw verifier=on|off-->\n- **At nomination, parallel with the gate:"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 section 4 PASS \u2192 merge rule", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- PASS → apply the **merge rule**", "<!--sw verifier=on|off-->\n- PASS → apply the **merge rule**"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 deliver paragraph --no-review-gate", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\nALWAYS pass ¤--review-verdict¤", "<!--sw verifier=on|off-->\nALWAYS pass ¤--review-verdict¤"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 deliver paragraph back to the verifier", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\nconflict goes to the implementer, a moved head", "<!--sw verifier=on|off-->\nconflict goes to the implementer, a moved head"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 fix round", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- **BLOCKING/MAJOR → ONE fix round**", "<!--sw verifier=on|off-->\n- **BLOCKING/MAJOR → ONE fix round**"],
+  ["563 skill: the verifier variant leaks with verifier off \u2014 references list", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=on-->\n- **references/verifier-and-review.md** — read when briefing the verifier", "<!--sw verifier=on|off-->\n- **references/verifier-and-review.md** — read when briefing the verifier"],
+  ["563 skill: the verifier=off variant of \u00a73 is missing", "src/shared/verified-fanout-skill.ts", "<!--sw verifier=off-->\n## 3. No gating seat", "<!--sw verifier=on-->\n## 3. No gating seat"],
+  ["563 skill: \u00a71b keeps the verifier variant with verifier off", "src/shared/verified-fanout-skill.ts", "<!--sw acceptance=on verifier=on-->\n- **Register the spec**", "<!--sw acceptance=on-->\n- **Register the spec**"],
+  ["563 skill: \u00a71b names a verifier with verifier off (off variant = on text)", "src/shared/verified-fanout-skill.ts", "<!--sw acceptance=on verifier=off-->\n- **Register the spec**: ¤orchestra fanout state set <ticket> --spec <file|url|ledger section> --implementer <ws id>¤.", "<!--sw acceptance=on verifier=off-->\n- **Register the spec**: ¤orchestra fanout state set <ticket> --spec <file|url|ledger section> --implementer <ws id> --verifier <ws id>¤."],
+  ["563 reference: the verifier variant leaks with verifier off \u2014 budget-and-gates full suite", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n- **The full suite and the build run on the verifier's seat", "<!--sw verifier=on|off-->\\n- **The full suite and the build run on the verifier's seat"],
+  ["563 reference: the verifier variant leaks with verifier off \u2014 lead-ops tiers", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n  spawned agents of its own: the set of workers and the verifier", "<!--sw verifier=on|off-->\\n  spawned agents of its own: the set of workers and the verifier"],
+  ["563 reference: the verifier variant leaks with verifier off \u2014 acceptance-tests register", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n1. **Register**", "<!--sw verifier=on|off-->\\n1. **Register**"],
+  ["563 reference: the verifier variant leaks with verifier off \u2014 verifier-and-review head", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n# The verifier brief", "<!--sw verifier=on|off-->\\n# The verifier brief"],
 ];
 
 const base = run();
-const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 21 && base.pass === base.tests;
+const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 48 && base.pass === base.tests;
 console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
 if (!baseOk) { console.log(base.out.slice(-3000)); fs.rmSync(scratch, { recursive: true, force: true }); process.exit(1); }
 if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }
