@@ -84,7 +84,7 @@ test('state: acceptanceHash is unchanged without a config and binds the config p
   assert.equal(acceptanceHash(files, RUN), acceptanceHash(files, RUN, null), 'no config ⇒ the pre-#542 hash');
   assert.notEqual(acceptanceHash(files, RUN, cfg), acceptanceHash(files, RUN));
   assert.notEqual(acceptanceHash(files, RUN, cfg), acceptanceHash(files, RUN, { ...cfg, sha256: sha256Hex('other') }), 'the config bytes are in the hash');
-  const doc = (acc: Record<string, unknown>) => JSON.parse(JSON.stringify({ ...applyTicketPatch(newState('r', { now: NOW }), 'T1', {}, NOW), tickets: { T1: { ...applyTicketPatch(newState('r', { now: NOW }), 'T1', {}, NOW).tickets.T1, acceptance: acc } } }));
+  const doc = (acc: Record<string, unknown>) => JSON.parse(JSON.stringify({ ...applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T1', {}, NOW), tickets: { T1: { ...applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T1', {}, NOW).tickets.T1, acceptance: acc } } }));
   const good = { files, hash: acceptanceHash(files, RUN, cfg), run: RUN, config: cfg, source: { branch: 'b', head: 'a'.repeat(40) }, frozenAt: NOW, amendments: [] };
   assert.equal(parseState(doc(good)).tickets.T1.acceptance?.config?.path, CFG);
   assert.throws(() => parseState(doc({ ...good, config: { ...cfg, sha256: sha256Hex('tampered') } })), /does not match its files \+ command/);
@@ -128,7 +128,7 @@ function rig(t: { after: (fn: () => void) => void }, o: { target?: string; noTar
   g('checkout', 'FETCH_HEAD', '--', TEST);
   g('add', '.'); g('commit', '-q', '-m', 'impl: tests copied unchanged');
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
-  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW, ...(o.target ? { target: o.target } : {}) }), 'T542', { branch: 'impl-542' }, NOW));
+  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW, ...(o.target ? { target: o.target } : {}) }), 'T542', { branch: 'impl-542' }, NOW));
   const deps: FanoutDeps = { env, cwd: writer, runner: ((c, a, d) => defaultRunner(c, a, d)) as Runner, now: () => NOW, readStdin: () => '' };
   const freeze = (run = RUN, extra: string[] = []) => runAcceptance(['freeze', 'T542', '--files', TEST, '--run-cmd', run, '--from', 'writer-542', '--accept-unclassified', 'no jest here: this suite pins the config record (#542); the freeze check itself is #539', ...extra], deps); // #539: the freeze also runs the command on the target tip — no jest in this scratch repo ⇒ unclassified ⇒ the coordinator's recorded escape
   return { root, home, writer, cand, deps, w, g, freeze, acc: () => readState(stateFile(home, 'r1'))!.tickets.T542.acceptance };

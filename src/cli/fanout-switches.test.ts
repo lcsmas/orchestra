@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { runFanout, switchVerbRun, type FanoutDeps, type Runner } from './fanout-state.ts';
@@ -12,7 +13,7 @@ import { deliver, realDeps, upstreamsFromState, type DeliverDeps, type DeliverOp
 import { gatePr, realGateDeps, stackFromState, type GateOpts } from './fanout-gate.ts';
 import { followUpFromState } from './fanout-followup.ts';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from '../shared/fanout-acceptance-host.ts';
-import { applyTicketPatch, blockingMinors, followUpRefusal, mergeBlockRefusal, newState, DEFAULT_SWITCHES, SWITCH_NAMES, SWITCH_VALUES, firstSpawnSignal, parseState, readState, reconcile, stackView, stateFile, switchesOf, switchesStamp, type Switches } from '../shared/fanout-state.ts';
+import { applyTicketPatch, blockingMinors, followUpRefusal, mergeBlockRefusal, newState, DEFAULT_SWITCHES, V378_DEFAULT_SWITCHES, defaultsProfileOf, switchSourceOf, stampDefaults, SWITCH_NAMES, SWITCH_VALUES, firstSpawnSignal, parseState, readState, reconcile, stackView, stateFile, switchesOf, switchesStamp, switchesForRun, type Switches } from '../shared/fanout-state.ts';
 import { AcceptanceOffError, amendHarnessInto, amendInto, claimAcceptor, freezeInto, waiveInto } from '../shared/fanout-acceptance.ts';
 import { renderSwitchBlocks } from '../shared/fanout-switch-render.ts';
 import { ACCEPTANCE_REFERENCE_PATH, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE, renderVerifiedFanoutSkill, verifiedFanoutReferenceWanted } from '../shared/verified-fanout-skill.ts';
@@ -44,23 +45,26 @@ function withEnv<T>(home: string, fn: () => T): T {
 
 // ── the table, the verbs, the freeze ─────────────────────────────────────────────────────────────────────
 
-test('defaults: earlyGate on, acceptance on, minorPolicy spec; `state show` PRINTS them (not frozen yet) and an untouched state stores none', (t) => {
-  assert.deepEqual(switchesOf(undefined), { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' });
-  assert.deepEqual(DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' });
+test('defaults (#559, the v0.5.375 profile): earlyGate on, acceptance off, minorPolicy legacy; a new state is stamped and stores no switch; `state show` prints each value as a default', (t) => {
+  assert.deepEqual(switchesOf(undefined), { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' });
+  assert.deepEqual(DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' });
+  assert.deepEqual(V378_DEFAULT_SWITCHES, { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' }, 'the v0.5.378 set stays as the named legacy constant');
   const d = deps(mkHome(t));
   assert.equal(init(d).code, 0);
-  assert.equal('switches' in stateOf(d.env.ORCHESTRA_HOME!), false);
-  assert.match(show(d), /switches \(#554\): earlyGate=on acceptance=on minorPolicy=spec — not frozen yet/);
+  const raw = JSON.parse(fs.readFileSync(stateFile(d.env.ORCHESTRA_HOME!, 'r1'), 'utf8')) as Record<string, unknown>;
+  assert.equal('switches' in raw, false, 'an untouched state stores no switch');
+  assert.equal(raw.switchDefaults, 'v0.5.375', 'a new run is stamped with the defaults profile it was born on');
+  assert.match(show(d), /switches \(#554, #559\): earlyGate=on \(default\) · acceptance=off \(default\) · minorPolicy=legacy \(default\) — not frozen yet/);
 });
 
 test('set --switch / init --switch: written, printed by `state show`; unknown name, unknown value, a name twice, an empty list, a ticket or another flag beside it: all REFUSED', (t) => {
   const d = deps(mkHome(t));
   assert.equal(init(d, 'earlyGate=off').code, 0);
-  assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' });
+  assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off' }, 'only what was chosen is stored');
   const r = set(d, '--switch', 'acceptance=off,minorPolicy=legacy');
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /earlyGate=off acceptance=off minorPolicy=legacy — not frozen yet/);
-  assert.match(show(d), /switches \(#554\): earlyGate=off acceptance=off minorPolicy=legacy/);
+  assert.match(r.stdout, /earlyGate=off \(explicit\) · acceptance=off \(explicit\) · minorPolicy=legacy \(explicit\) — not frozen yet/, 'a value equal to the default is still reported explicit');
+  assert.match(show(d), /switches \(#554, #559\): earlyGate=off \(explicit\) · acceptance=off \(explicit\) · minorPolicy=legacy \(explicit\)/);
   const bad: Array<[string[], RegExp]> = [
     [['--switch', 'earlyGaet=off'], /unknown switch "earlyGaet"/],
     [['--switch', 'earlyGate=maybe'], /switch earlyGate must be on\|off \(got "maybe"\)/],
@@ -76,7 +80,7 @@ test('set --switch / init --switch: written, printed by `state show`; unknown na
   assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy' }, 'no refused call wrote anything');
 });
 
-test('FREEZE at the first spawn: a ticket past todo freezes the FULL set on record; every later change is refused with the reason — even to the same value', (t) => {
+test('FREEZE at the first spawn: a ticket past todo records the freeze next to the explicit switches; every later change is refused with the reason — even to the same value', (t) => {
   const d = deps(mkHome(t));
   init(d, 'earlyGate=off');
   assert.equal(set(d, 'A', '--status', 'todo').code, 0);
@@ -84,16 +88,16 @@ test('FREEZE at the first spawn: a ticket past todo freezes the FULL set on reco
   assert.equal(set(d, '--switch', 'minorPolicy=refuse').code, 0, 'still changeable before the first spawn');
   assert.equal(set(d, 'A', '--status', 'started', '--branch', 'a').code, 0);
   const s = stateOf(d.env.ORCHESTRA_HOME!);
-  assert.deepEqual(s.switches, { earlyGate: 'off', acceptance: 'on', minorPolicy: 'refuse' }, 'the full set is recorded');
+  assert.deepEqual(s.switches, { earlyGate: 'off', minorPolicy: 'refuse' }, 'the explicit values stay, the defaults are not copied in');
   assert.equal(s.switchesFrozen?.at, NOW);
   assert.match(s.switchesFrozen!.by, /first spawn of the run: ticket A is started/);
-  for (const v of ['earlyGate=on', 'earlyGate=off', 'acceptance=off', 'minorPolicy=spec']) {
+  for (const v of ['earlyGate=on', 'earlyGate=off', 'acceptance=off', 'acceptance=on', 'minorPolicy=spec']) {
     const r = set(d, '--switch', v);
     assert.equal(r.code, 1, v);
     assert.match(r.stderr, /cannot change: frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\) — a switch is fixed for the run/, v);
   }
-  assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off', acceptance: 'on', minorPolicy: 'refuse' });
-  assert.match(show(d), /earlyGate=off acceptance=on minorPolicy=refuse — frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\)/);
+  assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'off', minorPolicy: 'refuse' });
+  assert.match(show(d), /earlyGate=off \(explicit\) · acceptance=off \(default\) · minorPolicy=refuse \(explicit\) — frozen 2026-11-23T10:00:00\.000Z \(first spawn of the run: ticket A is started\)/);
   assert.match(runFanout(['state', 'show', '--run', 'r1'], d).stdout, /switches/);
 });
 
@@ -106,25 +110,26 @@ test('FREEZE detector (ledger D1, state-side): a recorded implementer, a recorde
     assert.equal(set(d0, 'A', flag, 'ws-1').code, 0);
     const raw0 = JSON.parse(fs.readFileSync(stateFile(d0.env.ORCHESTRA_HOME!, 'r1'), 'utf8')) as Record<string, unknown>;
     assert.equal('switches' in raw0 || 'switchesFrozen' in raw0, false, 'a default run writes neither key');
+    assert.equal(raw0.switchDefaults, 'v0.5.375', 'but it keeps its defaults stamp');
     const r0 = set(d0, '--switch', 'acceptance=off');
     assert.equal(r0.code, 1, flag);
     assert.match(r0.stderr, sig(flag), 'refused from the state signal alone');
-    // a run on a NON-default switch records the full set + who froze it
+    // a run that set a switch records who froze it; the stored switches stay the explicit ones
     const d = deps(mkHome(t));
     init(d, 'minorPolicy=refuse');
     assert.equal(set(d, 'A', flag, 'ws-1').code, 0);
-    assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { earlyGate: 'on', acceptance: 'on', minorPolicy: 'refuse' });
+    assert.deepEqual(stateOf(d.env.ORCHESTRA_HOME!).switches, { minorPolicy: 'refuse' });
     assert.match(stateOf(d.env.ORCHESTRA_HOME!).switchesFrozen!.by, sig(flag));
     assert.equal(set(d, '--switch', 'acceptance=off').code, 1, flag);
   }
-  // setting every switch back to its default stores nothing either
-  const dd = deps(mkHome(t)); init(dd, 'acceptance=off'); assert.equal('switches' in stateOf(dd.env.ORCHESTRA_HOME!), true);
-  set(dd, '--switch', 'acceptance=on');
-  assert.equal('switches' in stateOf(dd.env.ORCHESTRA_HOME!), false);
+  // an explicit value equal to the default is STORED (reportable as explicit), not dropped
+  const dd = deps(mkHome(t)); init(dd, 'acceptance=on'); set(dd, '--switch', 'acceptance=off');
+  assert.deepEqual(stateOf(dd.env.ORCHESTRA_HOME!).switches, { acceptance: 'off' });
+  assert.match(show(dd), /acceptance=off \(explicit\)/);
   // the writer claim (the host's door) freezes too
   const home = mkHome(t);
   const d = deps(home);
-  init(d, 'minorPolicy=refuse');
+  init(d, 'minorPolicy=refuse,acceptance=on');
   assert.equal(set(d, 'A', '--spec', 's.md').code, 0);
   assert.equal(stateOf(home).switchesFrozen, undefined, 'a spec alone spawns nothing yet');
   const hd: AcceptanceHostDeps = { home, now: () => NOW, isWorkspace: () => true, repoPath: () => undefined, spawn: async () => ({ ok: true, id: 'w1' }), post: () => {} };
@@ -134,6 +139,7 @@ test('FREEZE detector (ledger D1, state-side): a recorded implementer, a recorde
   // a state written before #554 (no record) with a started ticket: the detector still locks it
   const old = parseState({ version: 1, run: 'r1', target: 'master', repo: null, tickets: { A: { status: 'started', verdict: 'none' } }, updatedAt: NOW, reconciledAt: null });
   assert.equal(firstSpawnSignal(old), 'ticket A is started');
+  assert.equal(defaultsProfileOf(old), 'v0.5.378', 'a state written before #559 that has spawned keeps the v0.5.378 defaults');
   const h2 = mkHome(t);
   fs.mkdirSync(path.join(h2, 'fanout', 'r1'), { recursive: true });
   fs.writeFileSync(stateFile(h2, 'r1'), JSON.stringify(old));
@@ -145,7 +151,8 @@ test('a stored state with an unknown switch / value / frozen shape is REFUSED on
   assert.throws(() => parseState({ ...base, switches: { turbo: 'on' } }), /unknown switch "turbo"/);
   assert.throws(() => parseState({ ...base, switches: { earlyGate: 'sometimes' } }), /earlyGate must be on\|off/);
   assert.throws(() => parseState({ ...base, switchesFrozen: { at: 'nope', by: 'x' } }), /switchesFrozen needs/);
-  assert.deepEqual(parseState({ ...base, switches: { acceptance: 'off' } }).switches, { earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec' });
+  assert.deepEqual(parseState({ ...base, switches: { acceptance: 'off' } }).switches, { acceptance: 'off' }, 'a stored switch set is read as written, nothing filled in');
+  assert.throws(() => parseState({ ...base, switchDefaults: 'v9' }), /switchDefaults must be/);
 });
 
 // ── earlyGate ────────────────────────────────────────────────────────────────────────────────────────────
@@ -197,7 +204,7 @@ test('earlyGate OFF: B waits for A\'s MERGE — nominated / gated / merged all r
 
 test('acceptance on: `state set --spec` leaves the spawn request for the host; the host spawns the accept- writer', async (t) => {
   const home = mkHome(t);
-  const d = deps(home); init(d);
+  const d = deps(home); init(d, 'acceptance=on');
   const r = set(d, 'T1', '--spec', 'docs/spec.md#T1');
   assert.deepEqual(r.hostCalls?.map((c) => c.body.op), ['spawn']);
   let spawned = 0;
@@ -244,7 +251,7 @@ test('acceptance OFF: freeze / amend / amend --harness-only / waive / spawn are 
   assert.equal(runAcceptance(['show', 'T1', '--run', 'r1'], d).code, 0);
   // control: with the switch on the same `spawn` verb is not refused for that reason
   const home2 = mkHome(t);
-  const d2 = deps(home2); init(d2); set(d2, 'T1', '--spec', 's.md');
+  const d2 = deps(home2); init(d2, 'acceptance=on'); set(d2, 'T1', '--spec', 's.md');
   assert.doesNotMatch(runAcceptance(['spawn', 'T1', '--run', 'r1', '--replace'], d2).stderr, /switch is OFF/);
 });
 
@@ -272,7 +279,7 @@ async function gate(home: string, head: string): Promise<Awaited<ReturnType<type
 }
 
 test('gate: a ticket with a spec and nothing frozen — acceptance ON ⇒ pending (exit 3, a frozen test is asked for); acceptance OFF ⇒ answered, no acceptance clause, no wait', async (t) => {
-  const on = mkHome(t); { const d = deps(on); init(d); set(d, 'T1', '--spec', 's.md'); }
+  const on = mkHome(t); { const d = deps(on); init(d, 'acceptance=on'); set(d, 'T1', '--spec', 's.md'); }
   const gOn = await gate(on, A);
   assert.equal(gOn.exit, 3);
   assert.equal(gOn.result.reason, 'acceptance-pending');
@@ -307,7 +314,7 @@ function deliverRig() {
 const dopts = (o: Partial<DeliverOpts> = {}): DeliverOpts => ({ branch: 't1', into: 'master', ticket: 'T1', verifiedHead: A, noReviewGate: true, strategy: 'merge', timeoutMs: 600_000, intervalMs: 10_000, noChecksGraceMs: 30_000, requireChecks: [], run: 'r1', ...o });
 
 test('deliver: a ticket with a spec and nothing frozen — acceptance ON ⇒ refused acceptance-pending, nothing merged; acceptance OFF ⇒ merges, no acceptance gate anywhere', async (t) => {
-  const on = mkHome(t); { const d = deps(on); init(d); set(d, 'T1', '--spec', 's.md'); }
+  const on = mkHome(t); { const d = deps(on); init(d, 'acceptance=on'); set(d, 'T1', '--spec', 's.md'); }
   const rOn = deliverRig();
   const dOn = await withEnv(on, () => deliver(dopts(), rOn.dd));
   assert.equal(dOn.exit, 2);
@@ -371,11 +378,17 @@ test('minorPolicy legacy (= before #514): a MINOR-only follow-up, a finding-less
   assert.match(set(d2, 'T1', '--status', 'nominated', '--head', 'd'.repeat(40)).stderr, /follow-up/);
 });
 
-test('minorPolicy spec is the default and keeps the BLOCKING|MAJOR follow-up path; its MINOR semantics are #552 (T1)', (t) => {
+test('minorPolicy legacy is the default (#559): a MINOR-only follow-up passes with no switch given; spec, set explicitly, keeps the BLOCKING|MAJOR follow-up path and its MINOR semantics (#552)', (t) => {
   const home = mkHome(t);
-  assert.equal(followUp(home, undefined, 'MAJ').r.code, 0);
-  assert.equal(switchesOf(stateOf(home)).minorPolicy, 'spec');
+  const def = followUp(home, undefined, 'MIN');
+  assert.equal(def.r.code, 0, def.r.stderr);
+  assert.equal(switchesOf(stateOf(home)).minorPolicy, 'legacy');
   assert.equal(reader(home).refusal, null);
+  const spec = mkHome(t);
+  assert.equal(followUp(spec, 'minorPolicy=spec', 'MAJ').r.code, 0);
+  assert.equal(switchesOf(stateOf(spec)).minorPolicy, 'spec');
+  assert.equal(followUp(mkHome(t), 'minorPolicy=spec', 'MIN').r.code, 1, 'spec: a MINOR with no spec sentence is still refused as a follow-up');
+  assert.equal(reader(spec).refusal, null);
 });
 
 test('minorPolicy x #552, all three on the same facts: a MINOR with an accepted spec sentence blocks the merge and may be a follow-up ONLY under spec; refuse and legacy differ exactly as defined', () => {
@@ -422,7 +435,9 @@ test('minorPolicy x the lost-sentence guard (review T1 delta2 m1): re-capturing 
 const COMBOS: Switches[] = [];
 for (const e of SWITCH_VALUES.earlyGate) for (const a of SWITCH_VALUES.acceptance) for (const m of SWITCH_VALUES.minorPolicy) COMBOS.push({ earlyGate: e, acceptance: a, minorPolicy: m });
 
-test('skill render: every combination renders, leaves no directive behind, and the default render IS the bundled text', () => {
+const FULL_ON = { acceptance: 'on', minorPolicy: 'spec' } as const; // the v0.5.378 defaults for those two switches (earlyGate on in both profiles)
+
+test('skill render: every combination renders, leaves no directive behind, and the default render IS the bundled text — with NO acceptance section and no spec-sentence MINOR rule (#559)', () => {
   assert.equal(COMBOS.length, 12);
   for (const c of COMBOS) {
     const text = renderVerifiedFanoutSkill(c);
@@ -431,8 +446,42 @@ test('skill render: every combination renders, leaves no directive behind, and t
   }
   assert.equal(VERIFIED_FANOUT_SKILL, renderVerifiedFanoutSkill(DEFAULT_SWITCHES));
   assert.equal(VERIFIED_FANOUT_SKILL, renderVerifiedFanoutSkill({}));
-  // the default render carries every feature's text
-  for (const needle of ['## 1b. Acceptance tests', 'references/acceptance-tests.md', '--built-on <upstream>=<head>', 'At most ONE follow-up branch per candidate', 'no follow-up PR']) assert.ok(VERIFIED_FANOUT_SKILL.includes(needle), needle);
+  for (const needle of ['--built-on <upstream>=<head>', 'ONE follow-up branch', 'only a BLOCKING/MAJOR in its own diff reopens it']) assert.ok(VERIFIED_FANOUT_SKILL.includes(needle), `default render lost ${needle}`);
+  for (const needle of ['## 1b. Acceptance tests', 'references/acceptance-tests.md', 'Routing rule', 'unsettled spec-sentence MINOR', 'finding-unsettled', 'no follow-up PR']) assert.ok(!VERIFIED_FANOUT_SKILL.includes(needle), `default render still says ${needle}`);
+  // acceptance=on + minorPolicy=spec: every feature's text is back
+  const full = renderVerifiedFanoutSkill(FULL_ON);
+  for (const needle of ['## 1b. Acceptance tests', 'references/acceptance-tests.md', 'Routing rule', 'unsettled spec-sentence MINOR', 'finding-unsettled']) assert.ok(full.includes(needle), needle);
+});
+
+// sha256 of what v0.5.378 rendered for a run on ITS defaults (earlyGate on, acceptance on, minorPolicy spec): SKILL.md + every installed file. Regenerate: node --experimental-strip-types scripts/diff-fanout-skill-vs-375.mjs --tag v0.5.378 --switches acceptance=on,minorPolicy=spec  (must print "no difference").
+const V378_RENDER_SHA256: Record<string, string> = {
+  'SKILL.md': '2b7ed8dd33184ffbdbf939d00a3826f874986229eb9eb5ab615f7aa06e3253e6',
+  'references/meta-rules.md': 'a203d4a735e79e7339c7ed88617e4f403cc80d4fd547d8e943f7cd7956aa5bcd',
+  'references/prose.md': '68ce78da7a108a475c211afe24b8cdb661e7d6391b69f5134f34126b6499c3ed',
+  'references/traps.md': '2da64c32010533252c26e8ffe069a8a8c86d374e96cf20849963c49ac4187560',
+  'references/working-with-agents.md': '8fc47556e2ee1f7f4542660484cbb6fd3b99780b38fed8f4013a3f6d106bf1f7',
+  'scripts/ledger-set': 'c6e24d3a56a9d6498f2d191f11979fa6f0a5e5370187d23ba8a1ca89af9ad0f6',
+  'references/acceptance-tests.md': 'f8cdec046e92091d0cc3dc5dd7adcfd8640a8bb505eed68946fe024ce82efdd8',
+  'references/budget-and-gates.md': 'f181c77bbc2c5e47b80982ec098cb9e4fb01d5b46cd8b8c66527a261bd97dbe7',
+  'references/closeout-and-gates.md': 'f4d7f7a7b0c3013d36590a0364a84128757b0b5346b9fe64b1c1d5a2dcae45c7',
+  'references/fleet-bus.md': 'bf6aa4ba306934656d9a88f30bc8b8ab149067e3bc612eeb1e2ba9ab60d2606a',
+  'references/lead-ops-tiers.md': '268ff1e15fd4450415e764218ae37cac817f704bb193e2f89b776cce67df766b',
+  'references/verifier-and-review.md': '530fb0662a317327d11db370123bd9b327ec74defc1a846b8c35ad83af4d74ce',
+};
+
+test('#559 skill render: with acceptance=on,minorPolicy=spec the installed SKILL.md and every reference are BYTE-IDENTICAL to what v0.5.378 rendered (sha256), the default install differs only by the features it turns off', async (t) => {
+  const sha = (x: string): string => createHash('sha256').update(x).digest('hex');
+  const dir = mkHome(t);
+  assert.equal(await installVerifiedFanoutSkill(dir, undefined, FULL_ON), 'written');
+  const got: Record<string, string> = {};
+  for (const p of Object.keys(V378_RENDER_SHA256)) got[p] = sha(fs.readFileSync(path.join(dir, 'verified-fanout', p), 'utf8'));
+  assert.deepEqual(got, V378_RENDER_SHA256);
+  // the default install: no acceptance reference, and the SKILL.md / verifier reference are the ones that changed
+  const def = path.join(dir, 'def');
+  await installVerifiedFanoutSkill(def);
+  assert.equal(fs.existsSync(path.join(def, 'verified-fanout', ACCEPTANCE_REFERENCE_PATH)), false);
+  assert.notEqual(sha(fs.readFileSync(path.join(def, 'verified-fanout', 'SKILL.md'), 'utf8')), V378_RENDER_SHA256['SKILL.md']);
+  assert.equal(sha(fs.readFileSync(path.join(def, 'verified-fanout', 'references/fleet-bus.md'), 'utf8')), V378_RENDER_SHA256['references/fleet-bus.md'], 'a reference no switch touches is unchanged');
 });
 
 test('skill render: acceptance OFF leaves NO acceptance sentence; earlyGate OFF no early-gate sentence (and says the dependent waits); legacy no #514 follow-up sentence', () => {
@@ -440,15 +489,17 @@ test('skill render: acceptance OFF leaves NO acceptance sentence; earlyGate OFF 
   const off = renderVerifiedFanoutSkill({ acceptance: 'off' });
   for (const n of ACC) assert.ok(!off.includes(n), `acceptance=off still says ${JSON.stringify(n)}`);
   assert.ok(off.includes('--built-on') && off.includes('At most ONE follow-up'), 'acceptance=off removes only its own text');
-  const early = renderVerifiedFanoutSkill({ earlyGate: 'off' });
+  assert.ok(!off.includes('Routing rule'), 'the #510 B routing rule belongs to the acceptance feature');
+  const early = renderVerifiedFanoutSkill({ earlyGate: 'off', acceptance: 'on' });
   assert.ok(!early.includes('--built-on'), 'earlyGate=off still names --built-on');
   assert.ok(!early.includes('say wait or re-gate'));
   assert.ok(!early.includes('is gated on its upstream\'s candidate'));
   assert.match(early, /A dependent track waits for its upstream's MERGE/);
   assert.ok(early.includes('## 1b. Acceptance tests'), 'earlyGate=off removes only its own text');
-  const legacy = renderVerifiedFanoutSkill({ minorPolicy: 'legacy' });
-  for (const n of ['At most ONE follow-up branch per candidate', 'no follow-up PR', '(BLOCKING/MAJOR) or `noted`']) assert.ok(!legacy.includes(n), `legacy still says ${JSON.stringify(n)}`);
-  assert.match(legacy, /A review round with 0 BLOCKING and 0 MAJOR merges on its current gate\.\*/);
+  const legacy = renderVerifiedFanoutSkill({ minorPolicy: 'legacy', acceptance: 'on' });
+  for (const n of ['no follow-up PR', '(BLOCKING/MAJOR) or `noted`', 'refuse a MINOR-only']) assert.ok(!legacy.includes(n), `legacy still says ${JSON.stringify(n)}`);
+  assert.match(legacy, /A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a\nMINOR that touches correctness or a ticket promise goes to the candidate's ONE\nfollow-up branch/, 'legacy = the v0.5.375 sentence');
+  assert.ok(legacy.includes('only a BLOCKING/MAJOR in its own diff reopens it'));
   assert.ok(legacy.includes('## 1b. Acceptance tests') && legacy.includes('--built-on'), 'legacy removes only its own text');
   // #552's text (the spec policy) reads under spec ONLY; refuse / legacy never see it, in SKILL.md or in the references
   const SPEC_TEXT = ['unsettled spec-sentence MINOR', 'A MINOR refuses only when it quotes a spec sentence', 'finding-unsettled'];
@@ -461,7 +512,7 @@ test('skill render: acceptance OFF leaves NO acceptance sentence; earlyGate OFF 
   assert.ok(renderVerifiedFanoutSkill({ minorPolicy: 'refuse' }).includes('At most ONE follow-up branch per candidate'));
   // everything off at once
   const all = renderVerifiedFanoutSkill({ earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy' });
-  for (const n of [...ACC, '--built-on', 'At most ONE follow-up branch per candidate']) assert.ok(!all.includes(n), n);
+  for (const n of [...ACC, '--built-on', 'Routing rule']) assert.ok(!all.includes(n), n);
 });
 
 test('skill render: the references — the acceptance one is shipped only with acceptance on', () => {
@@ -488,6 +539,9 @@ test('installer: the SKILL.md and the reference files written for a run follow i
   const skills = path.join(dir, 'skills');
   const accRef = path.join(skills, 'verified-fanout', ACCEPTANCE_REFERENCE_PATH);
   assert.equal(await installVerifiedFanoutSkill(skills), 'written');
+  assert.equal(fs.existsSync(accRef), false, '#559: the default install ships no acceptance reference');
+  assert.ok(!fs.readFileSync(path.join(skills, 'verified-fanout', 'SKILL.md'), 'utf8').includes('## 1b. Acceptance tests'));
+  assert.equal(await installVerifiedFanoutSkill(skills, undefined, { acceptance: 'on' }), 'written');
   assert.ok(fs.existsSync(accRef));
   assert.ok(fs.readFileSync(path.join(skills, 'verified-fanout', 'SKILL.md'), 'utf8').includes('## 1b. Acceptance tests'));
   assert.equal(await installVerifiedFanoutSkill(skills, undefined, { acceptance: 'off', earlyGate: 'off' }), 'written');
@@ -496,8 +550,9 @@ test('installer: the SKILL.md and the reference files written for a run follow i
   assert.ok(!md.includes('## 1b. Acceptance tests') && !md.includes('--built-on') && !md.includes('<!--sw'));
   assert.ok(fs.existsSync(path.join(skills, 'verified-fanout', 'references/fleet-bus.md')), 'the other references stay');
   assert.ok(VERIFIED_FANOUT_FILES.every((f) => fs.existsSync(path.join(skills, 'verified-fanout', f.path))));
-  assert.equal(switchesStamp('V1', { ...DEFAULT_SWITCHES }), 'V1');
-  assert.equal(switchesStamp('V1', { earlyGate: 'off', acceptance: 'on', minorPolicy: 'legacy' }), 'V1+sw:earlyGate=off,minorPolicy=legacy');
+  assert.equal(switchesStamp('V1', { ...DEFAULT_SWITCHES }), 'V1', 'a default run keeps the plain version');
+  assert.equal(switchesStamp('V1', { earlyGate: 'off', acceptance: 'off', minorPolicy: 'spec' }), 'V1+sw:earlyGate=off,minorPolicy=spec');
+  assert.equal(switchesStamp('V1', { ...V378_DEFAULT_SWITCHES }), 'V1+sw:acceptance=on,minorPolicy=spec', 'a run that keeps the v0.5.378 defaults is stamped (it re-renders once, the stamp names why)');
   assert.deepEqual(SWITCH_NAMES, ['earlyGate', 'acceptance', 'minorPolicy']);
 });
 
@@ -513,7 +568,7 @@ test('wiring (source-pinned): installOrchestraHooks renders from the run\'s froz
   assert.doesNotMatch(inst, /=== HOOKS_VERSION/);
   assert.match(wiring, /refreshSkills: async \(ids\) => \{[^]*installOrchestraHooks\(ws\.worktreePath\)/);
   // the stamp itself: a default run keeps the plain version, a flipped run re-renders once
-  assert.notEqual(switchesStamp('V', { ...DEFAULT_SWITCHES, acceptance: 'off' }), switchesStamp('V', { ...DEFAULT_SWITCHES }));
+  assert.notEqual(switchesStamp('V', { ...DEFAULT_SWITCHES, acceptance: 'on' }), switchesStamp('V', { ...DEFAULT_SWITCHES }));
 });
 
 test('earlyGate off: `resume` / stack advice says MERGED, never the #506 candidate/--built-on route; a recorded builtOn is ignored when the upstream merges elsewhere', (t) => {
@@ -590,10 +645,10 @@ test('FREEZE, host side (review T3 m1): a run owner that already SPAWNED (childr
   assert.match(fs.readFileSync(new URL('../main/fanout-acceptance-wiring.ts', import.meta.url), 'utf8'), /childrenOf: \(run\) => store\.workspaces\.filter\(\(w\) => w\.parentId === run\)\.map\(\(w\) => w\.id\)/);
 });
 
-test('skill render (review T3 m2): EVERY installed file is rendered by the switches — with all three off no file of the install teaches the early gate, the acceptance flow or the #514 follow-up rule; the default install keeps them', async (t) => {
+test('skill render (review T3 m2): EVERY installed file is rendered by the switches — with all three off no file of the install teaches the early gate, the acceptance flow or the #514 follow-up rule; an install with acceptance on keeps them', async (t) => {
   const dir = mkHome(t);
   const walk = (p: string): string[] => fs.readdirSync(p, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(p, e.name)) : [path.join(p, e.name)]));
-  const TEACHES = [/acceptance-tests/, /`accept-`/, /frozen test/i, /--spec </, /--built-on/, /gated on its upstream's candidate/, /re-gates when that moves/, /At most ONE follow-up branch/, /no follow-up PR/];
+  const TEACHES = [/acceptance-tests/, /`accept-`/, /frozen test/i, /--spec </, /--built-on/, /gated on its upstream's candidate/, /re-gates when that moves/, /refuse a MINOR-only/, /no follow-up PR/];
   const off = path.join(dir, 'off');
   await installVerifiedFanoutSkill(off, undefined, { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy' });
   const files = walk(off);
@@ -604,9 +659,9 @@ test('skill render (review T3 m2): EVERY installed file is rendered by the switc
     for (const re of TEACHES) assert.doesNotMatch(text, re, `${path.relative(off, f)} still teaches ${re}`);
   }
   const on = path.join(dir, 'on');
-  await installVerifiedFanoutSkill(on);
+  await installVerifiedFanoutSkill(on, undefined, { acceptance: 'on', minorPolicy: 'spec' });
   const all = walk(on).map((f) => fs.readFileSync(f, 'utf8')).join('\n');
-  for (const re of [/gated on its upstream's candidate/, /acceptance-tests/, /At most ONE follow-up branch/]) assert.match(all, re);
+  for (const re of [/gated on its upstream's candidate/, /acceptance-tests/, /At most ONE follow-up branch per candidate\*\*, only for a BLOCKING\/MAJOR \(or a spec-sentence MINOR/]) assert.match(all, re);
   assert.match(fs.readFileSync(path.join(off, 'verified-fanout/references/budget-and-gates.md'), 'utf8'), /nominated and\s+gated only after its upstream is merged/);
 });
 
@@ -622,4 +677,139 @@ test('host `skills` op: re-renders the caller\'s and the run owner\'s skill (onl
   assert.deepEqual(await dispatchFanoutAcceptance({ op: 'skills', run: 'r1', from: 'impl-9' }, hd), { ok: true, op: 'skills', refreshed: ['impl-9', 'r1'] });
   assert.deepEqual(await dispatchFanoutAcceptance({ op: 'skills', run: 'r1', from: 'ghost' }, hd), { ok: true, op: 'skills', refreshed: ['r1'] });
   assert.equal(seen.length, 2);
+});
+
+// ── #559 — the defaults are the v0.5.375 profile; a run in flight is never re-read with other defaults ──────────
+
+const SPEC559 = 'The endpoint returns 404 for an unknown id.\nThe list is sorted.';
+const SENT559 = { severity: 'MINOR', evidence: 'measured', specSentence: 'The list is sorted.', report: { input: 'GET /list', happens: 'unsorted', where: 'list.ts:1', proof: 'node t.js' } };
+/** A state exactly as v0.5.378 persisted a run on ITS defaults (acceptance on, minorPolicy spec): spawned, a spec-sentence MINOR open, NO switch stored, NO defaults marker. */
+function v378Shaped(): Record<string, any> {
+  let st = newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW });
+  st = applyTicketPatch(st, 'T1', { status: 'started', branch: 't1', spec: 'spec.md' }, NOW, { specText: SPEC559 });
+  st = applyTicketPatch(st, 'T1', { findings: { SENT: SENT559, PLAIN: 'MINOR' } }, NOW);
+  const raw = JSON.parse(JSON.stringify(st)) as Record<string, any>;
+  delete raw.switches; delete raw.switchDefaults; delete raw.switchesFrozen;
+  return raw;
+}
+const putRaw = (home: string, raw: unknown): void => { fs.mkdirSync(path.dirname(stateFile(home, 'r1')), { recursive: true }); fs.writeFileSync(stateFile(home, 'r1'), JSON.stringify(raw)); };
+
+test('#559 must-PASS: a default run spawns NO acceptance writer (CLI request, host claim) and its gate and deliver ask for no frozen test', async (t) => {
+  const home = mkHome(t);
+  const d = deps(home); init(d);
+  const r = set(d, 'T1', '--spec', 'docs/spec.md#T1');
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.hostCalls, undefined, 'no spawn request for the host');
+  assert.doesNotMatch(r.stderr, /acceptance-pending|no --spec/);
+  let spawned = 0;
+  const hd: AcceptanceHostDeps = { home, now: () => NOW, isWorkspace: () => true, repoPath: () => undefined, spawn: async () => { spawned++; return { ok: true, id: 'w1' }; }, post: () => {} };
+  const res = await dispatchFanoutAcceptance({ op: 'spawn', run: 'r1', ticket: 'T1' }, hd);
+  assert.equal(res.ok, false);
+  assert.match(String((res as { error?: string }).error), /acceptance switch is OFF/);
+  assert.equal(spawned, 0);
+  const g = await gate(home, A);
+  assert.equal(g.exit, 0, JSON.stringify(g.result));
+  assert.equal(g.result.acceptance, undefined, 'the gate asks for no frozen test');
+  const rig = deliverRig();
+  const dv = await withEnv(home, () => deliver(dopts(), rig.dd));
+  assert.equal(dv.exit, 0, JSON.stringify(dv.result));
+  assert.equal(rig.merged(), true);
+});
+
+test('#559 must-PASS: an explicit `acceptance: on` still spawns the writer; an explicit `minorPolicy: spec` still blocks the merge on a literal spec sentence', async (t) => {
+  const home = mkHome(t);
+  const d = deps(home); init(d, 'acceptance=on,minorPolicy=spec');
+  const r = set(d, 'T1', '--spec', 'docs/spec.md#T1');
+  assert.deepEqual(r.hostCalls?.map((c) => c.body.op), ['spawn']);
+  const hd: AcceptanceHostDeps = { home, now: () => NOW, isWorkspace: () => true, repoPath: () => undefined, spawn: async () => ({ ok: true, id: 'w1' }), post: () => {} };
+  assert.deepEqual(await dispatchFanoutAcceptance(r.hostCalls![0].body, hd), { ok: true, op: 'spawn', id: 'w1', name: 'accept-T1' });
+  let st = newState('r1', { switches: { minorPolicy: 'spec' }, now: NOW });
+  st = applyTicketPatch(st, 'T1', { status: 'started', branch: 't1', spec: 'spec.md' }, NOW, { specText: SPEC559 });
+  st = applyTicketPatch(st, 'T1', { findings: { SENT: SENT559 } }, NOW);
+  assert.deepEqual(blockingMinors(st, 'T1'), ['SENT']);
+  // the same facts on a DEFAULT run: the sentence blocks nothing
+  let def = newState('r1', { now: NOW });
+  def = applyTicketPatch(def, 'T1', { status: 'started', branch: 't1', spec: 'spec.md' }, NOW, { specText: SPEC559 });
+  def = applyTicketPatch(def, 'T1', { findings: { SENT: SENT559 } }, NOW);
+  assert.deepEqual(blockingMinors(def, 'T1'), []);
+  assert.equal(mergeBlockRefusal(def, 'T1'), null);
+});
+
+test('#559 must-FAIL: a v0.5.378-shaped state (spawned, no marker, no explicit value) is NOT re-read with the new defaults — acceptance still on, the spec sentence still blocks, MINOR-only follow-ups still refused; `show` says so', async (t) => {
+  const raw = v378Shaped();
+  const st = parseState(raw);
+  assert.equal(defaultsProfileOf(st), 'v0.5.378');
+  assert.deepEqual(switchesOf(st), V378_DEFAULT_SWITCHES);
+  assert.deepEqual(blockingMinors(st, 'T1'), ['SENT'], 'spec still in force');
+  assert.doesNotThrow(() => claimAcceptor(st, 'T1', 'accept-T1', NOW), 'acceptance still on: the writer claim is not refused');
+  const home = mkHome(t);
+  putRaw(home, raw);
+  const d = deps(home);
+  assert.match(show(d), /earlyGate=on \(default\) · acceptance=on \(default kept from v0.5.378 \(run started before the defaults change\)\) · minorPolicy=spec \(default kept from v0.5.378 \(run started before the defaults change\)\) — the run already spawned/);
+  assert.equal(switchSourceOf(st, 'earlyGate'), 'default', 'earlyGate is on in both profiles: nothing was kept');
+  // the new binary's FIRST WRITE pins the profile on the file, so no later write can flip it …
+  assert.equal(set(d, 'T2', '--status', 'todo').code, 0);
+  assert.equal(stateOf(home).switchDefaults, 'v0.5.378');
+  // … not even one that takes the run back to "nothing spawned" (the signal that decided the profile is gone)
+  assert.equal(set(d, 'T1', '--status', 'todo').code, 0);
+  assert.equal(firstSpawnSignal(stateOf(home)), null, 'nothing recorded any more');
+  assert.deepEqual(switchesOf(stateOf(home)), V378_DEFAULT_SWITCHES, 'still the v0.5.378 defaults');
+  assert.deepEqual(blockingMinors(stateOf(home), 'T1'), ['SENT']);
+  // the host-side reader (skill render, stamp) reads the same rule
+  assert.deepEqual(switchesForRun(home, 'r1'), V378_DEFAULT_SWITCHES);
+  assert.equal(switchesStamp('V', switchesForRun(home, 'r1')), 'V+sw:acceptance=on,minorPolicy=spec');
+  // an unspawned run, and a run with no state, read the new defaults
+  assert.deepEqual(switchesForRun(mkHome(t), 'r1'), DEFAULT_SWITCHES);
+});
+
+test('#559: a v0.5.378 state that has NOT spawned reads the new defaults; its first spawn (the marker is stamped BEFORE the patch) never turns it into a legacy run; the stored explicit set of a v0.5.378 run is kept as written', (t) => {
+  const home = mkHome(t);
+  const raw = JSON.parse(JSON.stringify(newState('r1', { now: NOW }))) as Record<string, any>;
+  delete raw.switchDefaults; // as v0.5.378 wrote a fresh run
+  putRaw(home, raw);
+  const d = deps(home);
+  assert.equal(defaultsProfileOf(parseState(raw)), 'v0.5.375');
+  assert.deepEqual(switchesOf(parseState(raw)), DEFAULT_SWITCHES);
+  assert.equal(set(d, 'T1', '--status', 'started', '--branch', 't1').code, 0, 'the first spawn');
+  assert.equal(stateOf(home).switchDefaults, 'v0.5.375');
+  assert.deepEqual(switchesOf(stateOf(home)), DEFAULT_SWITCHES, 'acceptance off after the spawn');
+  // the pure writers stamp first too (a direct caller, no updateState)
+  const pure = applyTicketPatch(parseState(raw), 'T1', { status: 'started' }, NOW);
+  assert.equal(pure.switchDefaults, 'v0.5.375');
+  assert.equal(stampDefaults(pure), pure, 'idempotent');
+  // a v0.5.378 state with an explicit full set stored and not spawned: the stored values stay (effective values unchanged), read as explicit
+  const stored = parseState({ ...raw, switches: { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' } });
+  assert.deepEqual(switchesOf(stored), { earlyGate: 'off', acceptance: 'on', minorPolicy: 'spec' });
+  assert.equal(switchSourceOf(stored, 'acceptance'), 'explicit');
+});
+
+test('#559 must-FAIL: a switch changed after the first spawn is still refused — on a default run, on a run that kept the v0.5.378 defaults, even to the value it already has', (t) => {
+  const d = deps(mkHome(t)); init(d);
+  assert.equal(set(d, 'A', '--status', 'started', '--branch', 'a').code, 0);
+  for (const v of ['acceptance=on', 'acceptance=off', 'minorPolicy=spec', 'earlyGate=off']) {
+    const r = set(d, '--switch', v);
+    assert.equal(r.code, 1, v);
+    assert.match(r.stderr, /cannot change: the run already spawned \(ticket A is started\)/, v);
+  }
+  const home = mkHome(t);
+  putRaw(home, v378Shaped());
+  for (const v of ['acceptance=off', 'acceptance=on', 'minorPolicy=legacy']) {
+    const r = set(deps(home), '--switch', v);
+    assert.equal(r.code, 1, v);
+    assert.match(r.stderr, /cannot change: the run already spawned/, v);
+  }
+  assert.deepEqual(switchesOf(stateOf(home)), V378_DEFAULT_SWITCHES);
+});
+
+test('#559 `state show` labels each switch: default / explicit (even a value equal to the default) / default kept from v0.5.378; `state --help` states the new defaults and the in-flight rule', (t) => {
+  const d = deps(mkHome(t)); init(d, 'acceptance=off');
+  assert.match(show(d), /earlyGate=on \(default\) · acceptance=off \(explicit\) · minorPolicy=legacy \(default\) — not frozen yet/);
+  const help = runFanout(['--help'], d).stdout;
+  assert.match(help, /earlyGate=on\|off {6}on \(default\)/);
+  assert.match(help, /acceptance=on\|off {5}off \(default\): no writer spawned, no frozen test asked; on:/);
+  assert.match(help, /minorPolicy=legacy\|refuse\|spec {3}legacy \(default\)/);
+  assert.match(help, /spec: #552/);
+  assert.doesNotMatch(help, /on \(default\): --spec spawns|spec \(default\)/, 'the old defaults are gone from the help');
+  assert.match(help, /default kept from v0\.5\.378 \(run started before the defaults change\)/);
+  assert.match(help, /ALREADY spawned when they changed keeps the old ones/);
 });

@@ -71,7 +71,7 @@ function rig(t: { after: (fn: () => void) => void }): Rig {
   fs.writeFileSync(path.join(cand, 't/spec.test.js'), V0);
   g('add', '.'); g('commit', '-q', '-m', 'impl: tests copied + code');
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
-  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW }), 'T540', { branch: 'impl-540' }, NOW));
+  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T540', { branch: 'impl-540' }, NOW));
   const runner: Runner = (cmd, args, cwd) => (cmd === 'git' ? defaultRunner(cmd, args, cwd) : { code: 1, stdout: '', stderr: 'gh: not used' });
   const deps = (): FanoutDeps => ({ env, cwd: writer, runner, now: () => NOW, readStdin: () => '' });
   const frozen = runAcceptance(['freeze', 'T540', '--files', 't/spec.test.js', '--run-cmd', 'node --test t/spec.test.js', '--from', 'writer-540'], deps());
@@ -335,7 +335,7 @@ test('amend --harness-only on a ticket with a recorded runner config keeps the c
   const run = 'jest --config jest.config.js t/spec.test.js';
   const files0 = { 't/spec.test.js': sha256Hex(V0) };
   const source = { branch: 'writer-540', head: 'a'.repeat(40) };
-  const s0 = freezeInto(applyTicketPatch(newState('r1', { now: NOW }), 'T540', {}, NOW), 'T540', { files: files0, run, config, source, now: NOW });
+  const s0 = freezeInto(applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T540', {}, NOW), 'T540', { files: files0, run, config, source, now: NOW });
   const s1 = amendHarnessInto(s0, 'T540', { files: { 't/spec.test.js': sha256Hex(V1) }, reason: 'boot the db', assertionsHash: 'b'.repeat(64), source, now: NOW });
   const acc = s1.tickets.T540.acceptance!;
   assert.deepEqual(acc.config, config);

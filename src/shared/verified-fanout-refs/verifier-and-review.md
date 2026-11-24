@@ -77,8 +77,8 @@ each and change nothing).
 - **MINOR** — a real defect with limited reach (rare input, unlikely race, a
   test that lets a mutant survive).
 - **NIT** — cosmetic (comment, doc, naming) — not reported by the spawned reviewer.
-
 <!--sw minorPolicy=spec-->
+
 **A MINOR that breaks a sentence of the ticket (#552, `minorPolicy: spec`).** A finding may carry
 `specSentence` — text quoted from the ticket's spec — and `kind: process` when the sentence is about how
 the work is REPORTED ("write the list in the pull request"). Record it with

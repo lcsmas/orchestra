@@ -44,7 +44,7 @@ function world(t: { after: (fn: () => void) => void }, body: string, o: { run?: 
   fs.writeFileSync(path.join(work, 't/helper.js'), 'exports.h = 1;\n'); // committed on the writer's branch, NOT frozen
   w('add', '.'); w('commit', '-q', '-m', 'writer'); w('push', '-q', 'origin', 'writer');
   const caller = o.role === 'writer' ? 'w1' : 'r1';
-  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW }), 'T1', { branch: 'impl', ...(o.spec ? { spec: 'spec.md' } : {}) }, NOW));
+  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T1', { branch: 'impl', ...(o.spec ? { spec: 'spec.md' } : {}) }, NOW));
   updateState(stateFile(home, 'r1'), (s) => ({ ...s!, tickets: { ...s!.tickets, T1: { ...s!.tickets.T1, accept: { acceptor: { id: 'w1', name: 'accept-T1', at: NOW }, wait: null, waived: null } } } }));
   const deps = (extra: Record<string, string> = {}): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: caller, ...extra }, cwd: work, runner: defaultRunner, now: () => NOW, readStdin: () => '' });
   const freeze = (extra: string[] = [], env: Record<string, string> = {}) => runAcceptance(['freeze', 'T1', '--run', 'r1', '--files', 't/spec.test.js', '--run-cmd', o.run ?? 'node --test t/spec.test.js', '--from', 'writer', ...extra], deps(env));

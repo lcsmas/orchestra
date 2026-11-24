@@ -8,7 +8,7 @@ import {
 
 const NOW = '2026-11-22T10:00:00.000Z';
 const H = 'a'.repeat(64);
-const withSpec = () => applyTicketPatch(newState('r1', { now: NOW }), 'T1', { spec: 'docs/spec.md#T1', implementer: 'impl-1', verifier: 'verif-1' }, NOW);
+const withSpec = () => applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T1', { spec: 'docs/spec.md#T1', implementer: 'impl-1', verifier: 'verif-1' }, NOW);
 
 test('schema: a state file written BEFORE #515 (no spec/implementer/verifier/accept) still loads, defaults null', () => {
   const s = parseState({ version: 1, run: 'r1', target: 'master', repo: null, updatedAt: NOW, reconciledAt: null, tickets: { T1: { branch: null, pr: null, head: null, verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'todo', acceptance: null, updatedAt: NOW } } });
@@ -29,7 +29,7 @@ test('schema must-FAIL: unsafe workspace ids, a multi-line spec, an unknown acce
 test('phase: unspecified (no spec) · pending (spec, nothing frozen) · frozen · waived — frozen wins over waived, waived over pending; unknown ticket = none', () => {
   const s = withSpec();
   assert.equal(acceptancePhase(s.tickets.T1), 'pending');
-  assert.equal(acceptancePhase(applyTicketPatch(newState('r1', { now: NOW }), 'T2', { status: 'todo' }, NOW).tickets.T2), 'unspecified');
+  assert.equal(acceptancePhase(applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T2', { status: 'todo' }, NOW).tickets.T2), 'unspecified');
   assert.equal(acceptancePhase(undefined), 'none');
   const w = waiveInto(s, 'T1', { decision: 'https://github.com/o/r/issues/1#issuecomment-2', reason: 'docs', now: NOW });
   assert.equal(acceptancePhase(w.tickets.T1), 'waived');
@@ -47,14 +47,14 @@ test('claim/settle: one writer per ticket; a failed spawn is retryable; a frozen
   const again = claimAcceptor(failed, 'T1', 'accept-T1', NOW); // retry after a failure
   assert.equal(again.tickets.T1.accept?.acceptor?.error, undefined);
   assert.equal(settleAcceptor(again, 'T1', { id: 'w1' }, NOW).tickets.T1.accept?.acceptor?.id, 'w1');
-  assert.throws(() => claimAcceptor(applyTicketPatch(newState('r1', { now: NOW }), 'T2', { status: 'todo' }, NOW), 'T2', 'accept-T2', NOW), /no spec registered/);
+  assert.throws(() => claimAcceptor(applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T2', { status: 'todo' }, NOW), 'T2', 'accept-T2', NOW), /no spec registered/);
   assert.throws(() => claimAcceptor(waiveInto(s, 'T1', { decision: 'd', reason: 'r', now: NOW }), 'T1', 'accept-T1', NOW), /waived/);
   assert.throws(() => claimAcceptor(freezeInto(s, 'T1', { files: { 't/a.test.js': H }, run: 'node --test t/a.test.js', source: { branch: null, head: 'b'.repeat(40) }, now: NOW }), 'T1', 'accept-T1', NOW), /already frozen/);
 });
 
 test('waive: works WITHOUT a spec (a docs ticket); must-FAIL already frozen, already waived, empty reason', () => {
   const s = withSpec();
-  const noSpec = applyTicketPatch(newState('r1', { now: NOW }), 'T2', { status: 'todo' }, NOW);
+  const noSpec = applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T2', { status: 'todo' }, NOW);
   assert.equal(acceptancePhase(waiveInto(noSpec, 'T2', { decision: 'd', reason: 'r', now: NOW }).tickets.T2), 'waived');
   assert.throws(() => waiveInto(s, 'T1', { decision: 'd', reason: '  ', now: NOW }), /needs --reason/);
   const w = waiveInto(s, 'T1', { decision: 'd', reason: 'r', now: NOW });

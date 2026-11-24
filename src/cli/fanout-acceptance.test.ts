@@ -60,7 +60,7 @@ function rig(t: { after: (fn: () => void) => void }, o: { freeze?: boolean } = {
   g('add', '.'); g('commit', '-q', '-m', 'impl: tests copied unchanged + code');
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' };
   const marker = path.join(root, 'test-ran.marker'); // written by the frozen test body itself
-  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { now: NOW }), 'T510', { branch: 'impl-510' }, NOW));
+  writeStateAtomic(stateFile(home, 'r1'), applyTicketPatch(newState('r1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: NOW }), 'T510', { branch: 'impl-510' }, NOW));
   const ghFake = (comments: Record<string, string>): Runner => (cmd, args, cwd) => {
     if (cmd === 'git') return defaultRunner(cmd, args, cwd);
     const m = /^repos\/o\/r\/issues\/comments\/(\d+)$/i.exec(args[1] ?? '');

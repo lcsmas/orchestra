@@ -18,7 +18,7 @@ function world() {
   const env = { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'rig' } as NodeJS.ProcessEnv;
   const deps: FanoutDeps = { env, cwd: home, runner: defaultRunner, now: () => NOW, readStdin: () => '' };
   const set = (...a: string[]) => runFanout(['state', 'set', ...a, '--run', 'rig'], deps);
-  assert.equal(runFanout(['state', 'init', '--run', 'rig'], deps).code, 0);
+  assert.equal(runFanout(['state', 'init', '--run', 'rig', '--switch', 'minorPolicy=spec'], deps).code, 0);
   assert.equal(set('T-1', '--status', 'merged', '--branch', 't1', '--head', H1, '--finding', 'F-MAJ=MAJOR,F-MIN=minor').code, 0);
   return { home, env, deps, set, done: () => fs.rmSync(home, { recursive: true, force: true }) };
 }

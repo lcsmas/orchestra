@@ -6,7 +6,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { HOOK_ROLE_GUARD_CMD, ROLE_GUARD_SCRIPT, ROLE_SENTINEL_FILE } from './role-guard.ts';
-import { VERIFIED_FANOUT_SKILL } from './verified-fanout-skill.ts';
+import { renderVerifiedFanoutSkill } from './verified-fanout-skill.ts';
+/** #559: the defaults changed (acceptance off, minorPolicy legacy) — these checks read the FULL text, every feature on (the strictest reading: word budget, pointers, rule pins). The default render is pinned in cli/fanout-switches.test.ts. */
+const VERIFIED_FANOUT_SKILL = renderVerifiedFanoutSkill({ acceptance: 'on', minorPolicy: 'spec' });
 import { mkHomeScratch } from './home-scratch.ts';
 
 // NOT under os.tmpdir(): /tmp counts as scratch for the guard (same reason as role-guard.test.ts).

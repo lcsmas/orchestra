@@ -177,8 +177,10 @@ the Briefing section of ledger #N — pull it first".
 **A dependent track waits for its upstream's MERGE.** Freeze the interface in the ledger; ¤orchestra fanout state set <ticket> --depends-on <upstream> --frozen-interface <ref>¤ lets it build on a stub (¤--status started¤), but it is nominated, gated and merged only after every upstream is merged (¤state set¤ refuses earlier): rebase on the merged target, then nominate. An upstream changing the frozen interface posts one "what changed" line to its dependents.
 <!--/sw-->
 
+<!--sw acceptance=on-->
 **Routing rule: a gap found in an upstream is fixed by a follow-up ON the upstream, never by changing the dependent's spec interface (the one it was specified and tested against); a follow-up that must change the frozen interface goes through a ledger decision first.**
 
+<!--/sw-->
 **The spawner names the child at spawn** — ¤orchestra spawn --name <rôle>-<object>-<ticket>¤
 (¤orchestra-spawn¤ skill); the prefix IS the role. You rename it when its scope grows
 (¤orchestra rename <ws-id> <name>¤); every brief says "your name is set by your parent". A fleet nests under the coordinator; ¤--detached¤ is for one-offs.
@@ -252,7 +254,9 @@ current gate; every other MINOR is ¤noted¤ — no follow-up PR.*
 MINOR is ¤noted¤ — no follow-up PR.*
 <!--/sw-->
 <!--sw minorPolicy=legacy-->
-*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate.*
+*A review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a
+MINOR that touches correctness or a ticket promise goes to the candidate's ONE
+follow-up branch, every other finding is ¤noted¤.*
 <!--/sw-->
 
 The count, the head and the CI are code: write the round's counts to a verdict file
@@ -281,6 +285,9 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never
 <!--sw minorPolicy=refuse-->
 - **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
 <!--/sw-->
+<!--sw minorPolicy=legacy-->
+- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.
+<!--/sw-->
 
 <!--sw minorPolicy=refuse|spec-->
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
@@ -288,7 +295,7 @@ measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-u
 <!--/sw-->
 <!--sw minorPolicy=legacy-->
 MERGE-ELIGIBLE = a DISPOSITION in the ledger for EVERY review finding: ¤fixed¤ (re-gated), ¤refuted¤ (with the
-measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ or ¤noted¤.
+measurement), ¤accepted-gap¤ (rides in the PR body's NOT VERIFIED), ¤follow-up¤ or ¤noted¤ (MINOR/NIT only).
 <!--/sw-->
 
 **Serialize merges that touch a shared seam.** Same-file branches merge one at a time in dependency order,
