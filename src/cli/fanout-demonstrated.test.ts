@@ -307,10 +307,12 @@ test('a demonstrated finding may be named in --fixes (a follow-up on the merged 
   st = applyTicketPatch(st, 'T1', { status: 'started', branch: 't1', head: A }, NOW);
   st = applyTicketPatch(st, 'T1', { findings: { F1: { severity: 'MINOR', demonstration: DEMO } } }, NOW, { fileOnHead: () => true });
   assert.deepEqual(blockingMinors(st, 'T1'), ['F1']);
-  st = applyTicketPatch(st, 'T1', { decide: { F1: { text: 'merge anyway, follow-up' } } }, NOW);
-  st = applyTicketPatch(st, 'T1', { status: 'merged', head: A }, NOW);
+  st = applyTicketPatch(st, 'T1', { status: 'merged', head: A }, NOW); // merged with the finding still open (a finding raised after the merge goes through a follow-up)
   assert.doesNotThrow(() => applyTicketPatch(st, 'F-1', { followUpOf: 'T1', fixes: ['F1'] }, NOW));
   assert.deepEqual(blockingMinors(st, 'T1'), [], 'a merged ticket blocks nothing');
+  assert.equal(mergeBlockRefusal(st, 'T1'), null);
+  // legacy-like: a further candidate on a merged ticket is not forced into a follow-up registration (the #514 rule is not in force)
+  assert.doesNotThrow(() => applyTicketPatch(st, 'T1', { status: 'nominated', head: B }, NOW));
 });
 
 // ── state show / closeout ────────────────────────────────────────────────────────────────────────────────
@@ -386,6 +388,7 @@ test('demonstrated render: the reviewer sentence and the settle text appear ONLY
     assert.match(skill, /no unsettled demonstrated finding merges on its\ncurrent gate/);
     assert.match(skill, /Only an accepted demonstration refuses a finding \(`finding-unsettled`\)/);
     assert.match(skill, /only a BLOCKING\/MAJOR or demonstrated finding in its own diff reopens it/);
+    assert.match(skill, /`follow-up` or `noted` \(MINOR\/NIT only\)/, 'the merge-eligible dispositions are the legacy ones');
     assert.match(skill, /\*\*Reviewer brief \(#572\):\*\* per product finding demand `input` \/ `observed` \(`file:line`\) \/ `expected`, or `cannot`/);
     assert.match(review(c), /--settle <id>=fixed:<head>.*--decide <id>=<text>/s);
     assert.match(norm(review(c)), /Limit: code checks the demonstration is well formed, not that it is true — a wrong one costs one fix round or one coordinator decision\./);

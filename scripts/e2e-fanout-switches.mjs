@@ -16,7 +16,7 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-sw-rig-'));
 if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw new Error(`refusing scratch outside ${tmpBase}`);
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' })); // quiet the module-type reparse warning
-const TESTS = ['src/cli/fanout-switches.test.ts', 'src/cli/fanout-verifier-switch.test.ts'].map((f) => path.join(scratch, f)); // #563: the verifier arms live in their own file
+const TESTS = ['src/cli/fanout-switches.test.ts', 'src/cli/fanout-verifier-switch.test.ts', 'src/cli/fanout-demonstrated.test.ts', 'src/shared/fanout-demonstration.test.ts'].map((f) => path.join(scratch, f)); // #563: the verifier arms live in their own file; #572: so do the demonstrated ones
 
 function run() {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
@@ -29,11 +29,17 @@ function run() {
 const S = 'src/shared/fanout-state.ts';
 const A = 'src/shared/fanout-acceptance.ts';
 const W = 'src/main/workspaces.ts';
+const D = 'src/shared/fanout-demonstration.ts';
+const CL = 'src/cli/fanout-closeout.ts';
+const SC = 'src/shared/fanout-closeout.ts';
+const K = 'src/shared/verified-fanout-skill.ts';
+const F = 'src/shared/verified-fanout-files.ts';
+const C = 'src/cli/fanout-state.ts';
 const mutants = [
-  ['default earlyGate flipped to off', S, "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile"],
-  ['default acceptance flipped to on (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile"],
-  ['default minorPolicy flipped to spec (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec', verifier: 'on' }; // #559: the v0.5.375 profile"],
-  ['default minorPolicy flipped to refuse', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'refuse', verifier: 'on' }; // #559: the v0.5.375 profile"],
+  ['default earlyGate flipped to off', S, "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile", "export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'off', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile"],
+  ['default acceptance flipped to on (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'on', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile"],
+  ['default minorPolicy flipped to spec (the v0.5.378 default)', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile"],
+  ['default minorPolicy flipped to refuse', S, "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile", "{ earlyGate: 'on', acceptance: 'off', minorPolicy: 'refuse', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile"],
   ['switchesOf ignores the stored switches', S, "return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)], ...(state?.switches ?? {}) };", "return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)] };"],
   ['unknown switch name accepted', S, "if (!(SWITCH_NAMES as string[]).includes(name)) throw new FanoutStateError(`unknown switch", "if (false as boolean) throw new FanoutStateError(`unknown switch"],
   ['unknown switch value accepted', S, "if (typeof v !== 'string' || !allowed.includes(v)) throw new FanoutStateError(`switch ${name} must be", "if (typeof v !== 'string' || false as boolean) throw new FanoutStateError(`switch ${name} must be"],
@@ -50,9 +56,9 @@ const mutants = [
   ['earlyGate off: upstreamBlocker still admits a verified candidate', S, "if (switchesOf(state).earlyGate === 'off') return { kind: 'ineligible', why:", "if (switchesOf(state).earlyGate === 'never') return { kind: 'ineligible', why:"],
   ['earlyGate off: state set still nominates a dependent on an open upstream', S, "if (switchesOf(state).earlyGate === 'off' && (next.status === 'nominated' || next.status === 'gated')) {", "if (false as boolean && (next.status === 'nominated' || next.status === 'gated')) {"],
   ['earlyGate off: the reason does not say the dependent waits for the MERGE', S, "earlyGate is off for this run: a dependent may START against a frozen interface but is not nominated or gated before its upstream is MERGED", "a dependent is not nominated here"],
-  ['minorPolicy legacy: followUpRefusal still refuses', S, "if (switchesOf(state).minorPolicy === 'legacy') return null; // #554: legacy = before #514, follow-ups unrestricted", ""],
-  ['minorPolicy legacy: a further candidate on a merged ticket is still a follow-up (state)', S, "const legacyMinor = switchesOf(state).minorPolicy === 'legacy';", "const legacyMinor = false;"],
-  ['minorPolicy refuse treated as legacy', S, "if (switchesOf(state).minorPolicy === 'legacy') return null;", "if (switchesOf(state).minorPolicy !== 'spec') return null;"],
+  ['minorPolicy legacy: followUpRefusal still refuses', S, "if (policy === 'legacy' || policy === 'demonstrated') return null;", ""],
+  ['minorPolicy legacy: a further candidate on a merged ticket is still a follow-up (state)', S, "const legacyMinor = switchesOf(state).minorPolicy === 'legacy' || switchesOf(state).minorPolicy === 'demonstrated';", "const legacyMinor = false;"],
+  ['minorPolicy refuse treated as legacy', S, "if (policy === 'legacy' || policy === 'demonstrated') return null;", "if (policy !== 'spec') return null;"],
   ['acceptance off: the writer claim still spawns', A, "  assertAcceptanceOn(state, `claim a writer for ${id}`); // #554: the spawn is ABSENT with the switch off — the host's only door is this claim\n", ""],
   ['acceptance off: a writer claim does not freeze the switches', A, "return freezeAtFirstSpawn({ ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor: { id: null, name, at: now } }), updatedAt: now } }, updatedAt: now }, now);", "return { ...state, tickets: { ...state.tickets, [id]: { ...t, accept: withAccept(t, { acceptor: { id: null, name, at: now } }), updatedAt: now } }, updatedAt: now };"],
   ['acceptance off: freezeInto accepts', A, "  assertAcceptanceOn(state, `freeze tests for ${id}`);\n", ""],
@@ -126,10 +132,10 @@ const mutants = [
   ['559: the host reader falls back to the old defaults', S, "catch { return { ...DEFAULT_SWITCHES }; }", "catch { return { ...V378_DEFAULT_SWITCHES }; }"],
   ['559: an unknown defaults profile is accepted on read', S, "if (v !== 'v0.5.375' && v !== 'v0.5.378') throw new FanoutStateError(", "if (false as boolean) throw new FanoutStateError("],
   ['559: --help still says acceptance is on by default', 'src/cli/fanout-state.ts', "acceptance=on|off     off (default): no writer spawned, no frozen test asked; on:", "acceptance=on|off     on (default): no writer spawned, no frozen test asked; on:"],
-  ['559: --help still says minorPolicy spec is the default', 'src/cli/fanout-state.ts', "minorPolicy=legacy|refuse|spec   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552", "minorPolicy=legacy|refuse|spec   legacy: follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec (default): #552"],
+  ['559: --help still says minorPolicy spec is the default', 'src/cli/fanout-state.ts', "minorPolicy=legacy|refuse|spec|demonstrated   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552", "minorPolicy=legacy|refuse|spec|demonstrated   legacy: follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec (default): #552"],
   ['559: --help forgets the in-flight rule', 'src/cli/fanout-state.ts', "A run that had ALREADY spawned when they changed keeps the old ones", "A run"],
   ['559: skill: the routing rule is not part of the acceptance feature', 'src/shared/verified-fanout-skill.ts', "<!--sw acceptance=on-->\n**Routing rule", "<!--sw acceptance=on|off-->\n**Routing rule"],
-  ['559: skill: the legacy merge rule is not the v0.5.375 sentence', 'src/shared/verified-fanout-skill.ts', "merges on its current gate; a\nMINOR that touches correctness or a ticket promise goes to the candidate's ONE\nfollow-up branch, every other finding is ¤noted¤.*\n<!--/sw-->\n\nThe count", "merges on its current gate.*\n<!--/sw-->\n\nThe count"],
+  ['559: skill: the legacy merge rule is not the v0.5.375 sentence', 'src/shared/verified-fanout-skill.ts', "merges on its current gate; a\nMINOR that touches correctness or a ticket promise goes to the candidate's ONE\nfollow-up branch, every other finding is ¤noted¤.*\n<!--/sw-->\n<!--sw minorPolicy=demonstrated-->", "merges on its current gate.*\n<!--/sw-->\n<!--sw minorPolicy=demonstrated-->"],
   ['559: skill: legacy loses the v0.5.375 one-follow-up line', 'src/shared/verified-fanout-skill.ts', "<!--sw minorPolicy=legacy-->\n- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.\n<!--/sw-->\n", ""],
   ['559: installer: the default install ships the acceptance reference', 'src/shared/verified-fanout-skill.ts', "path !== ACCEPTANCE_REFERENCE_PATH || switchesOf({ switches }).acceptance === 'on'", "true"],
   ['559: the first-spawn lock forgets a v0.5.378-shaped state', S, "  if (state.switchesFrozen) return `frozen ${state.switchesFrozen.at} (${state.switchesFrozen.by})`;\n", ""],
@@ -137,8 +143,8 @@ const mutants = [
   ['m2: an explicit value equal to the default is dropped (not reportable as explicit)', S, "return { ...rest, switches: { ...(prev ?? {}), ...assign }, updatedAt: now };", "return { ...rest, ...(Object.entries({ ...(prev ?? {}), ...assign }).every(([k, v]) => v === (DEFAULTS_PROFILES[defaultsProfileOf(rest)] as Record<string, string>)[k]) ? {} : { switches: { ...(prev ?? {}), ...assign } }), updatedAt: now };"],
   ['m2: the lock forgets the state signal once nothing is recorded', S, "  const signal = firstSpawnSignal(state);\n  return signal ? `the run already spawned", "  const signal = null as string | null;\n  return signal ? `the run already spawned"],
   // #563 — the verifier switch
-  ["563: default verifier flipped to off", S, "minorPolicy: 'legacy', verifier: 'on' }; // #559: the v0.5.375 profile", "minorPolicy: 'legacy', verifier: 'off' }; // #559: the v0.5.375 profile"],
-  ["563: SWITCH_VALUES drops the verifier switch", S, ", verifier: ['on', 'off'] } as const;", " } as const;"],
+  ["563: default verifier flipped to off", S, "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile", "minorPolicy: 'legacy', verifier: 'off', preNominationChecks: 'off' }; // #559: the v0.5.375 profile"],
+  ["563: SWITCH_VALUES drops the verifier switch", S, ", verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;", ", preNominationChecks: ['on', 'off'] } as const;"],
   ["563: state set --verifier records a seat under verifier=off", S, "if (next.verifier && switchesOf(state).verifier === 'off') throw", "if (next.verifier && switchesOf(state).verifier === 'never') throw"],
   ["563: the stamp ignores a non-default verifier", S, "sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]", "n !== 'verifier' && sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]"],
   ["563: deliver never reads the verifier switch", "src/cli/fanout-deliver.ts", "if (opts.noReviewGate && deps.verifierSwitch) {", "if (false as boolean && deps.verifierSwitch) {"],
@@ -175,8 +181,66 @@ const mutants = [
   ["563 reference: the verifier variant leaks with verifier off \u2014 lead-ops tiers", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n  spawned agents of its own: the set of workers and the verifier", "<!--sw verifier=on|off-->\\n  spawned agents of its own: the set of workers and the verifier"],
   ["563 reference: the verifier variant leaks with verifier off \u2014 acceptance-tests register", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n1. **Register**", "<!--sw verifier=on|off-->\\n1. **Register**"],
   ["563 reference: the verifier variant leaks with verifier off \u2014 verifier-and-review head", "src/shared/verified-fanout-files.ts", "<!--sw verifier=on-->\\n# The verifier brief", "<!--sw verifier=on|off-->\\n# The verifier brief"],
+  // ── #572 minorPolicy=demonstrated: every clause of the rule mutated (src/cli/fanout-demonstrated.test.ts + src/shared/fanout-demonstration.test.ts) ──
+  ["572 demonstrated: an accepted demonstration blocks nothing", S, "(policy !== 'spec' && policy !== 'demonstrated') || t.status", "policy !== 'spec' || t.status"],
+  ["572 demonstrated: a refused demonstration blocks too", S, "(policy === 'demonstrated' ? findingDemonstrated(f) : f.severity", "(policy === 'demonstrated' ? f.demonstration !== undefined : f.severity"],
+  ["572 demonstrated: only a MINOR blocks (the any-severity clause)", S, "(policy === 'demonstrated' ? findingDemonstrated(f) : f.severity", "(policy === 'demonstrated' ? f.severity === 'MINOR' && findingDemonstrated(f) : f.severity"],
+  ["572 demonstrated: a settled / decided finding still blocks", S, "holds(f) && !findingClosed(f))", "holds(f))"],
+  ["572 demonstrated: a merged ticket still blocks", S, "|| t.status === 'merged' || t.mergedHead) return [];\n  const holds", "|| false) return [];\n  const holds"],
+  ["572 demonstrated: findingDemonstrated ignores the verdict", S, "=> demonstrationAccepted(f.demonstration);", "=> f.demonstration !== undefined;"],
+  ["572 demonstrated: the refusal does not say the limit (well formed, not true)", S, "are neither settled nor decided: ${ids.map(said).join('; ')} — ${ids.map(how).join('; ')}; or the coordinator records a decision: state set ${id} --decide <finding>=<text>. (${DEMONSTRATION_LIMIT})", "are neither settled nor decided: ${ids.map(said).join('; ')} — ${ids.map(how).join('; ')}; or the coordinator records a decision: state set ${id} --decide <finding>=<text>."],
+  ["572 demonstrated: follow-ups are restricted like spec (it is legacy-like)", S, "if (policy === 'legacy' || policy === 'demonstrated') return null;", "if (policy === 'legacy') return null;"],
+  ["572 demonstrated: a merged ticket's further candidate is a follow-up (not legacy-like)", S, "const legacyMinor = switchesOf(state).minorPolicy === 'legacy' || switchesOf(state).minorPolicy === 'demonstrated';", "const legacyMinor = switchesOf(state).minorPolicy === 'legacy';"],
+  ["572 demonstrated: SWITCH_VALUES drops the value", S, "minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated']", "minorPolicy: ['legacy', 'refuse', 'spec']"],
+  ["572 demonstrated: the finding record drops its demonstration on parse", S, "if (v.demonstration !== undefined) out.demonstration = demonstrationOf(v.demonstration, where);", ""],
+  ["572 demonstrated: a demonstration is recorded under any policy", S, "if (switchesOf(state).minorPolicy !== 'demonstrated') throw new FanoutStateError(`${id}: finding ${k}: a demonstration is recorded only", "if (false as boolean) throw new FanoutStateError(`${id}: finding ${k}: a demonstration is recorded only"],
+  ["572 demonstrated: a typed file / head is trusted (the verdict is not code's)", S, "else fr.demonstration = classifyDemonstration(f.demonstration, { head: next.head, fileOnHead: derived.fileOnHead });", "else fr.demonstration = f.demonstration;"],
+  ["572 demonstrated: an accepted demonstration can be rewritten", S, "if (!DEMONSTRATION_FIELDS.every((x) => hadD[x] === f.demonstration![x])) throw", "if (false as boolean) throw"],
+  ["572 demonstrated: a closed finding takes a new demonstration", S, "} else if (had && findingClosed(had)) throw new FanoutStateError(`${id}: finding ${k} is already ${had.settled ? 'settled' : 'decided'}", "} else if (false as boolean) throw new FanoutStateError(`${id}: finding ${k} is already ${had.settled ? 'settled' : 'decided'}"],
+  ["572 floor: 4 words is enough", D, "export const DEMONSTRATION_WORD_FLOOR = 5;", "export const DEMONSTRATION_WORD_FLOOR = 4;"],
+  ["572 floor: 6 words needed", D, "export const DEMONSTRATION_WORD_FLOOR = 5;", "export const DEMONSTRATION_WORD_FLOOR = 6;"],
+  ["572 floor: no floor", D, "if (n < DEMONSTRATION_WORD_FLOOR) return", "if (n < 0) return"],
+  ["572 floor: the file:line of observed counts as words", D, "wordsOf(k === 'observed' ? stripCitations(d[k]) : d[k])", "wordsOf(d[k])"],
+  ["572 blank: a blank field is not refused as blank", D, "if (typeof d[k] !== 'string' || !d[k].trim()) return `${k} is blank or missing`;", "if (typeof d[k] !== 'string') return `${k} is blank or missing`;"],
+  ["572 blank: no blank check and no floor (a blank field is accepted)", D, "if (typeof d[k] !== 'string' || !d[k].trim()) return `${k} is blank or missing`;\n  for (const k of DEMONSTRATION_FIELDS) {\n    const n = wordsOf(k === 'observed' ? stripCitations(d[k]) : d[k]);\n    if (n < DEMONSTRATION_WORD_FLOOR) return `${k} has ${n} word(s)${k === 'observed' ? ' besides its file:line' : ''}, the floor is ${DEMONSTRATION_WORD_FLOOR}`;\n  }", "void 0;"],
+  ["572 identical: identical fields are accepted", D, "if (normalised(d[a]) === normalised(d[b])) return", "if (false as boolean) return"],
+  ["572 identical: only byte-identical texts count (case / spacing ignored no more)", D, "if (normalised(d[a]) === normalised(d[b])) return", "if (d[a] === d[b]) return"],
+  ["572 observed: any file is product code", D, "export const isProductPath = (p: string): boolean => classifyPath(p) === 'product';", "export const isProductPath = (p: string): boolean => true;"],
+  ["572 observed: a test file by name is product code", D, "|| TEST_FILE_CI.test(base) || TEST_FILE_CS.test(base)) return 'test';", ") return 'test';"],
+  ["572 observed: a test directory is product code", D, "if (segs.slice(0, -1).some((s) => TEST_DIR.test(s))", "if (false as boolean"],
+  ["572 observed: documentation is product code", D, "if (segs.slice(0, -1).some((s) => DOC_DIR.test(s)) || DOC_FILE.test(base)) return 'docs';", ""],
+  ["572 observed: a vendored file is product code", D, "if (segs.slice(0, -1).some((s) => NOT_SOURCE_DIR.test(s))) return 'vendored';", ""],
+  ["572 observed: a file ABSENT from the head is accepted", D, "if (here === true) return { ...base, file: c.path, head: ctx.head };", "if (here !== null) return { ...base, file: c.path, head: ctx.head };"],
+  ["572 observed: an UNREADABLE head is accepted", D, "if (here === true) return { ...base, file: c.path, head: ctx.head };", "if (here !== false) return { ...base, file: c.path, head: ctx.head };"],
+  ["572 observed: a ticket with no head is accepted", D, "if (!ctx.head) return refuse(", "if (false as boolean) return refuse("],
+  ["572 observed: no file:line is accepted", D, "if (cites.length === 0) return refuse(", "if (false as boolean) return refuse("],
+  ["572 observed: a file with no line number counts as a citation", D, "[A-Za-z0-9]{0,9}):(\\d+)(?:-\\d+)?/g;", "[A-Za-z0-9]{0,9})(?::(\\d+))?(?:-\\d+)?/g;"],
+  ["572 re-check: a stored demonstration is accepted without re-checking its texts / file", D, "return textRefusal(d) === null && isProductPath(d.file) && citationsOf(d.observed).some((c) => c.path === d.file);", "return true;"],
+  ["572 CLI: the observed file is never looked up (every file exists)", C, "return runner('git', ['cat-file', '-e', `${head}:${file}`], cwd).code === 0;", "return true;"],
+  ["572 CLI: state set gives applyTicketPatch no way to read the head", C, "if (typeof patch.findings === 'object' && patch.findings !== null && Object.values(patch.findings).some((f) =>", "if (false as boolean && Object.values(patch.findings as object).some((f) =>"],
+  ["572 CLI: state show lists no demonstrated finding", C, "const dem = switchesOf(s).minorPolicy === 'demonstrated' ? demonstratedShow(s) : '';", "const dem = '';"],
+  ["572 CLI: state show lists the demonstrated section under every policy", C, "const dem = switchesOf(s).minorPolicy === 'demonstrated' ? demonstratedShow(s) : '';", "const dem = demonstratedShow(s);"],
+  ["572 CLI: state show lists settled findings as open", C, "demonstratedFindings(t).filter((x) => x.end === 'open')", "demonstratedFindings(t)"],
+  ["572 CLI: the usage text does not state the limit", C, "`state show\\` lists the open demonstrated findings per ticket; \\`fanout closeout\\` lists each and how it ended. ${DEMONSTRATION_LIMIT}", "`state show\\` lists the open demonstrated findings per ticket; \\`fanout closeout\\` lists each and how it ended."],
+  ["572 closeout: no demonstrated section", CL, "const dem = switchesOf(state).minorPolicy === 'demonstrated' ? demonstratedCloseout(state) : null;", "const dem = null as ReturnType<typeof demonstratedCloseout> | null;"],
+  ["572 closeout: the demonstrated section under every policy", CL, "const dem = switchesOf(state).minorPolicy === 'demonstrated' ? demonstratedCloseout(state) : null;", "const dem = demonstratedCloseout(state);"],
+  ["572 closeout: a fixed finding does not say the head it was fixed on", SC, "d.end === 'fixed' ? `fixed on head ${d.ref}`", "d.end === 'fixed' ? 'fixed'"],
+  ["572 closeout: an open finding is not said STILL OPEN", SC, ": 'STILL OPEN');", ": 'ended');"],
+  ["572 closeout: the refused demonstrations are not listed", SC, "for (const r of refusedDemonstrations(t)) refused.push({ ticket, ...r });", ""],
+  ["572 skill: the demonstrated merge rule leaks under legacy", K, "<!--sw minorPolicy=demonstrated-->\n*A review round", "<!--sw minorPolicy=demonstrated|legacy-->\n*A review round"],
+  ["572 skill: the demonstrated deliver sentence leaks under spec", K, "<!--sw minorPolicy=demonstrated-->\nrefusal: inspect", "<!--sw minorPolicy=demonstrated|spec-->\nrefusal: inspect"],
+  ["572 skill: the demonstrated follow-up bullet leaks under refuse", K, "<!--sw minorPolicy=demonstrated-->\n- **At most ONE", "<!--sw minorPolicy=demonstrated|refuse-->\n- **At most ONE"],
+  ["572 skill: the reviewer brief leaks into the default render", K, "<!--sw minorPolicy=demonstrated-->\n**Reviewer brief", "<!--sw minorPolicy=demonstrated|legacy-->\n**Reviewer brief"],
+  ["572 skill: the reviewer brief is absent under demonstrated", K, "<!--sw minorPolicy=demonstrated-->\n**Reviewer brief", "<!--sw minorPolicy=spec-->\n**Reviewer brief"],
+  ["572 skill: demonstrated gets no merge-eligible disposition text", K, "<!--sw minorPolicy=legacy|demonstrated-->\nMERGE-ELIGIBLE", "<!--sw minorPolicy=legacy-->\nMERGE-ELIGIBLE"],
+  ["572 reference: the demonstrated section leaks under spec", F, "<!--sw minorPolicy=demonstrated-->\\n\\n**A finding with a demonstration", "<!--sw minorPolicy=demonstrated|spec-->\\n\\n**A finding with a demonstration"],
+  ["572 reference: the demonstrated section leaks into the default render", F, "<!--sw minorPolicy=demonstrated-->\\n\\n**A finding with a demonstration", "<!--sw minorPolicy=demonstrated|legacy-->\\n\\n**A finding with a demonstration"],
+  ["572 reference: the reviewer sentence is dropped", F, "never invent an input you did not trace. Coordinator:", "Coordinator:"],
+  ["572 reference: the limit sentence is dropped", F, "**Limit: code checks the demonstration is well formed, not that it is true — a wrong one costs one fix round or one coordinator decision.**", ""],
 ];
 
+// --only <substring>: run just the mutants whose name contains it (a light local loop); the control still runs.
+const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 const base = run();
 const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 48 && base.pass === base.tests;
 console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
@@ -185,6 +249,7 @@ if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true,
 
 let survived = 0, refused = 0;
 for (const [i, [name, file, from, to]] of mutants.entries()) {
+  if (only && !name.includes(only)) continue;
   const f = path.join(scratch, file);
   const orig = fs.readFileSync(f, 'utf8');
   const n = orig.split(from).length - 1;
