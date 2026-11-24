@@ -369,3 +369,63 @@ test('#564 review 2: the override is read from the COMMITTED head (an ignored / 
   assert.equal(mv.run('T1', '--head', headOf(mv.repo)).code, 0);
   assert.equal(mv.calls.length, 2, 'both packages are linted: the rename lists the old path too');
 });
+
+test('#564 fix round: the record rule also holds for a patch carrying a verdict (pass|approve); a resume write-back moving a nominated ticket onto a record-less tree demotes it to started; the nothing-found message and --help say `git add -f`', (t) => {
+  const r = rig(t, { checks: { checks: [] } });
+  const h = headOf(r.repo);
+  const v = r.set('T1', '--head', h, '--verdict', 'pass'); // no record yet: a pass verdict on an unchecked head
+  assert.equal(v.code, 1); assert.match(v.stderr, /no check record for this head/);
+  assert.equal(r.set('T1', '--head', h, '--verdict', 'fail').code, 0, 'a non-pass verdict is not a candidate');
+  assert.equal(r.run('T1', '--head', h).code, 0);
+  assert.equal(nominate(r).code, 0);
+  assert.equal(r.set('T1', '--verdict', 'pass').code, 0, 'with the record, the verdict form is accepted');
+  // the branch moves to another tree (a push after nomination): reconcile + write-back
+  fs.writeFileSync(path.join(r.repo, 'a.txt'), 'moved\n'); git(r.repo, 'commit', '-qam', 'moved');
+  git(r.repo, 'init', '-q', '--bare', path.join(r.home, 'origin.git'));
+  git(r.repo, 'remote', 'add', 'origin', path.join(r.home, 'origin.git'));
+  git(r.repo, 'push', '-q', 'origin', 'HEAD:refs/heads/b1');
+  git(r.repo, 'push', '-q', 'origin', 'master:refs/heads/master'); git(r.repo, 'fetch', '-q', 'origin');
+  const res = runFanout(['resume', '--run', 'r1', '--cwd', r.repo, '--no-fetch'], r.deps);
+  assert.match(res.stdout, /head moved onto a tree with no passing pre-nomination check record/);
+  const t1 = r.state().tickets.T1;
+  assert.equal(t1.status, 'started'); assert.equal(t1.verdict, 'none'); assert.equal(t1.head, headOf(r.repo));
+  const again = r.set('T1', '--verdict', 'pass');
+  assert.equal(again.code, 1, 'the short form no longer leaks a pass onto the unchecked head');
+  // the nothing-found message and the usage name the force-add
+  const n = rig(t, { base: { 'package.json': '{"scripts":{"test":"x"}}' } });
+  n.run('T1', '--head', headOf(n.repo));
+  assert.match(nominate(n).stderr, /git add -f \.orchestra\/pre-nomination-checks\.json/);
+  assert.match(runCheck(['--help'], n.deps).stdout, /git add -f \.orchestra\/pre-nomination-checks\.json/);
+});
+
+test('#564 fix round: a write-back onto a tree that DOES hold a passing record keeps the ticket nominated (no needless demotion)', (t) => {
+  const r = rig(t, { checks: { checks: [] } });
+  assert.equal(r.run('T1', '--head', headOf(r.repo)).code, 0);
+  assert.equal(nominate(r).code, 0);
+  fs.writeFileSync(path.join(r.repo, 'a.txt'), 'second\n'); git(r.repo, 'commit', '-qam', 'second');
+  assert.equal(r.run('T1', '--head', headOf(r.repo)).code, 0, 'the new tree is checked first');
+  git(r.repo, 'init', '-q', '--bare', path.join(r.home, 'origin.git'));
+  git(r.repo, 'remote', 'add', 'origin', path.join(r.home, 'origin.git'));
+  git(r.repo, 'push', '-q', 'origin', 'HEAD:refs/heads/b1'); git(r.repo, 'push', '-q', 'origin', 'master:refs/heads/master'); git(r.repo, 'fetch', '-q', 'origin');
+  runFanout(['resume', '--run', 'r1', '--cwd', r.repo, '--no-fetch'], r.deps);
+  const t1 = r.state().tickets.T1;
+  assert.equal(t1.status, 'nominated'); assert.equal(t1.head, headOf(r.repo));
+});
+
+test('#564 verifier MINOR: a status-only `--status nominated` (head recorded earlier) is refused; a FAILED same-tree record is re-run (a flaky retry can pass); a timeout kill cannot be ignored by the command (SIGKILL)', (t) => {
+  const r = rig(t, { checks: { checks: [{ run: 'lint' }] }, exec: (_run, n) => ({ exit: n === 1 ? 1 : 0 }) });
+  const h = headOf(r.repo);
+  assert.equal(r.set('T1', '--status', 'started', '--branch', 'b1', '--head', h).code, 0);
+  const s = r.set('T1', '--status', 'nominated');
+  assert.equal(s.code, 1, 'no --head in the patch: the recorded head still needs its record'); assert.match(s.stderr, /no check record for this head/);
+  assert.equal(r.run('T1').code, 2);
+  assert.equal(r.set('T1', '--status', 'nominated').code, 1, 'a failing record does not admit it either');
+  assert.equal(r.run('T1').code, 0, 'the same tree, a FAILED record: the checks run again');
+  assert.equal(r.calls.length, 2);
+  assert.equal(r.set('T1', '--status', 'nominated').code, 0);
+  const k = rig(t, { checks: { checks: [{ run: 'trap "" TERM; sleep 15', timeoutSec: 1 }] } });
+  k.deps.exec = defaultCheckExec;
+  const t0 = Date.now();
+  assert.equal(k.run('T1', '--head', headOf(k.repo)).code, 2);
+  assert.ok(Date.now() - t0 < 10_000, 'a command that ignores SIGTERM is still killed at the limit');
+});

@@ -89,7 +89,7 @@ export function nominationRefusal(t: Pick<TicketState, 'tree' | 'head' | 'checks
   const rec = t.tree ? t.checks?.[t.tree] : undefined;
   if (!rec) return `${ticket}: no check record for this head${t.head ? ` (${t.head.slice(0, 8)}${t.tree ? `, tree ${t.tree.slice(0, 8)}` : ', tree unreadable'})` : ''} — preNominationChecks is on for this run: run \`orchestra fanout check ${ticket} --head ${t.head?.slice(0, 12) ?? '<sha>'}\` from a clean worktree at that head, then nominate`;
   if (rec.ok) return null;
-  if (rec.nothingFound) return `${ticket}: the pre-nomination checks found NOTHING to run for this head (tree ${rec.tree.slice(0, 8)}): ${rec.changed} changed file(s), no package.json with a \`lint\` script above them and no ${CHECKS_FILE} — add a lint script, or write the override file (an explicit {"checks":[]} is the only way to nominate with no check), then run \`orchestra fanout check ${ticket}\` again`;
+  if (rec.nothingFound) return `${ticket}: the pre-nomination checks found NOTHING to run for this head (tree ${rec.tree.slice(0, 8)}): ${rec.changed} changed file(s), no package.json with a \`lint\` script above them and no ${CHECKS_FILE} — add a lint script, or write the override file (an explicit {"checks":[]} is the only way to nominate with no check), then COMMIT it (the \`.orchestra/\` folder is gitignored in an Orchestra worktree: \`git add -f ${CHECKS_FILE}\`) and run \`orchestra fanout check ${ticket}\` again`;
   const bad = rec.results.filter((r) => r.exit !== 0 || r.timedOut);
   return `${ticket}: the pre-nomination checks FAILED at this head (tree ${rec.tree.slice(0, 8)}, recorded ${rec.at}) — ${bad.map(failureLine).join('\n')}\nfix, commit, run \`orchestra fanout check ${ticket}\` again`;
 }
