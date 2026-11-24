@@ -74,7 +74,7 @@ function world(t: { after: (fn: () => void) => void }): World {
     };
     return dispatchFanoutAcceptance(call.body, hd);
   };
-  runFanout(['state', 'init', '--run', 'r1', '--repo', 'o/r'], deps('r1'));
+  runFanout(['state', 'init', '--run', 'r1', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec'], deps('r1'));
   const wd: World = {
     root, home, origin, writer, cand, env, deps, spawned, posts, host,
     state: () => readState(stateFile(home, 'r1')),
@@ -132,7 +132,7 @@ test('register must-PASS (no flow): a ticket WITHOUT --spec owes no writer — n
   const root = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'accept-515-nospec-'));
   try {
     const d: FanoutDeps = { env: { ORCHESTRA_HOME: root, ORCHESTRA_WS_ID: 'r1' }, cwd: root, runner: defaultRunner, now: () => NOW, readStdin: () => '' };
-    runFanout(['state', 'init', '--run', 'r1'], d);
+    runFanout(['state', 'init', '--run', 'r1', '--switch', 'acceptance=on,minorPolicy=spec'], d);
     const r = runFanout(['state', 'set', 'T9', '--status', 'started'], d);
     assert.equal(r.code, 0);
     assert.equal(r.hostCalls, undefined);
@@ -627,7 +627,7 @@ test('stuck ticket: a claim that never settled (app died mid-spawn) is retaken a
 
 test('M1 must-FAIL (reviewer input A): a writer cannot freeze a ticket of ANOTHER run — not even a no-spec one, not even creating a new ticket there', async (t) => {
   const w = await registered(t);
-  runFanout(['state', 'init', '--run', 'r2'], w.deps('r2'));
+  runFanout(['state', 'init', '--run', 'r2', '--switch', 'acceptance=on,minorPolicy=spec'], w.deps('r2'));
   runFanout(['state', 'set', 'TX', '--status', 'started'], w.deps('r2'));
   const before = readState(stateFile(w.home, 'r2'))!;
   for (const ticket of ['TX', 'ZZ']) {

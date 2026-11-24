@@ -9,7 +9,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../cli/help.ts';
-import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME } from './verified-fanout-skill.ts';
+import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL_NAME, renderVerifiedFanoutSkill } from './verified-fanout-skill.ts';
+/** #559: the defaults changed (acceptance off, minorPolicy legacy) — these checks read the FULL text, every feature on (the strictest reading: word budget, pointers, rule pins). The default render is pinned in cli/fanout-switches.test.ts. */
+const FULL = { acceptance: 'on', minorPolicy: 'spec' } as const;
+const VERIFIED_FANOUT_SKILL = renderVerifiedFanoutSkill(FULL);
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
 import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
@@ -557,11 +560,11 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
   const skills = mkHomeScratch('vf-install-');
   try {
     const dir = path.join(skills, 'verified-fanout');
-    assert.equal(await installVerifiedFanoutSkill(skills), 'written');
+    assert.equal(await installVerifiedFanoutSkill(skills, undefined, { acceptance: 'on', minorPolicy: 'spec' }), 'written');
     assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
     assert.equal(fs.readFileSync(path.join(dir, 'references', 'traps.md'), 'utf8'), VERIFIED_FANOUT_FILES.find((f) => f.path === 'references/traps.md')!.content);
     // #474: the v2 references land too (every pointer of SKILL.md resolves in the installed dir)
-    for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.equal(fs.readFileSync(path.join(dir, f.path), 'utf8'), renderSwitchBlocks(f.content, {}), f.path); // #554: the default-switch render
+    for (const f of VERIFIED_FANOUT_V2_REFERENCES) assert.equal(fs.readFileSync(path.join(dir, f.path), 'utf8'), renderSwitchBlocks(f.content, FULL), f.path); // #554: the rendered text, every feature on (#559: not the default)
     for (const m of VERIFIED_FANOUT_SKILL.matchAll(/(?<![\w/-])(references\/[a-z][a-z-]*\.md|scripts\/ledger-set)(?![\w-])/g)) assert.ok(fs.existsSync(path.join(dir, m[1])), `${m[1]} (pointed at by SKILL.md) exists on disk after the install`);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0);
     // a previous generated copy + a corrupted reference + a lost exec bit → all restored
@@ -569,7 +572,7 @@ test('installVerifiedFanoutSkill: fresh dir gets SKILL.md + the files; a marked 
     fs.writeFileSync(path.join(dir, 'references', 'prose.md'), 'corrupt');
     fs.writeFileSync(path.join(dir, 'references', 'fleet-bus.md'), 'corrupt');
     fs.chmodSync(path.join(dir, 'scripts', 'ledger-set'), 0o644);
-    assert.equal(await installVerifiedFanoutSkill(skills), 'written');
+    assert.equal(await installVerifiedFanoutSkill(skills, undefined, { acceptance: 'on', minorPolicy: 'spec' }), 'written');
     assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), VERIFIED_FANOUT_SKILL);
     assert.deepEqual(filesDrift(VERIFIED_FANOUT_FILES.map((f) => ({ path: f.path, content: fs.readFileSync(path.join(dir, f.path), 'utf8') }))), []);
     assert.ok((fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0, 'exec bit restored on a rewrite');

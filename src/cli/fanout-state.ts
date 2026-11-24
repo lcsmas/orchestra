@@ -108,13 +108,15 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            (finding-unsettled) like a MAJOR until --settle <id>=fixed:<head> (code) / --settle <id>=pr-body:<what the PR body says now> (kind process: how the work is REPORTED — never a code
            round, never a --fixes target) or the coordinator's --decide <id>=<text> (scribes: --settle / --decide / --spec-text denied). It may be named in --fixes (a process finding never).
            LIMIT: code checks the sentence is IN the spec, not that it is really broken — judging that stays with the reviewer.
-  --switch (#554) one switch per feature, printed by \`state show\` and FROZEN for the run at its first spawn (the first ticket past todo, the first implementer / verifier / accept- writer recorded;
+  --switch (#554, defaults #559) one switch per feature, printed by \`state show\` and FROZEN for the run at its first spawn (the first ticket past todo, the first implementer / verifier / accept- writer recorded;
            after that any change is refused with the reason; an unknown name or value is refused):
              earlyGate=on|off      on (default): a dependent is nominated/gated on its upstream's verified candidate (#506); off: it waits for the upstream's MERGE.
-             acceptance=on|off     on (default): --spec spawns the accept- writer, the gate / deliver ask for the frozen tests (#510, #515); off: no writer spawned, no frozen test asked.
-             minorPolicy=legacy|refuse|spec   legacy: follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec (default): #552.
+             acceptance=on|off     off (default): no writer spawned, no frozen test asked; on: --spec spawns the accept- writer, the gate / deliver ask for the frozen tests (#510, #515).
+             minorPolicy=legacy|refuse|spec   legacy (default): follow-ups unrestricted (before #514); refuse: #514 (a follow-up needs a BLOCKING|MAJOR finding); spec: #552 (a MINOR quoting a spec sentence blocks).
+           Defaults = the v0.5.375 profile (#559: they were acceptance=on, minorPolicy=spec in v0.5.378). A run that had ALREADY spawned when they changed keeps the old ones for every switch it never set (never re-read mid-run);
+           \`state show\` prints each switch as <name>=<value> (default | explicit | default kept from v0.5.378 (run started before the defaults change)).
            The installed skill follows the switches of the coordinator's DEFAULT run id (its own workspace id); a second vague under \`--run <other id>\` obeys its switches in every verb, but its members' skill text is rendered from the default run's.
-           Accepted gap: a run on the defaults persists no freeze record, so a ticket moved back to todo (nothing recorded, no child) lets a switch change again; a real spawned child still refuses it (host check + recorded implementer).
+           Accepted gap: a run that set no switch persists no freeze record, so a ticket moved back to todo (nothing recorded, no child) lets a switch change again; a real spawned child still refuses it (host check + recorded implementer).
            Choose them BEFORE the first spawn (\`state init --switch …\` or \`state set --switch …\`): an agent spawned by hand and not yet recorded in the state is not seen by the freeze.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
 

@@ -27,7 +27,7 @@ try {
   });
   const { store } = await import(`${REPO}/src/main/store.ts`);
   const { installOrchestraHooks } = await import(`${REPO}/src/main/workspaces.ts`);
-  const { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_MARKER } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
+  const { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_NAME, VERIFIED_FANOUT_MARKER, ACCEPTANCE_REFERENCE_PATH, verifiedFanoutReferenceWanted } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
   const { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } = await import(`${REPO}/src/shared/verified-fanout-files.ts`);
   const { renderSwitchBlocks } = await import(`${REPO}/src/shared/fanout-switch-render.ts`); // #554: an installed .md is the default-switch render of the embedded text
   await store.load?.();
@@ -42,7 +42,7 @@ try {
   await installOrchestraHooks(wt);
   out.landed = fs.existsSync(file) && fs.readFileSync(file, 'utf8') === VERIFIED_FANOUT_SKILL;
   const dir = path.join(skills, VERIFIED_FANOUT_SKILL_NAME);
-  out.filesLanded = VERIFIED_FANOUT_FILES.length === 5 && VERIFIED_FANOUT_V2_REFERENCES.length >= 5 && [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES].every((f) => fs.readFileSync(path.join(dir, f.path), 'utf8') === (f.path.endsWith('.md') ? renderSwitchBlocks(f.content, {}) : f.content));
+  out.filesLanded = VERIFIED_FANOUT_FILES.length === 5 && VERIFIED_FANOUT_V2_REFERENCES.length >= 5 && [...VERIFIED_FANOUT_FILES, ...VERIFIED_FANOUT_V2_REFERENCES].filter((f) => verifiedFanoutReferenceWanted(f.path, {})).every((f) => fs.readFileSync(path.join(dir, f.path), 'utf8') === (f.path.endsWith('.md') ? renderSwitchBlocks(f.content, {}) : f.content)) && !fs.existsSync(path.join(dir, ACCEPTANCE_REFERENCE_PATH)); // #559: the default run (acceptance off) ships no acceptance reference
   out.ledgerSetExecutable = (fs.statSync(path.join(dir, 'scripts', 'ledger-set')).mode & 0o111) !== 0;
   out.siblingsKept = ['orchestra-spawn', 'orchestra-comms', 'orchestra-workspace-admin', 'orchestra-rename', 'orchestra-status', 'orchestra-browser'].every((n) => fs.existsSync(path.join(skills, n, 'SKILL.md')));
 

@@ -145,7 +145,7 @@ function hostWorld(t: { after: (fn: () => void) => void }, o: { harness?: string
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const file = stateFile(home, 'r1');
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  let s = newState('r1', { now: NOW, repo: 'o/r', target: o.target ?? 'master', harness: o.harness });
+  let s = newState('r1', { switches: { acceptance: 'on' }, now: NOW, repo: 'o/r', target: o.target ?? 'master', harness: o.harness });
   s = applyTicketPatch(s, 'T1', { spec: 'docs/spec.md#T1' }, NOW);
   fs.writeFileSync(file, JSON.stringify(s));
   const spawned: Array<{ task: string; repoPath?: string }> = [];

@@ -13,7 +13,7 @@ const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 
 function base(): FanoutState {
-  let s = newState('run1', { now: T });
+  let s = newState('run1', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'A', { status: 'started', branch: 'a' }, T);
   s = applyTicketPatch(s, 'B', { dependsOn: ['A'], frozenInterface: '#471 §Interfaces 1', status: 'started', branch: 'b' }, T);
   return s;
@@ -26,7 +26,7 @@ test('a dependent may START against a frozen interface', () => {
 });
 
 test('MUST-FAIL: a dependent cannot START with an unmerged upstream and no frozen interface', () => {
-  const s = applyTicketPatch(newState('r', { now: T }), 'A', { status: 'started' }, T);
+  const s = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'A', { status: 'started' }, T);
   assert.throws(() => applyTicketPatch(s, 'B', { dependsOn: ['A'], status: 'started' }, T), /no frozen interface/);
 });
 
@@ -47,7 +47,7 @@ test('nominate is accepted once the upstream is merged (positive control)', () =
 });
 
 test('an unknown upstream counts as not merged', () => {
-  const s = newState('r', { now: T });
+  const s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   assert.throws(() => applyTicketPatch(s, 'B', { dependsOn: ['ghost'], status: 'nominated' }, T), /ghost/);
 });
 
@@ -114,7 +114,7 @@ test('updateState: a held lock blocks a second writer; a stale lock is broken', 
 // ── reconcile ────────────────────────────────────────────────────────────────────────────────────────────
 
 function withA(status: 'nominated' | 'gated' | 'merged', extra: Record<string, unknown> = {}): FanoutState {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'A', { branch: 'a', head: SHA_A, pr: 7, status: 'started' }, T);
   return applyTicketPatch(s, 'A', { status, ...extra }, T);
 }
@@ -184,7 +184,7 @@ test('a nominated ticket whose upstream reality contradicts is flagged', () => {
 });
 
 test('classification table: todo/started/nominated/gated verdicts', () => {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'U', { status: 'started', branch: 'u' }, T);
   s = applyTicketPatch(s, 'W', { dependsOn: ['U'] }, T);
   s = applyTicketPatch(s, 'F', { dependsOn: ['U'], frozenInterface: 'ref' }, T);
@@ -199,7 +199,7 @@ test('classification table: todo/started/nominated/gated verdicts', () => {
 });
 
 test('a STARTED branch cut from the target tip is not "merged" (ancestry counts only once nominated); a moving started head is not a divergence', () => {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'A', { branch: 'a', head: SHA_A, status: 'started' }, T);
   const fresh = reconcile(s, { A: { branchHead: SHA_B, mergedIntoTarget: true } });
   assert.deepEqual(fresh.divergences, []);
@@ -253,7 +253,7 @@ test('review MINOR 2: merged at a head the verdict did not cover is a divergence
 });
 
 test('review MINOR 3: nominated|gated or a pass/approve verdict without a recorded head is refused', () => {
-  const s = applyTicketPatch(newState('r', { now: T }), 'C', { branch: 'c', status: 'started' }, T);
+  const s = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'C', { branch: 'c', status: 'started' }, T);
   assert.throws(() => applyTicketPatch(s, 'C', { status: 'gated' }, T), /needs a recorded head/);
   assert.throws(() => applyTicketPatch(s, 'C', { status: 'nominated' }, T), /needs a recorded head/);
   assert.throws(() => applyTicketPatch(s, 'C', { verdict: 'pass' }, T), /needs a recorded head/);
@@ -312,7 +312,7 @@ test('mergedAccepted guard sees the NEW status: un-merging with the override sti
 const SHA_C = 'c'.repeat(40);
 /** A nominated (or gated) with head SHA_A; B depends on A, started. */
 function stacked(aStatus: 'nominated' | 'gated' = 'nominated', aExtra: Record<string, unknown> = {}): FanoutState {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'A', { branch: 'a', head: SHA_A, pr: 7, status: aStatus, ...aExtra }, T);
   return applyTicketPatch(s, 'B', { dependsOn: ['A'], frozenInterface: 'fi', branch: 'b', head: SHA_B, pr: 8, status: 'started' }, T);
 }
@@ -341,7 +341,7 @@ test('#506 must-FAIL: early nominate/gate is refused without builtOn, with a sta
     const bad = stacked('gated', { verdict: v });
     assert.throws(() => applyTicketPatch(bad, 'B', { status: 'nominated', builtOn: { A: SHA_A } }, T), new RegExp(`A's verdict is ${v}`));
   }
-  const started = applyTicketPatch(newState('r', { now: T }), 'A', { status: 'started', branch: 'a' }, T);
+  const started = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'A', { status: 'started', branch: 'a' }, T);
   const sb = applyTicketPatch(started, 'B', { dependsOn: ['A'], head: SHA_B, frozenInterface: 'x' }, T);
   assert.throws(() => applyTicketPatch(sb, 'B', { status: 'nominated', builtOn: {} }, T), /A is started/);
   assert.throws(() => applyTicketPatch(s, 'B', { builtOn: { Z: SHA_A } }, T), /builtOn names Z, which is not in dependsOn/);
@@ -456,7 +456,7 @@ test('#506 V3: an upstream with NO recorded head (hand-edited state) is ineligib
 import { followUpRefusal } from './fanout-state.ts';
 /** T-1 merged at SHA_A with findings F-MAJ (MAJOR), F-BLK (BLOCKING), F-MIN (MINOR); T-2 is an unrelated started ticket. */
 function merged514(): FanoutState {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'T-1', { status: 'merged', branch: 't1', head: SHA_A, findings: { 'F-MAJ': 'MAJOR', 'F-BLK': 'BLOCKING', 'F-MIN': 'MINOR' } }, T);
   return applyTicketPatch(s, 'T-2', { status: 'started', branch: 't2' }, T);
 }
@@ -571,7 +571,7 @@ test('#514 review M2 must-PASS: a fresh branch under a fresh id, a duplicate rec
   assert.equal(applyTicketPatch(s, 'T-1-fu', { status: 'nominated', branch: 't1', head: SHA_B, followUpOf: 'T-1', fixes: ['F-MAJ'] }, T).tickets['T-1-fu'].status, 'nominated');
 });
 test('#514 review M3 (minor 3): a normal ticket merged WITHOUT a head is not consulted by the rule (gate/deliver unchanged)', () => {
-  const s = applyTicketPatch(newState('r', { now: T }), 'T-9', { status: 'merged', branch: 'plain' }, T);
+  const s = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-9', { status: 'merged', branch: 'plain' }, T);
   assert.equal(s.tickets['T-9'].mergedHead, null);
   assert.equal(followUpRefusal(s, 'T-9', SHA_B, 'plain'), null);
   assert.equal(followUpRefusal(s, 'T-9', SHA_A), null);
@@ -581,7 +581,7 @@ test('#514 review M3 (minor 3): a normal ticket merged WITHOUT a head is not con
 const TREE_A = '1'.repeat(40);
 const TREE_B = '2'.repeat(40);
 function mergedWithTree(): FanoutState {
-  let s = newState('r', { now: T });
+  let s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   s = applyTicketPatch(s, 'T-1', { status: 'merged', branch: 't1', head: SHA_A }, T, { tree: TREE_A });
   return s;
 }

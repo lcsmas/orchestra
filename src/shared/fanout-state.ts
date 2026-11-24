@@ -137,8 +137,10 @@ export interface FanoutState {
   repo: string | null;
   /** #538 — the repo's own integration test entry, DECLARED by the coordinator (a path and/or the command that runs it; one line). Absent = not declared (the key is never written as null, so an older binary reads a state that declares nothing): the writer's brief falls back to discovery (shared/fanout-harness.ts). */
   harness?: string;
-  /** #554 — one switch per feature, frozen for the run (see `switchesOf`). Absent = every default (never written as null: an older binary reads a state that sets none). */
-  switches?: Switches;
+  /** #554 — the switches the run SET explicitly (see `switchesOf`; since #559 only the explicit ones — a V378 frozen state keeps its full set). Absent = every default of `switchDefaults` (never written as null). */
+  switches?: Partial<Switches>;
+  /** #559 — which default set an unset switch takes: `v0.5.375` (earlyGate on, acceptance off, minorPolicy legacy) or `v0.5.378` (on/on/spec — a run that had already spawned when the defaults changed keeps it). Stamped by `stampDefaults` before any write; absent = not stamped yet (read through `defaultsProfileOf`). */
+  switchDefaults?: DefaultsProfile;
   /** #554 — set at the run's FIRST SPAWN (first ticket past `todo`, first implementer/verifier/acceptor recorded — `firstSpawnSignal`): from then on no switch can change. */
   switchesFrozen?: { at: string; by: string };
   tickets: Record<string, TicketState>;
@@ -153,13 +155,37 @@ export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
 export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' }
 /** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
  *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 (default). */
-export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' };
-/** The switches in force for `state`: the stored ones over the defaults (a state that sets none = all defaults). The ONE reader — every gate / spawn / skill render goes through it. */
-export function switchesOf(state: { switches?: Partial<Switches> } | null | undefined): Switches {
-  return { ...DEFAULT_SWITCHES, ...(state?.switches ?? {}) };
+export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy' }; // #559: the v0.5.375 profile
+/** #559 — the defaults of v0.5.378 (#554): kept for a run that had already spawned when the defaults changed (never re-read with other defaults mid-run). */
+export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec' };
+export type DefaultsProfile = 'v0.5.375' | 'v0.5.378';
+export const DEFAULTS_PROFILES: Readonly<Record<DefaultsProfile, Readonly<Switches>>> = { 'v0.5.375': DEFAULT_SWITCHES, 'v0.5.378': V378_DEFAULT_SWITCHES };
+type SwitchHolder = { switches?: Partial<Switches>; switchDefaults?: DefaultsProfile; switchesFrozen?: unknown; tickets?: FanoutState['tickets'] };
+/** #559 (ledger D1) — the default set an UNSET switch of `state` takes: the stamped one; else (not stamped — a state written before #559) `v0.5.378` once the run is frozen / has spawned, `v0.5.375` while it has not. */
+export function defaultsProfileOf(state: SwitchHolder | null | undefined): DefaultsProfile {
+  if (state?.switchDefaults) return state.switchDefaults;
+  return state && (state.switchesFrozen || (state.tickets && firstSpawnSignal({ tickets: state.tickets } as FanoutState))) ? 'v0.5.378' : 'v0.5.375';
+}
+/** #559 — pin the defaults profile on the state BEFORE a writer touches it: an unspawned run gets the new one, a spawned one keeps v0.5.378. Idempotent. */
+export function stampDefaults(state: FanoutState): FanoutState {
+  return state.switchDefaults ? state : { ...state, switchDefaults: defaultsProfileOf(state) };
+}
+/** The switches in force for `state`: the stored ones over the defaults of its profile (a state that sets none = all defaults). The ONE reader — every gate / spawn / skill render goes through it. */
+export function switchesOf(state: SwitchHolder | null | undefined): Switches {
+  return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)], ...(state?.switches ?? {}) };
+}
+/** #559 (ledger D2) — where `name`'s value comes from: `explicit` (stored, and — for a v0.5.378 run — different from that profile's default), `default`, or `default-kept-v0.5.378` (a run that had spawned when the defaults changed). */
+export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit' | 'default' | 'default-kept-v0.5.378' {
+  const profile = defaultsProfileOf(state);
+  const stored = state.switches?.[name];
+  if (profile === 'v0.5.378') { // a V378 frozen set stores every key: only a changed one was chosen; one both profiles share (earlyGate) was not kept from anything
+    if (stored !== undefined && stored !== V378_DEFAULT_SWITCHES[name]) return 'explicit';
+    return V378_DEFAULT_SWITCHES[name] === DEFAULT_SWITCHES[name] ? 'default' : 'default-kept-v0.5.378';
+  }
+  return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchesFrozen', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
@@ -200,7 +226,7 @@ export function stateFile(home: string, run: string): string {
 }
 
 export function newState(run: string, opts: { target?: string; repo?: string | null; harness?: string | null; switches?: Partial<Switches>; now: string }): FanoutState {
-  const base: FanoutState = { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, ...withHarness(harnessOf(opts.harness ?? null)), tickets: {}, updatedAt: opts.now, reconciledAt: null };
+  const base: FanoutState = { version: STATE_VERSION, run: assertRunId(run), target: opts.target ?? 'master', repo: opts.repo ?? null, ...withHarness(harnessOf(opts.harness ?? null)), switchDefaults: 'v0.5.375', tickets: {}, updatedAt: opts.now, reconciledAt: null }; // #559: a new run is born on the new defaults
   return opts.switches && Object.keys(opts.switches).length ? setSwitches(base, opts.switches, opts.now) : base; // #554: `init --switch` is the earliest moment to choose
 }
 
@@ -227,12 +253,16 @@ function switchValueOf(name: string, v: unknown): Switches[SwitchName] {
   if (typeof v !== 'string' || !allowed.includes(v)) throw new FanoutStateError(`switch ${name} must be ${allowed.join('|')} (got ${JSON.stringify(v)})`);
   return v as Switches[SwitchName];
 }
-/** A stored `switches` object: every key known, every value in its table, the missing ones filled with the default. */
-function switchesParse(v: unknown): Switches {
+/** A stored `switches` object: every key known, every value in its table; a missing one stays missing (= the profile's default, #559). */
+function switchesParse(v: unknown): Partial<Switches> {
   if (!isObj(v)) throw new FanoutStateError('switches must be an object {earlyGate, acceptance, minorPolicy}');
-  const out: Record<string, unknown> = { ...DEFAULT_SWITCHES };
+  const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v)) out[k] = switchValueOf(k, val);
-  return out as unknown as Switches;
+  return out as Partial<Switches>;
+}
+function switchDefaultsOf(v: unknown): DefaultsProfile {
+  if (v !== 'v0.5.375' && v !== 'v0.5.378') throw new FanoutStateError(`switchDefaults must be "v0.5.375" or "v0.5.378" (got ${JSON.stringify(v)})`);
+  return v;
 }
 function switchesFrozenOf(v: unknown): { at: string; by: string } {
   if (!isObj(v)) throw new FanoutStateError('switchesFrozen must be {at, by}');
@@ -265,28 +295,29 @@ export function firstSpawnSignal(state: FanoutState): string | null {
   }
   return null;
 }
-/** Freeze the switches (the full set, defaults filled in) at the first spawn; a no-op once frozen or while nothing has spawned. Applied by every state writer a spawn goes through (applyTicketPatch, claimAcceptor). */
+/** Record the freeze at the first spawn; a no-op once frozen or while nothing has spawned. Applied by every state writer a spawn goes through (applyTicketPatch, claimAcceptor).
+ *  A run that set nothing persists NOTHING (the lock is recomputed from the tickets by `switchesLockedWhy`); one that set a switch keeps its explicit values and gains the record. */
 export function freezeAtFirstSpawn(state: FanoutState, now: string): FanoutState {
   if (state.switchesFrozen) return state;
   const signal = firstSpawnSignal(state);
-  if (signal && isDefaultSwitches(switchesOf(state))) return state; // a run on the defaults persists NOTHING (a pre-#554 binary still reads its state; the lock is recomputed from the tickets by `switchesLockedWhy`)
-  return signal ? { ...state, switches: switchesOf(state), switchesFrozen: { at: now, by: `first spawn of the run: ${signal}` } } : state;
+  if (!signal) return state;
+  if (!state.switches || Object.keys(state.switches).length === 0) return state;
+  return { ...state, switchesFrozen: { at: now, by: `first spawn of the run: ${signal}` } };
 }
-export const isDefaultSwitches = (sw: Switches): boolean => SWITCH_NAMES.every((n) => sw[n] === DEFAULT_SWITCHES[n]);
 /** Why the switches cannot change now (null = they can): frozen on record, or the run already spawned (a state older than #554 has no record). */
 export function switchesLockedWhy(state: FanoutState): string | null {
   if (state.switchesFrozen) return `frozen ${state.switchesFrozen.at} (${state.switchesFrozen.by})`;
   const signal = firstSpawnSignal(state);
   return signal ? `the run already spawned (${signal})` : null;
 }
-/** `state set --switch …` / `state init --switch …`: pure. Refused after the first spawn (whatever the value, even an unchanged one) and for an unknown name / value. */
+/** `state set --switch …` / `state init --switch …`: pure. Refused after the first spawn (whatever the value, even an unchanged one) and for an unknown name / value.
+ *  #559: stores the EXPLICIT values only (one equal to the default is still explicit), after stamping the defaults profile. */
 export function setSwitches(state: FanoutState, assign: Partial<Switches>, now: string): FanoutState {
   for (const [k, v] of Object.entries(assign)) switchValueOf(k, v);
   const locked = switchesLockedWhy(state);
   if (locked) throw new FanoutStateError(`the switches of run ${state.run} cannot change: ${locked} — a switch is fixed for the run from its first spawn (start a new run to change one)`);
-  const { switches: _prev, ...rest } = state;
-  const next = { ...switchesOf(state), ...assign };
-  return { ...rest, ...(isDefaultSwitches(next) ? {} : { switches: next }), updatedAt: now }; // all defaults = nothing stored (an older binary reads it)
+  const { switches: prev, ...rest } = stampDefaults(state);
+  return { ...rest, switches: { ...(prev ?? {}), ...assign }, updatedAt: now };
 }
 /** #554 — the switches in force for run `run` under `home`: the state file's, or the defaults when there is none / it cannot be read (a skill render must never fail an install). */
 export function switchesForRun(home: string, run: string): Switches {
@@ -297,11 +328,12 @@ export function switchesStamp(version: string, sw: Switches): string {
   const diff = SWITCH_NAMES.filter((n) => sw[n] !== DEFAULT_SWITCHES[n]).map((n) => `${n}=${sw[n]}`);
   return diff.length ? `${version}+sw:${diff.join(',')}` : version;
 }
-/** One line for `state show`: the values in force and whether they can still change. */
+/** One line for `state show`: each switch's value in force and where it comes from (#559), then whether they can still change. */
 export function switchesLine(state: FanoutState): string {
   const sw = switchesOf(state);
   const locked = switchesLockedWhy(state);
-  return `switches (#554): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]}`).join(' ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
+  const label = (n: SwitchName): string => { const src = switchSourceOf(state, n); return src === 'default-kept-v0.5.378' ? 'default kept from v0.5.378 (run started before the defaults change)' : src; };
+  return `switches (#554, #559): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]} (${label(n)})`).join(' · ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -716,6 +748,7 @@ export function parseState(raw: unknown): FanoutState {
     repo: strOrNull(raw.repo, 'repo'),
     ...withHarness(harnessOf(raw.harness)),
     ...(raw.switches !== undefined ? { switches: switchesParse(raw.switches) } : {}),
+    ...(raw.switchDefaults !== undefined ? { switchDefaults: switchDefaultsOf(raw.switchDefaults) } : {}),
     ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
@@ -893,7 +926,8 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
  *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
  *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
-export function applyTicketPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {}): FanoutState {
+export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null } = {}): FanoutState {
+  const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
   const prev: TicketState = state.tickets[id] ?? blankTicket(now);
@@ -1074,7 +1108,8 @@ export function updateState(file: string, mutate: (cur: FanoutState | null) => F
     }
   }
   try {
-    const next = mutate(readState(file));
+    const cur = readState(file);
+    const next = mutate(cur && stampDefaults(cur)); // #559: stamped BEFORE any writer's patch
     writeStateAtomic(file, next);
     return next;
   } finally {

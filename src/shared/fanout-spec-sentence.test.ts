@@ -13,7 +13,7 @@ const SENT = 'The endpoint returns 404 for an unknown id.';
 
 /** T-1: spec text captured, a started ticket (not merged) with findings recorded through the same path `state set` uses. */
 function open552(): FanoutState {
-  const s = newState('r', { now: T });
+  const s = newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T });
   return applyTicketPatch(s, 'T-1', { status: 'started', branch: 't1', spec: 'spec.md' }, T, { specText: SPEC });
 }
 const rec = (s: FanoutState, findings: Record<string, unknown>, id = 'T-1') => applyTicketPatch(s, id, { findings }, T);
@@ -41,7 +41,7 @@ test('#552 persistence: a severity-only record is WRITTEN as the legacy string (
     assert.equal(raw.tickets['T-1'].specText, SPEC);
     assert.deepEqual(readState(file), s);
     // no captured text ⇒ the key is not written at all (a build older than #552 refuses an unknown field: such a state stays readable by it)
-    const bare = applyTicketPatch(newState('r', { now: T }), 'T-2', { status: 'started' }, T);
+    const bare = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-2', { status: 'started' }, T);
     writeStateAtomic(file, bare);
     assert.ok(!('specText' in JSON.parse(fs.readFileSync(file, 'utf8')).tickets['T-2']));
     writeStateAtomic(file, s);
@@ -65,7 +65,7 @@ test('#552 must-FAIL: a specSentence not in the captured spec / case-folded / re
     assert.throws(() => rec(s, { 'F-1': { severity: 'MINOR', specSentence: sentence } }), /specSentence/, JSON.stringify(sentence));
   }
   assert.throws(() => rec(s, { 'F-1': { severity: 'MINOR', specSentence: ` ${SENT}` } }), /specSentence is not a literal sentence/, 'no trim of the sentence');
-  const noText = applyTicketPatch(newState('r', { now: T }), 'T-9', { status: 'started', spec: 'https://x/y' }, T);
+  const noText = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-9', { status: 'started', spec: 'https://x/y' }, T);
   assert.equal(noText.tickets['T-9'].specText, null);
   assert.throws(() => rec(noText, { 'F-1': { severity: 'MINOR', specSentence: SENT } }, 'T-9'), /no spec text was captured/);
   assert.equal(Object.keys(s.tickets['T-1'].findings).length, 0);
@@ -144,7 +144,7 @@ test('#552 process finding: blocks until settled by a PR-body edit (never `fixed
 
 /** T-1 merged with spec text; findings on it; follow-ups declared against it. */
 function mergedWith(findings: Record<string, unknown>): FanoutState {
-  let s = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', branch: 't1', spec: 'spec.md' }, T, { specText: SPEC });
+  let s = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-1', { status: 'started', branch: 't1', spec: 'spec.md' }, T, { specText: SPEC });
   s = rec(s, findings);
   return applyTicketPatch(s, 'T-1', { status: 'merged', head: A }, T);
 }
@@ -190,9 +190,9 @@ test('#552 D5: fewer than 15 trimmed characters is no sentence (CJK counts chara
   assert.doesNotThrow(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: 'returns 404 for' } }));
   assert.throws(() => rec(open552(), { 'F-1': { severity: 'MINOR', specSentence: '- - -' } }), /at least 15 characters/);
   const cjk = '出力にはidを表示する必要があります。出力にはidを表示する。';
-  const cj = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: `${cjk}\n` });
+  const cj = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: `${cjk}\n` });
   assert.doesNotThrow(() => rec(cj, { 'F-1': { severity: 'MINOR', specSentence: cjk } }), 'a CJK sentence is long enough');
-  const crlf = applyTicketPatch(newState('r', { now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: SPEC.replace(/\n/g, '\r\n') });
+  const crlf = applyTicketPatch(newState('r', { switches: { acceptance: 'on', minorPolicy: 'spec' }, now: T }), 'T-1', { status: 'started', spec: 'spec.md' }, T, { specText: SPEC.replace(/\n/g, '\r\n') });
   assert.equal(crlf.tickets['T-1'].specText, SPEC);
   assert.doesNotThrow(() => rec(crlf, { 'F-1': { severity: 'MINOR', specSentence: 'pull request.\nThe endpoint returns 404' } }));
   // follow-up candidate: no spec of its own → the base's text; it records a sentence MINOR and is blocked by it

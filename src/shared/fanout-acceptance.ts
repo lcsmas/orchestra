@@ -7,6 +7,7 @@ import {
   blankTicket,
   assertConfigMatchesRun,
   freezeAtFirstSpawn,
+  stampDefaults,
   switchesOf,
   parseRunArgv,
   type AcceptFlow,
@@ -128,7 +129,8 @@ export function claimIsStale(a: { id: string | null; error?: string; at: string 
 
 /** Claim the ticket's writer slot (id null = spawn in flight). Throws when a live writer already exists / the tests are frozen / waived / no spec.
  *  A failed or stale claim is retaken; `replace` (the coordinator's `acceptance spawn --replace`: its writer died, was archived…) retakes a settled one too. */
-export function claimAcceptor(state: FanoutState, id: string, name: string, now: string, o: { replace?: boolean } = {}): FanoutState {
+export function claimAcceptor(state0: FanoutState, id: string, name: string, now: string, o: { replace?: boolean } = {}): FanoutState {
+  const state = stampDefaults(state0); // #559: before the claim — the writer spawn is the spawn that must not read as a legacy run
   assertAcceptanceOn(state, `claim a writer for ${id}`); // #554: the spawn is ABSENT with the switch off — the host's only door is this claim
   const t = state.tickets[id];
   if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
