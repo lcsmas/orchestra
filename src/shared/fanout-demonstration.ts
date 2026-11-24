@@ -17,13 +17,20 @@ export interface Demonstration { input: string; observed: string; expected: stri
 export const wordsOf = (text: string): number => text.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 const normalised = (s: string): string => s.toLowerCase().replace(/\s+/g, ' ').trim();
 
-/** A citation `path/to/file.ext:12` (or `:12-30`): the path has an extension, no `..`, not absolute; the line is mandatory — « observed (file:line) ». */
-const CITATION = /(?<![\w@./+-])((?:\.\/)?(?:[\w@+-][\w@.+-]*\/)*[\w@+-][\w@.+-]*\.[A-Za-z][A-Za-z0-9]{0,9}):(\d+)(?:-\d+)?/g;
+/** A citation `path/to/file.ext:12` (or `:12-30`): the path has an extension, no `..`, not absolute; the line is mandatory — « observed (file:line) ». Unicode letters / digits and balanced `(group)` / `[id]` segments (Next.js app router) are path characters; a SPACE is not (a path with spaces is not citable). */
+const SEG = String.raw`(?:[\p{L}\p{N}_@+~$.-]|\([^()\s/]*\)|\[[^\[\]\s/]*\])+`;
+const CITATION = new RegExp(String.raw`(?<![\p{L}\p{N}_@./+~$-])((?:\.\/)?(?:${SEG}\/)*${SEG}\.[A-Za-z][A-Za-z0-9]{0,9}):(\d+)(?:-\d+)?`, 'gu');
 export function citationsOf(observed: string): Array<{ path: string; line: number }> {
   const out: Array<{ path: string; line: number }> = [];
-  for (const m of observed.replace(/\\/g, '/').matchAll(CITATION)) { // `src\a.ts:4` is src/a.ts, never the root file a.ts
+  const text = observed.replace(/\\/g, '/'); // `src\a.ts:4` is src/a.ts, never the root file a.ts
+  for (const m of text.matchAll(CITATION)) {
     const p = m[1].replace(/^\.\//, '');
     if (p.split('/').includes('..') || out.some((c) => c.path === p)) continue;
+    // `src/my a.ts:1` would read as the ROOT file `a.ts`: a slash-less citation right after a slash-bearing word that is not itself a citation / punctuated is a path broken by a space — never looked up
+    if (!p.includes('/')) {
+      const prev = /(\S+)\s+$/.exec(text.slice(0, m.index))?.[1];
+      if (prev && prev.includes('/') && !/(?::\d+(?:-\d+)?|[,;.!?)])$/.test(prev)) continue;
+    }
     out.push({ path: p, line: Number(m[2]) });
   }
   return out;
@@ -31,9 +38,9 @@ export function citationsOf(observed: string): Array<{ path: string; line: numbe
 const stripCitations = (observed: string): string => observed.replace(/\\/g, '/').replace(CITATION, ' ');
 
 // ── product / test / docs: the ONE classification (no other module of the repo classifies a path: fanout-harness only finds integration specs) ──
-const TEST_DIR = /^(?:tests?|__tests?__|__mocks__|__fixtures__|__snapshots__|specs?|e2e|e2e-tests?|tests?-e2e|integration-tests?|fixtures?|testdata|test[-_]?(?:utils?|helpers?|support)|mocks?|cypress|playwright)$/i;
+const TEST_DIR = /^(?:tests?|__tests?__|__mocks__|__fixtures__|__snapshots__|specs?|e2e|e2e-tests?|tests?-e2e|integration-tests?|fixtures?|testdata|test[-_]?(?:utils?|helpers?|support)|mocks?|cypress|playwright|pause-canary)$/i;
 /** `a.test.ts`, `app.e2e-spec.ts`, `x.stories.tsx`, `y.snap` (a dot-segment of the basename) · `test_x.py`, `x_test.go`, `x_spec.rb`, `conftest.py`, `e2e-run.mjs` · `FooTest.java`, `FooTests.cs` (case-sensitive: `Latest.ts` is product). */
-const TEST_FILE_CI = /(?:\.(?:tests?|spec|e2e|e2e-spec|int-spec|integration|stories|snap|test-d)(?:\.|$)|^test[_-]|[_-](?:test|spec)\.[^.]+$|^conftest\.py$|^e2e[-_.])/i;
+const TEST_FILE_CI = /(?:\.(?:tests?|spec|e2e|e2e-spec|int-spec|integration|stories|snap|test-d|testlib|mocks?|fixtures?)(?:\.|$)|^test[_-]|[_-](?:test|spec)\.[^.]+$|^conftest\.py$|(?:^|[._-])e2e(?:[._-]|$)|[._-]rig\.[^.]+$)/i;
 const TEST_FILE_CS = /[a-z0-9]Tests?\.[A-Za-z]+$/;
 const DOC_DIR = /^(?:docs?|documentation)$/i;
 const DOC_FILE = /(?:^(?!cmakelists\.txt$|requirements[^/]*\.txt$)[^/]*\.(?:md|mdx|markdown|rst|adoc|txt|org)$|^(?:readme|changelog|license|licence|notice|authors|contributing|codeowners)(?:\.(?:md|mdx|rst|adoc|txt))?$)/i;

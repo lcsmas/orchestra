@@ -34,7 +34,7 @@ import {
   type TicketState,
 } from '../shared/fanout-state.ts';
 import type { CheckExec } from '../shared/fanout-checks.ts';
-import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR } from '../shared/fanout-demonstration.ts';
+import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
@@ -158,7 +158,11 @@ export function treeOfSha(runner: Runner, sha: string, cwd: string, repo: string
 /** #572 — does `file` exist on `head`: the local object first (a commit we hold answers for sure), else GitHub's contents API. null = UNREADABLE (head not fetched, no gh): the demonstration is then refused saying so, never accepted. */
 export function fileOnHead(runner: Runner, head: string, file: string, cwd: string, repo: string | null): boolean | null {
   if (!SHA_ARG.test(head) || file.startsWith('-') || file.startsWith('/')) return null;
-  if (runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0) { const t = runner('git', ['cat-file', '-t', `${head}:${file}`], cwd); return t.code === 0 && t.stdout.trim() === 'blob'; } // a directory is not a file
+  if (runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0) { // ls-tree: a REGULAR blob only — a directory (tree) and a symlink (120000, which can point at test code) are not the product file the finding cites; the gh arm refuses them the same way
+    const t = runner('git', ['ls-tree', '-z', head, '--', file], cwd);
+    const m = t.code === 0 ? /^(\d+) (\w+) [0-9a-f]+\t([^\0]*)\0?/.exec(t.stdout) : null;
+    return !!m && m[3] === file && m[2] === 'blob' && (m[1] === '100644' || m[1] === '100755');
+  }
   const a = runner('gh', ['api', `repos/${repo ?? '{owner}/{repo}'}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`, '--jq', '.type'], cwd);
   if (a.code === 0) return a.stdout.trim() === 'file';
   return /\b404\b|Not Found/i.test(a.stderr) ? false : null;
@@ -375,12 +379,22 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; fileOnHead?: (head: string, file: string) => boolean | null } = {};
     const notes: string[] = specRead?.note ? [specRead.note] : [];
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
-    const repo = readState(file)?.repo ?? null;
+    const before = readState(file);
+    const repo = before?.repo ?? null;
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
       if (!derived.tree) notes.push(`note: the tree of head ${patch.head.slice(0, 8)} is unreadable (not fetched? gh?): its verdict stays keyed on the sha, not the content\n`);
     }
-    if (typeof patch.findings === 'object' && patch.findings !== null && Object.values(patch.findings).some((f) => typeof f === 'object' && f !== null && 'demonstration' in f)) derived.fileOnHead = (head, file) => fileOnHead(deps.runner, head, file, deps.cwd, repo); // #572: only when a demonstration is being recorded
+    if (typeof patch.findings === 'object' && patch.findings !== null && Object.values(patch.findings).some((f) => typeof f === 'object' && f !== null && 'demonstration' in f)) {
+      // #572 (review M1): every existence check (git / gh, up to 60 s) is resolved HERE, before `updateState` takes the state lock — a slow gh inside the lock let a second writer break it (stale 15 s) and lose its write (#512 reads git outside the lock for the same reason)
+      const head = typeof patch.head === 'string' ? patch.head : before?.tickets[ticket]?.head ?? null;
+      const known = new Map<string, boolean | null>();
+      for (const f of Object.values(patch.findings)) {
+        const obs = typeof f === 'object' && f !== null ? (f as { demonstration?: { observed?: unknown } }).demonstration?.observed : undefined;
+        if (head && typeof obs === 'string') for (const c of citationsOf(obs)) if (isProductPath(c.path) && !known.has(c.path)) known.set(c.path, fileOnHead(deps.runner, head, c.path, deps.cwd, repo));
+      }
+      derived.fileOnHead = (h, p) => (h === head && known.has(p) ? known.get(p)! : null); // a head that moved between the read and the lock: unreadable, never guessed
+    }
     if (patch.builtOn && typeof patch.builtOn === 'object') {
       derived.builtOnTree = {};
       for (const [up, sha] of Object.entries(patch.builtOn as Record<string, unknown>)) {

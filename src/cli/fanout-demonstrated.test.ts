@@ -13,7 +13,7 @@ import { runCloseout } from './fanout-closeout.ts';
 import { deliver, realDeps, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
 import { gatePr, realGateDeps, type GateOpts } from './fanout-gate.ts';
 import { DEFAULT_SWITCHES, SWITCH_VALUES, V378_DEFAULT_SWITCHES, applyTicketPatch, blockingMinors, mergeBlockRefusal, newState, parseState, readState, stateFile, switchesOf, type Switches } from '../shared/fanout-state.ts';
-import { DEMONSTRATION_LIMIT } from '../shared/fanout-demonstration.ts';
+import { DEMONSTRATION_LIMIT, citationsOf, classifyDemonstration, classifyPath } from '../shared/fanout-demonstration.ts';
 import { renderSwitchBlocks } from '../shared/fanout-switch-render.ts';
 import { renderVerifiedFanoutSkill } from '../shared/verified-fanout-skill.ts';
 import { VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
@@ -29,7 +29,7 @@ const norm = (s: string): string => s.replace(/\s+/g, ' ');
 const FILES = new Set(['src/orders/service.ts', 'src/orders/service.test.ts', 'docs/orders.md', 'src/orders/list.ts']);
 const gitFake: Runner = (cmd, args) => {
   if (cmd === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: `${'e'.repeat(40)}\n`, stderr: '' };
-  if (cmd === 'git' && args[0] === 'cat-file') { const p = args[2].split(':').slice(1).join(':'); return FILES.has(p) ? { code: 0, stdout: 'blob\n', stderr: '' } : p === 'src/dir.d' ? { code: 0, stdout: 'tree\n', stderr: '' } : { code: 128, stdout: '', stderr: '' }; }
+  if (cmd === 'git' && args[0] === 'ls-tree') { const p = args[args.length - 1]; const row = (mode: string, type: string): { code: number; stdout: string; stderr: string } => ({ code: 0, stdout: `${mode} ${type} ${'f'.repeat(40)}\t${p}\0`, stderr: '' }); return FILES.has(p) ? row('100644', 'blob') : p === 'src/dir.d' ? row('040000', 'tree') : p === 'src/link.ts' ? row('120000', 'blob') : { code: 0, stdout: '', stderr: '' }; }
   return { code: 1, stdout: '', stderr: 'offline' };
 };
 function mkHome(t: { after: (fn: () => void) => void }): string {
@@ -241,10 +241,12 @@ test('must-FAIL: a head that cannot be read here, or a ticket with no head, refu
 
 test('fileOnHead: a held commit answers by cat-file; a commit not held asks GitHub (404 = absent, anything else = unreadable)', () => {
   const calls: string[] = [];
-  const held: Runner = (c, a) => { calls.push(`${c} ${a[0]}`); return a[0] === 'cat-file' ? (a[2] === `${A}:src/x.ts` ? { code: 0, stdout: 'blob\n', stderr: '' } : a[2] === `${A}:src/dir.d` ? { code: 0, stdout: 'tree\n', stderr: '' } : { code: 128, stdout: '', stderr: '' }) : { code: 0, stdout: '', stderr: '' }; };
+  const held: Runner = (c, a) => { calls.push(`${c} ${a[0]}`); const p = a[a.length - 1]; const row = (mode: string, type: string): { code: number; stdout: string; stderr: string } => ({ code: 0, stdout: `${mode} ${type} ${'f'.repeat(40)}\t${p}\0`, stderr: '' }); return a[0] === 'ls-tree' ? (p === 'src/x.ts' ? row('100755', 'blob') : p === 'src/dir.d' ? row('040000', 'tree') : p === 'src/link.ts' ? row('120000', 'blob') : { code: 0, stdout: '', stderr: '' }) : { code: 0, stdout: '', stderr: '' }; };
   assert.equal(fileOnHead(held, A, 'src/x.ts', '/', null), true);
   assert.equal(fileOnHead(held, A, 'src/y.ts', '/', null), false);
   assert.equal(fileOnHead(held, A, 'src/dir.d', '/', null), false, 'a directory is not a file');
+  assert.equal(fileOnHead(held, A, 'src/link.ts', '/', null), false, 'a symlink is not the product file (review M3: the git arm refuses it like the gh arm)');
+  assert.equal(fileOnHead((c, a) => ({ code: 0, stdout: `100644 blob ${'f'.repeat(40)}\tsrc/other.ts\0`, stderr: '' }), A, 'src/x.ts', '/', null), false, 'ls-tree answered for another path');
   const gone: Runner = (c, a) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: a.includes('--silent') ? 1 : 0, stdout: '', stderr: 'gh: Not Found (HTTP 404)' });
   assert.equal(fileOnHead(gone, A, 'src/x.ts', '/', 'o/r'), false);
   const flaky: Runner = (c) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: 'HTTP 502' });
@@ -433,3 +435,47 @@ test('a directory is not a file: observed on a path that is a tree on the head i
   set(d, 'T1', '--finding-json', finding('MINOR', { observed: 'src/dir.d:3 returns every order instead of an empty page' }));
   assert.match(stateOf(home).tickets.T1.findings.F1.demonstration?.refusal ?? '', /src\/dir\.d does not exist on head/);
 });
+
+test('review M1: the existence checks run BEFORE the state lock is taken (a slow gh inside the lock lets a second writer break it and lose its write)', (t) => {
+  const home = mkHome(t);
+  const lock = `${stateFile(home, 'r1')}.lock`;
+  let during = 0, calls = 0;
+  const spy: Runner = (c, a) => { calls++; if (fs.existsSync(lock)) during++; return gitFake(c, a); };
+  const d = deps(home, spy);
+  init(d, 'minorPolicy=demonstrated'); set(d, 'T1', '--status', 'nominated', '--branch', 't1', '--head', A);
+  calls = 0; during = 0;
+  assert.equal(set(d, 'T1', '--finding-json', finding('MINOR')).code, 0);
+  assert.ok(calls > 0, 'the checks did run');
+  assert.equal(during, 0, 'none of them ran while the lock file existed');
+  assert.deepEqual(blockingMinors(stateOf(home), 'T1'), ['F1']);
+  // the head given in the SAME patch is the one the file is read on
+  const home2 = mkHome(t); const d2 = deps(home2); init(d2, 'minorPolicy=demonstrated');
+  assert.equal(set(d2, 'T1', '--status', 'nominated', '--branch', 't1', '--head', B, '--finding-json', finding('MINOR')).code, 0);
+  assert.equal(readState(stateFile(home2, 'r1'))!.tickets.T1.findings.F1.demonstration?.head, B);
+});
+
+test('review M2: non-ASCII, [id] / (group) segments and spaces — the cited path is never truncated to its tail and looked up at the repo root', () => {
+  assert.deepEqual(citationsOf('src/app/[id]/page.tsx:1'), [{ path: 'src/app/[id]/page.tsx', line: 1 }]);
+  assert.deepEqual(citationsOf('src/app/(shop)/[...slug]/page.tsx:9-12'), [{ path: 'src/app/(shop)/[...slug]/page.tsx', line: 9 }]);
+  assert.deepEqual(citationsOf('src/Straße.ts:1 and lib/café/données.py:7'), [{ path: 'src/Straße.ts', line: 1 }, { path: 'lib/café/données.py', line: 7 }]);
+  assert.deepEqual(citationsOf('(src/a.ts:3), then [lib/b.ts:4]'), [{ path: 'src/a.ts', line: 3 }, { path: 'lib/b.ts', line: 4 }]);
+  assert.deepEqual(citationsOf('src/my a.ts:1'), [], 'a path with a space is not citable: `a.ts` at the root is NOT the cited file');
+  assert.deepEqual(citationsOf('src/x.ts:4 package.json:3, and README.md:1'), [{ path: 'src/x.ts', line: 4 }, { path: 'package.json', line: 3 }, { path: 'README.md', line: 1 }], 'a root citation after a citation or punctuation is a citation');
+  assert.match(cls({ observed: 'src/my a.ts:1 returns every order instead of an empty page' }, { head: HEAD, fileOnHead: onHead('a.ts', 'src/my a.ts') }).refusal ?? '', /^observed names no file:line/);
+  assert.equal(cls({ observed: 'src/app/[id]/page.tsx:1 returns every order instead of an empty page' }, { head: HEAD, fileOnHead: onHead('src/app/[id]/page.tsx') }).file, 'src/app/[id]/page.tsx');
+  const t0 = Date.now(); citationsOf(`${'a/'.repeat(1000)}b.ts:x ${'(['.repeat(500)}`); citationsOf('a'.repeat(2000) + '.'.repeat(500)); assert.ok(Date.now() - t0 < 500, 'no catastrophic backtracking');
+});
+
+test('review M3 + verifier pins: more test code / rigs are not product; a single very long path and a 2001-char text are bounded or refused loudly; an unknown key is refused', () => {
+  for (const p of ['src/shared/electron-guest-window.testlib.ts', 'sandbox/app-e2e.mjs', 'src/foo.mock.ts', 'x.fixture.ts', 'scripts/pause-canary/run.mjs', 'scripts/foo-rig.mjs']) assert.equal(classifyPath(p), 'test', p);
+  const long = `${'d'.repeat(60)}/`.repeat(8) + 'x.ts';
+  const d = classifyDemonstration({ ...DEMO_UNIT, observed: `${long}:3 returns every order instead of an empty page` }, { head: HEAD, fileOnHead: () => false });
+  assert.ok((d.refusal ?? '').length <= 400 && /…$/.test(d.refusal ?? ''), `${d.refusal?.length}`);
+  assert.throws(() => applyTicketPatch(newState('r1', { switches: { minorPolicy: 'demonstrated' }, now: '2026-11-24T10:00:00.000Z' }), 'T1', { findings: { F1: { severity: 'MINOR', demonstration: { ...DEMO_UNIT, input: 'x'.repeat(2001) } } } }, '2026-11-24T10:00:00.000Z'), /at most 2000 characters/);
+  assert.throws(() => applyTicketPatch(newState('r1', { switches: { minorPolicy: 'demonstrated' }, now: '2026-11-24T10:00:00.000Z' }), 'T1', { findings: { F1: { severity: 'MINOR', demonstration: { ...DEMO_UNIT, input: 'a b c d e\u0001 f' } } } }, '2026-11-24T10:00:00.000Z'), /printable/);
+  assert.throws(() => applyTicketPatch(newState('r1', { switches: { minorPolicy: 'demonstrated' }, now: '2026-11-24T10:00:00.000Z' }), 'T1', { findings: { F1: { severity: 'MINOR', demonstration: { ...DEMO_UNIT, extra: 'x' } } } }, '2026-11-24T10:00:00.000Z'), /unknown/i);
+});
+const DEMO_UNIT = { input: 'GET /orders?limit=0 as an authenticated user', observed: 'src/orders/service.ts:42 returns every order instead of an empty page', expected: 'the ticket says limit=0 must return an empty page' };
+const HEAD = A;
+const onHead = (...files: string[]) => (_h: string, p: string): boolean => files.includes(p);
+const cls = (d: Partial<typeof DEMO_UNIT>, ctx: Parameters<typeof classifyDemonstration>[1]) => classifyDemonstration({ ...DEMO_UNIT, ...d }, ctx);
