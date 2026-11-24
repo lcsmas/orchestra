@@ -29,7 +29,7 @@ const norm = (s: string): string => s.replace(/\s+/g, ' ');
 const FILES = new Set(['src/orders/service.ts', 'src/orders/service.test.ts', 'docs/orders.md', 'src/orders/list.ts']);
 const gitFake: Runner = (cmd, args) => {
   if (cmd === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: `${'e'.repeat(40)}\n`, stderr: '' };
-  if (cmd === 'git' && args[0] === 'cat-file') return { code: FILES.has(args[2].split(':').slice(1).join(':')) ? 0 : 128, stdout: '', stderr: '' };
+  if (cmd === 'git' && args[0] === 'cat-file') { const p = args[2].split(':').slice(1).join(':'); return FILES.has(p) ? { code: 0, stdout: 'blob\n', stderr: '' } : p === 'src/dir.d' ? { code: 0, stdout: 'tree\n', stderr: '' } : { code: 128, stdout: '', stderr: '' }; }
   return { code: 1, stdout: '', stderr: 'offline' };
 };
 function mkHome(t: { after: (fn: () => void) => void }): string {
@@ -241,15 +241,17 @@ test('must-FAIL: a head that cannot be read here, or a ticket with no head, refu
 
 test('fileOnHead: a held commit answers by cat-file; a commit not held asks GitHub (404 = absent, anything else = unreadable)', () => {
   const calls: string[] = [];
-  const held: Runner = (c, a) => { calls.push(`${c} ${a[0]}`); return { code: a[0] === 'cat-file' && a[2] === `${A}:src/x.ts` ? 0 : a[0] === 'cat-file' ? 128 : 0, stdout: '', stderr: '' }; };
+  const held: Runner = (c, a) => { calls.push(`${c} ${a[0]}`); return a[0] === 'cat-file' ? (a[2] === `${A}:src/x.ts` ? { code: 0, stdout: 'blob\n', stderr: '' } : a[2] === `${A}:src/dir.d` ? { code: 0, stdout: 'tree\n', stderr: '' } : { code: 128, stdout: '', stderr: '' }) : { code: 0, stdout: '', stderr: '' }; };
   assert.equal(fileOnHead(held, A, 'src/x.ts', '/', null), true);
   assert.equal(fileOnHead(held, A, 'src/y.ts', '/', null), false);
+  assert.equal(fileOnHead(held, A, 'src/dir.d', '/', null), false, 'a directory is not a file');
   const gone: Runner = (c, a) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: a.includes('--silent') ? 1 : 0, stdout: '', stderr: 'gh: Not Found (HTTP 404)' });
   assert.equal(fileOnHead(gone, A, 'src/x.ts', '/', 'o/r'), false);
   const flaky: Runner = (c) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: 'HTTP 502' });
   assert.equal(fileOnHead(flaky, A, 'src/x.ts', '/', 'o/r'), null);
-  const found: Runner = (c) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' });
+  const found: Runner = (c) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: 'file\n', stderr: '' });
   assert.equal(fileOnHead(found, A, 'src/x.ts', '/', 'o/r'), true);
+  assert.equal(fileOnHead((c) => (c === 'git' ? { code: 1, stdout: '', stderr: '' } : { code: 0, stdout: 'dir\n', stderr: '' }), A, 'src/x.d', '/', 'o/r'), false, 'gh: a directory answers type dir');
   assert.equal(fileOnHead(found, 'not-a-sha', 'src/x.ts', '/', 'o/r'), null);
   assert.equal(fileOnHead(found, A, '-rf', '/', 'o/r'), null, 'a path that looks like a flag is never passed to git');
 });
@@ -324,6 +326,9 @@ test('`state show` prints, per ticket, the open demonstrated findings (and drops
   assert.match(s, /demonstrated findings \(#572\) — open ones block gate \+ deliver:\n  T1\/F1  MINOR  OPEN  src\/orders\/service\.ts @aaaaaaaa  input: GET \/orders\?limit=0/);
   set(d, 'T1', '--settle', `F1=fixed:${B}`);
   assert.match(show(d), /none open/);
+  // an open finding on a MERGED ticket blocks nothing: it is not listed as an open blocker
+  const m = run(t); set(m.d, 'T1', '--finding-json', finding('MINOR')); set(m.d, 'T1', '--status', 'merged');
+  assert.match(show(m.d), /none open/);
   const home2 = mkHome(t); const d2 = deps(home2); init(d2, 'minorPolicy=spec');
   assert.doesNotMatch(show(d2), /demonstrated findings/);
 });
@@ -405,4 +410,26 @@ test('the always-read SKILL.md stays under 4,000 words under demonstrated (+ acc
   assert.match(FANOUT_USAGE, /A finding with a demonstration \(#572, minorPolicy demonstrated\)/);
   assert.ok(FANOUT_USAGE.includes(DEMONSTRATION_LIMIT), 'the limit — well formed, not true — is in `orchestra fanout --help`');
   assert.match(FANOUT_USAGE, /not that it is true/);
+});
+
+test('pre-review MAJOR: a refusal naming MANY cited paths is bounded, so the finding is still recorded as a plain finding (never an error about a field the reviewer did not type)', (t) => {
+  const many = Array.from({ length: 12 }, (_, i) => `packages/orchestra-backend-service/src/shared/handler-${i}.ts:4`).join(' and ');
+  for (const [name, runner] of [['absent', gitFake], ['unreadable', ((c: string) => ({ code: 1, stdout: '', stderr: c })) as Runner]] as const) {
+    const home = mkHome(t); const d = deps(home, runner); init(d, 'minorPolicy=demonstrated'); set(d, 'T1', '--status', 'nominated', '--branch', 't1', '--head', A);
+    const r = set(d, 'T1', '--finding-json', finding('MINOR', { observed: `${many} return every order instead of an empty page` }));
+    assert.equal(r.code, 0, `${name}: ${r.stderr}`);
+    const f = stateOf(home).tickets.T1.findings.F1;
+    assert.equal(f.severity, 'MINOR');
+    assert.ok((f.demonstration?.refusal ?? '').length <= 400 && /\(\+9 more\)/.test(f.demonstration?.refusal ?? ''), `${name}: ${f.demonstration?.refusal}`);
+  }
+  const tests = Array.from({ length: 12 }, (_, i) => `packages/orchestra-backend-service/src/shared/handler-${i}.test.ts:4`).join(' and ');
+  const home = mkHome(t); const d = deps(home); init(d, 'minorPolicy=demonstrated'); set(d, 'T1', '--status', 'nominated', '--branch', 't1', '--head', A);
+  assert.equal(set(d, 'T1', '--finding-json', finding('MINOR', { observed: `${tests} return every order instead of an empty page` })).code, 0);
+  assert.match(stateOf(home).tickets.T1.findings.F1.demonstration?.refusal ?? '', /cites only .*\(test\).*\(\+9 more\)/);
+});
+
+test('a directory is not a file: observed on a path that is a tree on the head is refused', (t) => {
+  const { d, home } = run(t);
+  set(d, 'T1', '--finding-json', finding('MINOR', { observed: 'src/dir.d:3 returns every order instead of an empty page' }));
+  assert.match(stateOf(home).tickets.T1.findings.F1.demonstration?.refusal ?? '', /src\/dir\.d does not exist on head/);
 });

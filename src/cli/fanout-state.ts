@@ -158,9 +158,9 @@ export function treeOfSha(runner: Runner, sha: string, cwd: string, repo: string
 /** #572 — does `file` exist on `head`: the local object first (a commit we hold answers for sure), else GitHub's contents API. null = UNREADABLE (head not fetched, no gh): the demonstration is then refused saying so, never accepted. */
 export function fileOnHead(runner: Runner, head: string, file: string, cwd: string, repo: string | null): boolean | null {
   if (!SHA_ARG.test(head) || file.startsWith('-') || file.startsWith('/')) return null;
-  if (runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0) return runner('git', ['cat-file', '-e', `${head}:${file}`], cwd).code === 0;
-  const a = runner('gh', ['api', `repos/${repo ?? '{owner}/{repo}'}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`, '--silent'], cwd);
-  if (a.code === 0) return true;
+  if (runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0) { const t = runner('git', ['cat-file', '-t', `${head}:${file}`], cwd); return t.code === 0 && t.stdout.trim() === 'blob'; } // a directory is not a file
+  const a = runner('gh', ['api', `repos/${repo ?? '{owner}/{repo}'}/contents/${file.split('/').map(encodeURIComponent).join('/')}?ref=${head}`, '--jq', '.type'], cwd);
+  if (a.code === 0) return a.stdout.trim() === 'file';
   return /\b404\b|Not Found/i.test(a.stderr) ? false : null;
 }
 
@@ -429,7 +429,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
 export function demonstratedShow(s: FanoutState): string {
   const lines: string[] = [];
   for (const [id, t] of Object.entries(s.tickets)) {
-    for (const d of demonstratedFindings(t).filter((x) => x.end === 'open')) lines.push(`${id}/${d.finding}  ${d.severity}  OPEN  ${d.file} @${d.head.slice(0, 8)}  input: ${d.input.replace(/\s+/g, ' ').trim().slice(0, 100)}  → state set ${id} --settle ${d.finding}=fixed:<head> | --decide ${d.finding}=<text>`);
+    for (const d of demonstratedFindings(t).filter((x) => x.end === 'open' && t.status !== 'merged' && !t.mergedHead)) lines.push(`${id}/${d.finding}  ${d.severity}  OPEN  ${d.file} @${d.head.slice(0, 8)}  input: ${d.input.replace(/\s+/g, ' ').trim().slice(0, 100)}  → state set ${id} --settle ${d.finding}=fixed:<head> | --decide ${d.finding}=<text>`);
     for (const r of refusedDemonstrations(t)) lines.push(`${id}/${r.finding}  demonstration REFUSED (stays a plain ${t.findings[r.finding].severity}): ${r.refusal}`);
   }
   return lines.length ? `demonstrated findings (#572) — open ones block gate + deliver:\n${lines.map((l) => `  ${l}`).join('\n')}\n` : `demonstrated findings (#572): none open\n`;
