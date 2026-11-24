@@ -25,7 +25,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const workspacesSrc = fs.readFileSync(path.join(root, 'src', 'main', 'workspaces.ts'), 'utf8');
 const REFS_SRC_DIR = path.join(root, 'src', 'shared', 'verified-fanout-refs');
 /** The v2-only references' text by shipped path (`references/<name>.md`). */
-const refText = (name: string): string => VERIFIED_FANOUT_V2_REFERENCES.find((f) => f.path === `references/${name}`)?.content ?? '';
+/** The reference as a run with every feature on reads it (#563: a verifier=off variant repeats a pinned sentence, so the pins read ONE rendering, not both variants). */
+const refText = (name: string): string => renderSwitchBlocks(VERIFIED_FANOUT_V2_REFERENCES.find((f) => f.path === `references/${name}`)?.content ?? '', { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on' });
 const ALL_V2_REFS = VERIFIED_FANOUT_V2_REFERENCES.map((f) => f.content).join('\n');
 
 /** sha256 of the frozen v1 SKILL.md (ground-zero-prep/skills-v1/SHA256SUMS, tag verified-fanout-v1-prose). */

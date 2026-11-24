@@ -1,3 +1,4 @@
+<!--sw verifier=on-->
 # The verifier brief and adversarial review: the grounds
 
 (Read when you write the verifier's or a reviewer's brief (SKILL.md §3, §3b). Long form of what SKILL.md carries as one-line rules; the § numbers are SKILL.md's.)
@@ -54,6 +55,14 @@ design, security) — different job, opposite staffing. The verifier's
 accumulated rig capital is exactly why it should NOT review: a party trading
 one method with the fleet all day converges on the fleet's priors and misses
 the same things with it. Review lives on freshness.
+<!--/sw-->
+<!--sw verifier=off-->
+# Adversarial review: the grounds
+
+(Read when you write a reviewer's brief (SKILL.md §3b). Long form of what SKILL.md carries as one-line rules; the § numbers are SKILL.md's.)
+
+Adversarial review attacks the CODE (correctness, design, security) with a party that has not spent the day trading one method with the fleet, which converges on the fleet's priors and misses the same things with it: a fresh party is the point.
+<!--/sw-->
 
 When the coordinator records a merge candidate, spawn ONE short-lived
 reviewer per candidate — **nested under the coordinator like every fleet
@@ -93,12 +102,23 @@ not that it is really broken — judging that stays with the reviewer.** A MINOR
 <!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code**
+<!--sw verifier=on-->
 (tests, comments, docs, rigs only): the implementer's pre-review + the
 verifier's delta gate suffice. Any production-code line in the diff → spawned
+<!--/sw-->
+<!--sw verifier=off-->
+(tests, comments, docs, rigs only): the implementer's pre-review + the
+CI suffice. Any production-code line in the diff → spawned
+<!--/sw-->
 review, follow-ups included.
 
+<!--sw verifier=on-->
 The coordinator NEVER reviews (it wrote the specs — a stake; and
 coordinator+verifier reading the same artifact is one review counted twice).
+<!--/sw-->
+<!--sw verifier=off-->
+The coordinator NEVER reviews (it wrote the specs — a stake).
+<!--/sw-->
 What it does with the findings is the §4 merge rule.
 
 **Done when:** the reviewer's comment is on the ledger — findings or an
