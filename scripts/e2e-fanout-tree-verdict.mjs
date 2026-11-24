@@ -131,7 +131,7 @@ function world(cliPath) {
   const deliver = (b, ticket, verified, extra = []) => cli(['deliver', '--branch', b, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', verified, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate', ...extra]); // #515 M3: the rig's tickets carry no spec / frozen tests — the explicit escape
   const gate = (b, ticket, headSha, extra = []) => cli(['gate', '--branch', b, '--into', 'master', '--head', headSha, '--ticket', ticket, '--run', 'rig', '--require-check', 'ci', ...extra]);
   const file = (name, o) => { const f = path.join(dir, name); fs.writeFileSync(f, typeof o === 'string' ? o : JSON.stringify(o)); return f; };
-  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
+  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
   for (const t of ['T-G', 'T-D', 'T-E', 'T-F', 'T-H']) cli(['state', 'set', t, '--run', 'rig', '--status', 'started']); // a ticket the state does not name is refused (A: a mistyped --ticket must not skip a clause)
   return { dir, cand, cli, g, readState, patchGh, ghState, count, lastMerge, head, tree, branch, rewrite, bump, reset, deliver, gate, file, setCi: (...hs) => patchGh((s) => s.ciGreen.push(...hs)), cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }

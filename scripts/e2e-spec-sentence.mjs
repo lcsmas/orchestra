@@ -104,7 +104,7 @@ function world(cliPath) {
   const gate = (ticket, branch, head) => cli(['gate', '--branch', branch, '--into', 'master', '--head', head, '--ticket', ticket, '--run', 'rig']);
   const deliver = (ticket, branch, head) => cli(['deliver', '--branch', branch, '--into', 'master', '--ticket', ticket, '--run', 'rig', '--no-review-gate', '--verified-head', head, '--no-checks-grace', '0', '--timeout', '3', '--interval', '1', '--no-acceptance-gate']); // #515 M3: unspecced rig tickets need the explicit escape
   const setCi = (h) => { const s = JSON.parse(fs.readFileSync(ghFile, 'utf8')); s.ciGreen.push(h); fs.writeFileSync(ghFile, JSON.stringify(s)); };
-  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r']);
+  cli(['state', 'init', '--run', 'rig', '--repo', 'o/r', '--switch', 'acceptance=on,minorPolicy=spec']);
   const SPEC = 'Write the list in the pull request.\nThe endpoint returns 404 for an unknown id.\nUse   two spaces here.\n';
   const SENT = 'The endpoint returns 404 for an unknown id.';
   const PROC = 'Write the list in the pull request.';

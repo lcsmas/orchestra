@@ -86,7 +86,7 @@ function scenarios(cliPath, sharedDir) {
   return (async () => {
     try {
       // ── declared ────────────────────────────────────────────────────────────────────────────────────────
-      const init = W.cli(['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r', '--harness', 'pnpm run test:e2e — test/utils/create-test-app.ts']);
+      const init = W.cli(['fanout', 'state', 'init', '--run', 'rig', '--repo', 'o/r', '--harness', 'pnpm run test:e2e — test/utils/create-test-app.ts', '--switch', 'acceptance=on,minorPolicy=spec']);
       arm('D1 must-PASS `state init --harness` records it (state.json) and `state show` prints it', init.code === 0 && W.readState().harness === 'pnpm run test:e2e — test/utils/create-test-app.ts' && /harness \(#538\): pnpm run test:e2e — test\/utils\/create-test-app\.ts/.test(W.cli(['fanout', 'state', 'show', '--run', 'rig']).stdout), J(init));
       const r1 = W.register('T-1');
       arm('D2 must-PASS declared: the writer\'s brief NAMES the declared harness and carries BOTH requirements (full-module boot, per-test execution context)', r1.code === 0 && W.spawns().length === 1 && /DECLARED by the coordinator in the fanout state\): pnpm run test:e2e — test\/utils\/create-test-app\.ts\./.test(task(0)) && both(task(0)) && /`--run-cmd` is still a DIRECT runner call/.test(task(0)) && /freeze the closest allowlisted call you can run, or do not freeze/.test(task(0)), `${J(r1)} | ${task(0).slice(0, 700)}`);
@@ -122,7 +122,7 @@ function scenarios(cliPath, sharedDir) {
       arm('X2 must-FAIL `state init --harness` with a control char is refused and writes no state.json', badInit.code !== 0 && /harness/.test(badInit.stderr) && !fs.existsSync(path.join(W.dir, 'home', 'fanout', 'rig2', 'state.json')), J(badInit));
 
       // ── compat: nothing declared = no key at all ──────────────────────────────────────────────────────────
-      const plain = W.cli(['fanout', 'state', 'init', '--run', 'rig3']);
+      const plain = W.cli(['fanout', 'state', 'init', '--run', 'rig3', '--switch', 'acceptance=on,minorPolicy=spec']);
       const plainRaw = JSON.parse(fs.readFileSync(path.join(W.dir, 'home', 'fanout', 'rig3', 'state.json'), 'utf8'));
       arm('C1 must-PASS a state that declares no harness has NO `harness` key (an older binary refuses unknown keys; never written as null)', plain.code === 0 && !('harness' in plainRaw), J(plain) + JSON.stringify(plainRaw).slice(0, 200));
 
