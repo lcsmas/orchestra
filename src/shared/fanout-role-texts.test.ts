@@ -20,6 +20,7 @@ import { REVIEWER_RULES, renderReviewerBrief } from './fanout-review-brief.ts';
 import { COMMANDS } from '../cli/help.ts';
 import { SEAT_USAGE } from '../cli/fanout-state.ts';
 import { REVIEW_USAGE } from '../cli/fanout-review.ts';
+import { RECORD_USAGE } from '../cli/fanout-record.ts';
 import { briefInputOf } from './fanout-review.ts';
 import { switchesOf, type Switches } from './fanout-state.ts';
 
@@ -389,13 +390,13 @@ test('#590 installer: an fs error is reported, never thrown (the hook install it
 });
 
 test('#590 the reviewer\'s brief carries the role file path (I5) — by default, and the path is one the installer writes; the pointer replaced the inline rules', () => {
-  const input = { run: 'r1', coordinator: 'r1', ticket: 'T1', kind: 'spawn', ticketText: 'T1 must frob.', ticketRef: null, target: 'master', head: 'a'.repeat(40), base: 'b'.repeat(40), prevHead: null, branch: 'b1', pr: null, ownInterface: null, upstreamInterfaces: [], decisions: [], switches: { ...switchesOf(null), seatRecords: 'on' }, openFindings: [] } as unknown as Parameters<typeof renderReviewerBrief>[0];
-  const withPath = renderReviewerBrief({ ...input, reviewerSkillPath: FANOUT_REVIEWER_SKILL_PATH });
+  const state = { run: 'r1', target: 'master', switches: { seatRecords: 'on' }, tickets: { T1: { id: 'T1', dependsOn: [], findings: {}, spec: null, specText: 't', branch: 'b1', pr: null, head: 'a'.repeat(40) } }, decisions: [] } as unknown as Parameters<typeof briefInputOf>[0];
+  const input = briefInputOf(state, 'T1', { kind: 'spawn', head: 'a'.repeat(40), base: 'b'.repeat(40) });
+  const withPath = renderReviewerBrief(input);
   assert.ok(withPath.includes(`Your role file: ${FANOUT_REVIEWER_SKILL_PATH}`) && withPath.includes(REVIEWER_RULES));
   assert.ok(FANOUT_ROLE_FILES.some((r) => r.worktreePath === FANOUT_REVIEWER_SKILL_PATH), 'the named path is a written file');
-  assert.ok(!renderReviewerBrief(input).includes('Your role file'), 'no path ⇒ no pointer line (the field is optional in the pure renderer)');
+  assert.ok(!renderReviewerBrief({ ...input, reviewerSkillPath: null }).includes('Your role file'), 'no path ⇒ no pointer line (the field is optional in the pure renderer)');
   assert.ok(!REVIEWER_RULES.includes('BLOCKING = must not merge'), 'the severity scale is no longer duplicated in the brief — one text per role');
-  const state = { run: 'r1', target: 'master', switches: { seatRecords: 'on' }, tickets: { T1: { id: 'T1', dependsOn: [], findings: {}, spec: null, specText: 't', branch: 'b1', pr: null, head: 'a'.repeat(40) } }, decisions: [] } as unknown as Parameters<typeof briefInputOf>[0];
   assert.equal(briefInputOf(state, 'T1', { kind: 'spawn', head: 'a'.repeat(40), base: null }).reviewerSkillPath, FANOUT_REVIEWER_SKILL_PATH, 'the production input names the file without the host passing it');
 });
 
@@ -412,8 +413,8 @@ test('#590 installer wiring: the role templates are in the HOOKS_VERSION hash (a
 
 // every `orchestra fanout …` span of the ON text names a verb and flags the CLI knows: the main usage + the seatRecords usage (#587) + the review usage (#588) + `fanout record` once #589 lands
 test('#590 on: every `orchestra fanout state set …` / `fanout review` flag of the ON coordinator text is a flag of the CLI (main usage ∪ seat usage ∪ review usage); a made-up flag is caught', () => {
-  const known = new Set([...[helpOf('fanout'), SEAT_USAGE, REVIEW_USAGE].join('\n').matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
-  const spans = (text: string): string[] => [...text.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter((x) => /^orchestra fanout (state set|review)\b/.test(x));
+  const known = new Set([...[helpOf('fanout'), SEAT_USAGE, REVIEW_USAGE, RECORD_USAGE].join('\n').matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
+  const spans = (text: string): string[] => [...text.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter((x) => /^orchestra fanout (state set|review|record|deliver)\b/.test(x));
   const lint = (text: string): string[] => spans(text).flatMap((sp) => sp.split(' ').flatMap((tk) => { const f = /^(--[a-z][a-z-]*)/.exec(tk)?.[1]; return f && !known.has(f) ? [`${f} in: ${sp}`] : []; }));
   for (const c of COMBOS) assert.deepEqual(lint(renderVerifiedFanoutSkill(asSw(c, 'on'))), [], `ON text at ${comboKey(c)}`);
   assert.ok(spans(renderVerifiedFanoutSkill(asSw({}, 'on'))).length >= 4, 'the extractor found the spans');

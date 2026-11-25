@@ -57,7 +57,8 @@ import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE } from '../shared
 import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanout-state.ts';
 import { handSpawnRefusalFor } from '../shared/fanout-start.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
-import { installFanoutRoleFiles, installVerifiedFanoutSkill } from './verified-fanout-install.ts';
+import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
+import { installFanoutRoleFiles } from './verified-fanout-install.ts';
 import { FANOUT_REVIEWER_SKILL_TEMPLATE } from '../shared/fanout-reviewer-skill.ts';
 import { FANOUT_IMPLEMENTER_SKILL_TEMPLATE } from '../shared/fanout-implementer-skill.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
