@@ -30,6 +30,7 @@ test('only the implementer door of `fanout start` passes viaFanoutStart; the acc
   const impl = src.slice(src.indexOf('spawnImplementer:'), src.indexOf('childrenOf:'));
   assert.match(impl, /\{ viaFanoutStart: true \}\)/);
   assert.match(impl, /baseBranch/);
+  assert.match(impl, /\.\.\.\(i\.reuseBranch \? \{ reuseBranch: true \} : \{\}\)/);
   const acc = src.slice(src.indexOf('spawn: async (i)'), src.indexOf('implementerLive'));
   assert.doesNotMatch(acc, /viaFanoutStart/);
   assert.match(src, /vouches: \(id, key\) => !!key && sessionKeys\(\)\.verify\(id, key\) === 'ok'/);
@@ -43,8 +44,17 @@ test('the CLI routes `fanout start` through runStart, vouched by the host like a
   const i = src.indexOf("if (args[0] === 'start') {");
   assert.ok(i > 0);
   const blk = src.slice(i, i + 900);
-  assert.match(blk, /settleHostIdentity\(\)/);
-  assert.match(blk, /if \(hostIdentity\?\.source !== 'host'\) fail\('refusing to start:/, 'fail closed: no key is not a vouch either');
+  assert.match(blk, /const helpOnly = args\.includes\('--help'\) \|\| args\.includes\('-h'\);/, 'a --help start is not a start: no host question');
+  assert.match(blk, /if \(!helpOnly\) await settleHostIdentity\(\);/);
+  assert.match(blk, /if \(!helpOnly && hostIdentity\?\.source !== 'host'\) fail\('refusing to start:/, 'fail closed: no key is not a vouch either');
   assert.match(blk, /fanoutDeps\.vouchedCaller = /);
   assert.match(blk, /runStart\(args\.slice\(1\), fanoutDeps, \(body\) => request\('\/fanoutAcceptance', body/);
+});
+
+test('reuseBranch rides createWorkspace\'s naming (no suffix pick, git reuse) and cannot come from the socket', () => {
+  const w = read('workspaces.ts');
+  assert.match(w, /const free = requested && naming\?\.reuseBranch \? requested : requested \? await freeBranchName\(/);
+  assert.match(w, /createWorktree\(input\.repoPath, branch, baseBranch, worktreePath, naming\?\.reuseBranch \? \{ reuse: true \} : undefined\)/);
+  assert.match(w, /\.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}, input\.profile/);
+  for (const f of ['hooks-server.ts', 'transport/sandbox-manager.ts', 'acces-mobile.ts']) { try { assert.doesNotMatch(read(f), /reuseBranch/, f); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; } }
 });

@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runFanout, type FanoutDeps } from './fanout-state.ts';
 import { runStart } from './fanout-start.ts';
-import { readState, stateFile, parseState, type FanoutState } from '../shared/fanout-state.ts';
+import { SeatRefusal, readState, stateFile, parseState, type FanoutState } from '../shared/fanout-state.ts';
 import { briefHash } from '../shared/fanout-brief-common.ts';
 import { IMPLEMENTER_RULES, renderImplementerBrief } from '../shared/fanout-implementer-brief.ts';
 import { handSpawnRefusal, handSpawnRefusalFor, implementerName, startRun, type StartDeps } from '../shared/fanout-start.ts';
@@ -34,7 +34,7 @@ function planned(t: { after: (fn: () => void) => void }, sw = 'seatRecords=on'):
     set(d, 'A', '--depends-on', 'none'); set(d, 'B', '--depends-on', 'A'); set(d, 'C', '--depends-on', 'none');
     set(d, 'A', '--interface', 'table t(id, name)');
     set(d, '--run-decision', 'Money is integer cents.');
-    set(d, 'A', '--spec', 'ledger #1 §A');
+    for (const id of ['A', 'B', 'C']) set(d, id, '--spec', `ledger #1 §${id}`);
   }
   return d;
 }
@@ -45,7 +45,7 @@ function fake(d: FanoutDeps): Fake {
     home: d.env.ORCHESTRA_HOME!, now: () => NOW,
     implementerLive: (id) => f.live.has(id),
     repoPath: () => '/repo',
-    spawn: async (i) => { f.calls.push(i); const r = await f.answer(i.name, f.calls.length); if (r.ok && r.id) f.live.add(r.id); return r; },
+    spawn: async (i) => { f.calls.push(i); let r = await f.answer(i.name, f.calls.length); if (r.ok && i.reuseBranch) r = { ...r, branch: i.name }; /* the host puts the worktree ON the named branch (git-reuse-branch.test.ts) */ if (r.ok && r.id) f.live.add(r.id); return r; },
   };
   return f;
 }
@@ -70,7 +70,7 @@ test('brief: ticket, spec, own interface, the interfaces it builds on WITH versi
   assert.match(a, /Interface you PROVIDE \(frozen, v2\):\ntable t\(id, name, age\)/);
   assert.match(a, /Spec: ledger #1 §A/);
   assert.equal(renderImplementerBrief({ state: load(d), ticket: 'B' }), b, 'deterministic');
-  assert.match(renderImplementerBrief({ state: load(d), ticket: 'B', continueFrom: { branch: 'impl-b', head: 'a'.repeat(40) } }), /Continue the work of the agent that died: your branch starts from impl-b @aaaaaaaaaaaa/);
+  assert.match(renderImplementerBrief({ state: load(d), ticket: 'B', continueFrom: { branch: 'impl-b', head: 'a'.repeat(40) } }), /Continue the work of the agent that died: you are ON its branch impl-b \(last recorded head aaaaaaaaaaaa\), same name, same PR/);
   assert.throws(() => renderImplementerBrief({ state: load(d), ticket: 'Z' }), /not in the state/);
 });
 
@@ -149,6 +149,7 @@ test('start: a dead implementer is respawned FROM ITS BRANCH (kind respawn, brie
   const d = planned(t);
   const f = fake(d);
   await startRun('r1', 'r1', f.deps);
+  set(d, 'B', '--pr', '12', '--head', 'a'.repeat(40));
   const before = load(d).tickets.B;
   f.live.delete(before.implementer!);
   set(d, 'C', '--status', 'merged');
@@ -156,11 +157,16 @@ test('start: a dead implementer is respawned FROM ITS BRANCH (kind respawn, brie
   assert.deepEqual(r.respawned.map((x) => x.ticket), ['B']);
   assert.deepEqual(r.started, []);
   assert.deepEqual(r.skipped.map((x) => [x.ticket, x.reason]), [['A', 'live'], ['C', 'merged']]);
-  assert.equal(f.calls.at(-1)!.baseBranch, before.branch, 'the new agent continues from the dead one\'s branch');
-  assert.match(f.calls.at(-1)!.task, /Continue the work of the agent that died: your branch starts from /);
+  const last = f.calls.at(-1)!;
+  assert.equal(last.name, before.branch, 'the respawn is asked for the ticket\'s EXISTING branch by name');
+  assert.equal(last.reuseBranch, true);
+  assert.equal(last.baseBranch, 'master', 'the diff / merge base stays the run target, not the dead branch');
+  assert.match(last.task, /you are ON its branch .*, same name, same PR/);
   const b = load(d).tickets.B;
   assert.equal(b.start!.kind, 'respawn'); assert.equal(b.start!.briefs, 2);
   assert.notEqual(b.implementer, before.implementer);
+  assert.equal(b.branch, before.branch, 'the branch name is UNCHANGED');
+  assert.equal(b.pr, 12); assert.equal(b.head, 'a'.repeat(40), 'pr and head still describe the branch');
 });
 
 test('start: a start held by Admission is a WAIT (exit 0, listed, the agent recorded); a failed spawn is listed and retried by the next call; a kept child is recorded, never duplicated', async (t) => {
@@ -329,4 +335,39 @@ test('start: the orphan scan is told which implementers the state records (a rec
   const r = await startRun('r1', 'r1', f.deps);
   assert.deepEqual(r.respawned.map((x) => x.ticket), ['A']);
   assert.ok(seen[0].includes(old) && seen[0].length === 3, 'every recorded implementer id is passed');
+});
+
+test('start must-FAIL: a plan ticket with no spec and no text is REFUSED naming it — nothing spawned, never an empty task; a ticket that already has its agent is not asked', async (t) => {
+  const d = planned(t);
+  const bare = mkDeps(mkHome(t));
+  sh(bare, 'init', '--run', 'r1', '--switch', 'seatRecords=on');
+  set(bare, '--plan', 'A,B,C');
+  for (const id of ['A', 'B', 'C']) set(bare, id, '--depends-on', 'none');
+  set(bare, 'A', '--spec', 'ledger #1');
+  const f = fake(bare);
+  await assert.rejects(() => startRun('r1', 'r1', f.deps), (e: unknown) => e instanceof SeatRefusal && e.refusal === 'start-no-spec' && /\bB, C\b/.test(e.message) && !/\bA\b/.test(e.message.split('—')[1] ?? ''));
+  assert.equal(f.calls.length, 0, 'nothing spawned');
+  const r = await runStart(['--run', 'r1'], bare, async () => { throw new Error('the host must not be asked'); });
+  assert.equal(r.code, 2); assert.ok(r.stderr.startsWith('[start-no-spec] '), r.stderr); assert.match(r.stderr, /--spec <file\|url\|ledger section>/);
+  set(bare, 'B', '--spec', 'ledger #2');
+  const r2 = await runStart(['--run', 'r1'], bare, async () => { throw new Error('x'); });
+  assert.match(r2.stderr, /\bC\b/); assert.ok(!/\bB\b/.test(r2.stderr.split('—')[1] ?? ''));
+  set(bare, 'C', '--spec', 'ledger #3');
+  assert.equal((await startRun('r1', 'r1', fake(bare).deps)).started.length, 3);
+  // a ticket already running (recorded implementer) without a spec is not what this guards
+  const f2 = fake(d);
+  await startRun('r1', 'r1', f2.deps);
+  const file = stateFile(d.env.ORCHESTRA_HOME!, 'r1');
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete raw.tickets.A.spec; delete raw.tickets.A.specText; fs.writeFileSync(file, JSON.stringify(raw));
+  assert.equal((await startRun('r1', 'r1', f2.deps)).skipped.length, 3, 'a running ticket whose spec was cleared is skipped, not refused');
+});
+
+test('start --help prints the usage (rc 0) and names the empty-task refusal, the branch rule and the human-terminal limit', async (t) => {
+  const d = planned(t);
+  const r = await runStart(['--help'], { ...d, vouchedCaller: null }, async () => { throw new Error('no host'); });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /no spec and no text is refused \(\[start-no-spec\], listing them\)/);
+  assert.match(r.stdout, /A respawn keeps the ticket's branch/);
+  assert.match(r.stdout, /Limit: it is the coordinator's door, not a lock — a human at a terminal .* can still hand-spawn/);
 });

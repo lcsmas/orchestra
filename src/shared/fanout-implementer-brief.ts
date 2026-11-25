@@ -35,7 +35,7 @@ export function renderImplementerBrief(input: ImplementerBriefInput): string {
     '',
     '## Branch',
     input.continueFrom
-      ? `Continue the work of the agent that died: your branch starts from ${input.continueFrom.branch}${input.continueFrom.head ? ` @${input.continueFrom.head.slice(0, 12)}` : ''}.`
+      ? `Continue the work of the agent that died: you are ON its branch ${input.continueFrom.branch}${input.continueFrom.head ? ` (last recorded head ${input.continueFrom.head.slice(0, 12)})` : ''}, same name, same PR. Read \`git log\` first; if the branch holds none of that work (it was deleted and recreated), say so to your coordinator before redoing it.`
       : `Branch base: origin/${state.target}${state.repo ? ` of ${state.repo}` : ''}.`,
     '',
     '## Interfaces',

@@ -31,7 +31,7 @@ export interface AcceptanceHostDeps {
   /** #587 PR B — `fanout start`: is this implementer workspace live (exists, not archived)? Absent = `start` is not wired in this host. */
   implementerLive?: (id: string) => boolean;
   /** #587 PR B — the implementer spawn of `fanout start` (the ONLY door `handSpawnRefusal` leaves open for an `impl-` name of a seatRecords run). */
-  spawnImplementer?: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
+  spawnImplementer?: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string; reuseBranch?: boolean }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
   /** #587 PR B — did the host vouch `id` with this session key (the live session of that workspace)? Absent = nobody is vouched and `start` is refused. */
   vouches?: (id: string, key: string | undefined) => boolean;
   /** #587 PR B — see StartDeps.orphanImplementer. */
