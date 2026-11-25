@@ -298,7 +298,8 @@ function readSpecText(ref: string | undefined, explicit: string | undefined, dep
 
 /** #515 — does this ticket owe a writer spawn? spec registered, nothing frozen, not waived, and no live writer (a failed spawn and a claim older than CLAIM_STALE_SEC — the app died mid-spawn — are retried). */
 export function needsAcceptor(t: TicketState | undefined, nowIso?: string): boolean {
-  if (!t || t.status === 'parked' || acceptancePhase(t) !== 'pending') return false; // #603: no writer for a ticket set aside
+  if (!t || acceptancePhase(t) !== 'pending') return false;
+  if (t.status === 'parked') return false; // #603: no writer for a ticket set aside
   const a = t.accept?.acceptor;
   return !a || !!a.error || claimIsStale(a, nowIso ?? new Date().toISOString());
 }
