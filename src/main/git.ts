@@ -59,6 +59,11 @@ export async function detectRemoteUrl(repoPath: string): Promise<string | undefi
   return undefined;
 }
 
+/** #599 — does `ref` resolve to a commit in `repoPath`, the way `git branch <b> <ref>` resolves its start point? Never throws. */
+export async function refResolves(repoPath: string, ref: string): Promise<boolean> {
+  try { return (await simpleGit(repoPath).raw(['rev-parse', '--verify', '-q', `${ref}^{commit}`])).trim().length > 0; } catch { return false; }
+}
+
 export async function detectDefaultBranch(repoPath: string): Promise<string> {
   const git = simpleGit(repoPath);
   try {

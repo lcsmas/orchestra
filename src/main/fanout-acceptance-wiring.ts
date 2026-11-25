@@ -4,6 +4,7 @@ import { dispatchFanoutAcceptance, type AcceptanceHostDeps, type AcceptanceHostR
 import { send, getBus } from './bus.ts';
 import { orchestraHome } from './platform/index.ts';
 import { store } from './store';
+import { detectRemoteUrl, refResolves } from './git';
 import { sessionKeys } from './session-identity-host.ts';
 import { dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
 
@@ -35,6 +36,13 @@ const productionDeps: AcceptanceHostDeps = {
     const w = store.workspaces.find((x) => x.parentId === run && !x.archived && !recorded.includes(x.id) && named(x.branch) && !others.includes(x.branch));
     return w ? { id: w.id, branch: w.branch } : null;
   },
+  // #599: which repository the implementers' worktrees are made in (the coordinator's, as `repoPath` above) and whether the run target is a ref of it
+  worktreeRepo: async ({ run, repoPath }) => {
+    const p = repoPath ?? store.getWorkspace(run)?.repoPath;
+    const r = store.repos.find((x) => x.path === p);
+    return { remote: r?.remoteUrl ?? (p ? (await detectRemoteUrl(p)) ?? null : null), defaultBranch: r?.defaultBranch ?? null }; // remoteUrl is backfilled lazily: ask git when the store has none
+  },
+  refExists: ({ run, repoPath, ref }) => { const p = repoPath ?? store.getWorkspace(run)?.repoPath; return p ? refResolves(p, ref) : Promise.resolve(true); },
   childrenOf: (run) => store.workspaces.filter((w) => w.parentId === run).map((w) => w.id), // #554 m1: the run owner's direct children
   // #554: the stamp carries the run's switches, so this rewrites the skill only when they changed
   refreshSkills: async (ids) => {

@@ -14,7 +14,11 @@ export interface StartDeps {
   orphanImplementer?: (i: { run: string; ticket: string; name: string; recorded: string[]; others: string[] }) => { id: string; branch: string } | null;
   /** The coordinator's checkout (the repo the implementers work in). undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; repo: string | null }) => string | undefined;
-  /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = the run target (the diff / merge base). `reuseBranch` = a respawn: `name` IS the ticket's existing branch and the new worktree is put ON it (never a suffixed copy). */
+  /** #599 — the repository the worktrees are made in (`repoPath` as `repoPath` answered it): its origin remote (URL or `owner/name`; null = unknown) and its default branch (null = unknown). Absent = every run is read as same-repo (the pre-#599 rule). */
+  worktreeRepo?: (i: { run: string; repoPath: string | undefined }) => { remote: string | null; defaultBranch: string | null } | Promise<{ remote: string | null; defaultBranch: string | null }>;
+  /** #599 — does `ref` resolve to a commit in the worktree repository (what `git branch <b> <ref>` needs)? Absent = no check. */
+  refExists?: (i: { run: string; repoPath: string | undefined; ref: string }) => Promise<boolean>;
+  /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = the base of the worktree AND its diff / merge base: the run target when it lives in the worktree repository, ABSENT (= the repo's default branch) when the run's target is in another repository (#599). `reuseBranch` = a respawn: `name` IS the ticket's existing branch and the new worktree is put ON it (never a suffixed copy). */
   spawn: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string; reuseBranch?: boolean }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
 }
 
@@ -31,6 +35,20 @@ export interface StartResult {
 export function implementerName(ticket: string): string {
   const slug = ticket.normalize('NFD').replace(/\p{M}+/gu, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '').replace(/\.{2,}/g, '.').slice(0, 60);
   return `impl-${slug || 'ticket'}`;
+}
+
+/** #599 — `owner/name` of a git remote (https, scp-style or ssh), lowercased, `.git` dropped; null = not a recognisable remote. */
+export function repoSlugOf(remote: string | null | undefined): string | null {
+  const m = /^(?:[a-z][a-z0-9+.-]*:\/\/(?:[^@/]+@)?[^/]+\/|[^@/\s]+@[^:/\s]+:|)([^/\s:]+\/[^/\s]+?)(?:\.git)?\/?$/i.exec((remote ?? '').trim());
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** #599 — where an implementer's worktree is cut from. `same`: the run target is a ref of the worktree repository (base = the target). `cross`: the run's target is in ANOTHER repository (`state.repo` is not the worktree repo's origin) — the worktree starts from the worktree repo's own default branch (`base` absent), the brief names the target. Unknown on either side = same (unchanged). */
+export type StartBase = { kind: 'same'; base: string } | { kind: 'cross'; base: undefined; targetRepo: string; defaultBranch: string | null };
+export function startBase(i: { stateRepo: string | null; target: string; worktreeRemote: string | null; defaultBranch: string | null }): StartBase {
+  const want = repoSlugOf(i.stateRepo), have = repoSlugOf(i.worktreeRemote);
+  if (want && have && want !== have) return { kind: 'cross', base: undefined, targetRepo: i.stateRepo!, defaultBranch: i.defaultBranch };
+  return { kind: 'same', base: i.target };
 }
 
 /** Why `start` is refused for `state` and `caller` (null = fine): the I6 refusal names. */
@@ -79,6 +97,15 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
     const refusal = startRefusal(state0, run, caller);
     if (refusal) throw refusal;
     const out: StartResult = { started: [], respawned: [], waiting: [], skipped: [], failed: [] };
+    let baseOf: StartBase | null = null; // #599: ONE decision per call, taken before the first spawn (a missing same-repo target is refused once, not once per ticket)
+    const resolveBase = async (ticket: string, repo: string | null, target: string): Promise<StartBase> => {
+      if (baseOf) return baseOf;
+      const repoPath = deps.repoPath({ run, ticket, repo });
+      const wr = await deps.worktreeRepo?.({ run, repoPath });
+      const b = startBase({ stateRepo: repo, target, worktreeRemote: wr?.remote ?? null, defaultBranch: wr?.defaultBranch ?? null });
+      if (b.kind === 'same' && deps.refExists && !(await deps.refExists({ run, repoPath, ref: b.base }))) throw new SeatRefusal('start-base-missing', `the run's target branch ${b.base} does not exist in the repository the implementers work in${repoPath ? ` (${repoPath})` : ''} — create it there or fix the run's target (state init --target); nothing was started`);
+      return (baseOf = b);
+    };
     for (const ticket of state0.plan!.tickets) {
       const cur = readState(file)!; // each ticket sees the writes of the one before
       const t = cur.tickets[ticket];
@@ -92,10 +119,11 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
       }
       const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn'; // a dead recorded implementer is replaced; a ticket set `started` by hand with none is a first spawn
       const onBranch = kind === 'respawn' && !!t.branch; // the dead agent's branch: same name, same PR / head, the new worktree is put ON it
-      const task = renderImplementerBrief({ state: cur, ticket, ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}) });
+      const base = await resolveBase(ticket, cur.repo, cur.target); // may throw start-base-missing: before this ticket's spawn, so before ANY spawn of the call
+      const task = renderImplementerBrief({ state: cur, ticket, ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });
       let res: Awaited<ReturnType<StartDeps['spawn']>>;
       try {
-        res = await deps.spawn({ from: run, name: onBranch ? t.branch! : implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: cur.target, ...(onBranch ? { reuseBranch: true } : {}) }); // the brief says "Branch base: origin/<target>": the worktree is cut from it, not from the repo's default
+        res = await deps.spawn({ from: run, name: onBranch ? t.branch! : implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: base.base, ...(onBranch ? { reuseBranch: true } : {}) }); // same repo: the worktree is cut from the run target; another repo (#599): from the worktree repo's default branch, the brief names the target
       } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
       if (!res.id || !res.branch) { out.failed.push({ ticket, error: res.error ?? 'spawn failed' }); continue; } // no workspace: nothing to record, a second call retries
       const id = res.id, branch = onBranch ? t.branch! : res.branch, hash = briefHash(task);

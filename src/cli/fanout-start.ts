@@ -8,8 +8,9 @@ export const START_USAGE = `usage: orchestra fanout start [--run <id>]
   seatRecords=on, coordinator only: launches ONE implementer per plan ticket that has no live one (a dead one is respawned on its branch), each with a brief rendered by code
   (ticket, its interfaces with versions, branch base, the run's decisions, the rules). No flag takes free text: what you must say goes in \`state set --run-decision\`.
   Prints {"started":[{ticket,ws,branch}],"respawned":[…],"waiting":[{ticket,why}],"skipped":[{ticket,reason}],"failed":[{ticket,error}]}; a start held by Admission is listed in "waiting" (exit 0: call again later
-  for the rest, a ticket with a live implementer is never started twice). Refused (exit 2, message [name] …): [start-off] · [start-caller] · [plan-incomplete] · [start-no-spec]; "failed" non-empty = exit 2 too.
+  for the rest, a ticket with a live implementer is never started twice). Refused (exit 2, message [name] …): [start-off] · [start-caller] · [plan-incomplete] · [start-no-spec] · [start-base-missing]; "failed" non-empty = exit 2 too.
   A plan ticket with no spec and no text is refused ([start-no-spec], listing them): an implementer is never launched with an empty task. A respawn keeps the ticket's branch (same name, same PR).
+  Base: the run target when it is in this repository (refused ONCE, [start-base-missing], when it does not exist); when \`state.repo\` is another repository the worktree is cut from this repository's default branch and the brief names the target.
   Limit: it is the coordinator's door, not a lock — a human at a terminal (no ORCHESTRA_WS_ID) can still hand-spawn an impl- agent.`;
 
 export async function runStart(args: string[], deps: FanoutDeps, host: (body: Record<string, unknown>) => Promise<Record<string, unknown>>): Promise<RunResult> {
