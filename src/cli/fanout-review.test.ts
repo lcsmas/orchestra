@@ -9,7 +9,7 @@ import path from 'node:path';
 import { runFanout, type FanoutDeps, type Runner } from './fanout-state.ts';
 import { runReview } from './fanout-review.ts';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from '../shared/fanout-acceptance-host.ts';
-import { readState, stateFile, parseState, switchesOf, type FanoutState } from '../shared/fanout-state.ts';
+import { readState, stateFile, parseState, switchesOf, writeStateAtomic, type FanoutState } from '../shared/fanout-state.ts';
 import { resolveCaller } from '../shared/fanout-caller.ts';
 import { briefHash as commonHash, renderDecisions, renderInterfaces, renderSwitchesLine } from '../shared/fanout-brief-common.ts';
 import { assertReviewable, decideReview, renderBriefOf, reviewerName } from '../shared/fanout-review.ts';
@@ -34,6 +34,11 @@ const deps = (home: string, ws = 'r1', identity: IdentityResolution | null = HOS
 const set = (d: FanoutDeps, ...a: string[]) => runFanout(['state', 'set', '--run', 'r1', ...a], d);
 const review = (d: FanoutDeps, ...a: string[]) => runReview(['--run', 'r1', ...a], d);
 const load = (home: string): FanoutState => readState(stateFile(home, 'r1'))!;
+/** #589: under seatRecords=on the coordinator cannot type a finding (`[finding-source]`) — an open finding of the reviewer is seeded straight into the state file. */
+function seedFinding(home: string, ticket: string, id: string, severity: 'BLOCKING' | 'MAJOR' | 'MINOR'): void {
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, [ticket]: { ...s.tickets[ticket], findings: { ...s.tickets[ticket].findings, [id]: { severity } } } } });
+}
 
 /** A run with seatRecords=on and ticket T1 started on H1 (a head is all `review` needs) (implementer impl-1); a dependent T2 on T1. */
 function mkRun(t: { after: (fn: () => void) => void }, sw = 'seatRecords=on'): { home: string; d: FanoutDeps } {
@@ -264,7 +269,7 @@ test('a NEW head wakes the SAME live reviewer with the delta + its open findings
   const { home, d } = mkRun(t);
   const host = mkHost(home);
   await runVerb(d, host, 'T1');
-  assert.equal(set(d, 'T1', '--finding', 'F1=MAJOR').code, 0);
+  seedFinding(home, 'T1', 'F1', 'MAJOR');
   assert.equal(set(d, 'T1', '--head', H2).code, 0);
   const r = await runVerb(d, host, 'T1');
   const res = r.results[0] as { ok: true; action: string; id: string };
@@ -285,7 +290,7 @@ test('a reviewer that is dead or deleted is REPLACED by a new one that gets the 
   const { home, d } = mkRun(t);
   const host = mkHost(home);
   await runVerb(d, host, 'T1');
-  assert.equal(set(d, 'T1', '--finding', 'F1=BLOCKING').code, 0);
+  seedFinding(home, 'T1', 'F1', 'BLOCKING');
   host.live.delete('rev-1');
   const r = await runVerb(d, host, 'T1');
   assert.equal((r.results[0] as { action: string }).action, 'replace');
@@ -425,7 +430,7 @@ test('decideReview + reviewerName (pure): the table of who does what', () => {
 
 test('index.ts wiring (source pin): `fanout review` and `state set --run-decision` ask the HOST who the caller is and hand the answer to the verb; the dispatch reaches runReview', () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, 'index.ts'), 'utf8');
-  assert.match(src, /const needsCaller = args\[0\] === 'review' \|\| \(args\[0\] === 'state' && args\[1\] === 'set' && args\.includes\('--run-decision'\)\);/);
+  assert.match(src, /const needsCaller = args\[0\] === 'review' \|\| args\[0\] === 'record' \|\| \(args\[0\] === 'state' && args\[1\] === 'set' && args\.includes\('--run-decision'\)\) \|\| stateSetNeedsHost\(args, process\.env\);/); // #589 adds `record` and the `--decide` ask
   assert.ok(src.includes('if (needsCaller) await settleHostIdentity();'), 'the host is asked before the verb runs');
   assert.ok(src.includes('...(needsCaller ? { identity: hostIdentity } : {})'), 'its answer is handed to the verb');
   assert.ok(src.includes("args[0] === 'review' ? runReview(args.slice(1), fanoutDeps)"), 'the verb is dispatched');
@@ -453,7 +458,7 @@ test('a failed REPLACEMENT retried is still a replacement: it carries the open f
   const { home, d } = mkRun(t);
   const host = mkHost(home);
   await runVerb(d, host, 'T1');
-  assert.equal(set(d, 'T1', '--finding', 'F1=BLOCKING').code, 0);
+  seedFinding(home, 'T1', 'F1', 'BLOCKING');
   host.live.delete('rev-1');
   host.failNextSpawn.v = 'no capacity';
   assert.equal((await runVerb(d, host, 'T1')).results[0].ok, false);
