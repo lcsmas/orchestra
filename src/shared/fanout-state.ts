@@ -188,6 +188,8 @@ export interface FanoutState {
   plan?: { tickets: string[]; declaredAt: string };
   /** #587 PR A (ledger #591 I3 v2) — the run's decisions: what the coordinator must tell every seat; EVERY brief carries them verbatim (`fanout-brief-common.ts`). Appended by `state set --run-decision`, never edited. */
   decisions?: Array<{ n: number; text: string; by: string; at: string }>;
+  /** #604 (ledger #613 FROZEN v1) — set ONLY by `applyPlan` (src/shared/fanout-plan.ts): the run's plan came from the plan step of the Boucle (hash = sha256 of the normalised plan JSON, attempts = submissions it took). From then on `--run-decision` is refused `decision-after-plan`. Not settable by `state set`. */
+  loopPlan?: { at: string; hash: string; attempts: number };
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
@@ -236,7 +238,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
   return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'loopPlan', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
 TICKET_KEYS.add('reviews'); // #589 (I4)
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
@@ -323,6 +325,13 @@ function planOf(v: unknown): NonNullable<FanoutState['plan']> {
   if (tickets.length === 0) throw new FanoutStateError('plan.tickets is empty');
   return { tickets, declaredAt: isoOf(v.declaredAt, 'plan.declaredAt') };
 }
+function loopPlanOf(v: unknown): NonNullable<FanoutState['loopPlan']> {
+  if (!isObj(v)) throw new FanoutStateError('loopPlan must be {at, hash, attempts}');
+  refuseUnknown(v, new Set(['at', 'hash', 'attempts']), 'loopPlan');
+  if (typeof v.hash !== 'string' || !SHA256.test(v.hash)) throw new FanoutStateError('loopPlan.hash must be a sha256');
+  if (!Number.isInteger(v.attempts) || (v.attempts as number) < 1) throw new FanoutStateError('loopPlan.attempts must be an integer ≥ 1');
+  return { at: isoOf(v.at, 'loopPlan.at'), hash: v.hash, attempts: v.attempts as number };
+}
 function ifaceOfStored(v: unknown, where: string): Iface | null {
   if (v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: iface must be {version, text, history}`);
@@ -386,6 +395,7 @@ function decisionsOf(v: unknown): NonNullable<FanoutState['decisions']> {
 export function addDecision(state: FanoutState, text: string, by: string, now: string): FanoutState {
   const st = stampDefaults(state);
   if (!seatRecordsOn(st)) throw seatOff('--run-decision');
+  if (st.loopPlan) throw new SeatRefusal('decision-after-plan', `run ${st.run} has a plan of the loop (#604, ${st.loopPlan.at}): nothing writes a run decision after it — an order to wait cannot exist; what every seat needs is in the plan's interfaces`);
   const t = text.replace(/\r\n/g, '\n').trim();
   if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
   if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
@@ -1029,6 +1039,7 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
     ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
+    ...(raw.loopPlan !== undefined ? { loopPlan: loopPlanOf(raw.loopPlan) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,

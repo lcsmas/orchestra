@@ -102,6 +102,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
 import { runStart } from './fanout-start.ts';
+import { runPlan } from './fanout-plan.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
@@ -2497,6 +2498,17 @@ async function main(argv: string[]): Promise<void> {
         if (sr.code === 1) fail(sr.stderr.trimEnd());
         if (sr.stderr) process.stderr.write(sr.stderr);
         if (sr.code !== 0) throw new CliExit(sr.code);
+        return;
+      }
+      if (args[0] === 'plan') { // #604: the plan step — the coordinator asks for it, the plan agent submits; both on the word of the HOST (a session it cannot vouch asks / submits nothing)
+        const noHost = args.includes('--help') || args.includes('-h') || args.includes('--print');
+        if (!noHost) await settleHostIdentity();
+        fanoutDeps.vouchedCaller = !noHost && hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
+        const pr = await runPlan(args.slice(1), fanoutDeps, (body) => request('/fanoutAcceptance', body, { timeoutMs: 180_000 }));
+        if (pr.stdout) process.stdout.write(pr.stdout);
+        if (pr.code === 1) fail(pr.stderr.trimEnd());
+        if (pr.stderr) process.stderr.write(pr.stderr);
+        if (pr.code !== 0) throw new CliExit(pr.code);
         return;
       }
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
