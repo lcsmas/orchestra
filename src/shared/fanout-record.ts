@@ -58,7 +58,7 @@ export function countsThrough(t: TicketState, n: number): ReviewCounts {
   const raised: string[] = [];
   const closed = new Set<string>();
   for (const r of (t.reviews ?? []).filter((x) => x.n <= n)) { for (const id of r.findings) if (!raised.includes(id)) raised.push(id); for (const id of r.closed) closed.add(id); }
-  const open = raised.filter((id) => t.findings[id] && !closed.has(id) && !t.findings[id].decision && !t.findings[id].settled);
+  const open = raised.filter((id) => t.findings[id] && !closed.has(id) && !t.findings[id].decision); // as of review n: only a reviewer's "fixed" up to it closes (a later one must not rewrite what an earlier verdict said); a decision always closes
   const sev = (s: string): number => open.filter((id) => t.findings[id].severity === s).length;
   return { blocking: sev('BLOCKING'), major: sev('MAJOR'), minor: sev('MINOR'), open };
 }
@@ -148,8 +148,8 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
 
 // ── what gate and deliver read ─────────────────────────────────────────────────────────────────────────────────
 export interface RecordedVerdict { round: number; blocking: number; major: number; minor: number; head: string; reviewer: string; verdict: ReviewEntry['verdict']; open: string[] }
-export type RecordedRead = { ok: true; recorded: RecordedVerdict } | { ok: false; reason: 'record-missing' | 'review-blocking'; detail: string };
-/** The verdict of `ticket` on this content, from the recorded reviews only. No review on it ⇒ `record-missing` naming the reviewer to wake / replace. */
+export type RecordedRead = { ok: true; recorded: RecordedVerdict } | { ok: false; reason: 'record-missing'; detail: string };
+/** The verdict of `ticket` on this content, from the recorded reviews only. No review on it ⇒ `record-missing` naming the reviewer to wake / replace. The counts are the OPEN findings (a decided / closed one is not counted): what blocks is what they say, not the word the reviewer recorded. */
 export function recordedVerdictOf(state: FanoutState, ticketId: string, head: string, tree?: string | null): RecordedRead {
   const t = state.tickets[ticketId];
   if (!t) return { ok: false, reason: 'record-missing', detail: `${ticketId} is not in the state of run ${state.run}` };
@@ -163,7 +163,6 @@ export function recordedVerdictOf(state: FanoutState, ticketId: string, head: st
   }
   const c = countsThrough(t, r.n);
   const recorded: RecordedVerdict = { round: r.n, blocking: c.blocking, major: c.major, minor: c.minor, head: sameSha(r.head, head) ? head : r.head, reviewer: r.reviewer, verdict: r.verdict, open: c.open };
-  if (r.verdict === 'changes-requested') return { ok: false, reason: 'review-blocking', detail: `[review-blocking] ${ticketId}: reviewer ${r.reviewer} recorded changes-requested on ${r.head.slice(0, 12)} (round ${r.n}: ${c.blocking} BLOCKING / ${c.major} MAJOR / ${c.minor} MINOR open: ${c.open.join(', ') || 'none'}) — the fix is read by the SAME reviewer on the new head (\`orchestra fanout review ${ticketId}\`), which records approve once it closes them` };
   return { ok: true, recorded };
 }
 

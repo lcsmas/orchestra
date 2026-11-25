@@ -177,6 +177,7 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
         const rd = recordedVerdictOf(rs, opts.ticket, opts.head, await readTree(deps.gh, opts.repo, opts.head));
         if (!rd.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: rd.reason, detail: rd.detail, ...base } };
         const r = rd.recorded;
+        if (r.blocking > 0 || r.major > 0) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: 'review-blocking', detail: `[review-blocking] ${opts.ticket}: reviewer ${r.reviewer} (round ${r.round}) has ${r.blocking} BLOCKING / ${r.major} MAJOR finding(s) open (${r.open.join(', ')}) — it reads the fix on the new head and closes them ("fixed" in its record), or the coordinator records \`state set ${opts.ticket} --decide <finding>=<reason>\``, ...base } };
         recorded = { reviewer: r.reviewer, round: r.round, verdict: r.verdict, blocking: r.blocking, major: r.major, minor: r.minor };
       }
     }

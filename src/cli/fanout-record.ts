@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FanoutStateError, readState, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
 import { resolveCaller } from '../shared/fanout-caller.ts';
-import { countsThrough, parseRecordJson, recordReview } from '../shared/fanout-record.ts';
+import { countsThrough, parseRecordJson, recordReview, reviewerDoneRefusal } from '../shared/fanout-record.ts';
 import { citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { fileOnHead, homeOf, parseArgs, runOf, treeOfSha, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
@@ -65,4 +65,12 @@ function record(args: string[], deps: FanoutDeps): RunResult {
 
 function recordReviewOffRefusal(run: string, note: string): RunResult {
   return { code: 2, stdout: '', stderr: `${note}[record-off] seatRecords is off for run ${run} — nothing is recorded; the verdict file (deliver --review-verdict) stays the way\n` };
+}
+
+/** #589 (seatRecords=on) — the fanout state of the run a completion is filed in names its sender as a recorded reviewer with no verdict on its head: the refusal text (it prints the command). Reads the state file; unreadable / absent / switch off = null (never blocks a worker_done it cannot judge). */
+export function fanoutCompletionRefusal(sender: string, runId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const state = readState(stateFile(homeOf(env), runId));
+    return state ? reviewerDoneRefusal(state, sender) : null;
+  } catch { return null; }
 }
