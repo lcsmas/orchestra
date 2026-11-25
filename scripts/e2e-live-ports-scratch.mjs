@@ -95,7 +95,7 @@ const seed = (id, branch, h, n, tree) => st.updateState(st.stateFile(home, runOf
 seed('T1', flaky, head, pr.n, treeOf);
 const via = (id) => createLiveForge({ gh, repo: REPO, deliver: mergeThroughDeliver({ home, run: runOf(id), log: (l) => console.log(`  deliver: ${l}`) }) });
 const viaDeliver = via('T1');
-const merged = await viaDeliver.merge(pr.n, head);
+const merged = await viaDeliver.merge(pr.n, head, 'merge');
 check('merge through deliver: ok', merged.ok === true, JSON.stringify(merged));
 const mc = JSON.parse(sh('gh', ['pr', 'view', String(pr.n), '--repo', REPO, '--json', 'state,mergeCommit'])) ;
 const parents = JSON.parse(sh('gh', ['api', `repos/${REPO}/commits/${mc.mergeCommit.oid}`, '--jq', '.parents | length']));
@@ -109,7 +109,7 @@ const pr2 = await forge.openPr({ branch: moved, base: 'main', title: `T2: ${move
 await until('moved CI', async () => { const c = await forge.checks(pr2.n, h1); return c.length >= 3 && c.every((x) => x.status === 'green') ? c : null; });
 seed('T2', moved, h1, pr2.n, sh('gh', ['api', `repos/${REPO}/commits/${h1}`, '--jq', '.commit.tree.sha']));
 fs.writeFileSync(path.join(work, `${moved}.txt`), '2\n'); g('commit', '-q', '-am', 'moves'); g('push', '-q', 'origin', moved);
-const refused = await via('T2').merge(pr2.n, h1);
+const refused = await via('T2').merge(pr2.n, h1, 'merge');
 check('merge: a head that moved after the approval is refused (nothing merged)', refused.ok === false && (await forge.prState(pr2.n)).state === 'open', JSON.stringify(refused));
 await forge.close(pr2.n);
 sh('git', ['push', '-q', 'origin', '--delete', moved, flaky]);
