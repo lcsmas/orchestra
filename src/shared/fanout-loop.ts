@@ -6,7 +6,7 @@ import { readLoopState, updateLoopState, withLoop, type LoopState } from './fano
 import { applyPlan, type Plan } from './fanout-plan.ts';
 import { buildReport, type Report } from './fanout-report.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
-import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
+import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, CHOICES_MAX, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
 import { recordedVerdictOf, reviewOn } from './fanout-record.ts';
 
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
@@ -171,6 +171,11 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
 /** Decision 5, fail CLOSED: the marker opening ANY line of the body (any case, spacing or punctuation) parks; only a body without it is a question that gets the fixed answer. */
 /** An agent's text goes into `choices` / a park reason: control characters would be refused by the state ([choice-bad]) and the message would be retried for ever. */
 const clean = (t: string): string => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim() || '(empty)';
+/** `recordChoice`, except past the state's cap (`CHOICES_MAX`): the choice is NOT listed (said in the log) — the answer still goes out and a park still lands; a refused listing would poison every restart. */
+function listChoice(x: FanoutState, e: Parameters<typeof recordChoice>[1], now: string, note: (l: string) => void): FanoutState {
+  if ((x.choices?.length ?? 0) >= CHOICES_MAX) { note(`choices are full (${CHOICES_MAX}): "${e.question.slice(0, 60)}" is not listed (it stays in the agent's PR body)`); return x; }
+  return recordChoice(x, e, now);
+}
 export function parseNoSafeOption(body: string): { reason: string } | null {
   const m = /^[ \t\W_]*no[ \t_-]*safe[ \t_-]*option\b/im.exec(body); // the marker OPENS a line (any case/spacing/punctuation): a question that merely contains the words ("is there no safe option name collision?") stays a question
   if (!m) return null;
@@ -195,13 +200,13 @@ export async function stepMail(ctx: LoopCtx): Promise<void> {
         const nso = parseNoSafeOption(m.body);
         if (nso) {
           if (ticket && s.tickets[ticket] && !isMerged(s, ticket)) {
-            ctx.update((x) => { const y = recordChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now()); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'done' as const } } }; });
+            ctx.update((x) => { const y = listChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now(), ctx.note); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'done' as const } } }; });
             ctx.did(`parked ${ticket}: no safe option — ${nso.reason}`);
           } else markDone(m.seq);
           return;
         }
         const first = clean(m.body.split('\n')[0]).slice(0, ASK_MAX); // `recordChoice` refuses longer text ([choice-bad]); the full text stays in the agent's PR body
-        if (!h) ctx.update((x) => { const y = recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'listed' as const } } }; });
+        if (!h) ctx.update((x) => { const y = listChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now(), ctx.note); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'listed' as const } } }; });
         await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');
         markDone(m.seq);
         ctx.did(`answered ${ticket ?? m.sender}'s question with the fixed answer`);

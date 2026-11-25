@@ -11,7 +11,7 @@ import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
 import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
 import { applyPlan } from './fanout-plan.ts';
 import { startRun } from './fanout-start.ts';
-import { applyTicketPatch, newState, parkTicket, pauseRun, recordChoice, resumeRun, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
+import { applyTicketPatch, CHOICES_MAX, newState, parkTicket, pauseRun, recordChoice, resumeRun, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
 import { LOOP_BRIEF, renderImplementerBrief } from './fanout-implementer-brief.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
@@ -552,4 +552,27 @@ test('swap: an ask with control characters is cleaned before it is listed ([choi
   assert.equal(q.result.report.choices[0].question, 'Which name?   beep');
   const n = await runDummyLoop({ home: tmp(), scenario: sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body: 'NO SAFE OPTION: bad\u0000spec' } as never] } }), options: { stallMs: 30 * 60_000 } });
   assert.equal(n.result.report.parked.find((p) => p.ticket === 'T3')?.reason, 'bad spec');
+});
+
+// ── swap review: the loop section follows the LOOP; a full choices list never poisons a restart ────────────────────
+test('swap MAJOR: a HAND-planned run (a complete plan, no loopPlan marker) still gets the loop section in every brief — the section follows the loop, not the marker', async () => {
+  const home = tmp();
+  const r = await runDummyLoop({ home, scenario: load('pre-planned'), options: { stallMs: 30 * 60_000 } });
+  assert.equal(readLoopState(home, 'pre-planned')!.loopPlan, undefined, 'no #604 marker: the plan was written by hand');
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.briefHasLoop === true).length, 7, 'all 7 briefs carry LOOP_BRIEF');
+  assert.deepEqual(r.violations, []);
+});
+test('swap MINOR: past CHOICES_MAX the loop still ANSWERS a question and still PARKS on NO SAFE OPTION — the listing is skipped (logged), no [choice-bad] on every restart', async () => {
+  for (const name of ['question', 'nosafe']) {
+    const home = tmp();
+    const d = buildDummy({ home, run: name, scenario: load(name) });
+    updateLoopState(home, name, () => { let st = applyPlan(newState(name, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: N }), d.plan, N); for (let i = 0; i < CHOICES_MAX; i++) st = recordChoice(st, { ticket: 'T1', question: `q${i}`, rule: 'reversible-default', answer: 'a' }, N); return withLoop(st); });
+    const log: string[] = [];
+    const r = await runLoop({ ...depsOf(home, d), log: (l) => log.push(l) });
+    assert.equal(readLoopState(home, name)!.choices!.length, CHOICES_MAX, 'nothing was added past the cap');
+    assert.ok(log.some((l) => /choices are full/.test(l)), 'said in the log');
+    if (name === 'question') { assert.equal(r.exit, 0, r.reason); assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'the question was answered'); }
+    else assert.deepEqual(r.report.parked.map((p) => [p.ticket, p.cause]), [['T3', 'question'], ['T5', 'upstream'], ['T7', 'upstream']]);
+  }
 });

@@ -11,7 +11,8 @@ import { decideReview, claimReviewer, recordWake, reviewerName, nthReviewer, set
 import { recordReview, reviewHeadOf } from './fanout-record.ts';
 import { LOOP_BRIEF } from './fanout-implementer-brief.ts';
 import { implementerName, startRun, type StartResult } from './fanout-start.ts';
-import { applyTicketPatch, FanoutStateError, stateFile } from './fanout-state.ts';
+import { applyPlan } from './fanout-plan.ts';
+import { applyTicketPatch, FanoutStateError, newState, stateFile } from './fanout-state.ts';
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
@@ -26,6 +27,8 @@ export interface Scenario {
   ci?: Record<string, string[]>;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
+  /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
+  prePlanned?: boolean;
   faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
@@ -359,7 +362,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
   const fleet: FleetPort = {
     async start(): Promise<StartResult> {
       return startRun(i.run, i.run, {
-        home: i.home, now: () => w.iso(),
+        home: i.home, now: () => w.iso(), loop: true,
         implementerLive: (id) => w.impls.has(id),
         repoPath: () => undefined,
         spawn: async ({ name, task, reuseBranch }) => {
@@ -402,6 +405,9 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
   const run = i.run ?? i.scenario.run ?? 'dummy-run';
   let d = buildDummy({ home: i.home, run, scenario: i.scenario });
   if (i.wrap) d = i.wrap(d);
+  if (i.scenario.prePlanned) { // a plan written by hand (#587 `state set`), not by #604: complete, with NO `loopPlan` marker
+    updateLoopState(i.home, run, () => { const { loopPlan: _m, ...hand } = applyPlan(newState(run, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now()); return withLoop(hand); });
+  }
   const log: string[] = [];
   const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 5000, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
   const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options });
