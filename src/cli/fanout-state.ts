@@ -297,7 +297,7 @@ function readSpecText(ref: string | undefined, explicit: string | undefined, dep
 
 /** #515 — does this ticket owe a writer spawn? spec registered, nothing frozen, not waived, and no live writer (a failed spawn and a claim older than CLAIM_STALE_SEC — the app died mid-spawn — are retried). */
 export function needsAcceptor(t: TicketState | undefined, nowIso?: string): boolean {
-  if (!t || acceptancePhase(t) !== 'pending') return false;
+  if (!t || t.status === 'parked' || acceptancePhase(t) !== 'pending') return false; // #603: no writer for a ticket set aside
   const a = t.accept?.acceptor;
   return !a || !!a.error || claimIsStale(a, nowIso ?? new Date().toISOString());
 }
@@ -554,7 +554,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const unparkMoved = parkedBefore.filter((x) => x !== ticket && next.tickets[x]?.status !== 'parked');
     // #515: a ticket that carries a spec and has no live writer, no frozen tests and no waiver gets its `accept-` writer from the HOST (the call is made after the state is on disk).
     const accOn = acceptanceOn(next); // #554: acceptance off — no writer spawn, no frozen-status post, no pending notice
-    const hostCalls: HostCall[] = accOn && t.status !== 'parked' && needsAcceptor(t, deps.now()) ? [spawnCall(r.run, ticket, deps)] : []; // #603: no writer for a ticket set aside
+    const hostCalls: HostCall[] = accOn && needsAcceptor(t, deps.now()) ? [spawnCall(r.run, ticket, deps)] : [];
     // a recipient recorded AFTER the freeze (the implementer does not exist at dispatch) still gets the frozen status (path + command), once (#515 review m7)
     const late = (['implementer', 'verifier'] as const).map((k) => t[k]).filter((id, i): id is string => !!id && id !== (prev?.[(['implementer', 'verifier'] as const)[i]] ?? null));
     if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });

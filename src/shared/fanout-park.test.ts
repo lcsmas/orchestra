@@ -107,6 +107,13 @@ test('parking a ticket parks every transitive dependent with "blocked by <ticket
   assert.deepEqual(roundtrip(s), s);
 });
 
+test('a dependent names the ticket that blocks it — whichever one that is (a middle ticket, not only the first)', () => {
+  const s = parkTicket(world(), 'B', { cause: 'ci', reason: 'red' }, T);
+  assert.equal(statuses(s), 'A:started B:parked C:parked D:started E:parked');
+  assert.deepEqual(s.tickets.C.parked, { cause: 'upstream', reason: 'blocked by B', at: T, blockedBy: 'B' });
+  assert.equal(s.tickets.E.parked?.blockedBy, 'B');
+});
+
 test('MUST-FAIL (negative control): an upstream of the parked ticket and an unrelated ticket stay as they were', () => {
   const s = parkTicket(world(), 'C', { cause: 'ci', reason: 'same failure after its fix' }, T);
   assert.equal(statuses(s), 'A:started B:started C:parked D:started E:started');

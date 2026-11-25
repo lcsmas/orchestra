@@ -268,8 +268,6 @@ export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'b
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
 /** #587 — the patch keys of the seatRecords rules (kept out of SETTABLE_KEYS so a `nothing to set` message stays as before): refused under seatRecords=off. */
 export const SEAT_PATCH_KEYS = ['interface', 'interfaceReason', 'follows'] as const;
-/** #603 — the patch keys of the parking verbs (`--park <cause> --park-reason <text>` → `park`, `--unpark` → `unpark`); `status: 'parked'` is accepted ONLY with `park`. */
-export const PARK_PATCH_KEYS = ['park', 'unpark'] as const;
 export type TicketPatch = Partial<Pick<TicketState, Exclude<(typeof SETTABLE_KEYS)[number], 'forgetMerge' | 'settle' | 'decide' | 'findings'> | (typeof DERIVED_KEYS)[number]>> & { forgetMerge?: string; findings?: Record<string, StoredFinding>; settle?: Record<string, { how: string; ref: string }>; decide?: Record<string, { text: string; by?: string }> };
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -1276,8 +1274,8 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
 export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
-  refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS, ...PARK_PATCH_KEYS]), 'patch');
-  if ('park' in patch || 'unpark' in patch || patch.status === 'parked') return applyParkPatch(state, id, patch, now); // #603: parking is its own transition (it moves the dependents too)
+  if ('park' in patch || 'unpark' in patch || patch.status === 'parked') return applyParkPatch(state, id, patch, now); // #603: parking is its own transition (it moves the dependents too); it refuses every other key itself
+  refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');
   const seat = seatRecordsOn(state);
   for (const k of SEAT_PATCH_KEYS) if (k in patch && !seat) throw seatOff(`--${k === 'interfaceReason' ? 'interface-reason' : k}`);
   const prev: TicketState = state.tickets[id] ?? blankTicket(now);

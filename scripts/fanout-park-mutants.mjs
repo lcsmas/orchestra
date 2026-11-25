@@ -85,7 +85,7 @@ const MUTANTS = [
   { id: 'C02', name: 'cli: --round-fingerprint records nothing', edits: [[CS, '        return r.state;\n      });\n      return { code: 0, stdout: `repeat', '        return cur;\n      });\n      return { code: 0, stdout: `repeat']] },
   { id: 'C03', name: 'cli: --unpark is ignored', edits: [[CS, "if (p.bools.has('--unpark')) patch.unpark = true;", '']] },
   { id: 'C04', name: 'cli: --park-reason without --park is accepted', edits: [[CS, "if (p.vals['--park'] === undefined) throw new FanoutStateError('--park-reason needs", `${F} throw new FanoutStateError('--park-reason needs`]] },
-  { id: 'C05', name: 'cli: a parked ticket still gets its acceptance writer', edits: [[CS, "accOn && t.status !== 'parked' && needsAcceptor", 'accOn && needsAcceptor']] },
+  { id: 'C05', name: 'cli: a parked ticket still gets its acceptance writer', edits: [[CS, "if (!t || t.status === 'parked' || acceptancePhase(t) !== 'pending') return false;", "if (!t || acceptancePhase(t) !== 'pending') return false;"]] },
   { id: 'C06', name: 'cli: state show does not print the parked / choices / pause block', edits: [[CS, '${recordsShow(s)}${renderHold(s)}`', '${recordsShow(s)}`']] },
   { id: 'C07', name: 'cli: the run-level pause flags may carry a ticket / another flag', edits: [[CS, 'if (which.length !== 1 || ticket ||', 'if (false as boolean ||']] },
   { id: 'C08', name: 'cli: park-help is not a verb', edits: [[CS, "if (sub === 'park-help')", "if (sub === 'park-help-x')"]] },
