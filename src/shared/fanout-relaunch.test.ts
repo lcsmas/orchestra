@@ -6,8 +6,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { blankTicket, newState, readState, stateFile, type FanoutState, type TicketState } from './fanout-state.ts';
-import { fileStatePort, stepEnd, stepReconcile, type EndCtx, type ParkFn, type RelaunchCtx, type StatePort } from './fanout-relaunch.ts';
+import { fileStatePort, releaseDependents, stepEnd, stepReconcile, writeBackFor, type EndCtx, type ParkFn, type RelaunchCtx, type StatePort } from './fanout-relaunch.ts';
 import { buildReport, renderReport, reportExit, type PauseInfo } from './fanout-report.ts';
+import { reconcile } from './fanout-state.ts';
 
 const T0 = '2026-11-25T10:00:00.000Z';
 const sha = (c: string): string => c.repeat(40);
@@ -101,6 +102,7 @@ test('a ticket already recorded merged is never parked and never re-written, wha
   assert.deepEqual(out.parked, []);
   assert.equal(status(port.cur, 'A'), 'merged');
   assert.equal(port.writes, 0, 'no park, no write: a merged ticket is the loop\'s fact, not a parking case');
+  assert.deepEqual(out.diverged.map((d) => d.kind), ['merged-at-ungated-head'], 'but the divergence stays visible');
 });
 
 test('MUST-FAIL arm: a hand merge on a head no verdict covered is NOT recorded as covered — the ticket is parked, not merged', async () => {
@@ -149,12 +151,60 @@ test('a closed PR parks its ticket and the dependents of it; a second pass is a 
   assert.equal(JSON.stringify(port.cur), snap);
 });
 
-test('a branch that is gone parks its ticket (nothing to respawn an agent on)', async () => {
-  const w = new World().branch('b1', null);
-  const port = memPort(stateOf({ A: { status: 'started', branch: 'b1', implementer: 'ws-a' } }));
+test('a branch that is gone parks a ticket that PUBLISHED work (a PR or a recorded head) — a fresh one with neither is only not created yet', async () => {
+  const w = new World().branch('b1', null).branch('b2', null);
+  const port = memPort(stateOf({ A: { status: 'started', branch: 'b1', head: sha('a'), implementer: 'ws-a' }, B: { status: 'started', branch: 'b2', implementer: 'ws-b' } }));
   const out = await stepReconcile(rctx(w, port));
-  assert.equal(out.parked[0]?.ticket, 'A');
+  assert.deepEqual(out.parked.map((p) => p.ticket), ['A']);
   assert.match(parkedOf(port.cur, 'A').reason, /branch b1 is gone/);
+  assert.equal(status(port.cur, 'B'), 'started');
+});
+
+test('a PARKED ticket whose branch is trivially "contained" in the target is NOT adopted as merged (ancestry is no evidence for it); a covered PR merge of it IS', async () => {
+  const w = new World().branch('b1', sha('a')).pr(1, 'open', sha('a'));
+  w.merged.add('b1');
+  const parked = parkShim(stateOf({ A: gated(1, 'a', { status: 'started' }) }), 'A', { cause: 'question', reason: 'NO SAFE OPTION: x' }, T0);
+  const reality = { A: { branchHead: sha('a'), branchTree: sha('a'), mergedIntoTarget: true, pr: { state: 'OPEN' as const, headRefOid: sha('a'), baseRefName: 'master' } } };
+  assert.ok(reconcile(parked, reality).writeBack.some((x) => x.patch.status === 'merged'), 'the unfixed rule WOULD adopt it');
+  assert.deepEqual(writeBackFor(parked, reality, reconcile(parked, reality).writeBack), []);
+  const out = await stepReconcile(rctx(w, memPort(parked)));
+  assert.deepEqual(out.adopted, []);
+  const merged = { A: { ...reality.A, pr: { state: 'MERGED' as const, headRefOid: sha('a'), baseRefName: 'master' } } };
+  assert.deepEqual(writeBackFor(parked, merged, []).map((x) => [x.ticket, x.patch.status]), [['A', 'merged']]);
+  const ungated = { A: { ...merged.A, pr: { state: 'MERGED' as const, headRefOid: sha('c'), baseRefName: 'master' } } };
+  assert.deepEqual(writeBackFor(parked, ungated, []), [], 'merged at a head the verdict did not cover stays parked');
+  const otherBase = { A: { ...merged.A, pr: { state: 'MERGED' as const, headRefOid: sha('a'), baseRefName: 'stack' } } };
+  assert.deepEqual(writeBackFor(parked, otherBase, []), []);
+});
+
+test('a ticket parked for a merge at an ungated head STAYS parked on the next pass (its status no longer reads gated)', async () => {
+  const w = new World().branch('b1', sha('c')).pr(1, 'merged', sha('c'));
+  w.merged.add('b1');
+  const port = memPort(stateOf({ A: gated(1, 'a') }));
+  await stepReconcile(rctx(w, port));
+  assert.equal(status(port.cur, 'A'), 'parked');
+  const out = await stepReconcile(rctx(w, port));
+  assert.deepEqual(out.adopted, []);
+  assert.equal(status(port.cur, 'A'), 'parked');
+});
+
+test('releaseDependents: freed only when the recorded blocker is MERGED — never behind a dropped one or with no blocker; independent of ticket order; another parked upstream re-points', () => {
+  const up = (blockedBy?: string): Raw => ({ status: 'parked', branch: 'bx', dependsOn: [], parked: { cause: 'upstream', reason: `blocked by ${blockedBy}`, ...(blockedBy ? { blockedBy } : {}) } });
+  const ids = (s: FanoutState): string[] => Object.keys(s.tickets).filter((k) => status(s, k) !== 'parked');
+  const mk = (a: 'merged' | 'dropped', order: string[]): FanoutState => {
+    const all: Record<string, Raw> = { A: { status: a }, B: { ...up('A'), dependsOn: ['A'] }, C: { ...up('A'), dependsOn: ['B'] } };
+    return stateOf(Object.fromEntries(order.map((k) => [k, all[k]])));
+  };
+  for (const order of [['A', 'B', 'C'], ['C', 'B', 'A']]) {
+    const r = releaseDependents(mk('merged', order), T0);
+    assert.deepEqual(r.released.sort(), ['B', 'C'], order.join());
+    assert.deepEqual(ids(r.state).sort(), ['A', 'B', 'C']);
+  }
+  assert.deepEqual(releaseDependents(mk('dropped', ['A', 'B', 'C']), T0).released, []);
+  assert.deepEqual(releaseDependents(stateOf({ A: { status: 'dropped' }, B: { ...up(), dependsOn: ['A'] } }), T0).released, [], 'no recorded blocker: not freed');
+  const two = releaseDependents(stateOf({ A: { status: 'merged' }, X: { status: 'parked', parked: { cause: 'ci', reason: 'r' } }, B: { ...up('A'), dependsOn: ['A', 'X'] } }), T0);
+  assert.deepEqual(two.released, []);
+  assert.equal(parkedOf(two.state, 'B').blockedBy, 'X');
 });
 
 test('MUST-FAIL arm: a read that FAILED concludes nothing — no park, no adoption (unknown is not gone)', async () => {
@@ -302,6 +352,8 @@ test('reportExit: 0 merged · 3 parked · 4 paused (wins) · 1 unfinished withou
   assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } } }), 3);
   assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } } }, { pause: { at: T0, reason: 'r', check: null, prs: [] } }), 4);
   assert.equal(mk({ A: { status: 'started' } }), 1);
+  assert.equal(mk({}), 1, 'an empty run delivered nothing');
+  assert.equal(mk({ A: { status: 'dropped' } }), 1, 'only dropped tickets delivered nothing');
 });
 
 test('fileStatePort: the real state file — reconcile writes it once, atomically, and a relaunch reads the same state', async () => {

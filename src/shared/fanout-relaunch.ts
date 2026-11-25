@@ -1,7 +1,7 @@
 // #608 (spec #601 stories 22–23, decision 12) — the loop's `reconcile` and `end` steps: at EVERY start git and the PR host overrule the state (a merge made by hand is adopted, a closed PR parks its ticket, nothing is concluded from a read that failed),
 // and the run ends with a report DERIVED from the state. No agent is started here: adopting live agents / respawning dead ones on their branch is `startRun` (fanout-start.ts), reviewers are claim/settle (fanout-review.ts) — both already idempotent; this step only makes the STATE true first.
 // #605's `stepReconcile(ctx)` / `stepEnd(ctx)` stubs call these with the ports the loop already holds. Ports and the park helper are structural (the frozen names of ledger #613), so this file builds before #603 / #605 land.
-import { applyWriteBack, readState, reconcile, stateFile, updateState, type Divergence, type FanoutState, type Reality, type TicketReality, type TicketState } from './fanout-state.ts';
+import { applyWriteBack, readState, reconcile, sameContent, stateFile, updateState, type Divergence, type FanoutState, type Reality, type TicketReality, type TicketState } from './fanout-state.ts';
 import { buildReport, collectCosts, isParked, parkedOf, reportExit, type ParkCauseView, type Report, type TokenCost } from './fanout-report.ts';
 
 // ── ports: the structural subset of the frozen GitPort / ForgePort this step reads (read-only: it never merges, opens or closes anything) ──
@@ -72,30 +72,38 @@ const TERMINAL = new Set(['merged', 'dropped']);
 /** The park rules, one per divergence kind that leaves a ticket nobody can continue without a person: only these three. null = not a parking divergence. */
 function parkReason(d: Divergence, t: TicketState): { cause: ParkCauseView; reason: string } | null {
   if (d.kind === 'pr-closed-unmerged') return { cause: 'situation', reason: `PR #${t.pr} was closed without merging` };
-  if (d.kind === 'branch-gone') return { cause: 'situation', reason: `branch ${t.branch} is gone: nothing to respawn an agent on` };
+  // only a ticket that PUBLISHED something (a PR or a recorded head) loses work when its branch vanishes; a fresh one is merely not created yet (nothing is pushed before the CI wave: the port reads the refs the agent works on)
+  if (d.kind === 'branch-gone' && (t.pr !== null || t.head)) return { cause: 'situation', reason: `branch ${t.branch} is gone: nothing to respawn an agent on` };
   if (d.kind === 'merged-at-ungated-head') return { cause: 'situation', reason: d.detail.split(': re-gate')[0].slice(0, 300) };
   return null;
 }
 
-/** Free the tickets a parked upstream held, once that upstream is merged (a parked ticket merged by hand — adoption beats parking). A dependent still held by ANOTHER parked upstream stays parked, re-pointed at it. */
-function releaseDependents(state: FanoutState, now: string): { state: FanoutState; released: string[] } {
+/** Free the tickets a parked upstream held, once that upstream is MERGED (a parked ticket merged by hand — adoption beats parking). A dependent still held by ANOTHER parked upstream stays parked, re-pointed at it; one with no recorded blocker, or whose blocker is dropped, is never freed here (`stepEnd` owns those). Decided on the state as it was BEFORE any release, so the result does not depend on ticket order. */
+export function releaseDependents(state: FanoutState, now: string): { state: FanoutState; released: string[] } {
+  const heldBy = (t: TicketState): string | null => { const p = parkedOf(t); return isParked(t) && p?.cause === 'upstream' && p.blockedBy && state.tickets[p.blockedBy]?.status === 'merged' ? p.blockedBy : null; };
+  const freeing = new Set(Object.entries(state.tickets).filter(([, t]) => heldBy(t)).map(([id]) => id));
   const tickets = { ...state.tickets };
   const released: string[] = [];
-  for (const [id, t] of Object.entries(state.tickets)) {
-    const p = parkedOf(t);
-    if (!isParked(t) || p?.cause !== 'upstream') continue;
-    const stillParked = t.dependsOn.find((u) => isParked(tickets[u]));
-    const held = p.blockedBy ? tickets[p.blockedBy] : undefined;
-    if (stillParked) {
-      if (p.blockedBy !== stillParked) tickets[id] = { ...t, parked: { ...p, blockedBy: stillParked, reason: `blocked by ${stillParked}`, at: now }, updatedAt: now } as TicketState;
-      continue;
-    }
-    if (held && !TERMINAL.has(held.status) ) continue; // its blocker is not parked and not merged (e.g. a dropped one): not ours to free
+  for (const id of freeing) {
+    const t = state.tickets[id];
+    const stillParked = t.dependsOn.find((u) => isParked(state.tickets[u]) && !freeing.has(u));
+    if (stillParked) { tickets[id] = { ...t, parked: { ...parkedOf(t)!, blockedBy: stillParked, reason: `blocked by ${stillParked}`, at: now }, updatedAt: now } as TicketState; continue; }
     const { parked: _gone, ...rest } = t as TicketState & { parked?: unknown };
     tickets[id] = { ...rest, status: t.branch || t.implementer ? 'started' : 'todo', updatedAt: now } as TicketState;
     released.push(id);
   }
-  return { state: released.length ? { ...state, tickets, updatedAt: now } : state, released };
+  return { state: freeing.size ? { ...state, tickets, updatedAt: now } : state, released };
+}
+
+/** The write-backs reconcile may apply. For a PARKED ticket reconcile's rules are blind (its ancestry rule trusts any status but `started`, and the ungated-head check only reads `gated|merged`): a parked ticket is adopted only when its PR is MERGED on the target AND at the content the recorded head covers; every other write-back to it is dropped. */
+export function writeBackFor(state: FanoutState, reality: Reality, wb: ReturnType<typeof reconcile>['writeBack']): ReturnType<typeof reconcile>['writeBack'] {
+  const kept = wb.filter((w) => !isParked(state.tickets[w.ticket]));
+  for (const [id, t] of Object.entries(state.tickets)) {
+    const pr = reality[id]?.pr;
+    if (!isParked(t) || !t.head || pr?.state !== 'MERGED' || pr.baseRefName !== state.target || !pr.headRefOid) continue;
+    if (sameContent(pr.headRefOid, reality[id]?.prTree, t.head, t.tree)) kept.push({ ticket: id, patch: { status: 'merged' }, seen: t.updatedAt, why: 'a parked ticket merged by hand at the head it was recorded on' });
+  }
+  return kept;
 }
 
 /** The `reconcile` step. Reads git + the PR host once, then ONE atomic state update: write back what reality is ahead on (a hand merge), free what that hand merge releases, park what only a person could continue. Idempotent: a second call on the same world changes nothing (no timestamp churn — the state is written only when something changed). */
@@ -103,20 +111,21 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
   const state0 = ctx.state.read();
   const reality = await readReality(state0, ctx);
   const plan = reconcile(state0, reality);
+  const writeBack = writeBackFor(state0, reality, plan.writeBack);
   const out: ReconcileOutcome = { adopted: [], parked: [], released: [], diverged: [], unreadable: [] };
   for (const d of plan.divergences) {
     if (d.kind === 'reality-unreadable') { out.unreadable.push(d.ticket); ctx.log(`reconcile: ${d.ticket}: ${d.detail}`); }
   }
   const toPark = plan.divergences.map((d) => ({ d, why: parkReason(d, state0.tickets[d.ticket]) })).filter((x): x is { d: Divergence; why: { cause: ParkCauseView; reason: string } } => x.why !== null && !isParked(state0.tickets[x.d.ticket]) && !TERMINAL.has(state0.tickets[x.d.ticket].status));
-  if (!plan.writeBack.length && !toPark.length) {
-    out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !parkReason(d, state0.tickets[d.ticket]));
+  if (!writeBack.length && !toPark.length) {
+    out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(state0.tickets[d.ticket])));
     for (const d of out.diverged) ctx.log(`reconcile: ${d.ticket}: ${d.kind}: ${d.detail}`);
     return out;
   }
-  ctx.state.update((cur) => {
+  const after = ctx.state.update((cur) => {
     const before = cur;
     const now = ctx.now();
-    let s = plan.writeBack.length ? applyWriteBack(cur, plan.writeBack, now) : cur;
+    let s = writeBack.length ? applyWriteBack(cur, writeBack, now) : cur;
     out.adopted = Object.keys(s.tickets).filter((id) => s.tickets[id].status === 'merged' && before.tickets[id].status !== 'merged');
     // a ticket merged by hand leaves `parked`: the merge is a fact, the park was a decision about a ticket that is now done
     s = { ...s, tickets: Object.fromEntries(Object.entries(s.tickets).map(([id, t]) => [id, out.adopted.includes(id) && isParked(before.tickets[id]) ? (({ parked: _p, ...rest }) => rest as TicketState)(t as TicketState & { parked?: unknown }) : t])) };
@@ -131,7 +140,7 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
     }
     return s;
   });
-  out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !parkReason(d, state0.tickets[d.ticket]) && !out.adopted.includes(d.ticket)); // a parking kind is handled (parked now, before, or the ticket is done)
+  out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(after.tickets[d.ticket])) && !out.adopted.includes(d.ticket)); // a parking kind is handled once its ticket is parked; on a ticket recorded merged it stays visible
   for (const id of out.adopted) ctx.log(`reconcile: ${id}: merged outside the loop (or by the loop before a kill) — adopted`);
   for (const id of out.released) ctx.log(`reconcile: ${id}: its parked upstream was merged — released`);
   for (const p of out.parked) ctx.log(`reconcile: ${p.ticket}: parked [${p.cause}] ${p.reason}`);

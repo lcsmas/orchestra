@@ -89,7 +89,7 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
 export function reportExit(r: Report): 0 | 1 | 3 | 4 {
   if (r.paused) return 4;
   if (r.parked.length) return 3;
-  if (r.unfinished.length) return 1;
+  if (r.unfinished.length || !r.merged.length) return 1; // nothing merged and nothing parked (an empty run, or only dropped tickets) did not deliver
   return 0;
 }
 
@@ -120,11 +120,10 @@ export function renderReport(r: Report): string {
 
 // ── cost per ticket, from the transcripts ─────────────────────────────────────────────────────────────────────────────
 
-/** Tokens of one Claude Code transcript (`<configDir>/projects/<cwd>/<session>.jsonl`): the `usage` of every assistant line, once per `message.id` (a message streamed as several lines repeats its usage; the LAST line carries the final `output_tokens`). Subagent (sidechain) lines count: they are the ticket's cost. A line that does not parse is skipped. */
-export function tokensOfTranscript(jsonl: string): Required<TokenCost> {
-  const byId = new Map<string, { i: number; o: number; r: number; c: number }>();
-  let anon = 0;
-  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+type Usage = { i: number; o: number; r: number; c: number };
+const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+/** Add one transcript's assistant usages to `byId` (one entry per `message.id`: a message streamed as several lines repeats its usage, the LAST line carries the final `output_tokens`; a resumed or forked session that copies history into a new file repeats ids — one map per COUNT keeps them single). Lines with no id are each their own message. */
+function collect(jsonl: string, byId: Map<string, Usage>, anon: { n: number }): void {
   for (const raw of jsonl.split('\n')) {
     const line = raw.trim();
     if (!line || !line.includes('"usage"')) continue;
@@ -132,25 +131,34 @@ export function tokensOfTranscript(jsonl: string): Required<TokenCost> {
     try { e = JSON.parse(line); } catch { continue; }
     if (e.type !== 'assistant' || !e.message?.usage) continue;
     const u = e.message.usage;
-    byId.set(typeof e.message.id === 'string' ? e.message.id : `anon-${anon++}`, { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) });
+    byId.set(typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`, { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) });
   }
+}
+function total(byId: Map<string, Usage>): Required<TokenCost> {
   let input = 0, output = 0, cacheRead = 0, cacheCreate = 0;
   for (const v of byId.values()) { input += v.i; output += v.o; cacheRead += v.r; cacheCreate += v.c; }
   return { tokens: input + output + cacheRead + cacheCreate, input, output, cacheRead, cacheCreate };
 }
 
-/** Sum of {@link tokensOfTranscript} over files; null when NO file could be read (unmeasured is not 0). */
+/** Tokens of one Claude Code transcript (`<configDir>/projects/<cwd>/<session>.jsonl`): the `usage` of every assistant line, once per `message.id`. Subagent (sidechain) lines count: they are the ticket's cost. A line that does not parse is skipped. */
+export function tokensOfTranscript(jsonl: string): Required<TokenCost> {
+  const byId = new Map<string, Usage>();
+  collect(jsonl, byId, { n: 0 });
+  return total(byId);
+}
+
+/** {@link tokensOfTranscript} over files with ONE id map (a message copied into a second file is counted once); null when NO file could be read (unmeasured is not 0). */
 export function tokensOfFiles(files: string[], read: (p: string) => string = (p) => fs.readFileSync(p, 'utf8')): Required<TokenCost> | null {
+  const byId = new Map<string, Usage>();
+  const anon = { n: 0 };
   let any = false;
-  const sum: Required<TokenCost> = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
   for (const f of files) {
     let text: string;
     try { text = read(f); } catch { continue; }
     any = true;
-    const t = tokensOfTranscript(text);
-    sum.tokens += t.tokens; sum.input += t.input; sum.output += t.output; sum.cacheRead += t.cacheRead; sum.cacheCreate += t.cacheCreate;
+    collect(text, byId, anon);
   }
-  return any ? sum : null;
+  return any ? total(byId) : null;
 }
 
 /** Every `*.jsonl` of a transcript directory (a workspace restarted or cleared has one file per session — all of them are the ticket's cost). [] when the directory is absent. */

@@ -46,12 +46,17 @@ test('makeCostOf + transcriptFilesIn over real files: every session of every wor
     fs.writeFileSync(path.join(dir, 'impl', 's1.jsonl'), asst('m1', { input_tokens: 100, output_tokens: 10 }));
     fs.writeFileSync(path.join(dir, 'impl', 's2.jsonl'), asst('m9', { input_tokens: 50 })); // a restarted session
     fs.writeFileSync(path.join(dir, 'impl', 'notes.txt'), 'x');
-    fs.writeFileSync(path.join(dir, 'rev', 's1.jsonl'), asst('m1', { input_tokens: 7 })); // same message id as impl/s1: a DIFFERENT file, counted on its own
+    fs.writeFileSync(path.join(dir, 'rev', 's1.jsonl'), asst('r1', { input_tokens: 7 }));
     const costOf = makeCostOf({ workspacesOf: (t) => (t === 'A' ? ['impl', 'rev'] : []), transcriptsOf: (ws) => transcriptFilesIn(path.join(dir, ws)) });
     assert.equal((await costOf('A'))!.tokens, 167);
     assert.equal(await costOf('B'), null);
     assert.deepEqual(transcriptFilesIn(path.join(dir, 'nope')), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a message copied into a second file (a resumed / forked session) is counted ONCE across the files of a ticket', () => {
+  const files: Record<string, string> = { a: asst('m1', { input_tokens: 10, output_tokens: 2 }), b: [asst('m1', { input_tokens: 10, output_tokens: 2 }), asst('m2', { input_tokens: 5 })].join('\n') };
+  assert.equal(tokensOfFiles(['a', 'b'], (p) => files[p])!.tokens, 17);
 });
 
 test('workspacesOfTicket: implementer + every reviewer ever briefed, unique, in order', () => {
