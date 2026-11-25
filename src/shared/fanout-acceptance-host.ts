@@ -5,6 +5,7 @@ import {
 } from './fanout-state.ts';
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
+import { dispatchReview, type ReviewHostDeps, type ReviewHostResult } from './fanout-review-host.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
 export interface AcceptanceHostDeps {
@@ -22,6 +23,10 @@ export interface AcceptanceHostDeps {
   childrenOf?: (run: string) => string[];
   /** #554 — re-render the verified-fanout skill of these workspaces from their run's switches (the coordinator that just set them reads the text without a restart). Absent = nothing to refresh. */
   refreshSkills?: (ids: string[]) => Promise<string[]>;
+  /** #588 — production: re-proves the caller of op `review` against the session-key registry (see ReviewHostDeps). */
+  verifyCaller?: ReviewHostDeps['verifyCaller'];
+  /** #588 — is this workspace alive (exists and is not archived)? Absent = `isWorkspace`: the review host wakes a LIVE reviewer and replaces a dead one. */
+  isLive?: (id: string) => boolean;
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -30,6 +35,7 @@ export type AcceptanceHostResult =
   | { ok: true; op: 'spawn'; id: string; name: string }
   | { ok: true; op: 'skills'; refreshed: string[] }
   | { ok: true; op: 'children'; children: string[] }
+  | Extract<ReviewHostResult, { ok: true }> // #588: `fanout review`
   | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
 
@@ -55,6 +61,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const ids = [...new Set([str(input.from), deps.isWorkspace(run) ? run : undefined].filter((x): x is string => !!x && deps.isWorkspace(x)))];
       return { ok: true, op: 'skills', refreshed: deps.refreshSkills ? await deps.refreshSkills(ids) : [] };
     }
+    if (input.op === 'review') return await dispatchReview(input, deps); // #588: spawn / wake / replace the ticket's reviewer (src/shared/fanout-review-host.ts)
     const ticket = str(input.ticket);
     if (!ticket) return { ok: false, error: 'missing ticket' };
     const from = str(input.from);

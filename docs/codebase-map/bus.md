@@ -2890,6 +2890,8 @@ its baked env, and `send` is refused when the `bus-run-stale` marker names a run
 env ALREADY carries — a bash-mode `!cmd` with a freshly built env — does not block; an unreadable marker blocks). `check`/`ack` are always allowed there. While the host
 answers, the marker is ignored. This is why the marker file is still written on a host-resolved move (attach / detach / adopt): the session's baked env IS the old run if the app goes away.
 
+**Consumers beyond the bus verbs.** `orchestra fanout acceptance freeze` (#515 M1) and `orchestra fanout review` / `state set --run-decision` (#588: `resolveCaller` in `src/shared/fanout-caller.ts`, hooks-cli-socket.md § fanout review) take the host's `ok` as the ONLY proof of the caller — `ORCHESTRA_WS_ID` alone is forgeable (measured).
+
 **Not covered / accepted.** (0) Identity stays caller-asserted: `--as <coordinator>` from a member with a key gets the host's CURRENT generation (it passes the fence where master's stale env generation was rejected) — a member was never fenced without an env generation, `--generation`/`--as` flags already bypassed it, and the CLI writes `bus.sqlite` directly: the key is a fence against honest zombies, not an auth boundary. (1) Session-start-only effects still follow the OLD run until a restart: the Docker relay's `orchestra.run` label and the memory-cap decision of a
 promoted member — `refreeze --only memory_cap` (paused vague) is the explicit lever. (2) A pre-#379 keeper-surviving CLI has no key (env fallback until its next fresh spawn).
 (3) If the registry file is lost/corrupt every keyed CLI reads `unregistered` and falls back (degraded, never wrongly refused). (4) Same-uid processes can read a sibling's

@@ -40,6 +40,9 @@ import {
   type TicketState,
 } from '../shared/fanout-state.ts';
 import type { CheckExec } from '../shared/fanout-checks.ts';
+import type { IdentityResolution } from '../shared/session-identity.ts';
+import { resolveCaller } from '../shared/fanout-caller.ts';
+import { assertReviewCaller } from '../shared/fanout-review.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
@@ -60,6 +63,8 @@ export interface FanoutDeps {
   spawned?: string[] | null;
   /** #564 — runs one shell command of `fanout check` (undefined = the real `sh -c`; tests hand a fake). */
   exec?: CheckExec;
+  /** #588 — the host's answer to `/identity` for THIS call (index.ts `settleHostIdentity`); undefined / null = the host was not asked or did not vouch. The caller proof of `fanout review` (src/shared/fanout-caller.ts). */
+  identity?: IdentityResolution | null;
 }
 
 /** #554 — is this `fanout state init|set … --switch …`? Returns the run it acts on (for the host question), else null. */
@@ -322,6 +327,7 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
   }
 }
 
+
 function runState(args: string[], deps: FanoutDeps): RunResult {
   const [verb, ...rest] = args;
   if (verb === 'init') {
@@ -374,6 +380,8 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       const dfile = stateFile(homeOf(deps.env), dr.run);
       const dnext = updateState(dfile, (cur) => {
         if (!cur) throw new FanoutStateError(`no state at ${dfile} — run \`orchestra fanout state init\` first`);
+        // hardening (#588): under the real CLI (index.ts hands the host's /identity answer: `identity` is present) the coordinator must be VOUCHED by the host — an env id alone is forgeable; without the key (a unit test / embedded call) the env id is judged as before
+        if (seatRecordsOn(cur) && 'identity' in deps) assertReviewCaller(cur, resolveCaller(cur, deps.env, deps.identity), 'decision-caller');
         if (seatRecordsOn(cur) && caller !== dr.run) throw new SeatRefusal('decision-caller', `only the run's coordinator (${dr.run}) records a run decision${caller ? `, not ${caller}` : ' (no workspace identity: ORCHESTRA_WS_ID is empty)'}`);
         return addDecision(cur, text, caller, deps.now());
       });

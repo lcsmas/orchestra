@@ -137,7 +137,20 @@ export interface TicketState {
   iface?: Iface | null;
   /** #587 — upstream id → the `iface.version` of that upstream this ticket follows (`--follows`). Absent = follows nothing. */
   follows?: Record<string, number>;
+  /** #588 (I3) — the reviewer Orchestra spawned for this ticket + every brief it was sent (written ONLY by `orchestra fanout review` / its host op; absent = none). */
+  review?: ReviewRecord;
   updatedAt: string;
+}
+
+/** #588 (I3) — one brief sent to the ticket's reviewer: `kind` = first spawn / delta to the SAME live reviewer / a new reviewer after the old one died. `hash` = sha256 of `text`. */
+export interface ReviewBrief { n: number; kind: 'spawn' | 'wake' | 'replace'; head: string; base: string | null; hash: string; text: string; reviewer: string | null; at: string }
+export interface ReviewRecord {
+  /** The recorded reviewer (`id` null = the spawn is in flight, or failed — `error`). null = none yet. */
+  reviewer: { id: string | null; name: string; at: string; error?: string } | null;
+  /** The head the reviewer was last briefed on, and its base. */
+  head: string | null;
+  base: string | null;
+  briefs: ReviewBrief[];
 }
 /** #587 — one superseded version of an interface: `reason` = WHY it was replaced (the reason given with the next version), `at` = when. */
 export interface IfaceVersion { version: number; text: string; reason: string | null; at: string }
@@ -167,6 +180,7 @@ export interface FanoutState {
   updatedAt: string;
   reconciledAt: string | null;
 }
+
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
 export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;
@@ -211,7 +225,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -665,6 +679,34 @@ function wsIdOf(v: unknown, name: string): string | null {
   if (s !== null && !SAFE_ID.test(s)) throw new FanoutStateError(`${name} must be a workspace id (letters, digits, . _ -)`);
   return s;
 }
+/** #588 — a ticket's review record: the reviewer slot + the briefs sent (each `hash` is the sha256 of its `text`; a mismatch is a corrupt state). */
+function reviewOf(v: unknown, where: string): ReviewRecord {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: review must be an object`);
+  refuseUnknown(v, new Set(['reviewer', 'head', 'base', 'briefs']), `${where} review`);
+  const iso = (x: unknown, n: string): string => { if (typeof x !== 'string' || Number.isNaN(Date.parse(x))) throw new FanoutStateError(`${where}: ${n} must be an ISO date`); return x; };
+  let reviewer: ReviewRecord['reviewer'] = null;
+  if (v.reviewer !== undefined && v.reviewer !== null) {
+    const r = v.reviewer;
+    if (!isObj(r)) throw new FanoutStateError(`${where}: review.reviewer must be an object or null`);
+    refuseUnknown(r, new Set(['id', 'name', 'at', 'error']), `${where} review.reviewer`);
+    if (typeof r.name !== 'string' || !r.name.trim()) throw new FanoutStateError(`${where}: review.reviewer.name missing`);
+    reviewer = { id: wsIdOf(r.id, 'review.reviewer.id'), name: r.name, at: iso(r.at, 'review.reviewer.at'), ...(typeof r.error === 'string' && r.error ? { error: r.error.slice(0, 500) } : {}) };
+  }
+  const sha = (x: unknown, n: string): string | null => { const s = strOrNull(x, n); if (s !== null && !HEX_SHA.test(s)) throw new FanoutStateError(`${where}: ${n} must be 7-40 lowercase hex`); return s; };
+  if (v.briefs !== undefined && !Array.isArray(v.briefs)) throw new FanoutStateError(`${where}: review.briefs must be an array`);
+  const briefs = ((v.briefs as unknown[] | undefined) ?? []).map((b, i): ReviewBrief => {
+    if (!isObj(b)) throw new FanoutStateError(`${where}: review.briefs[${i}] must be an object`);
+    refuseUnknown(b, new Set(['n', 'kind', 'head', 'base', 'hash', 'text', 'reviewer', 'at']), `${where} review.briefs[${i}]`);
+    if (b.n !== i + 1) throw new FanoutStateError(`${where}: review.briefs[${i}].n must be ${i + 1}`);
+    const kind = enumOf(b.kind, ['spawn', 'wake', 'replace'] as const, `review.briefs[${i}].kind`);
+    const head = sha(b.head, 'review.briefs.head');
+    if (!head) throw new FanoutStateError(`${where}: review.briefs[${i}].head missing`);
+    if (typeof b.hash !== 'string' || !/^[0-9a-f]{64}$/.test(b.hash)) throw new FanoutStateError(`${where}: review.briefs[${i}].hash must be a sha256 hex`);
+    if (typeof b.text !== 'string' || !b.text) throw new FanoutStateError(`${where}: review.briefs[${i}].text missing`);
+    return { n: b.n, kind, head, base: sha(b.base, 'review.briefs.base'), hash: b.hash, text: b.text, reviewer: wsIdOf(b.reviewer, 'review.briefs.reviewer'), at: iso(b.at, 'review.briefs.at') };
+  });
+  return { reviewer, head: sha(v.head, 'review.head'), base: sha(v.base, 'review.base'), briefs };
+}
 function acceptFlowOf(v: unknown, where: string): AcceptFlow | null {
   if (v === undefined || v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: accept must be an object or null`);
@@ -919,6 +961,7 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),
       ...(t.follows !== undefined ? { follows: followsOf(t.follows, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
+      ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
