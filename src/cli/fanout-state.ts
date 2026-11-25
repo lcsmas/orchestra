@@ -157,6 +157,8 @@ export const SEAT_USAGE = `seatRecords (#585/#587) — switch \`state set --swit
   orchestra fanout state set <ticket> --follows <up>=<version>[,…]   the interface version a dependent built on (a nomination on an older one is refused with the reason of the change)
   Refused with exit 2, the message starting with its name: [plan-incomplete] (first spawn and --status started|nominated|gated: lists the plan tickets absent from the state, the tickets with no declared dependencies,
   the depended-on tickets with no interface) · [interface-blank] · [interface-reason-missing] · [interface-stale] · [interface-unfollowed] · [follows-invalid] · [plan-frozen] · [decision-blank] · [decision-caller] · [seat-records-off].
+  orchestra fanout start [--run <id>]                           launch the implementer of every plan ticket that has none live, brief rendered by code (coordinator only; orchestra fanout start --help)
+  \`orchestra spawn --name impl-…\` by the coordinator of such a run is refused: [start] is the one door.
   \`state show\` then lists the plan, the interfaces and the tickets that are ready (todo, not started).`;
 
 const SHA_ARG = /^[0-9a-f]{7,40}$/;
