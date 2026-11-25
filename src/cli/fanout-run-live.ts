@@ -48,7 +48,13 @@ export function mergeThroughDeliver(i: { home: string; run: string; log: (l: str
     const entry = Object.entries(s?.tickets ?? {}).find(([, t]) => t.pr === n);
     if (!s || !entry || !entry[1].branch) return { ok: false, reason: 'no-ticket', detail: `no ticket of run ${i.run} has pull request #${n}` };
     const [ticket, t] = entry;
-    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, { ...deliverDepsFor(i.home), ...i.deps, log: i.log });
+    const d = { ...deliverDepsFor(i.home), ...i.deps, log: i.log };
+    // deliver finds its pull request by BRANCH: refuse before it can merge a different one than the loop tracks (a closed #n and a second open PR on the branch)
+    const seen = await d.gh(['pr', 'view', String(n), '--json', 'state', ...(s.repo ? ['--repo', s.repo] : [])]);
+    let state = '';
+    try { state = String((JSON.parse(seen.stdout) as { state?: unknown }).state ?? ''); } catch { /* unreadable */ }
+    if (seen.code !== 0 || state !== 'OPEN') return { ok: false, reason: 'pr-not-open', detail: `pull request #${n} is ${state || 'unreadable'} (${seen.stderr.trim().slice(0, 160)}): deliver would pick another pull request of ${t.branch}` };
+    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, d);
     const r = out.result;
     if (r.pr !== undefined && r.pr !== n) return { ok: false, reason: 'pr-mismatch', detail: `deliver acted on pull request #${r.pr} for branch ${t.branch}, the loop tracks #${n}` }; // deliver finds its PR by branch: never report another PR's merge as this one's
     if (out.exit === 0 && (r.verdict === 'merged' || r.verdict === 'already-merged')) return { ok: true };

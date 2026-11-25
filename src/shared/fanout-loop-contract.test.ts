@@ -494,7 +494,7 @@ test('live forge: a re-run waits for the OTHER jobs of the run to finish (gh ref
   const { n } = await open(h, 'T1');
   h.fake.advance(240_000 + 1); // done
   const red = (await h.port.checks(n, head)).find((c) => c.status === 'red')!;
-  h.fake.runs[0].doneAt = h.fake.clock + 30_000; // a sibling job is still running: the run is not completed
+  h.fake.runs[0].sibling = { name: 'lint', until: h.fake.clock + 30_000 }; // `test` is red but a sibling job is still running: the run is not completed
   await h.port.rerun(n, [red.name]); // waits (its injected sleep advances the fake clock) then re-runs
   assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'rerun').length, 1);
 });

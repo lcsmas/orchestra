@@ -7,8 +7,8 @@ import type { ExecResult } from './fanout-loop-live-git.ts';
 export const CHECKS = ['build', 'test', 'lint'];
 const EPOCH = Date.parse('2026-01-01T00:00:00Z');
 
-interface Pr { n: number; branch: string; base: string; title: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergeParents?: number }
-interface Run { id: number; n: number; head: string; startedAt: number; doneAt: number; result: string; attempt: number; jobs: Record<string, string> }
+interface Pr { n: number; branch: string; base: string; title: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergeParents?: number; mergedHead?: string }
+interface Run { /** a job of the run that is still going until `until` while the others are done (a re-run is refused until the whole run is completed) */ sibling?: { name: string; until: number }; id: number; n: number; head: string; startedAt: number; doneAt: number; result: string; attempt: number; jobs: Record<string, string> }
 
 export class FakeForge {
   clock = EPOCH;
@@ -48,7 +48,7 @@ export class FakeForge {
   private field(pr: Pr, k: string): unknown {
     switch (k) {
       case 'state': return pr.state;
-      case 'headRefOid': return this.heads.get(pr.branch);
+      case 'headRefOid': return pr.mergedHead ?? this.heads.get(pr.branch); // a merged PR keeps the head it was merged at
       case 'statusCheckRollup': return this.rollup(pr);
       case 'baseRefName': return pr.base;
       case 'number': return pr.n;
@@ -63,10 +63,13 @@ export class FakeForge {
     if (!r) return [];
     const done = this.clock >= r.doneAt;
     const red = r.result.startsWith('red:') ? r.result.slice(4) : null;
-    return CHECKS.map((name) => ({
-      __typename: 'CheckRun', name, workflowName: 'ci', status: done ? 'COMPLETED' : 'IN_PROGRESS', conclusion: done ? (name === red ? 'FAILURE' : 'SUCCESS') : '',
-      detailsUrl: `https://github.com/o/r/actions/runs/${r.id}/job/${r.jobs[name]}`, startedAt: this.iso(r.startedAt), completedAt: done ? this.iso(r.doneAt) : '0001-01-01T00:00:00Z',
-    }));
+    return CHECKS.map((name) => {
+      const finished = done && !(r.sibling && r.sibling.name === name && this.clock < r.sibling.until);
+      return {
+        __typename: 'CheckRun', name, workflowName: 'ci', status: finished ? 'COMPLETED' : 'IN_PROGRESS', conclusion: finished ? (name === red ? 'FAILURE' : 'SUCCESS') : '',
+        detailsUrl: `https://github.com/o/r/actions/runs/${r.id}/job/${r.jobs[name]}`, startedAt: this.iso(r.startedAt), completedAt: finished ? this.iso(r.doneAt) : '0001-01-01T00:00:00Z',
+      };
+    });
   }
 
   private async run(args: string[]): Promise<ExecResult> {
@@ -108,6 +111,7 @@ export class FakeForge {
       const head = this.heads.get(pr.branch)!;
       if (sha && !(head.startsWith(sha) || sha.startsWith(head))) return this.no('X Pull request is not mergeable: Head branch was modified. Review and try the merge again.');
       pr.state = 'MERGED';
+      pr.mergedHead = head;
       pr.mergeParents = 2; // a merge commit
       return this.ok('');
     }
@@ -126,7 +130,7 @@ export class FakeForge {
     if (a === 'run' && b === 'rerun') {
       const run = this.runs.find((r) => String(r.id) === args[2]);
       if (!run || !args.includes('--failed')) return this.no('run rerun: unsupported here (only `--failed` of a known run)');
-      if (this.clock < run.doneAt) return this.no(`run ${run.id} is still in progress; it cannot be re-run until it has completed`);
+      if (this.clock < run.doneAt || (run.sibling && this.clock < run.sibling.until)) return this.no(`run ${run.id} is still in progress; it cannot be re-run until it has completed`);
       const pr = this.prs.get(run.n)!;
       const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
       const result = this.nextResult(pr.branch);
