@@ -11,7 +11,7 @@ import {
 
 /** A `[review-…]` refusal: a SeatRefusal (message starts with its bracketed name; the CLI exits 2). */
 export class ReviewRefusal extends SeatRefusal {}
-const refuse = (name: string, detail: string): never => { throw new ReviewRefusal(name, detail); };
+const reviewRefuse = (name: string, detail: string): never => { throw new ReviewRefusal(name, detail); };
 
 /** `review-<ticket slug>`: the `review-` prefix IS the reviewer role (fleet-roles.ts `ROLE_PREFIX`), so the role table pins its tools; `n` = the nth reviewer of the ticket (a replacement is `-r2`…). */
 export function reviewerName(ticket: string, n = 1): string {
@@ -24,28 +24,28 @@ const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWi
 
 /** The refusals that need only the state (the caller proof is checked by {@link assertReviewCaller}, `--print` skips it). Returns the ticket. */
 export function assertReviewable(state: FanoutState, ticket: string): TicketState {
-  if (!seatRecordsOn(state)) refuse('review-off', 'seatRecords is OFF for this run (state show prints the switches): no reviewer is rendered, spawned or recorded by code; spawn the reviewer by hand, or start a run with `--switch seatRecords=on`');
+  if (!seatRecordsOn(state)) reviewRefuse('review-off', 'seatRecords is OFF for this run (state show prints the switches): no reviewer is rendered, spawned or recorded by code; spawn the reviewer by hand, or start a run with `--switch seatRecords=on`');
   const t = state.tickets[ticket];
   if (!t) throw new FanoutStateError(`ticket ${ticket} is not in the fanout state of run ${state.run}`);
-  if (!t.head) refuse('review-no-head', `${ticket} has no recorded head: nominate it first (\`orchestra fanout state set ${ticket} --head <sha> --status nominated\`) — the brief names the exact head and base`);
+  if (!t.head) reviewRefuse('review-no-head', `${ticket} has no recorded head: nominate it first (\`orchestra fanout state set ${ticket} --head <sha> --status nominated\`) — the brief names the exact head and base`);
   const missing = planMissing(state);
-  if (missing.length) refuse('review-plan', `the run's plan is incomplete: ${missing.join('; ')}`);
+  if (missing.length) reviewRefuse('review-plan', `the run's plan is incomplete: ${missing.join('; ')}`);
   return t;
 }
 
 /** Only the run's coordinator, proven by the HOST, may have a reviewer rendered into the run (or add a run decision, `what` = `decision-caller`): a forged `ORCHESTRA_WS_ID` is not a proof (fanout-caller.ts). */
 export function assertReviewCaller(state: FanoutState, caller: Caller, name: 'review-caller' | 'decision-caller' = 'review-caller'): void {
   const verb = name === 'review-caller' ? '`fanout review`' : '`state set --run-decision`';
-  if (caller.role !== 'coordinator') refuse(name, `only the run's coordinator (${state.run}) may run ${verb}; the caller is ${caller.id ?? 'unidentified'} (${caller.role})`);
-  if (!isVouched(caller)) refuse(name, `the host did not vouch for ${caller.id}: ${caller.proof} — run it from the coordinator's own live session (a forged ORCHESTRA_WS_ID proves nothing)`);
+  if (caller.role !== 'coordinator') reviewRefuse(name, `only the run's coordinator (${state.run}) may run ${verb}; the caller is ${caller.id ?? 'unidentified'} (${caller.role})`);
+  if (!isVouched(caller)) reviewRefuse(name, `the host did not vouch for ${caller.id}: ${caller.proof} — run it from the coordinator's own live session (a forged ORCHESTRA_WS_ID proves nothing)`);
 }
 
 /** The recorded reviewer may be neither the ticket's implementer nor the coordinator (nor its verifier); checked on the RECORDED id and on a freshly spawned one. */
 export function assertReviewerRole(state: FanoutState, t: TicketState, reviewerId: string | null): void {
   if (!reviewerId) return;
-  if (reviewerId === state.run) refuse('review-role', `the reviewer ${reviewerId} is the run's coordinator`);
-  if (reviewerId === t.implementer) refuse('review-role', `the reviewer ${reviewerId} is the ticket's implementer`);
-  if (reviewerId === t.verifier) refuse('review-role', `the reviewer ${reviewerId} is the ticket's verifier`);
+  if (reviewerId === state.run) reviewRefuse('review-role', `the reviewer ${reviewerId} is the run's coordinator`);
+  if (reviewerId === t.implementer) reviewRefuse('review-role', `the reviewer ${reviewerId} is the ticket's implementer`);
+  if (reviewerId === t.verifier) reviewRefuse('review-role', `the reviewer ${reviewerId} is the ticket's verifier`);
 }
 
 export type ReviewAction = { action: 'spawn' | 'replace'; kind: BriefKind } | { action: 'wake'; kind: 'wake' } | { action: 'noop'; why: string; id: string | null };
