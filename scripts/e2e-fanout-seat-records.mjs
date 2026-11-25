@@ -28,6 +28,7 @@ function run() {
 // [name, file, from, to] — `from` must occur exactly once in `file`.
 const S = 'src/shared/fanout-state.ts';
 const C = 'src/cli/fanout-state.ts';
+const B = 'src/shared/fanout-brief-common.ts';
 const mutants = [
   // I1 — the switch
   ['default seatRecords flipped to on (v0.5.375 profile)', S, "preNominationChecks: 'off', seatRecords: 'off' }; // #559: the v0.5.375 profile", "preNominationChecks: 'off', seatRecords: 'on' }; // #559: the v0.5.375 profile"],
@@ -105,6 +106,28 @@ const mutants = [
   ['parse: the stored plan is dropped on read', S, "    ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),\n", ""],
   ['parse: a stored iface is dropped on read', S, "      ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),\n", ""],
   // the render
+  // PR A — the run's decisions + the shared brief helpers
+  ['decision: a blank text is accepted', S, "  if (!t) throw new SeatRefusal('decision-blank',", "  if (false) throw new SeatRefusal('decision-blank',"],
+  ['decision: accepted under off', S, "  if (!seatRecordsOn(st)) throw seatOff('--run-decision');", ""],
+  ['decision: numbered from the wrong base', S, "decisions: [...list, { n: list.length + 1, text: t, by, at: now }]", "decisions: [...list, { n: list.length, text: t, by, at: now }]"],
+  ['decision: the recorder is not kept', S, "{ n: list.length + 1, text: t, by, at: now }", "{ n: list.length + 1, text: t, by: 'coordinator', at: now }"],
+  ['decision: a decision replaces the earlier ones', S, "decisions: [...list, {", "decisions: [{"],
+  ['decision: any caller records it', C, "if (seatRecordsOn(cur) && caller !== dr.run) throw new SeatRefusal('decision-caller'", "if (false) throw new SeatRefusal('decision-caller'"],
+  ['decision: no identity is accepted', C, "caller !== dr.run) throw new SeatRefusal('decision-caller'", "caller && caller !== dr.run) throw new SeatRefusal('decision-caller'"],
+  ['decision: --run-decision takes a ticket', C, "if (ticket || Object.keys(p.vals).some((k) => k !== '--run-decision' && k !== '--run')) throw", "if (false) throw"],
+  ['decision: --run-decision does not read stdin / a file', C, "const text = readTextArg(p.vals['--run-decision'], deps);", "const text = p.vals['--run-decision'];"],
+  ['decision: state show lists none', C, "const decisions = s.decisions?.length ?", "const decisions = false ?"],
+  ['decision: a stored gap in the numbering loads', S, "if (d.n !== i + 1) throw new FanoutStateError(`decisions[${i}].n must be ${i + 1}`);", ""],
+  ['decision: a stored blank decision loads', S, "if (typeof d.text !== 'string' || !d.text.trim()) throw new FanoutStateError(`decisions[${i}].text must be non-blank`);", ""],
+  ['decision: a stored empty list loads', S, "if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('decisions must be", "if (!Array.isArray(v)) throw new FanoutStateError('decisions must be"],
+  ['decision: the stored decisions are dropped on read', S, "    ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),\n", ""],
+  ['brief-common: briefHash is not sha256', B, "createHash('sha256')", "createHash('sha1')"],
+  ['brief-common: the decisions are not numbered', B, "${x.n}. ${x.text}", "${x.text}"],
+  ['brief-common: no decision is said as nothing', B, "return \"Decisions of the run: none recorded.\";", "return '';"],
+  ['brief-common: the switches line reads the defaults', B, "const sw = switchesOf(state);", "const sw = switchesOf(undefined);"],
+  ['brief-common: the interface changes are not shown', B, "const changes = f.history.map(", "const changes = [].map("],
+  ['brief-common: a missing interface is not said', B, "if (!f) return `### ${id}: no interface declared`;", "if (!f) return '';"],
+  ['brief-common: only the first interface is rendered', B, "const parts = ids.map((id) => {", "const parts = ids.slice(0, 1).map((id) => {"],
   ['show: the ready line is gone', C, "ready (todo, not started): ${ready.length", "ready: ${ready.length"],
   ['show: a started ticket is ready', S, "filter(([, t]) => t.status === 'todo')", "filter(([, t]) => true)"],
   ['show: ready is listed while the plan is incomplete', S, "  if (planMissing(state).length) return [];\n", ""],

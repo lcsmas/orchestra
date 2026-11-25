@@ -161,6 +161,8 @@ export interface FanoutState {
   switchesFrozen?: { at: string; by: string };
   /** #587 (seatRecords) — the run's ticket list, declared by `state set --plan` before the first spawn (`--plan-add` appends, also after it). Absent = not declared. */
   plan?: { tickets: string[]; declaredAt: string };
+  /** #587 PR A (ledger #591 I3 v2) — the run's decisions: what the coordinator must tell every seat; EVERY brief carries them verbatim (`fanout-brief-common.ts`). Appended by `state set --run-decision`, never edited. */
+  decisions?: Array<{ n: number; text: string; by: string; at: string }>;
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
@@ -208,7 +210,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
   return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
@@ -278,6 +280,7 @@ export function setHarness(state: FanoutState, v: string, now: string): FanoutSt
 
 // ── #587 (I2): the plan + the interfaces, declared before the first spawn (switch seatRecords) ─────────────────────
 const IFACE_TEXT_MAX = 20_000;
+export const DECISION_TEXT_MAX = 4_000;
 const seatOff = (what: string): SeatRefusal => new SeatRefusal('seat-records-off', `${what} is a seatRecords rule and this run has seatRecords=off (choose it before the first spawn: state set --switch seatRecords=on)`);
 function ticketIdsOf(v: unknown, where: string): string[] {
   if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !SAFE_TICKET.test(d))) throw new FanoutStateError(`${where} must be a list of ticket ids`);
@@ -329,6 +332,27 @@ export function setPlan(state: FanoutState, ids: string[], mode: 'declare' | 'ad
     return { ...st, plan: { tickets: list, declaredAt: now }, updatedAt: now };
   }
   return { ...st, plan: { tickets: [...new Set([...(st.plan?.tickets ?? []), ...list])], declaredAt: st.plan?.declaredAt ?? now }, updatedAt: now };
+}
+function decisionsOf(v: unknown): NonNullable<FanoutState['decisions']> {
+  if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('decisions must be a non-empty list of {n, text, by, at}');
+  return v.map((d, i) => {
+    if (!isObj(d)) throw new FanoutStateError(`decisions[${i}] must be an object`);
+    refuseUnknown(d, new Set(['n', 'text', 'by', 'at']), `decisions[${i}]`);
+    if (d.n !== i + 1) throw new FanoutStateError(`decisions[${i}].n must be ${i + 1}`);
+    if (typeof d.text !== 'string' || !d.text.trim()) throw new FanoutStateError(`decisions[${i}].text must be non-blank`);
+    if (typeof d.by !== 'string' || !d.by.trim()) throw new FanoutStateError(`decisions[${i}].by must be non-empty`);
+    return { n: i + 1, text: d.text, by: d.by, at: isoOf(d.at, `decisions[${i}].at`) };
+  });
+}
+/** `state set --run-decision <text|file|->`: append one decision (numbered from 1, never edited). Pure; refused under seatRecords=off; a blank text → `[decision-blank]`. `by` = the recording workspace (the CLI proves it is the coordinator). */
+export function addDecision(state: FanoutState, text: string, by: string, now: string): FanoutState {
+  const st = stampDefaults(state);
+  if (!seatRecordsOn(st)) throw seatOff('--run-decision');
+  const t = text.replace(/\r\n/g, '\n').trim();
+  if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
+  if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
+  const list = st.decisions ?? [];
+  return { ...st, decisions: [...list, { n: list.length + 1, text: t, by, at: now }], updatedAt: now };
 }
 /** #587 (I2) — what stands between the run and its first spawn / a `started|nominated|gated` ticket: the plan tickets absent from the state, the tickets (not dropped) whose dependencies are not declared, the depended-on tickets with no interface. [] = nothing missing. */
 export function planMissing(state: FanoutState): string[] {
@@ -908,6 +932,7 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.switchDefaults !== undefined ? { switchDefaults: switchDefaultsOf(raw.switchDefaults) } : {}),
     ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
     ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),
+    ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,

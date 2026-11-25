@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runFanout, SEAT_USAGE, FANOUT_USAGE, type FanoutDeps } from './fanout-state.ts';
 import { DEFAULT_SWITCHES, V378_DEFAULT_SWITCHES, SeatRefusal, applyTicketPatch, interfaceOf, newState, parseState, planMissing, readState, readyTickets, seatRecordsOn, stateFile, switchesOf, type FanoutState } from '../shared/fanout-state.ts';
+import { briefHash, renderDecisions, renderInterfaces, renderSwitchesLine } from '../shared/fanout-brief-common.ts';
 import { claimAcceptor } from '../shared/fanout-acceptance.ts';
 import { renderVerifiedFanoutSkill } from '../shared/verified-fanout-skill.ts';
 
@@ -397,4 +398,61 @@ test('a stored depsDeclared:false (I2 types it boolean) loads as not declared; a
   assert.equal(parseState(j).tickets.B.depsDeclared, undefined);
   j.tickets.B.depsDeclared = 'yes';
   assert.throws(() => parseState(j), /depsDeclared must be a boolean/);
+});
+
+// ── PR A: the run's decisions + the shared brief helpers ─────────────────────────────────────────────────
+
+test('decisions: --run-decision appends numbered, verbatim decisions (coordinator only); blank refused; off refused; from a file and stdin', (t) => {
+  const d = onRun(t, { declared: false });
+  const home = d.env.ORCHESTRA_HOME!;
+  let r = set(d, '--run-decision', 'No new dependency.');
+  assert.equal(r.code, 0, r.stderr);
+  fs.writeFileSync(path.join(home, 'dec.md'), 'Money is integer cents.\n');
+  assert.equal(set(d, '--run-decision', 'dec.md').code, 0);
+  assert.equal(set({ ...d, readStdin: () => 'from stdin' }, '--run-decision', '-').code, 0);
+  assert.deepEqual(load(d).decisions, [
+    { n: 1, text: 'No new dependency.', by: 'r1', at: NOW },
+    { n: 2, text: 'Money is integer cents.', by: 'r1', at: NOW },
+    { n: 3, text: 'from stdin', by: 'r1', at: NOW },
+  ]);
+  assert.match(show(d), /decisions \(#587\): 3\n  1\. No new dependency\.\n  2\. Money is integer cents\.\n  3\. from stdin\n/);
+  refused(set(d, '--run-decision', '  '), 'decision-blank');
+  r = set(d, 'A', '--run-decision', 'x');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /run-level/);
+  refused(set({ ...d, env: { ...d.env, ORCHESTRA_WS_ID: 'someone-else' } }, '--run-decision', 'forged'), 'decision-caller');
+  refused(set({ ...d, env: { ORCHESTRA_HOME: home } }, '--run-decision', 'no identity'), 'decision-caller');
+  assert.equal(load(d).decisions!.length, 3, 'a refused decision writes nothing');
+  const off = mkDeps(mkHome(t));
+  sh(off, 'init', '--run', 'r1');
+  refused(set(off, '--run-decision', 'x'), 'seat-records-off');
+});
+
+test('decisions: a stored list is validated (numbered from 1, no gap, no unknown field, non-blank)', (t) => {
+  const d = onRun(t);
+  set(d, '--run-decision', 'one'); set(d, '--run-decision', 'two');
+  const good = JSON.parse(JSON.stringify(load(d)));
+  assert.equal(parseState(good).decisions!.length, 2);
+  const bad = (mut: (s: any) => void): void => { const j = JSON.parse(JSON.stringify(good)); mut(j); assert.throws(() => parseState(j)); };
+  bad((j) => { j.decisions[1].n = 3; });
+  bad((j) => { j.decisions[0].text = ' '; });
+  bad((j) => { j.decisions[0].extra = 1; });
+  bad((j) => { j.decisions = []; });
+  bad((j) => { j.decisions[0].by = ''; });
+});
+
+test('brief-common: briefHash is sha256 hex; decisions / switches / interfaces render from the state, verbatim', (t) => {
+  assert.equal(briefHash('x'), sha('x'));
+  const d = onRun(t);
+  assert.equal(renderDecisions(load(d)), 'Decisions of the run: none recorded.');
+  set(d, '--run-decision', 'No new dependency.'); set(d, '--run-decision', 'Cents only.');
+  assert.equal(renderDecisions(load(d)), 'Decisions of the run (binding, verbatim — recorded by the coordinator):\n1. No new dependency.\n2. Cents only.');
+  assert.equal(renderSwitchesLine(load(d)), 'Switches of this run: earlyGate=on · acceptance=off · minorPolicy=legacy · verifier=on · preNominationChecks=off · seatRecords=on.');
+  set(d, 'A', '--interface', 'table t(id, name, age)', '--interface-reason', 'age needed');
+  const out = renderInterfaces(load(d), ['A', 'B']);
+  assert.match(out, /### A — interface v2 \(changes: v1→v2: age needed\)\ntable t\(id, name, age\)/);
+  assert.match(out, /### B: no interface declared/);
+  assert.match(out, /--follows <ticket>=<version>/);
+  assert.equal(renderInterfaces(load(d), []), 'Interfaces you build against: none.');
+  assert.equal(renderInterfaces(load(d), ['A']), renderInterfaces(load(d), ['A']), 'deterministic');
 });
