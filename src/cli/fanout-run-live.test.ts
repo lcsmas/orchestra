@@ -37,7 +37,7 @@ async function rig(o: { approve: boolean; ci?: string[] }) {
     return s;
   });
   const logs: string[] = [];
-  const deps: Partial<DeliverDeps> = { gh: fake.gh, sleep: async (ms) => { fake.advance(ms); }, now: () => fake.clock, log: (l) => logs.push(l), recorded: () => readState(stateFile(home, RUN)) };
+  const deps: Partial<DeliverDeps> = { gh: fake.gh, sleep: async (ms) => { fake.advance(ms); }, now: () => fake.clock, log: (l) => logs.push(l)};
   const deliver = mergeThroughDeliver({ home, run: RUN, log: (l) => logs.push(l), deps });
   const forge = createLiveForge({ gh: fake.gh, deliver });
   const merges = (): number => fake.calls.filter((c) => c[0] === 'pr' && c[1] === 'merge').length;
