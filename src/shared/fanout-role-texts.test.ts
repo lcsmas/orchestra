@@ -392,7 +392,7 @@ test('#590 installer: an fs error is reported, never thrown (the hook install it
 });
 
 test('#590 the reviewer\'s brief carries the role file path (I5) — by default, and the path is one the installer writes; the pointer replaced the inline rules', () => {
-  const state = { run: 'r1', target: 'master', switches: { seatRecords: 'on' }, tickets: { T1: { id: 'T1', dependsOn: [], findings: {}, spec: null, specText: 't', branch: 'b1', pr: null, head: 'a'.repeat(40) } }, decisions: [] } as unknown as Parameters<typeof briefInputOf>[0];
+  const state = { run: 'r1', target: 'master', switches: { seatRecords: 'on' }, tickets: { T1: { id: 'T1', dependsOn: [], builtOn: {}, builtOnTree: {}, follows: {}, findings: {}, spec: null, specText: 't', branch: 'b1', pr: null, head: 'a'.repeat(40) } }, decisions: [] } as unknown as Parameters<typeof briefInputOf>[0];
   const input = briefInputOf(state, 'T1', { kind: 'spawn', head: 'a'.repeat(40), base: 'b'.repeat(40) });
   const withPath = renderReviewerBrief(input);
   assert.ok(withPath.includes(`Your role file: ${FANOUT_REVIEWER_SKILL_PATH}`) && withPath.includes(REVIEWER_RULES));
