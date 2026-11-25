@@ -194,6 +194,13 @@ A rebase, an author rewrite or a rebase-merge changes shas and not content; a ve
 - Tests: `src/shared/fanout-tree-verdict.test.ts` (pure: state, reconcile, decideDelivery, decideGate, receipt), rig `scripts/e2e-fanout-tree-verdict.mjs` through the BUILT CLI (`pnpm run test:fanout-tree-verdict`; control `RIG_UNFIXED_CLI=<bundle of master>` must go red; mutants `pnpm run test:fanout-tree-verdict-mutants`).
 
 
+### The loop's red CI + start check (#607, spec #601 decisions 8–9)
+`src/shared/fanout-loop-ci.ts` — the loop's `stepCi(ctx)` and `stepStartCheck(ctx)`, over the frozen ports (`ForgePort.checks/rerun/close`, `FleetPort.wake`, `GitPort`) and `ctx.update` (the atomic state write); nothing kept in memory, what a pass must remember is `TicketState.ci` (`CiRecord`, parsed in `fanout-state.ts`, written only by `stepCi`).
+- Red on a settled head: ONE re-run of the red jobs per ticket (recorded BEFORE the call; a re-run the forge refused is un-recorded; a red whose `jobId` is the one re-run is the OLD run) → green = listed `ci.flaky`; red again → the author is woken with the check name + log tail, once per head; the same failure after its fix (`situationFingerprint` of check name + numbers-erased log tail, kept in `ci.seen`, cleared by a green; backstop `CI_TELLS_MAX` tells per check set) → `parkTicket` cause `ci` (dependents `upstream`); a re-run still showing the old run after `rerunExpireMs` is retried.
+- Environment: the same check red on ≥ 2 open PRs → `pauseRun` (check + PRs + reason), before any re-run or message; a resumed run skips the acknowledged red (`ci.env` = check + job id), re-runs once; a fresh red after the re-run pauses again, a green is not flaky.
+- Start check (`options.startCheck`, off by default; skipped once any ticket started): `GitPort.emptyBranch` + `openPr` + poll `checks` + (always) `close` + `deleteBranch`; red / missing (none after `startCheckMissingMs`) / timeout → `{ ok:false, code:'start-check-*' }`, the loop refuses the start. `emptyBranch` / `deleteBranch` are #607 additions to the frozen `GitPort` (ledger #613 interface log).
+- Stub seam: `fanout-loop-ci-stubs.ts` copies the #603/#605 frozen names until they are connected; delete it then and repoint the imports. Tests: `fanout-loop-ci.test.ts` (hand-made ports).
+
 ## Error handling
 Helpers swallow and return safe defaults (`[]`/`''`/`null`/all-false merge
 state). User-facing errors (branch-switch collision) are re-thrown with a

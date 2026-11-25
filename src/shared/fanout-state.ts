@@ -151,7 +151,24 @@ export interface TicketState {
   review?: ReviewRecord;
   /** #587 PR B (ledger #591 I6) — written ONLY by `orchestra fanout start` (the host): when this ticket's implementer was launched, `spawn` or `respawn` (a dead one replaced), the sha256 of the brief it was given, how many briefs the ticket has had. Not settable by `state set`. */
   start?: { at: string; kind: 'spawn' | 'respawn'; briefHash: string; briefs: number };
+  /** #607 — the loop's CI bookkeeping for the head it last read (written ONLY by `stepCi`, never by `state set`). */
+  ci?: CiRecord;
   updatedAt: string;
+}
+
+/** #607 — what `stepCi` remembers between two (disposable) passes: the ONE re-run per head, the author told, the flaky checks (report), the checks the run attributed to the environment. `head` resets `rerun`/`told`/`env`, never `everTold`/`flaky`. */
+export interface CiRecord {
+  head: string;
+  rerun: { at: string; names: string[]; jobs: Record<string, string> } | null;
+  told: { at: string; names: string[] } | null;
+  everTold: boolean;
+  /** fingerprints (check names + normalised log tail) of the reds the author was told; cleared by a green */
+  seen: string[];
+  /** times the author was told about this exact set of check names; cleared by a green */
+  tells: Record<string, number>;
+  flaky: string[];
+  /** reds the run blamed on the environment: the check and the job id of the run that was red (null = the forge gave none) */
+  env: Array<{ name: string; job: string | null }>;
 }
 
 /** #588 (I3) — one brief sent to the ticket's reviewer: `kind` = first spawn / delta to the SAME live reviewer / a new reviewer after the old one died. `hash` = sha256 of `text`. */
@@ -239,6 +256,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
 TICKET_KEYS.add('reviews'); // #589 (I4)
+TICKET_KEYS.add('ci'); // #607
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -638,6 +656,46 @@ export function findingOf(v: unknown, where: string): FindingRecord {
   return out;
 }
 /** #589 (I4) — the stored `reviews`: every field shape-checked, `n` strictly increasing from 1. */
+function ciRecordOf(v: unknown, where: string): CiRecord {
+  const at = `${where}: ci`;
+  if (!isObj(v)) throw new FanoutStateError(`${at} must be an object`);
+  refuseUnknown(v, new Set(['head', 'rerun', 'told', 'everTold', 'seen', 'tells', 'flaky', 'env']), at);
+  if (typeof v.head !== 'string' || !HEX_SHA.test(v.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
+  const names = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !d.trim() || d.length > 200 || CTRL.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of check names`); return x as string[]; };
+  let rerun: CiRecord['rerun'] = null;
+  if (v.rerun !== null && v.rerun !== undefined) {
+    if (!isObj(v.rerun)) throw new FanoutStateError(`${at}.rerun must be an object or null`);
+    refuseUnknown(v.rerun, new Set(['at', 'names', 'jobs']), `${at}.rerun`);
+    const jobs: Record<string, string> = {};
+    if (v.rerun.jobs !== undefined) {
+      if (!isObj(v.rerun.jobs)) throw new FanoutStateError(`${at}.rerun.jobs must be {check: jobId}`);
+      for (const [k, j] of Object.entries(v.rerun.jobs)) { if (typeof j !== 'string' || !j) throw new FanoutStateError(`${at}.rerun.jobs[${k}] must be a job id`); jobs[k] = j; }
+    }
+    rerun = { at: isoOf(v.rerun.at, `${at}.rerun.at`), names: names(v.rerun.names, 'rerun.names'), jobs };
+  }
+  let told: CiRecord['told'] = null;
+  if (v.told !== null && v.told !== undefined) {
+    if (!isObj(v.told)) throw new FanoutStateError(`${at}.told must be an object or null`);
+    refuseUnknown(v.told, new Set(['at', 'names']), `${at}.told`);
+    told = { at: isoOf(v.told.at, `${at}.told.at`), names: names(v.told.names, 'told.names') };
+  }
+  if (typeof v.everTold !== 'boolean') throw new FanoutStateError(`${at}.everTold must be a boolean`);
+  const tells: Record<string, number> = {};
+  if (v.tells !== undefined) {
+    if (!isObj(v.tells)) throw new FanoutStateError(`${at}.tells must be {names: count}`);
+    for (const [k, n] of Object.entries(v.tells)) { if (!Number.isInteger(n) || (n as number) < 0) throw new FanoutStateError(`${at}.tells[${k}] must be a count`); tells[k] = n as number; }
+  }
+  if (v.env !== undefined && !Array.isArray(v.env)) throw new FanoutStateError(`${at}.env must be an array`);
+  const env = ((v.env ?? []) as unknown[]).map((e, i) => {
+    if (!isObj(e)) throw new FanoutStateError(`${at}.env[${i}] must be an object`);
+    refuseUnknown(e, new Set(['name', 'job']), `${at}.env[${i}]`);
+    if (typeof e.name !== 'string' || !e.name.trim() || CTRL.test(e.name)) throw new FanoutStateError(`${at}.env[${i}].name must be a check name`);
+    if (e.job !== null && (typeof e.job !== 'string' || !e.job)) throw new FanoutStateError(`${at}.env[${i}].job must be a job id or null`);
+    return { name: e.name, job: e.job as string | null };
+  });
+  return { head: v.head, rerun, told, everTold: v.everTold, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
+}
+
 function reviewsOf(v: unknown, where: string): ReviewEntry[] {
   if (!Array.isArray(v)) throw new FanoutStateError(`${where}: reviews must be an array`);
   return v.map((e, i) => {
@@ -1015,6 +1073,7 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
       ...(t.reviews !== undefined ? { reviews: reviewsOf(t.reviews, `ticket ${id}`) } : {}), // #589 (I4)
+      ...(t.ci !== undefined ? { ci: ciRecordOf(t.ci, `ticket ${id}`) } : {}), // #607
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
