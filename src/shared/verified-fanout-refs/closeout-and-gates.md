@@ -42,7 +42,12 @@ over adjectives — live in `references/prose.md`.
 
 ## A measured MINOR is never lost (#553)
 
+<!--sw seatRecords=off-->
 Record a MINOR you **measured** on product code with its report: `state set <ticket> --json '{"findings":{"<id>":{"severity":"MINOR","evidence":"measured","report":{"input":…,"happens":…,"where":…,"proof":…}}}}'` — a part missing is refused at recording. At close, `orchestra fanout closeout` (read-only) prints one ready-to-file ticket text per such finding: paste the list into the closing report. An *argued* MINOR and a `kind: process` finding create nothing. A MINOR a merged follow-up fixed (`--fixes`) still gets its text until you settle it: `state set <ticket> --settle <id>=fixed:<ref>` once the follow-up has landed (only a recorded settle drops a text). Filing in a tracker is `--file`, off by default, never waited on — the OPS decides.
+<!--/sw-->
+<!--sw seatRecords=on-->
+A MINOR the reviewer **measured** on product code is recorded with its report (`fanout record`, the reviewer's own file): a part missing is refused at recording. At close, `orchestra fanout closeout` (read-only) prints one ready-to-file ticket text per such finding: paste the list into the closing report. An *argued* MINOR and a `kind: process` finding create nothing. Filing in a tracker is `--file`, off by default, never waited on — the OPS decides.
+<!--/sw-->
 
 ## Specify gates that can fail
 

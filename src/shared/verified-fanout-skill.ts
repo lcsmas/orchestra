@@ -146,6 +146,7 @@ Coordinator-side rules:
 
 ## 0b. Budget: messages and gates
 
+<!--sw seatRecords=off-->
 Churn burns a fleet's tokens and wall-clock. Caps, carried in every brief:
 
 - **Every report, verdict and blocking question lands as a LEDGER COMMENT**; the message channel
@@ -155,6 +156,10 @@ Churn burns a fleet's tokens and wall-clock. Caps, carried in every brief:
 - **Fixed report format, ≤15 lines:** ¤STATE: <tip via ls-remote>¤ · each gate
   as ¤command → exact counts/RC¤ side by side · findings · NOT VERIFIED. Only the **delta since the last report**.
 - **One ping per event** — checkpoint, gate verdict, blocking question.
+<!--/sw-->
+<!--sw seatRecords=on-->
+Churn burns a fleet's tokens and wall-clock. The caps — reports as LEDGER COMMENTS with ONE ping, the fixed report format, the final ¤worker_done --cap¤ — are in the ledger's Briefing and in the role files (§2, §3b).
+<!--/sw-->
 
 Gate rhythm:
 
@@ -168,27 +173,33 @@ Gate rhythm:
 - **The PR's CI is the build and the full suite; nobody re-runs it by hand.** ¤deliver¤ refuses a head with no CI (¤no-checks¤), a red one (¤ci-red¤) or a check that ran nothing (¤zero-steps¤);
   pin the suite check with ¤--require-check¤ when it is external; a moved head's CI is never accepted. A target with no PR CI cannot be delivered: fix the CI first.
 <!--/sw-->
+<!--sw seatRecords=off-->
 - **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**
 - **Self-gate BEFORE nominating — the implementer runs the adversarial checklist on their own candidate first**
   and answers in the nomination comment: for each headline claim, what observation would DIFFER on a broken
   build; did the unfixed arm actually FAIL through the same rig; does any test assert the thing the ticket
   promises. No answers, no nomination. **Then a fresh-context PRE-REVIEW:** ONE in-process reviewer
   subagent (Agent tool, not an ¤orchestra spawn¤) on its diff + the ticket, flagging only correctness/ticket-promise gaps; BLOCKING/MAJOR fixed before nominating, the rest listed in the nomination.
+<!--/sw-->
 <!--sw verifier=on-->
 - **Gate merge candidates, not pushes.** The verifier gates when the coordinator names a candidate ref.
 <!--/sw-->
 <!--sw verifier=off-->
 - **Review merge candidates, not pushes.** The reviewer reads when the coordinator names a candidate ref.
 <!--/sw-->
+<!--sw seatRecords=off-->
   **Rebase onto current master BEFORE nominating**; a nominated ref's NAME is frozen.
-<!--sw preNominationChecks=on-->
+<!--/sw-->
+<!--sw preNominationChecks=on seatRecords=off-->
 - **Run the repo's fast checks before nominating:** from a clean worktree at the candidate head, ¤orchestra fanout check <ticket> --run <coordinator run>¤ (the commands are discovered from the files you changed — the nearest ¤package.json¤ ¤lint¤ script; the repo may override them in ¤.orchestra/pre-nomination-checks.json¤; nothing found = refused). ¤state set --status nominated¤ is refused without a passing record for that head's tree; a rebase that keeps the tree needs no re-run.
 <!--/sw-->
 - **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's tree object byte-equals the
   gated merged tree); the carry is VOID across any conflict resolution, squash-with-edits, or cherry-pick.
 - **Scope re-gates to the delta**; a docs/comment-only delta carries the verdict.
+<!--sw seatRecords=off-->
 - **A review that exposes a coverage gap**: do NOT add cases at the layer you already test — drive the module that can reach the defect.
 - **Mutation runs: FULL set at the first nomination and at the final merge gate; intermediate rounds mutate only the clauses the delta changed.**
+<!--/sw-->
 
 → **Read ¤references/budget-and-gates.md¤ before the first gate** (the grounds for each cap).
 
@@ -199,8 +210,13 @@ Every run is all-ON (six switches; mail cannot be switched off). Mail: ¤orchest
 ¤orchestra ack <lot-id>¤ (only the reader acks) or ¤orchestra check --ack-previous¤. ¤orchestra message¤ is refused for every target (except ¤--emergency <id> <text>¤); agents with no common ancestry may
 send each other ¤status¤ and ¤ask¤ only. **Only a real task assignment is ¤--type dispatch¤: it mints a
 capability and SUPERSEDES the recipient's previous one** — orders, pings and FYIs are ¤status¤; the one final
+<!--sw seatRecords=off-->
 report of a dispatched task is ¤worker_done --cap¤ (§0b). A worker sends gate failures, decision asks and ONE
 final report, nothing per phase. A coordinator waits for a verdict with ¤orchestra check --run <your run id>¤, never by counting ledger comments.
+<!--/sw-->
+<!--sw seatRecords=on-->
+report of a dispatched task is ¤worker_done --cap¤ (§0b). A coordinator waits for a verdict with ¤orchestra check --run <your run id>¤, never by counting ledger comments.
+<!--/sw-->
 
 → **Read ¤references/fleet-bus.md¤ when a message does not arrive, before ¤orchestra ask¤ / ¤gate¤ / ¤token¤, or on a ¤=OFF¤ notice line.**
 
@@ -210,6 +226,10 @@ Break the feature into 2–4 self-contained subtasks, disjoint files. Each brief
 pings with ¤worker_done --cap "$(orchestra token)"¤", "outward actions stay with the coordinator") lives ONCE in the ledger's **Briefing** section; every spawn prompt says "the contract is
 the Briefing section of ledger #N — pull it first".
 
+<!--sw seatRecords=on-->
+**Declare the plan before the first spawn** (§0 ledger = prose, the state file = the run's facts): ¤orchestra fanout state set --plan <id,id,…>¤ (¤--plan-add <id,…>¤ appends, also after the first spawn), and for EVERY ticket ¤state set <ticket> --depends-on a,b|none¤. A ticket another one depends on gets its frozen interface in the state file: ¤state set <ticket> --interface <text|file|->¤ (a change = ¤--interface-reason <text>¤, required from v2); a dependent records the version it builds on: ¤state set <dependent> --follows <up>=<ver>¤. A first spawn or a ¤--status started|nominated|gated¤ with a plan gap is refused (¤[plan-incomplete]¤ lists it; ¤[interface-stale]¤ / ¤[interface-unfollowed]¤ for a dependent on an old or no version). The run's own decisions: ¤state set --run-decision <text|file|->¤ — every brief carries them verbatim, so a decision is written once.
+
+<!--/sw-->
 <!--sw earlyGate=on-->
 **A dependent track starts at dispatch and is gated on its upstream's candidate, not merge.** Freeze the interface in the ledger; it builds on a stub. ¤orchestra fanout state set <ticket> --depends-on
 <upstream> --frozen-interface <ref>¤ lets it go ¤--status started¤. Once the upstream has a verified candidate, rebase on it, ¤--built-on <upstream>=<head>¤, nominate: ¤fanout gate --ticket <id>¤ / ¤resume¤ say wait or re-gate; ¤deliver¤ enforces order and content. An upstream changing the frozen interface posts one "what changed" line to its dependents.
@@ -253,6 +273,10 @@ Code forces it; you do not spawn the writer.
 
 One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per subtask (flags: ¤orchestra-spawn¤
 skill); record each printed workspace id + branch in the ledger.
+<!--sw seatRecords=on-->
+
+**Every implementer's brief names its rules file** — ¤.claude/skills/verified-fanout/roles/implementer.md¤ (the self-gate, the pre-review, the nomination, the reports) — and tells it NOT to load ¤verified-fanout¤: that skill is yours.
+<!--/sw-->
 
 <!--sw verifier=on-->
 ## 3. Spawn the verifier
@@ -275,6 +299,8 @@ One agent whose only job is verification. Its brief:
 ## 3. No gating seat: the CI and the reviewer
 
 No agent runs a gate for you: the build and the full suite are the PR's CI (§0b), the code is attacked by the reviewer (§3b).
+<!--/sw-->
+<!--sw verifier=off seatRecords=off-->
 
 - The implementer's self-gate (§0b) and its pre-review stay: they are what the nomination rests on.
 - What neither the CI nor the reviewer covers (a user-facing flow, a rig the CI does not run) is NOT VERIFIED: the implementer names it in the nomination and the PR body.
@@ -286,13 +312,18 @@ No agent runs a gate for you: the build and the full suite are the PR's CI (§0b
 
 Gates verify BEHAVIOUR; review attacks the CODE, with a fresh party. When the coordinator records a merge candidate, spawn ONE short-lived reviewer —
 **nested under the coordinator, never ¤--detached¤** (a detached reviewer escapes the close-out sweep).
+<!--sw seatRecords=off-->
 It reads the diff, the ledger spec and ¤references/traps.md¤, tries to BREAK the change, reports findings as a
 ledger comment with a per-finding measured/argued label, and dies. **It reports only BLOCKING, MAJOR, and MINOR
 that touch correctness or a ticket promise — never NITs.**
 
 **Severity scale** (BLOCKING / MAJOR / MINOR / NIT — the §4 merge rule keys on it): ¤references/verifier-and-review.md¤, read when you grade a finding.
-<!--sw minorPolicy=demonstrated-->
+<!--/sw-->
+<!--sw minorPolicy=demonstrated seatRecords=off-->
 **Reviewer brief (#572):** per product finding demand ¤input¤ / ¤observed¤ (¤file:line¤) / ¤expected¤, or ¤cannot¤ (see the reference).
+<!--/sw-->
+<!--sw seatRecords=on-->
+**Spawn it with ¤orchestra fanout review <ticket> [--run <id>]¤** (the ¤review-¤ name, the model and the brief are code: the ticket's spec, the run's decisions, the plan and interfaces, head and base; no flag takes free text, ¤--print¤ shows the brief without spawning). It reads the diff, tries to BREAK the change and RECORDS its verdict with ¤orchestra fanout record¤ — its rules, the severity scale and the record's shape are in its own file (¤.claude/skills/verified-fanout/roles/reviewer.md¤, named in its brief). **Never write a reviewer's rules or verdict yourself**: a reviewer that died without a record is woken or replaced by the same verb (¤deliver¤ says ¤record-missing¤).
 <!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs
@@ -349,39 +380,49 @@ current gate; a MINOR that touches correctness or a ticket promise goes to the O
 follow-up branch, every other finding is ¤noted¤.*
 <!--/sw-->
 
+<!--sw seatRecords=off-->
 The count, the head and the CI are code: write the round's counts to a verdict file
 ¤{"round":1,"blocking":0,"major":0,"minor":2,"head":"<40-hex>"}¤ and run
 ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --review-verdict <file>
 --verified-head <sha> --run <id>¤ — one call checks and merges with ¤gh pr merge --match-head-commit¤.
-<!--sw verifier=on-->
+<!--/sw-->
+<!--sw verifier=on seatRecords=off-->
 ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤); ¤--no-review-gate¤
 is the explicit ungated merge (¤reviewGated:false¤), never your default. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
 <!--/sw-->
-<!--sw verifier=off-->
+<!--sw verifier=off seatRecords=off-->
 ALWAYS pass ¤--review-verdict¤: without it ¤deliver¤ refuses (¤no-verdict¤), and ¤--no-review-gate¤
 is refused too (¤no-verdict¤): the review verdict and the CI are the whole gate. A refusal (exit 2, JSON ¤reason¤: ¤no-verdict¤, ¤review-blocking¤, ¤head-moved¤,
 <!--/sw-->
+<!--sw seatRecords=off-->
 ¤ci-red¤, ¤no-checks¤, ¤zero-steps¤, ¤merge-conflict¤…) is the answer: a MAJOR/BLOCKING or a
-<!--sw verifier=on-->
+<!--/sw-->
+<!--sw verifier=on seatRecords=off-->
 conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the verifier
 for a re-gate, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
 <!--/sw-->
-<!--sw verifier=off-->
+<!--sw verifier=off seatRecords=off-->
 conflict goes to the implementer, a moved head or ¤verdict-head-mismatch¤ back to the reviewer
 for a new verdict on the head, ¤wrong-base¤ / ¤pr-closed¤ to the ledger, red CI to its owner, ¤no-checks¤ or
 <!--/sw-->
+<!--sw seatRecords=off-->
 ¤zero-steps¤ to whoever owns the CI (external CI: ¤--require-check¤). Exit 1 (¤timeout¤,
 ¤gh-failed¤, ¤merge-failed¤, ¤bad-verdict¤, ¤no-verified-head¤) is "could not check", not a
-<!--sw minorPolicy=spec-->
+<!--/sw-->
+<!--sw minorPolicy=spec seatRecords=off-->
 refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR refuses only when it quotes a spec sentence (¤finding-unsettled¤).
 <!--/sw-->
-<!--sw minorPolicy=refuse|legacy-->
+<!--sw minorPolicy=refuse|legacy seatRecords=off-->
 refusal: inspect and retry. Never merge around either with ¤gh¤. A MINOR never refuses: its disposition stays yours.
 <!--/sw-->
-<!--sw minorPolicy=demonstrated-->
+<!--sw minorPolicy=demonstrated seatRecords=off-->
 refusal: inspect and retry. Never merge around either with ¤gh¤. Only an accepted demonstration refuses a finding (¤finding-unsettled¤).
 <!--/sw-->
 
+<!--sw seatRecords=on-->
+The count, the head and the CI are code, and the review input is the reviewer's RECORD (¤orchestra fanout record¤, §3b): ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --require-check suite --verified-head <sha> --run <id>¤ reads the verdict recorded on the delivered head, the CI and the PR, then merges with ¤gh pr merge --match-head-commit¤. A refusal (exit 2, JSON ¤reason¤) is the answer: ¤record-missing¤ (no verdict recorded on that head: wake or replace the reviewer with ¤orchestra fanout review <ticket>¤), ¤review-blocking¤ / ¤finding-unsettled¤ (a recorded BLOCKING/MAJOR or accepted demonstration: to the implementer; a finding you will not fix takes ¤state set <ticket> --decide <id>=<reason>¤ — a blank reason is refused), ¤head-moved¤ (the reviewer records the new head), ¤merge-conflict¤ (to the implementer), ¤ci-red¤ / ¤no-checks¤ / ¤zero-steps¤ (to whoever owns the CI), ¤wrong-base¤ / ¤pr-closed¤ (to the ledger). Exit 1 (¤timeout¤, ¤gh-failed¤, ¤merge-failed¤, ¤no-verified-head¤) is "could not check", not a refusal: inspect and retry. Never merge around either with ¤gh¤; you never type a verdict, a severity or a settlement — a finding exists only if the reviewer recorded it.
+
+<!--/sw-->
 <!--sw verifier=on-->
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the verifier gates the delta
 <!--/sw-->
@@ -389,17 +430,20 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. Only an accep
 - **BLOCKING/MAJOR → ONE fix round**: the implementer fixes and re-nominates once, the reviewer re-reads the delta
 <!--/sw-->
   (§0b); correctness MINORs may ride in it; upgrading a MINOR to MAJOR takes naming the ticket promise it breaks.
-<!--sw minorPolicy=spec-->
+<!--sw minorPolicy=spec seatRecords=off-->
 - **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR (or a spec-sentence MINOR, ¤references/verifier-and-review.md¤): ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other MINOR-only or finding-less one.
 <!--/sw-->
-<!--sw minorPolicy=refuse-->
+<!--sw minorPolicy=refuse seatRecords=off-->
 - **At most ONE follow-up branch per candidate**, only for a BLOCKING/MAJOR: ¤state set <ticket> --finding <id>=BLOCKING|MAJOR¤, then ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
 <!--/sw-->
-<!--sw minorPolicy=legacy-->
+<!--sw minorPolicy=legacy seatRecords=off-->
 - **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR in its own diff reopens it.
 <!--/sw-->
-<!--sw minorPolicy=demonstrated-->
+<!--sw minorPolicy=demonstrated seatRecords=off-->
 - **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR or demonstrated finding in its own diff reopens it.
+<!--/sw-->
+<!--sw seatRecords=on-->
+- **At most ONE follow-up branch per candidate**, only for a finding the reviewer RECORDED as BLOCKING/MAJOR (or an accepted demonstration / spec sentence): ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other.
 <!--/sw-->
 
 <!--sw minorPolicy=refuse|spec-->
@@ -471,8 +515,11 @@ These files ship WITH this skill (¤references/¤, ¤scripts/ledger-set¤); v1's
 <!--sw verifier=on-->
 - **references/verifier-and-review.md** — read when briefing the verifier or a reviewer (§3/§3b detail).
 <!--/sw-->
-<!--sw verifier=off-->
+<!--sw verifier=off seatRecords=off-->
 - **references/verifier-and-review.md** — read when briefing a reviewer (§3b detail).
+<!--/sw-->
+<!--sw verifier=off seatRecords=on-->
+- **references/verifier-and-review.md** — read when you decide whether a candidate needs a reviewer (§3b).
 <!--/sw-->
 - **references/closeout-and-gates.md** — read before a delete the sweep doubts, and when writing a gate (§5 traps, §Specify gates).
 - **references/traps.md** — the confident-wrong-answer catalogue: read the rung matching your evidence — *stale artifacts / off-target checks* (L23–117) when a gate is green off an artifact you did not build this run; *visual and capture rigs* (L118–394) when writing a gate that reads pixels; *controls, empty results, instruments* (L395–559) when a check passes first try or returns nothing; *multi-party evidence and close-out claims* (L560–723) when two agents agree or you write a close-out.
