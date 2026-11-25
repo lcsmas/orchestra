@@ -28,6 +28,8 @@ export interface RigEntry {
 export interface RigFile {
   /** How many jobs the RUNS_IN_CI rigs are spread over (D5, ledger #569). Each job installs once and runs its rigs in sequence. */
   groups?: number;
+  /** #594: how many jobs the suite (`node --test --test-shard=i/n`) is split over; the check named `suite` is red unless ALL of them reported (`judgeShards`). */
+  suiteShards?: number;
   rigs: RigEntry[];
 }
 
@@ -104,10 +106,25 @@ export function validateRigs(file: RigFile, required: string[]): string[] {
       if (r[k] !== undefined) { try { new RegExp(r[k] as string); } catch { problems.push(`${r.id}: ${k} is not a valid regex`); } }
     }
   }
+  const shards = file.suiteShards ?? DEFAULT_SUITE_SHARDS;
+  if (!Number.isInteger(shards) || shards < 1) problems.push(`suiteShards must be an integer >= 1, got ${JSON.stringify(file.suiteShards)}`);
+  if (file.groups !== undefined && !(Number.isInteger(file.groups) && file.groups >= 1)) problems.push(`groups must be an integer >= 1, got ${JSON.stringify(file.groups)}`);
+  else if (Number.isInteger(shards) && shards >= 1 && jobCount(file) > MAX_JOBS) problems.push(`one PR runs ${jobCount(file)} jobs (typecheck + ${shards} suite shard(s) + ${groupsOf(file)} rig group(s) + the \`suite\` verdict job) — the account runs at most ${MAX_JOBS} at a time (#594)`);
+  if (file.groups !== undefined && Number.isInteger(file.groups) && file.groups >= 1) {
+    const empty = assignGroups(file).flatMap((g, i) => (g.length === 0 ? [i + 1] : []));
+    if (empty.length) problems.push(`rig group(s) ${empty.join(', ')} hold no rig: a job that runs no rig is red`);
+  }
   return problems;
 }
 
 export const DEFAULT_GROUPS = 4;
+export const DEFAULT_SUITE_SHARDS = 1;
+/** GitHub's free-account concurrent-job limit: the jobs of ONE pull request must fit in it (#594). */
+export const MAX_JOBS = 20;
+export const groupsOf = (file: Pick<RigFile, 'groups'>): number => file.groups ?? DEFAULT_GROUPS;
+export const suiteShardsOf = (file: Pick<RigFile, 'suiteShards'>): number => file.suiteShards ?? DEFAULT_SUITE_SHARDS;
+/** The jobs of one PR run: `typecheck` + the suite shards + the rig groups + the `suite` verdict job (no inventory job: the matrices are static, pinned by ci-rigs.test.ts). */
+export const jobCount = (file: Pick<RigFile, 'groups' | 'suiteShards'>): number => 1 + suiteShardsOf(file) + groupsOf(file) + 1;
 const DEFAULT_WEIGHT_SEC = 300;
 
 /** RUNS_IN_CI rig ids per group (1-based, index 0 = group 1): an explicit `group` is honoured, the rest go longest-first (by `wallSec`) onto the lightest group. Deterministic. */
@@ -170,6 +187,28 @@ export function parseRigCounts(log: string, entry?: Pick<RigEntry, 'passPattern'
   const fail = lines.filter((l) => fp.test(l) && !pp.test(l)).length;
   const skipped = lines.filter((l) => VOID_RE.test(l) && !/AS EXPECTED|expect VOID/.test(l)).length;
   return { run: pass + fail + skipped, pass, fail, skipped, source: entry?.passPattern ? 'passPattern lines' : 'PASS/FAIL lines' };
+}
+
+/** What `run-job.mjs suite` writes for one suite shard (the subset `judgeShards` reads). */
+export interface ShardResult { name: string; shard?: number; shards?: number; ok: boolean; counts: { run: number }; why?: string }
+
+/** The verdict of the WHOLE suite from its shards' result files — the logic behind the single check named `suite`: all `expected` shards present exactly once (a missing / cancelled shard has no
+ *  result), each green with >= 1 test, and every result agreeing on the shard count. Returns the problems (empty = green) and the summed test count. */
+export function judgeShards(results: ShardResult[], expected: number): { ok: boolean; problems: string[]; tests: number } {
+  const problems: string[] = [];
+  let tests = 0;
+  for (let i = 1; i <= expected; i++) {
+    const rs = results.filter((r) => r.shard === i);
+    if (rs.length === 0) { problems.push(`suite shard ${i}/${expected}: NO RESULT (the job failed before reporting, or was cancelled / skipped)`); continue; }
+    if (rs.length > 1) problems.push(`suite shard ${i}/${expected}: reported ${rs.length} times`);
+    const r = rs[0];
+    if (r.shards !== expected) problems.push(`suite shard ${i}: ran as ${r.shard}/${r.shards} but ci-rigs.json says suiteShards = ${expected} (the workflow matrix and the file disagree)`);
+    if (!r.ok) problems.push(`suite shard ${i}/${expected}: ${r.why ?? 'red'}`);
+    else if (!(r.counts.run > 0)) problems.push(`suite shard ${i}/${expected}: ran 0 tests`);
+    tests += r.counts.run;
+  }
+  for (const r of results) if (!(Number.isInteger(r.shard) && (r.shard as number) >= 1 && (r.shard as number) <= expected)) problems.push(`suite result "${r.name}" is shard ${r.shard}/${r.shards}: outside 1..${expected}`);
+  return { ok: problems.length === 0, problems, tests };
 }
 
 /** The verdict of one job: green only on exit 0 AND at least one arm that passed, with no failed TEST (TAP) and no unlisted skip. Zero arms is red (no silent green).

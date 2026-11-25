@@ -73,17 +73,25 @@ const nodeAbi = abiOf('node');
 const electronAbi = abiOf('electron');
 console.log(`ABIs: node=${nodeAbi} electron(as-node)=${electronAbi}`);
 
-// 1. node ABI build.
-console.log(`building better-sqlite3 for node ABI ${nodeAbi} …`);
-sh('npx', ['--yes', 'node-gyp@10', 'rebuild', '--release'], { cwd: PKG });
 const nodeBinding = path.join(OUT, `better_sqlite3-abi${nodeAbi}.node`);
-fs.copyFileSync(BUILT, nodeBinding);
-
-// 2. Electron ABI build — LAST, so node_modules is left holding the shipped one.
-console.log(`building better-sqlite3 for Electron ABI ${electronAbi} …`);
-sh('npx', ['@electron/rebuild', '-v', ELECTRON_VERSION, '-m', '.', '-f', '-w', 'better-sqlite3']);
 const electronBinding = path.join(OUT, `better_sqlite3-abi${electronAbi}.node`);
-fs.copyFileSync(BUILT, electronBinding);
+
+// #594: BUS_ABI_REUSE=true (CI, after an exact `actions/cache` hit on build/bus-abi) skips the two ~80 s compiles; every probe below still CONSTRUCTS with the reused files.
+if (process.env.BUS_ABI_REUSE === 'true' && fs.existsSync(nodeBinding) && fs.existsSync(electronBinding)) {
+  console.log('BUS_ABI_REUSE: reusing build/bus-abi/*.node (no compile); installing the Electron binding into node_modules');
+  fs.mkdirSync(path.dirname(BUILT), { recursive: true });
+  fs.copyFileSync(electronBinding, BUILT);
+} else {
+  // 1. node ABI build.
+  console.log(`building better-sqlite3 for node ABI ${nodeAbi} …`);
+  sh('npx', ['--yes', 'node-gyp@10', 'rebuild', '--release'], { cwd: PKG });
+  fs.copyFileSync(BUILT, nodeBinding);
+
+  // 2. Electron ABI build — LAST, so node_modules is left holding the shipped one.
+  console.log(`building better-sqlite3 for Electron ABI ${electronAbi} …`);
+  sh('npx', ['@electron/rebuild', '-v', ELECTRON_VERSION, '-m', '.', '-f', '-w', 'better-sqlite3']);
+  fs.copyFileSync(BUILT, electronBinding);
+}
 
 // The two builds must be DIFFERENT files. If node-gyp and @electron/rebuild
 // somehow produced identical bytes, one of the two builds did not happen and

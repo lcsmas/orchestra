@@ -50,9 +50,23 @@ runs:
         ln -sf "$(command -v claude)" ~/.local/bin/claude
         claude --version
         pnpm run fetch:agent-browser
-    - name: Build better-sqlite3 for node (abi 127) and Electron (abi 130)
+    - name: Key of the compiled better-sqlite3 bindings (#594)
+      if: inputs.bus-abi == 'true'
+      id: abikey
+      shell: bash
+      run: echo "key=bus-abi-${ImageOS:-x}-${ImageVersion:-x}-$(uname -m)-${{ hashFiles('pnpm-lock.yaml', 'scripts/build-bus-abi.mjs') }}" >> "$GITHUB_OUTPUT"
+    - name: Restore the compiled bindings (the two node-gyp compiles are ~80 s per job)
+      if: inputs.bus-abi == 'true'
+      id: abicache
+      uses: actions/cache@v4
+      with:
+        path: build/bus-abi
+        key: ${{ steps.abikey.outputs.key }}
+    - name: Build better-sqlite3 for node (abi 127) and Electron (abi 130) — reused on an exact cache hit, probes always run
       if: inputs.bus-abi == 'true'
       shell: bash
+      env:
+        BUS_ABI_REUSE: ${{ steps.abicache.outputs.cache-hit }}
       run: pnpm run build:bus-abi
     - name: Build the bundles
       if: inputs.bundles == 'true'

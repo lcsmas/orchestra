@@ -5,7 +5,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, judgeArm, tapFails, judge, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, tapSkips, validateRigs, type RigFile } from './ci-rigs.ts';
+import { assignGroups, groupsOf, jobCount, judgeArm, judgeShards, tapFails, judge, MAX_JOBS, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, suiteShardsOf, tapSkips, validateRigs, type RigFile, type ShardResult } from './ci-rigs.ts';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const mk = (rigs: RigFile['rigs']): RigFile => ({ rigs });
@@ -90,23 +92,174 @@ test('ci.yml is read-only, secret-free and fans out through the data file', () =
   assert.ok(!/^\s*push:/m.test(wf), 'ci.yml has a push trigger: two runs per PR head (#586)');
   assert.match(wf, /^  pull_request:\n    branches: \[master\]\n/m);
   assert.match(wf, /group: ci-pr-\$\{\{ github\.event\.pull_request\.number \}\}/);
-  assert.match(wf, /scripts\/ci\/rigs\.mjs matrix/);
+  assert.match(wf, /scripts\/ci\/rigs\.mjs summary/);
   assert.match(wf, /run-group\.mjs/);
   assert.match(wf, /fail-fast: false/);
 });
 
-test('ci.yml: the suite step is continue-on-error with a verdict step behind it; the gate therefore needs `--require-check suite` (a derived suite check is refused)', async () => {
+test('ci.yml: the suite shard step is continue-on-error with a verdict step behind it; the gate therefore needs `--require-check suite` (a derived suite check is refused)', async () => {
   const { suiteJobsOf, workflowRunsOnPr } = await import('./fanout-deliver.ts');
   const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   assert.equal(workflowRunsOnPr(wf, 'master'), true);
   assert.deepEqual(suiteJobsOf(wf), [], 'a continue-on-error suite step is not derivable — if this ever derives, drop the --require-check advice');
-  assert.match(wf, /id: suite\n\s+continue-on-error: true\n\s+run: pnpm run test > /);
+  assert.match(wf, /id: suite\n\s+continue-on-error: true\n\s+run: pnpm run suite:shard > /);
   assert.match(wf, /if: always\(\)\n\s+run: node [^\n]*run-job\.mjs suite /);
   assert.match(wf, /SUITE_OUTCOME: \$\{\{ steps\.suite\.outcome \}\}/);
-  // the suite check a pin names is the job's name
-  assert.match(wf, /^  suite:\n/m);
-  // without continue-on-error the plain step IS derived (the property the pin replaces)
-  assert.deepEqual(suiteJobsOf(wf.replace('        continue-on-error: true\n', '')), ['suite']);
+  assert.match(wf, /SUITE_SHARD: \$\{\{ matrix\.shard \}\}\n\s+SUITE_SHARDS: \$\{\{ matrix\.shards \}\}/);
+  // package.json: the shard script is node's own sharding over the SAME glob as `test`, preceded by the same build:cli (the 12 CLI tests self-skip without it)
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+  assert.equal(pkg.scripts['presuite:shard'], pkg.scripts.pretest);
+  assert.equal(pkg.scripts['suite:shard'], pkg.scripts.test.replace("--experimental-strip-types 'src", "--experimental-strip-types --test-shard=${SUITE_SHARD}/${SUITE_SHARDS} 'src"));
+  // without continue-on-error a plain runner step would be derived as a check named for its job — the property the pin replaces (the job is `tests`, never `suite`)
+  assert.ok(!suiteJobsOf(wf.replace('        continue-on-error: true\n', '')).includes('suite'));
+});
+
+/** The `jobs:` of ci.yml as `id → block text` (top-level keys at 2-space indent). */
+function jobsOf(wf: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const body = wf.slice(wf.indexOf('\njobs:\n') + 7).split('\n');
+  let cur: string | null = null;
+  for (const l of body) {
+    const m = /^  ([\w-]+):\s*$/.exec(l);
+    if (m) { cur = m[1]; out.set(cur, ''); } else if (cur) out.set(cur, out.get(cur) + l + '\n');
+  }
+  return out;
+}
+
+test('#594 ci.yml: static matrices pinned to ci-rigs.json (no inventory job), the check named `suite` is the verdict job over typecheck + every shard + every group, the PR fits the job limit', () => {
+  const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  const file = readRigFile(root);
+  const jobs = jobsOf(wf);
+  assert.deepEqual([...jobs.keys()].sort(), ['rigs', 'suite', 'tests', 'typecheck'], 'an inventory (or any other) job would eat one of the 20');
+  const list = (job: string, key: string): number[] => (new RegExp(`\\n\\s+${key}: \\[([\\d, ]+)\\]`).exec(jobs.get(job) as string)?.[1] ?? '').split(',').map((x) => Number(x.trim()));
+  const iota = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1);
+  assert.deepEqual(list('tests', 'shard'), iota(suiteShardsOf(file)), 'ci.yml `tests` matrix shard list != suiteShards of .github/ci-rigs.json (change both)');
+  assert.deepEqual(list('tests', 'shards'), [suiteShardsOf(file)], 'ci.yml `shards` != suiteShards of .github/ci-rigs.json');
+  assert.deepEqual(list('rigs', 'group'), iota(groupsOf(file)), 'ci.yml `rigs` matrix group list != groups of .github/ci-rigs.json (change both)');
+  assert.equal(list('tests', 'shard').length + list('rigs', 'group').length + 2, jobCount(file));
+  assert.ok(jobCount(file) <= MAX_JOBS, `${jobCount(file)} jobs per PR`);
+  // the `suite` job: its id IS the check name (no `name:`), runs after everything even when a need failed, and needs ALL of them (a skipped/cancelled need is red in the summary)
+  const suite = jobs.get('suite') as string;
+  assert.ok(!/^\s{4}name:/m.test(suite), 'the suite job must not be renamed: `--require-check suite` pins this exact check name');
+  assert.match(suite, /needs: \[typecheck, tests, rigs\]\n\s+if: always\(\)/);
+  assert.match(suite, /rigs\.mjs summary/);
+  assert.match(suite, /NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}/);
+  // no other job may be named `suite` (a second check of that name would make the pin ambiguous)
+  assert.ok(!/^\s{4}name: suite\s*$/m.test(wf));
+});
+
+test('#594 ci-rigs.json: suiteShards + groups fit the job limit, rigs are balanced on their measured wall, the largest group is within 8% of the mean', () => {
+  const file = readRigFile(root);
+  assert.ok(Number.isInteger(file.suiteShards) && (file.suiteShards as number) >= 2, 'the suite is sharded (suiteShards >= 2)');
+  assert.ok(jobCount(file) <= MAX_JOBS);
+  const groups = assignGroups(file);
+  const w = (id: string): number => file.rigs.find((r) => r.id === id)?.wallSec ?? 300;
+  const loads = groups.map((g) => g.reduce((n, id) => n + w(id), 0));
+  const mean = loads.reduce((a, b) => a + b, 0) / loads.length;
+  assert.ok(Math.max(...loads) <= mean * 1.08, `groups unbalanced: ${loads.join(', ')}`);
+});
+
+test('must-FAIL: more jobs than the account runs, a bad suiteShards / groups, an empty group are validation problems', () => {
+  const r = (id: string, extra: object = {}) => ({ id, command: 'x', class: 'RUNS_IN_CI' as const, ...extra });
+  assert.deepEqual(validateRigs({ groups: 16, suiteShards: 2, rigs: [r('a', { group: 1 })].concat(Array.from({ length: 15 }, (_, i) => r(`g${i}`, { group: i + 2 }))) }, ['a', ...Array.from({ length: 15 }, (_, i) => `g${i}`)]), [], '20 jobs fit');
+  const many = (g: number, shards: number) => validateRigs({ groups: g, suiteShards: shards, rigs: Array.from({ length: g }, (_, i) => r(`r${i}`, { group: i + 1 })) }, Array.from({ length: g }, (_, i) => `r${i}`));
+  assert.ok(many(16, 3).some((p) => /21 jobs/.test(p)), 'typecheck + 3 shards + 16 groups + suite = 21');
+  assert.ok(many(17, 2).some((p) => /21 jobs/.test(p)));
+  assert.ok(many(3, 0).some((p) => /suiteShards must be an integer >= 1/.test(p)));
+  assert.ok(validateRigs({ groups: 2, suiteShards: 1.5, rigs: [r('a', { group: 1 }), r('b', { group: 2 })] }, ['a', 'b']).some((p) => /suiteShards must be/.test(p)));
+  assert.ok(validateRigs({ groups: 3, suiteShards: 1, rigs: [r('a', { group: 1 }), r('b', { group: 1 })] }, ['a', 'b']).some((p) => /group\(s\) 3 hold no rig/.test(p)) === false, 'an unassigned group is filled by assignGroups when there are rigs to spare');
+  assert.ok(validateRigs({ groups: 3, suiteShards: 1, rigs: [r('a', { group: 1 }), r('b', { group: 2 })] }, ['a', 'b']).some((p) => /group\(s\) 3 hold no rig/.test(p)), 'fewer rigs than groups: a job that runs no rig is red');
+});
+
+const shard = (i: number, n: number, run = 100, ok = true, extra: Partial<ShardResult> = {}): ShardResult => ({ name: `suite shard ${i}/${n}`, shard: i, shards: n, ok, counts: { run }, why: ok ? 'ok' : 'command exited 1', ...extra });
+
+test('judgeShards: green only when EVERY shard reported, green, with tests; must-FAIL arms: missing / cancelled, red, 0 tests, duplicate, disagreeing count, out of range', () => {
+  const g = judgeShards([shard(1, 2, 60), shard(2, 2, 40)], 2);
+  assert.deepEqual({ ok: g.ok, tests: g.tests, problems: g.problems }, { ok: true, tests: 100, problems: [] });
+  const miss = judgeShards([shard(1, 2)], 2);
+  assert.equal(miss.ok, false); assert.match(miss.problems[0], /shard 2\/2: NO RESULT/);
+  assert.equal(judgeShards([], 2).problems.length, 2, 'no result at all: both shards missing');
+  const red = judgeShards([shard(1, 2), shard(2, 2, 100, false)], 2);
+  assert.equal(red.ok, false); assert.match(red.problems.join(), /shard 2\/2: command exited 1/);
+  const zero = judgeShards([shard(1, 2), shard(2, 2, 0)], 2);
+  assert.equal(zero.ok, false); assert.match(zero.problems.join(), /ran 0 tests/);
+  assert.equal(judgeShards([shard(1, 2), shard(2, 2), shard(2, 2)], 2).ok, false, 'a duplicate');
+  const dis = judgeShards([shard(1, 3), shard(2, 3)], 2);
+  assert.equal(dis.ok, false); assert.match(dis.problems.join(), /workflow matrix and the file disagree/);
+  assert.equal(judgeShards([shard(1, 2), shard(2, 2), shard(3, 2)], 2).ok, false, 'a shard outside 1..N');
+  assert.equal(judgeShards([shard(1, 1)], 2).ok, false);
+  // the instrument can say green: one shard of one is a green suite
+  assert.equal(judgeShards([shard(1, 1, 9)], 1).ok, true);
+});
+
+/** Run `rigs.mjs summary` (the `suite` job's command) on a synthetic result dir: every RUNS_IN_CI rig + typecheck + the given suite shard results green. */
+function runSummary(shards: ShardResult[], needs: Record<string, { result: string }> = { typecheck: { result: 'success' }, tests: { result: 'success' }, rigs: { result: 'success' } }, dropRig?: string): { status: number | null; out: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci594-'));
+  try {
+    const file = readRigFile(root);
+    const put = (name: string, o: object): void => fs.writeFileSync(path.join(dir, `${name.replace(/[^\w.-]+/g, '_')}.json`), JSON.stringify(o));
+    const base = { attempts: 1, armRetries: 0, tolerated: [], wallSec: 1, why: 'ok' };
+    put('typecheck', { ...base, name: 'typecheck', ok: true, counts: { run: 1, pass: 1, fail: 0, skipped: 0 } });
+    for (const r of file.rigs.filter((x) => x.class === 'RUNS_IN_CI' && x.id !== dropRig)) put(`rig:${r.id}`, { ...base, name: `rig:${r.id}`, id: r.id, ok: true, counts: { run: 1, pass: 1, fail: 0, skipped: 0 } });
+    for (const s of shards) put(s.name, { ...base, ...s, counts: { run: s.counts.run, pass: s.counts.run, fail: 0, skipped: 0 } });
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/rigs.mjs'), 'summary', dir], { encoding: 'utf8', env: { ...process.env, NEEDS_JSON: JSON.stringify(needs), GITHUB_STEP_SUMMARY: '' } });
+    return { status: r.status, out: r.stdout + r.stderr };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('#594 the `suite` job command (rigs.mjs summary) through the real script: green when every shard is, RED on a missing / cancelled / red / empty shard, a cancelled need, a missing rig', () => {
+  const n = suiteShardsOf(readRigFile(root));
+  const all = Array.from({ length: n }, (_, i) => shard(i + 1, n, 50));
+  const ok = runSummary(all);
+  assert.equal(ok.status, 0, ok.out);
+  assert.match(ok.out, new RegExp(`suite: ${50 * n} tests over ${n} shard\\(s\\), every shard present and green`));
+  // each arm below must go red THROUGH the same instrument that just said green
+  const missing = runSummary(all.slice(1));
+  assert.equal(missing.status, 1); assert.match(missing.out, /suite shard 1\/\d+: NO RESULT/);
+  const empty = runSummary(all.map((s, i) => (i === 0 ? shard(1, n, 0) : s)));
+  assert.equal(empty.status, 1); assert.match(empty.out, /ran 0 tests/);
+  const red = runSummary(all.map((s, i) => (i === 0 ? shard(1, n, 50, false) : s)));
+  assert.equal(red.status, 1); assert.match(red.out, /suite RED/);
+  const cancelled = runSummary(all, { typecheck: { result: 'success' }, tests: { result: 'cancelled' }, rigs: { result: 'success' } });
+  assert.equal(cancelled.status, 1); assert.match(cancelled.out, /needs\.tests\.result = cancelled/);
+  const wrongCount = runSummary(all.map((s) => shard(s.shard as number, n + 1, 50)));
+  assert.equal(wrongCount.status, 1); assert.match(wrongCount.out, /disagree/);
+  const noRig = runSummary(all, undefined, 'test:wiring');
+  assert.equal(noRig.status, 1); assert.match(noRig.out, /rig:test:wiring.*NO RESULT/);
+});
+
+/** Run `run-job.mjs suite <tap>` as the `tests` job's verdict step does. */
+function runShardVerdict(tap: string | null, env: Record<string, string>): { status: number | null; result: { ok: boolean; why: string; shard?: number; shards?: number; counts: { run: number } } | null } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci594v-'));
+  try {
+    const log = path.join(dir, 'suite.tap');
+    if (tap !== null) fs.writeFileSync(log, tap);
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/run-job.mjs'), 'suite', log], { encoding: 'utf8', env: { ...process.env, SUITE_SHARD: undefined, SUITE_SHARDS: undefined, CI_RESULT_DIR: dir, GITHUB_STEP_SUMMARY: '', SUITE_OUTCOME: 'success', ...env } as NodeJS.ProcessEnv });
+    const f = fs.readdirSync(dir).find((x) => x.endsWith('.json'));
+    return { status: r.status, result: f ? JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) : null };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('#594 a suite shard verdict (run-job.mjs suite with SUITE_SHARD/SUITE_SHARDS): carries shard/shards, red on 0 tests / no TAP summary / a shard count that is not the file\'s', () => {
+  const n = suiteShardsOf(readRigFile(root));
+  const tap = (run: number): string => `# tests ${run}\n# suites 1\n# pass ${run}\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n`;
+  const ok = runShardVerdict(tap(7), { SUITE_SHARD: '1', SUITE_SHARDS: String(n) });
+  assert.equal(ok.status, 0); assert.deepEqual({ shard: ok.result?.shard, shards: ok.result?.shards, ok: ok.result?.ok, run: ok.result?.counts.run }, { shard: 1, shards: n, ok: true, run: 7 });
+  const zero = runShardVerdict(tap(0), { SUITE_SHARD: '1', SUITE_SHARDS: String(n) });
+  assert.equal(zero.status, 1); assert.match(zero.result?.why ?? '', /0 tests/);
+  const trunc = runShardVerdict('ok 1 - a\nok 2 - b\n', { SUITE_SHARD: '1', SUITE_SHARDS: String(n) });
+  assert.equal(trunc.status, 1); assert.match(trunc.result?.why ?? '', /no TAP summary/);
+  const none = runShardVerdict(null, { SUITE_SHARD: '1', SUITE_SHARDS: String(n) });
+  assert.equal(none.status, 1);
+  const mismatch = runShardVerdict(tap(7), { SUITE_SHARD: '1', SUITE_SHARDS: String(n + 1) });
+  assert.equal(mismatch.status, 1); assert.match(mismatch.result?.why ?? '', /suiteShards/);
+  const badOutcome = runShardVerdict(tap(7), { SUITE_SHARD: '1', SUITE_SHARDS: String(n), SUITE_OUTCOME: 'failure' });
+  assert.equal(badOutcome.status, 1);
+  // an invalid shard is refused before anything is judged
+  assert.equal(runShardVerdict(tap(7), { SUITE_SHARD: '3', SUITE_SHARDS: '2' }).status, 2);
+  // unsharded (local) use is unchanged: the whole-suite verdict, no shard fields (the `tests` jobs export SUITE_SHARD*, so the helper strips them from the parent env)
+  const whole = runShardVerdict(tap(7), {});
+  assert.equal(whole.status, 0); assert.equal(whole.result?.shard, undefined);
 });
 
 test('rig job slugs (artifact names) are unique', () => {
