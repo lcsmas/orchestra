@@ -499,7 +499,7 @@ test('index.ts hands `--run-decision` the HOST-vouched id only (fail closed): pi
   const i = src.indexOf("args.includes('--run-decision')");
   assert.ok(i > 0);
   const blk = src.slice(i, i + 700);
-  assert.match(blk, /await settleHostIdentity\(\);/);
+  assert.match(blk, /args\.includes\('--run-decision'\)\) \{[^\n]*\n\s+await settleHostIdentity\(\);\n\s+fanoutDeps\.vouchedCaller/, 'the host is asked IN this block, right before the id is taken');
   assert.match(blk, /fanoutDeps\.vouchedCaller = hostIdentity\?\.source === 'host' \? \(process\.env\.ORCHESTRA_WS_ID \|\| process\.env\.ORCHESTRA_WS_ID_IDENTITY \|\| ''\)\.trim\(\) \|\| null : null;/);
   assert.doesNotMatch(src.slice(0, i), /vouchedCaller = process\.env/);
 });
