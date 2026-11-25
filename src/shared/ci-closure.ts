@@ -106,10 +106,12 @@ export function createWalker(tree: Tree, pkgScripts: Record<string, string>): { 
     memo.set(n, out); return out;
   };
   /** Does an edge out of this node hand its src/ targets a transitive walk? Only the build configs / index.html do: a bundle IS its entries' whole import graph. */
+  const esb = new Map<string, boolean>();
+  const bundlesWithEsbuild = (n: string): boolean => { let v = esb.get(n); if (v === undefined) { v = /\besbuild\b/.test(code(tree.read(n))); esb.set(n, v); } return v; };
   const isBundleRoot = (n: string): boolean => n === 'index.html' || /(?:^|\/)vite[\w.-]*\.config\.ts$/.test(n);
   return {
-    // Reach rule (#595): harness code (scripts/, packages/, configs, package.json hops) is followed fully; a src/ file a script imports or names is IN, and its own imports are
-    // followed only when it sits in a built bundle's graph (the bundle's entries, via vite config / index.html). A rig linked to a module through a god-module's
+    // Reach rule (#595, pre-review MAJOR: a rig that runs a module runs its imports): harness code (scripts/, packages/, configs, package.json hops) is followed fully; a src/ file a script imports or names is IN, and its own imports are
+    // followed only when it sits in a built bundle's graph (vite config / index.html), is a test file (executed), or is named by a script that esbuild-bundles it. A rig linked to a module through a god-module's
     // transitive imports would otherwise claim the whole backend; the full suite unit-tests those deep edges, the release gate runs every rig.
     closure(command: string): Closure {
       const files = new Set<string>(); const via = new Map<string, string>(); const deep = new Set<string>(); const seen = new Set<string>(); const queue: string[] = [];
@@ -126,7 +128,8 @@ export function createWalker(tree: Tree, pkgScripts: Record<string, string>): { 
         if (!n.startsWith('pnpm:')) files.add(n);
         if (n.startsWith('src/') && !deep.has(n)) continue; // a shallow src file: in the set, not expanded
         const grant = n.startsWith('src/') ? true : isBundleRoot(n);
-        for (const e of edges(n)) reach(e, n, e.startsWith('src/') ? grant : false);
+        const runsSrc = !n.startsWith('src/') && bundlesWithEsbuild(n); // a script that esbuild-bundles the modules it names RUNS them: their graph is its graph
+        for (const e of edges(n)) reach(e, n, e.startsWith('src/') ? grant || runsSrc || TEST_FILE.test(e) : false); // a test file named by a rig is executed: its imports are inputs
       }
       return { files, via };
     },

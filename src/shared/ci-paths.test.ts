@@ -61,12 +61,13 @@ test('a shared file, an unclaimed file, the full flag and an unreadable list EAC
   assert.deepEqual(shared.skipped, []);
 });
 
-test('a file only a LOCAL_ONLY rig claims is claimed (no full run) and is reported as a rig CI does not run', () => {
+test('a file only a LOCAL_ONLY rig covers is UNCLAIMED (CI never runs that rig: everything runs) and the rig is still named as one CI does not run', () => {
   const s = selectRigs(fixture(), ['src/local/x.ts']);
-  assert.equal(s.mode, 'paths'); assert.deepEqual(ids(s), ['test:always']);
+  assert.equal(s.mode, 'all'); assert.match(s.fullReason!, /unclaimed file src\/local\/x\.ts/);
   assert.deepEqual(s.localOnly.map((r) => r.id), ['test:local']);
-  const md = renderSelection(toWire(s), 3);
-  assert.match(md, /skipped by path/); assert.match(md, /LOCAL_ONLY rigs linked to this change.*test:local/);
+  const md = renderSelection(toWire(selectRigs(fixture(), ['src/a/x.ts'])), 3);
+  assert.match(md, /skipped by path/);
+  assert.match(renderSelection(toWire(selectRigs({ ...fixture(), noRigPaths: ['docs/**', 'src/local/**'] }, ['src/local/x.ts'])), 3), /LOCAL_ONLY rigs linked to this change.*test:local/);
 });
 
 test('delta files: a package.json that only edits rig scripts / a ci-rigs.json that only edits rig entries select THOSE rigs; anything else is shared', () => {

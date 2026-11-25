@@ -87,11 +87,20 @@ test('ci.yml is read-only, secret-free and fans out through the data file', () =
   assert.match(wf, /^name: CI$/m);
   assert.match(wf, /^permissions:\n  contents: read\n/m);
   assert.ok(!/secrets\.|write-all|contents: write|pull-requests: write/.test(wf), 'a secret or write permission crept into ci.yml');
-  assert.match(wf, /cancel-in-progress: true/);
+  // a new PR head cancels the old run; a workflow_dispatch (the #595 full run a release is gated on) is never cancelled by another
+  assert.match(wf, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
   // #586: pull_request only — a `push` trigger doubles every PR head's run; the concurrency group must still key on the PR so a new head cancels the old
   assert.ok(!/^\s*push:/m.test(wf), 'ci.yml has a push trigger: two runs per PR head (#586)');
   assert.match(wf, /^  pull_request:\n    branches: \[master\]\n/m);
-  assert.match(wf, /group: ci-pr-\$\{\{ github\.event\.pull_request\.number \}\}/);
+  assert.match(wf, /format\('pr-\{0\}', github\.event\.pull_request\.number\)/);
+  assert.match(wf, /format\('dispatch-\{0\}', github\.sha\)/);
+  // #595: workflow_dispatch = the FULL run; path selection is on for pull_request ONLY, the ci-full label forces everything, every rig job decides before its install, the summary sees the merge commit's parents
+  assert.match(wf, /^  workflow_dispatch:\n/m);
+  assert.match(wf, /CI_PATH_SELECTION: \$\{\{ github\.event_name == 'pull_request' && '1' \|\| '0' \}\}/);
+  assert.match(wf, /CI_FULL_REASON: .*contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci-full'\)/);
+  assert.match(wf, /id: plan\n\s+run: node [^\n]*run-group\.mjs "\$\{\{ matrix\.group \}\}" --plan/);
+  assert.match(wf, /if: steps\.plan\.outputs\.run == 'true'/);
+  assert.match(wf, /fetch-depth: 2/);
   assert.match(wf, /scripts\/ci\/rigs\.mjs summary/);
   assert.match(wf, /run-group\.mjs/);
   assert.match(wf, /fail-fast: false/);

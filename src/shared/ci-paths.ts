@@ -117,7 +117,7 @@ export interface Selection {
 const few = (xs: string[], n = 3): string => (xs.length <= n ? xs.join(', ') : `${xs.slice(0, n).join(', ')} +${xs.length - n} more`);
 
 /** Which rigs run for `changed`. `full` (a reason string — the `ci-full` label, a manual dispatch, the release gate) forces everything; so does an empty/unknown change list,
- *  a changed shared file, and a changed file no rig claims (a rig of ANY class claims a file through `paths`; `noRigPaths` = files the suite alone gates, on purpose). */
+ *  a changed shared file, and a changed file no CI rig claims (`paths` of a RUNS_IN_CI rig; `noRigPaths` = files the suite alone gates, on purpose; a file only a LOCAL_ONLY rig covers is unclaimed too). */
 export function selectRigs(file: RigFile, changed: string[] | null | undefined, full?: string | null, ctx?: DeltaCtx): Selection {
   const ci = file.rigs.filter((r) => r.class === 'RUNS_IN_CI');
   const local = file.rigs.filter((r) => r.class === 'LOCAL_ONLY');
@@ -142,7 +142,7 @@ export function selectRigs(file: RigFile, changed: string[] | null | undefined, 
   }
   const noRig = file.noRigPaths ?? [];
   for (const f of rest) {
-    const claimed = [...pats.values()].some((p) => p && matchPaths(p, f)) || matchPaths(noRig, f);
+    const claimed = ci.some((r) => { const p = pats.get(r.id); return p && matchPaths(p, f); }) || matchPaths(noRig, f); // a RUNS_IN_CI rig only: a LOCAL_ONLY rig never runs in CI, so a file only it covers gates nothing here
     if (!claimed) return everything(`unclaimed file ${f}: no rig declares it and it is not in noRigPaths`);
   }
   const files0 = files; files = rest;
