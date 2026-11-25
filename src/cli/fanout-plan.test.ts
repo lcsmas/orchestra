@@ -261,6 +261,7 @@ test('submit: a plan that passes the check but cannot be recorded ENDS the step 
   c.onTick((n) => { if (n === 2) { try { submitPlan({ home, run: RUN, text: JSON.stringify(goodPlan()), caller: 'plan-ws-1', now: NOW }); } catch { /* the agent sees the refusal */ } } });
   const r = await runPlan(['--tickets', 'A,B'], d, hostVia(f), c);
   assert.equal(r.code, 2);
+  assert.ok(c.ticks() <= 3, `the verb saw the failure at once (${c.ticks()} polls), it did not wait for a re-ask`);
   assert.match(r.stderr, /\[plan-apply-failed\][\s\S]*interface-reason-missing/);
   assert.equal(load(home).loopPlan, undefined);
   const sc = readPlanSidecar(home, RUN)!;

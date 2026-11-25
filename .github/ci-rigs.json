@@ -258,7 +258,7 @@
    "id": "test:fanout-plan-mutants",
    "command": "pnpm run test:fanout-plan-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 300
+   "wallSec": 210
   },
   {
    "id": "test:fanout-start",

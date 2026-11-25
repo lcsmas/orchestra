@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { applyPlan, parsePlan, planHash, validatePlan, PlanError, type PlanReason } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
-import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
+import { FanoutStateError, SeatRefusal, assertRunId, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
 
 export const PLAN_MAX_SUBMISSIONS = 2;
 /** The agent may be (re)spawned at most this many times for one run (a dead one is replaced once). */
@@ -146,30 +146,29 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
     const file = stateFile(deps.home, run);
     const live = deps.isLive ?? deps.isWorkspace;
     const now = deps.now();
-    const st = readState(file);
-    if (!st) return { ok: false, error: `no fanout state for run ${run}` };
-    if (!seatRecordsOn(st)) return refusal('seat-records-off', `run ${run} has seatRecords=off: the plan step is a seatRecords rule (state init --switch seatRecords=on)`);
-    if (st.loopPlan) return { ok: true, op: 'plan', action: 'accepted', id: null, name: planAgentName(run) };
-    const locked = switchesLockedWhy(stampDefaults(st));
-    if (locked) return refusal('plan-after-spawn', `run ${run} already spawned (${locked}) — the plan of the loop is written before the first spawn`);
     const name = planAgentName(run);
     let action: 'spawn' | 'respawn' = 'spawn';
-    let refused: PlanHostResult | null = null;
+    let early: PlanHostResult | null = null;
     let adopted: { action: 'adopt' | 'in-flight' | 'accepted'; id: string | null } | null = null;
     let task = '';
-    updateState(file, (cur) => { // claim the slot under the state lock BEFORE spawning: two concurrent calls spawn ONE agent
+    let repo: string | null = null;
+    updateState(file, (cur) => { // EVERYTHING is decided under the state lock, and the slot is claimed BEFORE the spawn: two concurrent calls spawn ONE agent, a plan that lands meanwhile spawns none
       if (!cur) throw new FanoutStateError(`no fanout state for run ${run}`);
-      if (cur.loopPlan) { adopted = { action: 'accepted', id: null }; return cur; } // the plan landed between the read above and this lock: no second agent
+      if (!seatRecordsOn(cur)) { early = refusal('seat-records-off', `run ${run} has seatRecords=off: the plan step is a seatRecords rule (state init --switch seatRecords=on)`); return cur; }
+      if (cur.loopPlan) { adopted = { action: 'accepted', id: null }; return cur; }
+      const locked = switchesLockedWhy(stampDefaults(cur));
+      if (locked) { early = refusal('plan-after-spawn', `run ${run} already spawned (${locked}) — the plan of the loop is written before the first spawn`); return cur; }
+      repo = cur.repo;
       const sc = readPlanSidecar(deps.home, run);
       const d = decidePlanAgent(sc, tickets, now, live);
-      if (d.action === 'refuse') { refused = refusal(d.refusal, d.detail); return cur; }
+      if (d.action === 'refuse') { early = refusal(d.refusal, d.detail); return cur; }
       if (d.action === 'adopt' || d.action === 'in-flight') { adopted = { action: d.action, id: d.action === 'adopt' ? d.id! : null }; return cur; }
       action = d.action;
       task = renderPlanBrief(tickets, { run });
       writePlanSidecar(deps.home, run, { version: 1, tickets, agent: { id: null, name, at: now }, spawns: (sc?.spawns ?? 0) + 1, attempts: sc?.attempts ?? [], outcome: 'open' });
       return cur;
     });
-    if (refused) return refused;
+    if (early) return early;
     if (adopted) return { ok: true, op: 'plan', action: (adopted as { action: 'adopt' | 'in-flight' | 'accepted' }).action, id: (adopted as { id: string | null }).id, name };
     const settle = (id: string | null): boolean => { // false = the claim was taken over meanwhile (this agent is NOT the recorded one)
       for (let k = 0; ; k++) {
@@ -188,7 +187,7 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
     let res: Awaited<ReturnType<PlanHostDeps['spawn']>>;
     try {
       const parent = deps.isWorkspace(run) ? run : caller;
-      res = await deps.spawn({ from: parent, name, task, repoPath: deps.repoPath({ run, ticket: '', from: caller, repo: st.repo, implementer: null }) });
+      res = await deps.spawn({ from: parent, name, task, repoPath: deps.repoPath({ run, ticket: '', from: caller, repo, implementer: null }) });
     } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
     if (!res.ok || !res.id) { const error = res.error ?? 'spawn failed'; settle(null); return { ok: false, error: `could not spawn the plan agent: ${error}` }; }
     if (!settle(res.id)) return refusal('plan-claim-lost', `${res.id} was spawned but another call took over the claim: it is not the recorded plan agent of run ${run}`);
