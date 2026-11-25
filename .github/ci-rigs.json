@@ -1445,6 +1445,12 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-usage-resume-chain.mjs",
    "class": "LOCAL_ONLY",
    "reason": "exit 1: 'CHAIN FAIL (1) — 28 checks, 27 ok' (FAIL: a notice IS still produced (the user is warned)) — red on master, not env."
+  },
+  {
+   "id": "scripts/e2e-live-ports-scratch.mjs",
+   "command": "node --experimental-strip-types scripts/e2e-live-ports-scratch.mjs",
+   "class": "LOCAL_ONLY",
+   "reason": "needs `gh` auth, the network and a SCRATCH repository (ORCHESTRA_SCRATCH_REPO=<owner>/<…scratch…>, never this repo); it exits 1 without it. Real PR host: start-check probe, flaky job re-run, merge commit through deliver."
   }
  ],
  "groups": 12
