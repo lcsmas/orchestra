@@ -4,18 +4,30 @@
 //   rigs.mjs shards            → JSON {include:[{shard,shards}]}: the suite shard jobs (`suiteShards` of the file; #594)
 //   rigs.mjs assign            → writes the balanced `group` of every RUNS_IN_CI rig into .github/ci-rigs.json (from its measured wallSec)
 //   rigs.mjs draft             → rewrites .github/ci-rigs.json with EVERY required rig as RUNS_IN_CI (discovery input — then classified from runner logs)
+//   rigs.mjs select [--changed-file F] [--base REV] [--full REASON]  (#595) → ONE JSON line: the path selection (which RUNS_IN_CI rigs run / are skipped and why) for the changed files of F
+//                                (one path per line; default `git diff REV HEAD`, REV = $CI_BASE or HEAD^1); an unreadable list, a shared or unclaimed file, or --full ⇒ every rig. run-group.mjs and `summary` compute the same selection.
+//   rigs.mjs paths [--write] [id…] → the declared `paths` each rig's own command needs (closure walk, src/shared/ci-closure.ts); --write regenerates them in .github/ci-rigs.json (keeps `pathsExtra`)
 //   rigs.mjs summary <dir>     → the final table (per-job counts from <dir>/*.json + the needs verdicts in $NEEDS_JSON) + the LOCAL_ONLY list; exit 1 on any red/missing job.
 //                                This IS the check named `suite` (#594): red when any suite shard is red, missing, cancelled or ran 0 tests (`judgeShards`), or any other job is.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assignGroups, judgeShards, readRigFile, requiredRigIds, suiteShardsOf, validateRigs } from '../../src/shared/ci-rigs.ts';
+import { repoTree } from '../../src/shared/ci-closure.ts';
+import { currentSelection, pathSelectionOn } from './selection.mjs';
+import { generatePaths, renderSelection, selectRigs, toWire } from '../../src/shared/ci-paths.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const slug = (id) => id.replace(/[^\w.-]+/g, '_');
 const [cmd, arg] = process.argv.slice(2);
+const flag = (name) => { const i = process.argv.indexOf(name); return i >= 0 ? process.argv[i + 1] : undefined; };
 
-if (cmd === 'matrix') {
+if (cmd === 'select') {
+  const file = readRigFile(root);
+  const problems = validateRigs(file, requiredRigIds(root).ids);
+  if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
+  console.log(JSON.stringify(toWire(currentSelection(root, file, { changedFile: flag('--changed-file'), base: flag('--base'), full: flag('--full') }))));
+} else if (cmd === 'matrix') {
   const file = readRigFile(root);
   const problems = validateRigs(file, requiredRigIds(root).ids);
   if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
@@ -38,12 +50,29 @@ if (cmd === 'matrix') {
   const rigs = ids.map((id) => ({ id, command: commands[id] !== undefined ? `pnpm run ${id}` : `${id.endsWith('.sh') ? 'bash' : 'node'} ${id}`, class: 'RUNS_IN_CI', reason: 'UNMEASURED (discovery draft)' }));
   fs.writeFileSync(path.join(root, '.github', 'ci-rigs.json'), JSON.stringify({ _doc: 'Every rig is RUNS_IN_CI or LOCAL_ONLY + reason (#568). Guard: src/shared/ci-rigs.test.ts. Read by the matrix + summary of .github/workflows/ci.yml.', rigs }, null, 1) + '\n');
   console.log(`${rigs.length} rigs`);
+} else if (cmd === 'paths') {
+  const file = readRigFile(root);
+  const tree = repoTree(root);
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts;
+  const write = process.argv.includes('--write');
+  const only = process.argv.slice(3).filter((a) => !a.startsWith('--'));
+  const gen = generatePaths(file, tree, pkg);
+  if (write) {
+    file.pathSets = gen.pathSets;
+    for (const r of file.rigs) if (!only.length || only.includes(r.id)) r.paths = gen.paths[r.id];
+    const order = ['_doc', 'groups', 'suiteShards', 'sharedPaths', 'noRigPaths', 'pathSets', 'rigs'];
+    const out = {}; for (const k of order) if (file[k] !== undefined) out[k] = file[k]; for (const k of Object.keys(file)) if (!(k in out)) out[k] = file[k];
+    fs.writeFileSync(path.join(root, '.github', 'ci-rigs.json'), JSON.stringify(out, null, 1) + '\n');
+    console.log(`wrote pathSets (${Object.keys(gen.pathSets).join(', ')}) and paths for ${only.length || file.rigs.length} rig(s)`);
+  } else for (const r of file.rigs) if (!only.length || only.includes(r.id)) console.log(`${r.id}: ${gen.paths[r.id].length} path entries${only.length ? `\n${gen.paths[r.id].map((g) => `  ${g}`).join('\n')}` : ''}`);
 } else if (cmd === 'summary') {
   const dir = arg;
   const results = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))) : [];
   const needs = JSON.parse(process.env.NEEDS_JSON || '{}');
   const file = readRigFile(root);
-  const rigsExpected = file.rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
+  const sel = pathSelectionOn() ? toWire(currentSelection(root, file)) : null;
+  const allCi = file.rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
+  const rigsExpected = sel ? allCi.filter((id) => sel.ids.includes(id)) : allCi;
   const lines = []; let bad = 0;
   const row = (r) => { const t = r.tolerated ?? []; const failed = t.length ? `${r.counts.fail + t.length} (tolerated: ${t.map((x) => x.slice(0, 60)).join(' · ')} — NOT covered by CI)` : r.counts.fail; return `| ${r.ok ? '✅' : '❌'} | ${r.name} | ${r.counts.run} | ${r.counts.pass} | ${failed} | ${r.counts.skipped}${r.attempts > 1 || r.armRetries > 0 ? ` (${r.attempts > 1 ? `${r.attempts} attempts` : ''}${r.armRetries > 0 ? ` ${r.armRetries} arm re-runs` : ''})` : ''} | ${r.wallSec}s |${r.ok ? '' : ` ${r.why}`}`; };
   lines.push('## PR CI — per job', '', '| | job | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|');
@@ -68,10 +97,11 @@ if (cmd === 'matrix') {
   const badNeeds = Object.entries(needs).filter(([, v]) => v.result !== 'success');
   for (const [k, v] of badNeeds) { bad++; lines.push('', `**needs.${k}.result = ${v.result}** (must be success)`); }
   const local = file.rigs.filter((r) => r.class === 'LOCAL_ONLY');
+  if (sel) lines.unshift(renderSelection(sel, allCi.length));
   lines.push('', `## LOCAL-ONLY rigs (${local.length}) — NOT run by CI; the verifier / owner runs them locally`, '', '| rig | reason |', '|---|---|', ...local.map((r) => `| \`${r.id}\` | ${String(r.reason).replace(/\|/g, '\\|').replace(/\n/g, ' ')} |`));
-  lines.push('', suiteLine, '', bad ? `**❌ ${bad} problem(s)**` : `**✅ typecheck + ${nShards} suite shard(s) + ${rigsExpected.length} rigs green; ${local.length} local-only rigs listed above**`);
+  lines.push('', suiteLine, '', bad ? `**❌ ${bad} problem(s)**` : `**✅ typecheck + ${nShards} suite shard(s) + ${rigsExpected.length} rigs green${sel && sel.mode === 'paths' ? ` (${sel.skipped.length} rigs SKIPPED BY PATH — see the selection above; the release gate runs them all)` : ''}; ${local.length} local-only rigs listed above**`);
   const md = lines.join('\n') + '\n';
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
   console.log(md);
   process.exit(bad ? 1 : 0);
-} else { console.error('usage: rigs.mjs matrix | shards | assign | draft | summary <dir>'); process.exit(2); }
+} else { console.error('usage: rigs.mjs select | matrix | shards | paths | assign | draft | summary <dir>'); process.exit(2); }

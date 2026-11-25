@@ -27,6 +27,8 @@ import {
   normaliseRollupItem,
   parseActionsJobUrl,
   parseReviewVerdict,
+  RIG_SELECTION_NOTE,
+  rigSelectionOf,
   SAFE_REF,
   type DeliverCheck,
   type PrSnapshot,
@@ -175,6 +177,9 @@ export interface DeliverResult {
   acceptanceGate?: 'bypassed' | 'waived';
   /** #487 — where `combinedSuite`'s test command came from: --suite-cmd, package.json packageManager, a lockfile on the target, or the npm fallback. */
   combinedSuiteSource?: SuiteSource;
+  /** #595 — `by-path`: the PR CI that gated this merge ran only the rigs the changed files select; `rigSelectionNote` says what that means. Absent = every rig / not read. */
+  rigSelection?: 'by-path';
+  rigSelectionNote?: string;
 }
 
 export interface DeliverDeps {
@@ -403,12 +408,38 @@ export async function gatherUpstreamFacts(
   return out;
 }
 
+/** The TARGET branch's workflow files (contents read from GitHub, never this checkout). `[]` = the repo has none (404); `null` = could not read. */
+export async function targetWorkflows(opts: { repo?: string; into: string }, deps: Pick<DeliverDeps, 'gh'>): Promise<string[] | null> {
+  const base = `repos/${opts.repo ?? '{owner}/{repo}'}/contents/.github/workflows`;
+  const ref = `?ref=${encodeURIComponent(opts.into)}`;
+  const list = await deps.gh(['api', `${base}${ref}`]);
+  if (list.code !== 0) return /404|Not Found/i.test(list.stderr) ? [] : null;
+  let names: string[];
+  try {
+    names = (JSON.parse(list.stdout) as { name?: string; type?: string }[]).filter((e) => e.type !== 'dir' && /\.ya?ml$/i.test(String(e.name))).map((e) => String(e.name));
+  } catch {
+    return null;
+  }
+  const out: string[] = [];
+  for (const n of names) {
+    const f = await deps.gh(['api', '-H', 'Accept: application/vnd.github.raw+json', `${base}/${encodeURIComponent(n)}${ref}`]);
+    if (f.code !== 0) return null; // an unreadable workflow could be the PR one: not "none"
+    out.push(f.stdout);
+  }
+  return out;
+}
+
 export async function deliver(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
   const out = await deliverGated(opts, deps);
   if (out.result.combinedSuite === undefined) return out;
   const s = await suiteCommandForTarget(opts, deps.gh);
   if (s.source === 'fallback') deps.log('combinedSuite: could not tell the target repo\'s package manager (no packageManager field / lockfile read) — using "npm test"; pass --suite-cmd to set it');
-  return { exit: out.exit, result: { ...out.result, combinedSuite: combinedSuiteCommand(opts.into, s.cmd), combinedSuiteSource: s.source } };
+  const result: DeliverResult = { ...out.result, combinedSuite: combinedSuiteCommand(opts.into, s.cmd), combinedSuiteSource: s.source };
+  // #595 — say it when the merged PR's CI selected rigs by path (best effort: an unreadable workflow adds nothing, it never changes the verdict).
+  try {
+    if (rigSelectionOf(await targetWorkflows(opts, deps), opts.into) === 'by-path') { result.rigSelection = 'by-path'; result.rigSelectionNote = RIG_SELECTION_NOTE; }
+  } catch { /* informational only */ }
+  return { exit: out.exit, result };
 }
 
 async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<DeliverOutcome> {
