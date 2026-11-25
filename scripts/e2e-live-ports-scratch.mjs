@@ -87,8 +87,7 @@ const RUN = 'scratch-run';
 const treeOf = sh('gh', ['api', `repos/${REPO}/commits/${head}`, '--jq', '.commit.tree.sha']);
 const NOW = new Date().toISOString();
 const seed = (id, branch, h, n, tree) => st.updateState(st.stateFile(home, RUN), (cur) => {
-  let s = cur ?? st.setPlan(st.newState(RUN, { target: 'main', repo: REPO, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: NOW }), [id], 'declare', NOW);
-  if (cur) s = st.setPlan(s, [...(s.plan?.tickets ?? []), id], 'declare', NOW);
+  let s = cur ?? st.setPlan(st.newState(RUN, { target: 'main', repo: REPO, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: NOW }), ['T1', 'T2'], 'declare', NOW);
   s = st.applyTicketPatch(s, id, { dependsOn: [], spec: 's', branch, head: h, pr: n, status: 'nominated' }, NOW, { tree });
   s = rv.settleReviewer(rv.claimReviewer(s, id, { kind: 'spawn', name: rv.reviewerName(id, 1), head: h, base: null, text: 'brief', now: NOW }), id, { id: `ws-rev-${id}` }, NOW);
   return rec.recordReview(s, id, { head: h, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: `ws-rev-${id}`, callerVouched: true, tree, now: NOW });
