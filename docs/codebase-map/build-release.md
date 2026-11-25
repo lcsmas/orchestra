@@ -338,7 +338,7 @@ over the time budget. The authoritative list is `node scripts/ci/rig-table.mjs -
 
 **For the verifier and `fanout deliver`.** The suite step is `continue-on-error` (a verdict step decides),
 so `fanout gate` cannot DERIVE the suite check (`suiteJobsOf` refuses such a step — pinned by
-`ci-rigs.test.ts`): run it with `--require-check suite`. With a green PR CI on exactly the verified head
+`ci-rigs.test.ts`): run it with `--require-check suite`. A PR that edits `.github/` (every new rig does: its `ci-rigs.json` entry) is gated `fullSuite: verifier` by design — the CI that ran is the candidate's own — so "green CI ⇒ rerun nothing" does not apply to it. The `summary` row of the suite prints `failed 5 (tolerated: …  — NOT covered by CI)`: those tests are the verifier's to run. With a green PR CI on exactly the verified head
 (`orchestra fanout gate --require-check suite` says `fullSuite: ci`, `ciGreenOnHead`) the verifier does NOT rerun
 tsc, the suite or the CI-run rigs: it runs only the LOCAL-ONLY rigs the diff touches and its
 own probes. `fanout deliver` needs no change: `ciVerdict` (src/shared/fanout-deliver.ts)

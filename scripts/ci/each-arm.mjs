@@ -4,6 +4,7 @@
 // a rig whose arms cannot be read FAILS (no arms = no silent green). Prints `ARM <name>: PASS|FAIL` per arm and `EACH-ARM: n/m PASS`; exit 1 if any arm failed.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { judgeArm } from '../../src/shared/ci-rigs.ts';
 
 // `--expect-abort <arm>=<text>` (repeatable, before the command): an arm that is a must-ABORT self-test (e.g. `hang_selftest`, which hangs ON PURPOSE so the rig's deadline fires) passes
 // when it exits non-zero AND its output contains <text>; any other outcome of that arm is red.
@@ -34,8 +35,9 @@ for (const arm of arms) {
     tries++;
     r = spawnSync('bash', ['-c', `${argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ')} '${arm}'`], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 240_000 });
     const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
-    ok = expectAbort.has(arm) ? r.status !== 0 && out.includes(expectAbort.get(arm)) : r.status === 0;
-    if (!ok) process.stdout.write(out.split('\n').slice(-25).join('\n') + '\n');
+    const v = judgeArm(r.status, out, expectAbort.get(arm));
+    ok = v.ok;
+    if (!ok) process.stdout.write(`${out.split('\n').slice(-25).join('\n')}\n[each-arm] ${arm}: red — ${v.why}\n`);
   }
   if (ok) pass++;
   console.log(`ARM ${arm}: ${ok ? 'PASS' : 'FAIL'} (exit ${r.status}${r.signal ? ` ${r.signal}` : ''}${tries > 1 ? `, ${tries} attempts` : ''})`);

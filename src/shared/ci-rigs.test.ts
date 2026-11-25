@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, tapFails, judge, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, tapSkips, validateRigs, type RigFile } from './ci-rigs.ts';
+import { assignGroups, judgeArm, tapFails, judge, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, tapSkips, validateRigs, type RigFile } from './ci-rigs.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const mk = (rigs: RigFile['rigs']): RigFile => ({ rigs });
@@ -51,7 +51,7 @@ test('a LOCAL_ONLY rig with a reason is valid', () => {
 
 test('TAP summary: counts, last summary wins, absent summary is null (a truncated run is not green)', () => {
   const tap = '# tests 10\n# suites 2\n# pass 8\n# fail 1\n# cancelled 1\n# skipped 0\n# todo 0\n';
-  assert.deepEqual(parseTapSummary(tap), { run: 10, pass: 8, fail: 2, skipped: 0, source: 'TAP summary' });
+  assert.deepEqual(parseTapSummary(tap), { run: 10, pass: 8, fail: 2, skipped: 0, todo: 0, source: 'TAP summary' });
   assert.equal(parseTapSummary('ok 1 - a\nok 2 - b\n'), null);
 });
 
@@ -146,4 +146,23 @@ test('groups: every RUNS_IN_CI rig is in exactly one non-empty group, balanced b
   const g2 = assignGroups({ groups: 2, rigs: [mk('a', { wallSec: 100 }), mk('b', { wallSec: 90 }), mk('c', { wallSec: 20 })] });
   assert.deepEqual(g2.map((g) => g.length), [1, 2]);
   assert.ok(validateRigs({ groups: 2, rigs: [mk('a', { group: 3 })] }, ['a']).some((p) => /group 3 is outside 1\.\.2/.test(p)));
+});
+
+test('each-arm judge (reviewer BLOCKING): exit 0 + "ok":false is RED; VOID is RED; a last ok:true line is green; an expected abort is the only exit-1 pass', () => {
+  assert.equal(judgeArm(0, '{"arm":"a","ok":true}\n').ok, true);
+  const red = judgeArm(0, 'noise\n{"arm":"a","x":1,"ok":false}\n'); // the shape of e2e-r2-repro / delete-resurrect / spawn-failure: process.exit(0) after printing ok:false
+  assert.equal(red.ok, false); assert.match(red.why, /ok":false/);
+  assert.equal(judgeArm(0, '{"arm":"a","ok":false}\n{"arm":"a","ok":true}\n').ok, true, 'the LAST verdict line decides');
+  assert.equal(judgeArm(0, 'x: VOID — no `claude` CLI on PATH\n').ok, false);
+  assert.equal(judgeArm(1, '{"ok":true}\n').ok, false);
+  assert.equal(judgeArm(null, '').ok, false);
+  assert.equal(judgeArm(1, '{"arm":"hang_selftest","ok":false,"abort":"deadline: the arm hung"}', 'deadline: the arm hung').ok, true);
+  assert.equal(judgeArm(0, 'deadline: the arm hung', 'deadline: the arm hung').ok, false, 'an expected abort that exits 0 did not abort');
+});
+
+test('a `# todo` test is red (it is neither a pass nor a listed skip)', () => {
+  const c = parseTapSummary('# tests 3\n# pass 2\n# fail 0\n# skipped 0\n# todo 1\n');
+  assert.equal(c?.todo, 1);
+  assert.equal(judge(0, c!).ok, false);
+  assert.equal(judge(0, { ...c!, todo: 0 }).ok, true);
 });

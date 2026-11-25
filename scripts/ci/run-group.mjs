@@ -32,7 +32,7 @@ for (const id of ids) {
 }
 const bad = rows.filter((r) => !r.ok);
 const md = [`### Rig group ${n}: ${bad.length ? `❌ ${bad.length} of ${rows.length} red` : `✅ ${rows.length} rigs green`} (${Math.round((Date.now() - t0) / 60000)} min)`, '', '| | rig | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|',
-  ...rows.map((r) => `| ${r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.res?.counts.run ?? '—'} | ${r.res?.counts.pass ?? '—'} | ${r.res?.counts.fail ?? '—'} | ${r.res?.counts.skipped ?? '—'} | ${r.res ? `${r.res.wallSec}s${r.res.attempts > 1 ? ` (${r.res.attempts} attempts)` : ''}` : '—'} |${r.ok ? '' : ` ${r.res?.why ?? 'no result'}`}`), ''].join('\n');
+  ...rows.map((r) => `| ${r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.res?.counts.run ?? '—'} | ${r.res?.counts.pass ?? '—'} | ${r.res?.counts.fail ?? '—'} | ${r.res?.counts.skipped ?? '—'} | ${r.res ? `${r.res.wallSec}s${r.res.attempts > 1 ? ` (${r.res.attempts} attempts)` : ''}${r.res.armRetries > 0 ? ` (${r.res.armRetries} arm re-runs)` : ''}` : '—'} |${r.ok ? '' : ` ${r.res?.why ?? 'no result'}`}`), ''].join('\n');
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
 console.log(md);
 process.exitCode = bad.length ? 1 : 0;

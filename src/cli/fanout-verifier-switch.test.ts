@@ -107,9 +107,9 @@ const MASTER_DEFAULT = { skill: 'a9073a594a19c8018dfcd34ebf4abbfc2e7c3eca5e28b98
   'references/closeout-and-gates.md': 'f4d7f7a7b0c3013d36590a0364a84128757b0b5346b9fe64b1c1d5a2dcae45c7',
   'references/fleet-bus.md': 'bf6aa4ba306934656d9a88f30bc8b8ab149067e3bc612eeb1e2ba9ab60d2606a',
   'references/lead-ops-tiers.md': '268ff1e15fd4450415e764218ae37cac817f704bb193e2f89b776cce67df766b',
-  'references/verifier-and-review.md': '4d5535bf76b2f11f850c0caaf1c11232ab50a5c8d9f942a4ae2f6b7809d57d0c',
+  'references/verifier-and-review.md': 'f9269a516161d349d43f3800530b13bd75b7de9b2103d4e8b3e7d23dc480b36e',
 } as Record<string, string> };
-const MASTER_ALL_ON = { skill: 'f3fd918b3db0af2a0b92f64ca1af84e3a12eb7f5c37340045c0e196ec291078a', verifierAndReview: '249bd05cdd4636b34c5ee0034f647b8d56a6bbfeba5c009b099b03c17b5beff8' };
+const MASTER_ALL_ON = { skill: 'f3fd918b3db0af2a0b92f64ca1af84e3a12eb7f5c37340045c0e196ec291078a', verifierAndReview: '18dd586e12315f5c4922467e21097e2973c05b6dcb128bb6269cc93ffb60a41e' };
 
 test('verifier=on must-PASS: the default render and every reference are BYTE-IDENTICAL to master (and so is the all-features-on render)', () => {
   assert.equal(sha(renderVerifiedFanoutSkill({})), MASTER_DEFAULT.skill);

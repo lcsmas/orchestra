@@ -59,7 +59,7 @@ if (kind === 'suite') {
   if (exit !== 0 && kind === 'rig' && attempts < 3 && SWAY_FLAKE.test(stripAnsi(log))) { console.log(`::warning::${name}: compositor start-up flake, retrying (attempt ${attempts + 1}/3)`); continue; }
   // Any other red (not a timeout): ONE fresh re-run. A timing clause that flakes once on a shared runner passes on a fresh process; a real regression is red twice.
   // Both attempts are printed and the attempt count lands in the table, so a green-on-retry is visible and countable.
-  if (exit !== 0 && kind === 'rig' && !timedOut && attempts < 2) { console.log(`::warning::${name}: red on attempt ${attempts} (exit ${exit}), re-running once on a fresh process`); continue; }
+  if (exit !== 0 && kind === 'rig' && !timedOut && attempts < 2 && !/each-arm\.mjs/.test(command)) { console.log(`::warning::${name}: red on attempt ${attempts} (exit ${exit}), re-running once on a fresh process`); continue; }
   break;
   }
 }
@@ -82,7 +82,7 @@ if (kind === 'typecheck') {
     const known = JSON.parse(fs.readFileSync(path.join(root, '.github', 'ci-skips.json'), 'utf8')).knownFail ?? [];
     const fails = tapFails(log);
     const tolerated = fails.length > 0 && fails.length === counts.fail && fails.every((f) => known.some((k) => k.name === f && k.reason?.trim()));
-    if (tolerated) { counts = { ...counts, pass: counts.pass, fail: 0, source: `TAP summary (${fails.length} known-fail tolerated)` }; skipNote += `\n\nKnown-fail tests tolerated (.github/ci-skips.json knownFail):\n` + fails.map((f) => `- ${f}`).join('\n'); }
+    if (tolerated) { var toleratedNames = fails; counts = { ...counts, pass: counts.pass, fail: 0, source: `TAP summary (${fails.length} known-fail tolerated)` }; skipNote += `\n\nKnown-fail tests tolerated (.github/ci-skips.json knownFail):\n` + fails.map((f) => `- ${f}`).join('\n'); }
     verdict = bad.length ? { ok: false, why: `ci-skips.json entry without name/reason` } : judge(timedOut ? 124 : tolerated && exit === 1 ? 0 : exit, counts, { skippedAllowed: allowed.length });
     if (skips.length) skipNote = '\n\nSkipped tests:\n' + skips.map((s) => `- ${allowed.includes(s) ? '(allow-listed) ' : ''}${s.name}${s.reason ? ` — ${s.reason}` : ''}`).join('\n');
   }
@@ -93,9 +93,10 @@ if (kind === 'typecheck') {
 if (timedOut) verdict = { ok: false, why: `timed out after ${timeoutMin} min` };
 
 const tail = stripAnsi(log).split('\n').filter((l) => l.trim()).slice(-25).join('\n');
-const result = { name, attempts: typeof attempts === 'number' ? attempts : 1, id: kind === 'rig' ? arg : name, command, exit, timedOut, wallSec, counts, ok: verdict.ok, why: verdict.why, tail };
+const armRetries = [...stripAnsi(log).matchAll(/^ARM .*, (\d+) attempts\)/gm)].reduce((n, m) => n + Number(m[1]) - 1, 0);
+const result = { name, attempts: typeof attempts === 'number' ? attempts : 1, armRetries, tolerated: typeof toleratedNames !== 'undefined' ? toleratedNames : [], id: kind === 'rig' ? arg : name, command, exit, timedOut, wallSec, counts, ok: verdict.ok, why: verdict.why, tail };
 fs.writeFileSync(path.join(resultDir, `${name.replace(/[^\w.-]+/g, '_')}.json`), JSON.stringify(result, null, 1));
-const md = `### ${verdict.ok ? '✅' : '❌'} ${name}\n\n| run | passed | failed | skipped | wall | source |\n|---|---|---|---|---|---|\n| ${counts.run} | ${counts.pass} | ${counts.fail} | ${counts.skipped} | ${wallSec}s${typeof attempts === 'number' && attempts > 1 ? ` (${attempts} attempts)` : ''} | ${counts.source} |\n\n${verdict.ok ? '' : `**${verdict.why}**\n\n\`\`\`\n${tail}\n\`\`\`\n`}${skipNote}\n`;
+const md = `### ${verdict.ok ? '✅' : '❌'} ${name}\n\n| run | passed | failed | skipped | wall | source |\n|---|---|---|---|---|---|\n| ${counts.run} | ${counts.pass} | ${counts.fail} | ${counts.skipped} | ${wallSec}s${typeof attempts === 'number' && attempts > 1 ? ` (${attempts} attempts)` : ''}${armRetries > 0 ? ` (${armRetries} arm re-run${armRetries > 1 ? 's' : ''})` : ''} | ${counts.source} |\n\n${verdict.ok ? '' : `**${verdict.why}**\n\n\`\`\`\n${tail}\n\`\`\`\n`}${skipNote}\n`;
 if (process.env.GITHUB_STEP_SUMMARY && !(process.env.CI_GROUP === '1' && verdict.ok)) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md); // a group prints ONE table; only a red rig adds its tail
 console.log(`\n[ci] ${name}: ${verdict.ok ? 'OK' : 'FAIL'} — ${verdict.why} (run=${counts.run} pass=${counts.pass} fail=${counts.fail} skipped=${counts.skipped}, ${wallSec}s)`);
 process.exitCode = verdict.ok || process.env.CI_DISCOVERY === '1' ? 0 : 1; // not process.exit(): pending piped stdout would be cut (the verdict line was lost once)

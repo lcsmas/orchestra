@@ -40,7 +40,7 @@ if (cmd === 'matrix') {
   const file = readRigFile(root);
   const rigsExpected = file.rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
   const lines = []; let bad = 0;
-  const row = (r) => `| ${r.ok ? '✅' : '❌'} | ${r.name} | ${r.counts.run} | ${r.counts.pass} | ${r.counts.fail} | ${r.counts.skipped} | ${r.wallSec}s |${r.ok ? '' : ` ${r.why}`}`;
+  const row = (r) => { const t = r.tolerated ?? []; const failed = t.length ? `${r.counts.fail + t.length} (tolerated: ${t.map((x) => x.slice(0, 60)).join(' · ')} — NOT covered by CI)` : r.counts.fail; return `| ${r.ok ? '✅' : '❌'} | ${r.name} | ${r.counts.run} | ${r.counts.pass} | ${failed} | ${r.counts.skipped}${r.attempts > 1 || r.armRetries > 0 ? ` (${r.attempts > 1 ? `${r.attempts} attempts` : ''}${r.armRetries > 0 ? ` ${r.armRetries} arm re-runs` : ''})` : ''} | ${r.wallSec}s |${r.ok ? '' : ` ${r.why}`}`; };
   lines.push('## PR CI — per job', '', '| | job | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|');
   for (const n of ['typecheck', 'suite']) {
     const r = results.find((x) => x.name === n);
