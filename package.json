@@ -184,7 +184,8 @@
     "test:release-gate": "bash scripts/verify-release-gate.sh",
     "test:release-receipt": "bash scripts/verify-release-receipt.sh",
     "test:release-receipt-mutants": "bash scripts/verify-release-receipt.sh --mutants",
-    "release": "bash scripts/release.sh"
+    "release": "bash scripts/release.sh",
+    "test:probe-c-new-rig": "node -e \"console.log('PASS new rig')\""
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.6",
