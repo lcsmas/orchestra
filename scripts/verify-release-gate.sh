@@ -12,7 +12,7 @@
 # tree_dirtied, tree_moved, abi_fail, ah_*/aw_* (#286/#287 Admission rigs: red, no terminator, partial, wrong tree, missing script; rig_env: inherited RIG_ARMS/RIG_REPO never reach them), sb_fail, sb_void, sb_no_terminator, sb_weak_containment, sb_partial, sb_missing_script -> REFUSED naming
 # the check + nothing tagged/pushed (sb_* = the #208 session-budget step, stubbed here); bypass
 # (+notes-file, =form) -> proceeds with the reason in the notes; bypass_no_reason/blank/flag/ci_only
-# -> rc 2; dry_run -> plan only. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
+# -> rc 2; dry_run -> plan only; ci_* (#595: the tag's tree needs a green workflow_dispatch run of ci.yml) missing/other-tree/gh-fails/garbage -> REFUSED naming full-ci, bypass skips it loudly. Must-FAIL on old code: RG_SCRIPTS_DIR=<dir with the old release.sh>.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="${RG_SCRIPTS_DIR:-$REPO/scripts}"
@@ -34,6 +34,18 @@ cat > "$SB/bin/gh" <<'GH'
 #!/bin/sh
 case "$1 $2" in
   "auth status"|"release list") exit 0 ;;
+  "run list")
+    # #595: the full-rig-run check. Asserts the exact selection flags, logs the call, answers per RG_FX_CI (default: a green dispatch run on this HEAD's tree).
+    echo "$*" >> "$RG_FX_LOG.ci.args"
+    case "$*" in *"--workflow ci.yml"*"--event workflow_dispatch"*"--status success"*) ;; *) echo "rig gh stub: run list without --workflow ci.yml --event workflow_dispatch --status success: $*" >&2; exit 9 ;; esac
+    case "${RG_FX_CI:-green}" in
+      fail) exit 1 ;;
+      empty) echo '[]' ;;
+      garbage) echo 'not json' ;;
+      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other"}]\n' "$(git rev-parse HEAD~1)" ;;
+      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1"}]\n' "$(git rev-parse HEAD)" ;;
+    esac
+    exit 0 ;;
   "release create")
     echo gh-release >> "$RG_FX_LOG"
     : > "$RG_FX_LOG.notes"
@@ -342,6 +354,31 @@ if [ "$RC" = 0 ] && [ "$(steps)" = "tsc test session-budget admission-hold admis
    && [ "$(git -C "$ORIGIN" rev-parse master)" = "$(git -C "$W" rev-parse HEAD)" ]; then
   pass "to_master clean: master fast-forwarded" "rc=0 origin/master == bump commit"
 else fail "to_master clean: master fast-forwarded" "rc=$RC steps=[$(steps)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+
+# ── #595 full rig run: the tag's tree needs a green workflow_dispatch run of ci.yml ────────────────────────────────
+ci_refused() { # name variant marker — REFUSED naming full-ci AFTER the whole local gate, before the build, nothing shipped; the marker tells the four causes apart (a fail-closed refusal alone would hide a broken stub)
+  mk_fixture "$1" ok pass; RG_FX_CI="$2" run_release 0.5.271
+  refused "$1" full-ci "$3" "tsc test session-budget admission-hold admission-wake"; nothing_shipped "$1"
+}
+ci_refused ci_missing empty "no green workflow_dispatch run of ci.yml (every rig, no path selection) on a commit with this tree"
+ci_refused ci_other_tree other "1 recent green dispatch run(s) checked"
+ci_refused ci_gh_fails fail "so a green full rig run cannot be proven"
+ci_refused ci_garbage garbage "not the expected JSON"
+mk_fixture ci_green ok pass; run_release 0.5.271
+if [ "$RC" = 0 ] && [[ "$OUT" == *"full rig run PASS: https://example.invalid/run/1"* ]]; then pass "ci_green proceeds, proof printed" "rc=0 $(printf '%s' "$OUT" | grep -F 'full rig run PASS' | head -1 | cut -c1-110)"
+else fail "ci_green proceeds, proof printed" "rc=$RC tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+if [ "$(wc -l < "$LOG.ci.args" 2>/dev/null)" = 1 ] && grep -q -- '--workflow ci.yml --event workflow_dispatch --status success' "$LOG.ci.args"; then pass "ci_green asks for dispatch runs only" "one call: $(cut -c1-90 "$LOG.ci.args")"
+else fail "ci_green asks for dispatch runs only" "args=[$(cat "$LOG.ci.args" 2>/dev/null)]"; fi
+# a dispatch run on ANOTHER commit with the same tree counts (a tree, not a sha, is what the tag carries)
+mk_fixture ci_same_tree ok pass
+git -C "$W" commit -q --allow-empty -m "noop: same tree as its parent"
+RG_FX_CI=other run_release 0.5.271   # the stub answers with HEAD~1
+if [ "$RC" = 0 ]; then pass "ci_same_tree_other_commit accepted" "an empty commit shares its parent's tree: the dispatch run on the parent counts"; else fail "ci_same_tree_other_commit accepted" "rc=$RC tail=[$(printf '%s' "$OUT" | tail -2 | tr '\n' '|')]"; fi
+mk_fixture ci_bypass err fail; RG_FX_CI=fail run_release 0.5.271 --skip-release-gate "rig: emergency"
+if [ "$RC" = 0 ] && [ ! -s "$LOG.ci.args" ] && [[ "$OUT" == *"full rig run (ci.yml workflow_dispatch) was NOT required"* ]]; then pass "ci_bypass names the skipped full run" "gh never asked, banner present"
+else fail "ci_bypass names the skipped full run" "rc=$RC ci-args=[$(cat "$LOG.ci.args" 2>/dev/null)]"; fi
+mk_fixture ci_dry err pass; run_release 0.5.271 --dry-run
+if [ "$RC" = 0 ] && [[ "$OUT" == *"[dry-run] full rig run:"* ]] && [ ! -s "$LOG.ci.args" ]; then pass "ci_dry prints the plan, asks nothing" "rc=0"; else fail "ci_dry prints the plan, asks nothing" "rc=$RC"; fi
 
 # ── escape hatch ─────────────────────────────────────────────────────────────
 mk_fixture bypass err fail; run_release 0.5.271 --skip-release-gate "rig: emergency hotfix"

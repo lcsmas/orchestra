@@ -1057,8 +1057,8 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
         }
       }
 
-      closeRunsOf([ws.id]); // #437: an out-of-band removal (worktree gone) is a delete too
       await stopNoAgentCommand(ws.id); // #612: its detached command would otherwise keep running in a deleted cwd
+      closeRunsOf([ws.id]); // #437: an out-of-band removal (worktree gone) is a delete too
       await store.removeWorkspace(ws.id);
       expireBusAsksForDeleted(ws.id);
       forgetSessionKey(ws.id); // #379

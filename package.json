@@ -1,6 +1,6 @@
 {
   "name": "orchestra",
-  "version": "0.5.383",
+  "version": "0.5.384",
   "description": "Run parallel Claude Code agents in isolated git worktrees",
   "license": "Apache-2.0",
   "author": "Lucas Mas",
@@ -42,6 +42,8 @@
     "lint": "eslint src --ext .ts,.tsx",
     "pretest": "pnpm run build:cli",
     "test": "node --test --experimental-strip-types 'src/**/*.test.ts'",
+    "presuite:shard": "pnpm run build:cli",
+    "suite:shard": "node --test --experimental-strip-types --test-shard=${SUITE_SHARD}/${SUITE_SHARDS} 'src/**/*.test.ts'",
     "test:render": "node scripts/context-gauge-render-smoke.mjs && node scripts/answerable-cards-render-smoke.mjs && node scripts/queue-tray-render-smoke.mjs && node scripts/peer-rows-render-smoke.mjs && node scripts/task-notice-rows-render-smoke.mjs && node scripts/bus-rows-render-smoke.mjs && node scripts/restart-row-render-smoke.mjs && node scripts/sidebar-boot-render-smoke.mjs && node scripts/bus-pane-render-smoke.mjs && node scripts/human-gates-render-smoke.mjs && node scripts/usage-warning-render-smoke.mjs && node scripts/pause-ui-render-smoke.mjs && node scripts/memcap-settings-render-smoke.mjs && node scripts/memory-cap-row-render-smoke.mjs && pnpm run test:wiring && node scripts/watchers-strip-render-smoke.mjs && node scripts/tool-lines-render-smoke.mjs",
     "test:human-gates-shot": "node scripts/refuse-real-runtime.mjs test:human-gates-shot",
     "test:wiring": "node scripts/verify-answerable-wiring.mjs",

@@ -26,7 +26,9 @@ interface FakeOpts {
   readbackFails?: boolean;
   mergeStderr?: string;
   /** #487 — the TARGET repo's root files + package.json as `gh api contents` serves them (absent = the API call fails). */
-  target?: { files: string[]; packageJson?: string };
+  target?: {
+    /** #595 — `.github/workflows` of the target: file name → content (absent = 404). */
+    workflows?: Record<string, string>; files: string[]; packageJson?: string };
 }
 
 /** A fake `gh`: records every argv, answers like gh does, and — like GitHub — refuses a merge whose --match-head-commit != the head it holds. */
@@ -40,6 +42,11 @@ function fakeGh(o: FakeOpts) {
     const [a, b] = args;
     if (a === 'api') {
       if (!o.target) return { code: 1, stdout: '', stderr: 'HTTP 404' };
+      const wfm = /\/contents\/\.github\/workflows(?:\/([^?]+))?\?/.exec(args[args.length - 1]);
+      if (wfm) {
+        if (!o.target.workflows) return { code: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' };
+        return wfm[1] ? ok(o.target.workflows[decodeURIComponent(wfm[1])] ?? '') : ok(JSON.stringify(Object.keys(o.target.workflows).map((name) => ({ name, type: 'file' }))));
+      }
       if (args[args.length - 1].includes('/contents/package.json')) return ok(o.target.packageJson ?? '{}');
       return ok(JSON.stringify(o.target.files.map((name) => ({ name }))));
     }
@@ -392,6 +399,18 @@ test('#487 combinedSuite: packageManager field beats the lockfile; --suite-cmd b
   assert.match(none.combinedSuite ?? '', / && npm test$/);
   assert.equal(none.combinedSuiteSource, 'fallback');
 });
+test('#595 a merged PR whose target CI selects rigs by path says so in the result; a plain CI and an unreadable workflow dir add nothing', async () => {
+  const BYPATH = 'on:\n  pull_request:\n    branches: [bench/x]\nenv:\n  CI_PATH_SELECTION: 1\njobs:\n  ci:\n    steps:\n      - run: pnpm test\n';
+  const f = fakeGh({ views: [{ checks: [green()] }], target: { files: ['package-lock.json'], workflows: { 'ci.yml': BYPATH } } });
+  const r = await deliver(opts({ repo: 'o/r' }), deps(f.gh).d);
+  assert.equal(r.result.verdict, 'merged');
+  assert.equal(r.result.rigSelection, 'by-path'); assert.match(r.result.rigSelectionNote ?? '', /SKIPPED BY PATH/);
+  const plain = await deliver(opts({ repo: 'o/r' }), deps(fakeGh({ views: [{ checks: [green()] }], target: { files: ['package-lock.json'], workflows: { 'ci.yml': BYPATH.replace('CI_PATH_SELECTION: 1', 'OTHER: 1') } } }).gh).d);
+  assert.equal(plain.result.verdict, 'merged'); assert.equal(plain.result.rigSelection, undefined);
+  const none = await deliver(opts({ repo: 'o/r' }), deps(fakeGh({ views: [{ checks: [green()] }], target: { files: ['package-lock.json'] } }).gh).d);
+  assert.equal(none.result.verdict, 'merged'); assert.equal(none.result.rigSelection, undefined);
+});
+
 test('#487 the probe reads the TARGET ref on the --repo given, and a refused delivery prints no suite', async () => {
   const f = fakeGh({ views: [{ checks: [green()] }], target: { files: ['package-lock.json'] } });
   await deliver(opts({ repo: 'o/r' }), deps(f.gh).d);

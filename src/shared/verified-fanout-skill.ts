@@ -172,8 +172,8 @@ Gate rhythm:
   ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ wait for ¤ciGreenOnHead¤, rerun nothing CI ran; run LOCAL-ONLY rigs + own probes. ¤--require-check¤ pins it; a moved head's CI is never accepted).
 <!--/sw-->
 <!--sw verifier=off-->
-- **The PR's CI is the build and the full suite; nobody re-runs it by hand.** ¤deliver¤ refuses a head with no CI (¤no-checks¤), a red one (¤ci-red¤) or a check that ran nothing (¤zero-steps¤);
-  pin the suite check with ¤--require-check¤ when it is external; a moved head's CI is never accepted. A target with no PR CI cannot be delivered: fix the CI first.
+- **The PR's CI is the build, the full suite and the rigs the changed files select (¤ci-full¤ forces all; the release gate runs all); nobody re-runs it by hand.** ¤deliver¤ refuses a head with no CI (¤no-checks¤), a red one (¤ci-red¤) or a check that ran nothing (¤zero-steps¤);
+  pin the suite check with ¤--require-check¤ when it is external; a moved head's CI is never accepted. No PR CI ⇒ no delivery: fix the CI.
 <!--/sw-->
 <!--sw seatRecords=off-->
 - **An implementer's self-gate — and every fix round — is the typecheck, its diff's test files and its own rig arms; never the full suite (CI runs the rest).**

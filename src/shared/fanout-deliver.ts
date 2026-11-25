@@ -519,6 +519,13 @@ export function suiteJobsOf(yaml: string): string[] {
 /** A check name is the suite check `n`: EXACTLY, or — for a DERIVED name only — a matrix leg `n (…)`. A PINNED name is exact (`deliver --require-check` is); a reusable-workflow check is pinned by its full name (`ci / test`). */
 export const suiteMatches = (checkName: string, n: string, exactOnly = false): boolean => checkName === n || (!exactOnly && checkName.startsWith(`${n} (`));
 
+/** #595 — does the target's PR workflow select rigs by path (`CI_PATH_SELECTION` env)? `unknown` = the workflows could not be read. Gate and deliver say so: a green PR is then not "every rig ran". */
+export const RIG_SELECTION_NOTE = 'the PR CI runs only the rigs the changed files select — the others are SKIPPED BY PATH (listed in the CI run summary); the `ci-full` label forces all, the release gate runs every rig';
+export function rigSelectionOf(workflows: string[] | null, into?: string): 'by-path' | 'all' | 'unknown' {
+  if (workflows === null) return 'unknown';
+  return workflows.some((w) => workflowRunsOnPr(w, into) && /^\s*CI_PATH_SELECTION\s*:/m.test(w)) ? 'by-path' : 'all';
+}
+
 export type GateInput = {
   /** Workflow files of the TARGET branch (null = the listing could not be read). */
   workflows: string[] | null;
@@ -552,6 +559,8 @@ export type GateAnswer = {
   sameTree: boolean;
   /** WHO runs the full test suite: `ci` (the verifier does not) / `verifier` (its seat — no PR CI to trust, or could not tell). */
   fullSuite: 'ci' | 'verifier';
+  /** #595 — `by-path`: the PR CI runs only the rigs the changed files select (the rest are skipped by path, see RIG_SELECTION_NOTE); `all`: every RUNS_IN_CI rig; `unknown`: workflows unread. */
+  rigSelection: 'by-path' | 'all' | 'unknown';
   /** The verifier may sign PASS on the CI side ONLY when true: PR CI exists, is green, on exactly `head`. Always false when fullSuite is `verifier`. */
   ciGreenOnHead: boolean;
   /** Names of the checks on the PR head. */
@@ -577,6 +586,7 @@ export function decideGate(i: GateInput): GateAnswer {
     : i.workflows.some((w) => workflowRunsOnPr(w, i.into)) ? 'pr-workflows'
     : 'none'; // readable workflows with no provable PR trigger: a check on the head (push workflow, external status) is NOT PR CI
   const hasCi = repoCi === 'pr-workflows';
+  const rigSelection = hasCi ? rigSelectionOf(i.workflows, i.into) : 'unknown';
   // The checks that PROVE the suite ran: pinned (--require-check) or derived from the PR workflows' test jobs. A green lint is not the suite.
   const pinned = i.requiredChecks ?? [];
   const derived = hasCi ? [...new Set(i.workflows!.filter((w) => workflowRunsOnPr(w, i.into)).flatMap(suiteJobsOf))] : [];
@@ -588,7 +598,7 @@ export function decideGate(i: GateInput): GateAnswer {
   const ci: GateAnswer['ci'] = !i.pr ? 'no-pr' : verdict!.kind === 'none' ? 'none' : verdict!.kind === 'red' ? 'red' : verdict!.kind === 'zero-steps' ? 'zero-steps' : verdict!.kind === 'green' ? 'green' : 'pending';
   const h = i.head.slice(0, 12);
   const verifierSuite = (detail: string): GateAnswer => ({
-    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'verifier', ciGreenOnHead: false, ciChecks: [], suiteChecks: [], suiteSource, absentSuiteChecks: [],
+    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'verifier', rigSelection, ciGreenOnHead: false, ciChecks: [], suiteChecks: [], suiteSource, absentSuiteChecks: [],
     checklist: { skip: [], wait: [], keep: [], run: ['full test suite on the verifier seat, once per candidate', 'typecheck', ...KEEP.slice(0, -1)] },
     detail,
   });
@@ -602,8 +612,8 @@ export function decideGate(i: GateInput): GateAnswer {
     : !headMatches ? `PR head is ${(prHead ?? '').slice(0, 12)}, you verify ${h}: re-fetch and re-gate; the CI of another head is not accepted`
     : ci === 'green' ? `CI green on ${sameTree ? `${(prHead ?? '').slice(0, 12)} (same tree as ${h})` : h}, suite check(s): ${suiteChecks.join(', ')}` : `CI ${ci} on ${h}: do not sign PASS until green${absent.length > 0 ? `; suite check(s) NOT on the head: ${absent.join(', ')} — if they never register (typo, a matrix name), pin the exact name with --require-check or run the suite on the verifier\'s seat` : ''}`;
   return {
-    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'ci', ciGreenOnHead, ciChecks: i.checks.map((c) => c.name), suiteChecks, suiteSource, absentSuiteChecks: absent,
-    checklist: { skip: ['full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h}, suite check(s) ${suiteChecks.join(', ')} included (re-run this verb after any push)`], keep: KEEP, run: [] },
-    detail: why,
+    repoCi, ci, prHead, headMatches, sameTree, fullSuite: 'ci', rigSelection, ciGreenOnHead, ciChecks: i.checks.map((c) => c.name), suiteChecks, suiteSource, absentSuiteChecks: absent,
+    checklist: { skip: [rigSelection === 'by-path' ? 'full test suite + the rigs the changed files select (the PR CI runs them; the rest are skipped by path)' : 'full test suite (the PR CI runs it)'], wait: [`CI green on exactly ${h}, suite check(s) ${suiteChecks.join(', ')} included (re-run this verb after any push)`], keep: KEEP, run: [] },
+    detail: rigSelection === 'by-path' ? `${why} — ${RIG_SELECTION_NOTE}` : why,
   };
 }
