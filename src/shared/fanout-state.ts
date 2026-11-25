@@ -156,12 +156,13 @@ export interface TicketState {
   updatedAt: string;
 }
 
-/** #607 — what `stepCi` remembers between two (disposable) passes: the ONE re-run per head, the author told, the flaky checks (report), the checks the run attributed to the environment. `head` resets `rerun`/`told`/`env`, never `everTold`/`flaky`. */
+/** #607 — what `stepCi` remembers between two (disposable) passes: the ONE re-run per head, the author told, the flaky checks (report), the checks the run attributed to the environment. `head` resets `rerun`/`told`/`env`, never `reruns`/`seen`/`tells`/`flaky`. */
 export interface CiRecord {
   head: string;
   rerun: { at: string; names: string[]; jobs: Record<string, string> } | null;
   told: { at: string; names: string[] } | null;
-  everTold: boolean;
+  /** re-runs made for this ticket IN TOTAL (never reset: one automatic re-run per ticket) */
+  reruns: number;
   /** fingerprints (check names + normalised log tail) of the reds the author was told; cleared by a green */
   seen: string[];
   /** times the author was told about this exact set of check names; cleared by a green */
@@ -659,7 +660,7 @@ export function findingOf(v: unknown, where: string): FindingRecord {
 function ciRecordOf(v: unknown, where: string): CiRecord {
   const at = `${where}: ci`;
   if (!isObj(v)) throw new FanoutStateError(`${at} must be an object`);
-  refuseUnknown(v, new Set(['head', 'rerun', 'told', 'everTold', 'seen', 'tells', 'flaky', 'env']), at);
+  refuseUnknown(v, new Set(['head', 'rerun', 'told', 'reruns', 'seen', 'tells', 'flaky', 'env']), at);
   if (typeof v.head !== 'string' || !HEX_SHA.test(v.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
   const names = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !d.trim() || d.length > 200 || CTRL.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of check names`); return x as string[]; };
   let rerun: CiRecord['rerun'] = null;
@@ -679,7 +680,7 @@ function ciRecordOf(v: unknown, where: string): CiRecord {
     refuseUnknown(v.told, new Set(['at', 'names']), `${at}.told`);
     told = { at: isoOf(v.told.at, `${at}.told.at`), names: names(v.told.names, 'told.names') };
   }
-  if (typeof v.everTold !== 'boolean') throw new FanoutStateError(`${at}.everTold must be a boolean`);
+  if (v.reruns !== undefined && (!Number.isInteger(v.reruns) || (v.reruns as number) < 0)) throw new FanoutStateError(`${at}.reruns must be a count`);
   const tells: Record<string, number> = {};
   if (v.tells !== undefined) {
     if (!isObj(v.tells)) throw new FanoutStateError(`${at}.tells must be {names: count}`);
@@ -693,7 +694,7 @@ function ciRecordOf(v: unknown, where: string): CiRecord {
     if (e.job !== null && (typeof e.job !== 'string' || !e.job)) throw new FanoutStateError(`${at}.env[${i}].job must be a job id or null`);
     return { name: e.name, job: e.job as string | null };
   });
-  return { head: v.head, rerun, told, everTold: v.everTold, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
+  return { head: v.head, rerun, told, reruns: (v.reruns as number | undefined) ?? 0, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
 }
 
 function reviewsOf(v: unknown, where: string): ReviewEntry[] {

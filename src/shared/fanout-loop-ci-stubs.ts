@@ -68,7 +68,7 @@ export function pauseRun(state: CiState, p: { reason: string; check: string | nu
   if (!p.reason.trim()) throw new Error('[pause-no-reason]');
   return { ...state, pause: { at: now, reason: p.reason, check: p.check, prs: p.prs } };
 }
-export function resumeRun(state: CiState): CiState {
+export function resumeRun(state: CiState, now: string): CiState {
   const { pause: _p, ...rest } = state;
-  return rest;
+  return { ...rest, updatedAt: now };
 }
