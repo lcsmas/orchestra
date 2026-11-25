@@ -87,7 +87,7 @@ const mutants = [
   ['a status-only patch is not checked', S, "&& next.head && ('status' in patch || 'head' in patch || 'verdict' in patch)) { // #564", "&& next.head && ('head' in patch || 'verdict' in patch)) { // #564"],
   ['a FAILED same-tree record is not re-run', C, "if (have?.ok) return {", "if (have) return {"],
   ['the time-limit kill is SIGTERM (ignorable)', C, "killSignal: 'SIGKILL'", "killSignal: 'SIGTERM'"],
-  ['the skill says nothing when the switch is on', V, "<!--sw preNominationChecks=on-->", "<!--sw preNominationChecks=off-->"],
+  ['the skill says nothing when the switch is on', V, "<!--sw preNominationChecks=on seatRecords=off-->", "<!--sw preNominationChecks=off seatRecords=off-->"],
 ];
 
 const base = run();
