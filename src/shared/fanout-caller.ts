@@ -66,3 +66,10 @@ export function callerRefusal(verb: CallerVerb, state: FanoutState | null, seatR
 export function pausedVerbResult(verb: 'deliver' | 'open' | 'gate', run: string, text: string): { exit: 2; stdout: string; stderr: string } {
   return { exit: 2, stdout: `${JSON.stringify({ verdict: 'refused', reason: 'run-paused', verb, run, detail: text })}\n`, stderr: `${text}\n` };
 }
+
+/** The ticket a gate/check/open argv names: `check <ticket> [--run x] [--head y]` = the first word that is neither a flag nor a flag's value; `gate … --ticket <id>`; none otherwise. */
+export function ticketArgOf(verb: string, args: string[]): string | undefined {
+  if (verb === 'check') { const a = args.slice(1); for (let i = 0; i < a.length; i++) { if (a[i].startsWith('--')) i++; else return a[i]; } return undefined; }
+  const i = args.indexOf('--ticket');
+  return i >= 0 ? args[i + 1] : undefined;
+}

@@ -150,10 +150,12 @@ const identAfter = (tag, t) => jsonl(path.join(na[tag].out, 'ident.jsonl')).find
 const readSeqs = (tag) => jsonl(path.join(na[tag].out, 'reads.jsonl')).flatMap((e) => e.seqs ?? []);
 const sendMail = (to, body, { from = 'ws-sender', run = 'ws-sender' } = {}) => orch(['send', '--type', 'status', '--to', to, body], { ws: from, run });
 function rigPids() { const out = []; for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) { try { if (+p !== process.pid && environOf(p).includes(`ORCHESTRA_HOME=${world.ohome}`)) out.push(+p); } catch { /* */ } } return out; }
-/** `group` = signal the app's WHOLE process group (the rig spawned it detached = its own group): what a launcher / systemd stop / a closed terminal does, and what a command that is not setsid'd would not survive. */
+/** `group` = signal the app's WHOLE SESSION (every process whose session id is the app's — the rig spawned it detached, so it leads one): what a closed terminal / a service stop / `systemd` does, and what a command that is not setsid'd would not survive. */
+const sidOf = (pid) => { try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); return Number(s.slice(s.lastIndexOf(')') + 2).split(' ')[3]); } catch { return null; } };
 async function quitApp(sig, group = false) {
   const pid = app.pid; const t = Date.now();
-  process.kill(group ? -pid : pid, sig);
+  if (group) { const members = fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)).map(Number).filter((p) => sidOf(p) === pid); for (const m of members) { try { process.kill(m, sig); } catch { /* gone */ } } console.log(`  (signalled ${members.length} process(es) of the app's session ${pid} with ${sig})`); }
+  else process.kill(pid, sig);
   await waitFor(() => !alive(pid), 30000, `app exit after ${sig}`, 200);
   return Date.now() - t;
 }
@@ -206,8 +208,9 @@ try {
   if (row) { for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: row.l + row.w / 2, y: row.t + row.h / 2, button: 'left', clickCount: 1 }); await sleep(2500); saveShot('02-no-agent-workspace-selected.png', await cdp.shot()); }
 
   // ── C1: identity ──
-  const run1 = await waitFor(() => lastIdent('owner')?.ok ? lastIdent('owner') : null, 15000, 'the command vouched');
-  clause('c1/command-vouched-by-identity', run1.ok === true && typeof run1.runId === 'string', `ident ${JSON.stringify(run1)}`);
+  const run1 = await waitFor(() => lastIdent('owner')?.ok ? lastIdent('owner') : null, 15000, 'the command vouched').catch(() => lastIdent('owner') ?? null);
+  clause('c1/command-vouched-by-identity', run1?.ok === true && typeof run1.runId === 'string', `ident ${JSON.stringify(run1)}`);
+  if (run1?.ok !== true) throw new Error('the command is not vouched — nothing after this can be judged (the clause above says why)');
   const key = environOf(r0.pid).find((e) => e.startsWith('ORCHESTRA_SESSION_KEY='))?.split('=')[1];
   const forged = [['wrong key', { id: O.id, key: 'a'.repeat(64) }, 'superseded'], ['lead id + the command\'s key', { id: 'ws-lead', key }, null], ['unknown id', { id: 'ws-nobody', key }, 'unregistered']];
   for (const [label, body, want] of forged) { const r = await post('/identity', body); clause(`c1/forged/${label}`, r.ok === false && (want === null || r.code === want), JSON.stringify(r).slice(0, 140)); }
@@ -276,6 +279,9 @@ try {
     clause('caller/stranger-gate-refused', bg.code === 2 && /\[gate-caller\]/.test(bg.stderr), `rc ${bg.code} «${bg.stderr.trim().slice(0, 120)}»`);
     const bc = await job('stranger', ['fanout', 'check', 'A', '--run', O.id]);
     clause('caller/stranger-check-refused', bc.code === 2 && /\[check-caller\]/.test(bc.stderr), `rc ${bc.code} «${bc.stderr.trim().slice(0, 120)}»`);
+    fs.mkdirSync(path.join(world.ohome, 'fanout', 'corrupt'), { recursive: true }); fs.writeFileSync(path.join(world.ohome, 'fanout', 'corrupt', 'state.json'), '{not json');
+    const cs = await job('stranger', ['fanout', 'gate', '--branch', 'impl-a', '--into', 'main', '--head', 'a'.repeat(40), '--ticket', 'A', '--run', 'corrupt']);
+    clause('caller/unreadable-state-fails-closed', cs.code === 2 && /\[gate-caller\].*cannot be read/.test(cs.stderr), `rc ${cs.code} «${cs.stderr.trim().slice(0, 150)}»`);
     const oo = await job('owner', verbs.open);
     clause('caller/owner-open-passes-the-caller-gate', !/\[open-caller\]/.test(oo.stderr) && !paused(oo), `rc ${oo.code} (gh is not reachable in the rig: the verb fails AFTER the gate) «${(oo.stdout + oo.stderr).trim().slice(0, 100)}»`);
     const envOnly = orch(['fanout', 'state', 'set', 'C', '--status', 'merged'], { ws: O.id });
@@ -329,7 +335,7 @@ try {
   if (!SOAK_SEC) {
     // kill -9
     const kb = await bounce('SIGKILL', ['DOWN-3 after kill -9'], true);
-    clause('c3/kill9/command-survives', cmdAlive('owner'), `the app's whole process group SIGKILLed after ${kb.took} ms; command alive (its own session: not in that group)`);
+    clause('c3/kill9/command-survives', cmdAlive('owner'), `the app's whole SESSION SIGKILLed after ${kb.took} ms; command alive (its own session: not in that group)`);
     const rl2 = await launchApp();
     const hostUp2 = await waitFor(async () => { try { const r = await post('/identity', { id: 'ws-nobody', key: 'x' }); return r && r.code ? Date.now() : null; } catch { return null; } }, 30000, 'the host answering', 100);
     const v2 = await waitFor(() => identAfter('owner', rl2.t0), 30000, 'vouched after kill -9', 100);

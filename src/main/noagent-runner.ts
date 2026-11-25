@@ -104,9 +104,10 @@ export function createNoAgentRunner(deps: NoAgentDeps): NoAgentRunner {
       return { ok: false, error: `could not register the session key for ${id}: ${e instanceof Error ? e.message : String(e)} — nothing was started` };
     }
     const env = noAgentCommandEnv({ base: deps.hostEnv, scriptEnv: deps.scriptEnv(ws), sock, wsId: id, key, runId: deps.runIdOf(ws) });
-    fs.mkdirSync(dir, { recursive: true });
-    const fd = fs.openSync(logFile(id), 'a', 0o600);
+    let fd: number | null = null;
     try {
+      fs.mkdirSync(dir, { recursive: true });
+      fd = fs.openSync(logFile(id), 'a', 0o600);
       const child = spawnFn('/bin/sh', ['-c', ws.runCommand!.trim()], { cwd: ws.worktreePath, env, detached: true, stdio: ['ignore', fd, fd] });
       const pid = await new Promise<number>((resolve, reject) => {
         child.once('error', reject);
@@ -114,7 +115,10 @@ export function createNoAgentRunner(deps: NoAgentDeps): NoAgentRunner {
       });
       child.unref();
       if (!(pid > 1)) throw new Error('no pid');
-      const rec: NoAgentRecord = { version: 1, pid, startTicks: readTicks(pid), startedAt: (deps.now?.() ?? new Date()).toISOString(), command: ws.runCommand!.trim().slice(0, 200) };
+      const startTicks = readTicks(pid);
+      // on Linux a pid whose start time cannot be read is already gone (exited at once / zombie): a record without ticks would later let a REUSED pid pass for the command (and `stop` signal an unrelated group)
+      if (startTicks === null && (deps.platform ?? process.platform) === 'linux') throw new Error(`the command exited immediately — see ${logFile(id)}`);
+      const rec: NoAgentRecord = { version: 1, pid, startTicks, startedAt: (deps.now?.() ?? new Date()).toISOString(), command: ws.runCommand!.trim().slice(0, 200) };
       const tmp = `${recFile(id)}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(rec), { mode: 0o600 });
       fs.renameSync(tmp, recFile(id));
@@ -124,7 +128,7 @@ export function createNoAgentRunner(deps: NoAgentDeps): NoAgentRunner {
       deps.forgetKey(id); // the key vouched a process that never existed
       return { ok: false, error: `could not start the command of ${id}: ${e instanceof Error ? e.message : String(e)}` };
     } finally {
-      fs.closeSync(fd);
+      if (fd !== null) fs.closeSync(fd);
     }
   }
 

@@ -1,7 +1,7 @@
 // #612 — who may run the verbs the spike found open: `state set --status merged`, `open`, `gate`, `check`; and the Pause refusal text of `deliver|open|gate`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { callerRefusal, pausedVerbResult, resolveCaller, CALLER_REFUSALS, type Caller } from './fanout-caller.ts';
+import { callerRefusal, pausedVerbResult, ticketArgOf, resolveCaller, CALLER_REFUSALS, type Caller } from './fanout-caller.ts';
 import { blankTicket, newState, seatRecordsOn, type FanoutState } from './fanout-state.ts';
 import { pauseGateDecision } from './bus-pause.ts';
 import type { IdentityResolution } from './session-identity.ts';
@@ -67,4 +67,13 @@ test('Pause refusal of deliver / open / gate: reason run-paused, exit 2, the tex
     assert.equal(r.stderr, `${text}\n`);
   }
   assert.equal(pauseGateDecision(null), null, 'not paused ⇒ no refusal');
+});
+
+test('the ticket of a check / gate argv: flag order does not hide it (an implementer must not be refused for writing --run first)', () => {
+  assert.equal(ticketArgOf('check', ['check', 'T1', '--run', 'r']), 'T1');
+  assert.equal(ticketArgOf('check', ['check', '--run', 'r', 'T1']), 'T1');
+  assert.equal(ticketArgOf('check', ['check', '--head', 'abc', '--run', 'r', 'T1']), 'T1');
+  assert.equal(ticketArgOf('check', ['check', '--run', 'r']), undefined);
+  assert.equal(ticketArgOf('gate', ['gate', '--branch', 'b', '--ticket', 'T2', '--run', 'r']), 'T2');
+  assert.equal(ticketArgOf('gate', ['gate', '--branch', 'b']), undefined);
 });

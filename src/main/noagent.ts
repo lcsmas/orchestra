@@ -5,6 +5,8 @@ import { orchestraHome } from './platform/index.ts';
 import { registerSessionKey, forgetSessionKey } from './session-identity-host.ts';
 import { getHookSocketPath } from './hooks-server.ts';
 import { buildScriptEnv } from './scripts.ts';
+import { agentCliBinDir } from './cli-shim.ts';
+import path from 'node:path';
 import { runIdOf } from '../shared/run-position.ts';
 import { scoped } from './logger.ts';
 
@@ -18,7 +20,8 @@ export function noAgentRunner(): NoAgentRunner {
     home: orchestraHome(),
     getWorkspace: (id) => store.getWorkspace(id),
     runIdOf: (ws) => runIdOf(ws, (x) => store.getWorkspace(x)),
-    scriptEnv: (ws) => buildScriptEnv(ws),
+    // like an agent session: the orchestra-owned bin dir FIRST on PATH (so `orchestra` resolves without the user's login PATH) and the worktree the role guard / hooks read
+    scriptEnv: (ws) => ({ ...buildScriptEnv(ws), ORCHESTRA_WORKTREE: ws.worktreePath, PATH: process.env.PATH ? `${agentCliBinDir()}${path.delimiter}${process.env.PATH}` : agentCliBinDir() }),
     hostEnv: process.env,
     sock: () => getHookSocketPath(),
     registerKey: registerSessionKey,

@@ -17,4 +17,10 @@ mkdir -p "${E2E_RIG_BASE}"
 [[ "$(findmnt -no FSTYPE -T "${E2E_RIG_BASE}")" != "tmpfs" ]] || { echo "ABORT: rig base on tmpfs" >&2; exit 2; }
 SCRATCH_CFG="$(mktemp -d "${E2E_RIG_BASE}/cfg-XXXXXX")"
 export CLAUDE_CONFIG_DIR_PIN="${SCRATCH_CFG}"
+# a PRIVATE snapshot of the build (own copy of dist / dist-electron / build/bus-abi): a sibling rebuild or ABI flip cannot change the app under a long drive (NA_NO_SNAPSHOT=1 drives <app-dir> itself)
+if [[ -z "${NA_NO_SNAPSHOT:-}" && ! -f "${APP_DIR}/.na-snapshot" ]]; then
+  SNAP="$(mktemp -d "${E2E_RIG_BASE}/app-XXXXXX")"
+  APP_DIR="$(node "${HERE}/lib-app-snapshot.mjs" "${APP_DIR}" "${SNAP}/app")"
+  touch "${APP_DIR}/.na-snapshot"
+fi
 exec "${HERE}/e2e-contained-rig.sh" node "${HERE}/e2e-no-agent-workspace.mjs" "${APP_DIR}" --live-home "${HOME}" "$@"

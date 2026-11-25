@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { snapshotApp } from './lib-app-snapshot.mjs';
 
 const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : d; };
@@ -29,11 +30,8 @@ const results = [];
 for (const m of MUTANTS) {
   if (only?.length && !only.includes(m.name)) continue;
   const dir = path.join(BASE, `mut-${m.name}`);
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
-  for (const f of ['package.json']) fs.copyFileSync(path.join(APP, f), path.join(dir, f));
-  for (const l of ['dist', 'node_modules']) fs.symlinkSync(path.join(APP, l), path.join(dir, l));
-  fs.cpSync(path.join(APP, 'dist-electron'), path.join(dir, 'dist-electron'), { recursive: true });
+  snapshotApp(APP, dir); // a private copy (incl. build/bus-abi): the mutant patches ITS bundles; a sibling's rebuild / ABI flip cannot reach it
+  fs.writeFileSync(path.join(dir, '.na-snapshot'), '');
   const chunk = /require\("\.\/(index-[^"]+\.js)"\)/.exec(fs.readFileSync(path.join(dir, 'dist-electron/main.js'), 'utf8'))?.[1];
   const target = path.join(dir, 'dist-electron', m.file === 'cli' ? 'cli.js' : chunk ?? 'MISSING');
   const src = fs.readFileSync(target, 'utf8');
@@ -45,7 +43,7 @@ for (const m of MUTANTS) {
   const r = spawnSync(path.join(HERE, 'e2e-no-agent-workspace.sh'), [dir], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env } });
   const out = `${r.stdout}\n${r.stderr}`;
   const red = [...out.matchAll(/^\s+FAIL\s+(\S+)/gm)].map((x) => x[1]);
-  const summary = /(\d+)\/(\d+) clauses PASS/.exec(out)?.[0] ?? 'NO SUMMARY (the rig did not finish)';
+  const summary = /(\d+)\/(\d+) clauses PASS/.exec(out)?.[0] ?? (/DRIVE ERROR/.test(out) ? 'drive stopped at the first unjudgeable step (DRIVE ERROR after the red clause)' : 'NO SUMMARY (the rig did not finish)');
   const expectedRed = m.red.every((c) => red.includes(c));
   results.push({ name: m.name, verdict: differs && expectedRed ? 'KILLED' : 'SURVIVED', red, summary, expected: m.red });
   console.log(`  → ${differs && expectedRed ? 'KILLED' : 'SURVIVED'}: red clauses [${red.join(', ')}] (expected ⊇ [${m.red.join(', ')}]); ${summary}`);

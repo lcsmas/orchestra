@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { createNoAgentRunner } from './noagent-runner.ts';
+const require_events = () => ({ EventEmitter });
 import type { Workspace } from '../shared/types.ts';
 
 const SOCK = '/nonexistent/fake.sock';
@@ -69,7 +71,7 @@ test('stop: the whole process group dies, the record goes, and the command is th
   const stopped = await r.runner.stop('ws-na', 1000);
   assert.equal(stopped.stopped, true);
   assert.equal(r.runner.running('ws-na'), false);
-  assert.throws(() => process.kill(-a.pid, 0), /ESRCH/, 'no member of the group (the two sleeps) survived');
+  await until(() => { try { process.kill(-a.pid, 0); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ESRCH'; } }, 3000); // no member of the group (the two sleeps) survives — they may be reaped a tick after the leader
   assert.equal(fs.existsSync(path.join(r.home, 'noagent', 'ws-na.json')), false);
   const b = await r.runner.start('ws-na');
   assert.ok(b.ok && !b.reused);
@@ -79,7 +81,7 @@ test('stop: the whole process group dies, the record goes, and the command is th
 });
 
 test('a command that exits is not "running" (and the pid of a dead one is never trusted)', async () => {
-  const r = rig({ runCommand: 'true' });
+  const r = rig({ runCommand: 'sleep 1' });
   const a = await r.runner.start('ws-na');
   assert.ok(a.ok);
   await until(() => !r.runner.running('ws-na'));
@@ -118,4 +120,15 @@ test('a key that cannot be persisted starts nothing', async () => {
   const a = await bad.start('ws-na');
   assert.ok(!a.ok && /disk full/.test(a.error));
   assert.equal(bad.running('ws-na'), false);
+});
+
+test('on Linux a command whose start time cannot be read (gone at once) is a FAILED start: no record, the key is forgotten (a pid-less record would let a reused pid pass)', async () => {
+  const r = rig({ runCommand: 'exit 0' });
+  // a fake spawn that "succeeds" with a pid that does not exist: readTicks → null
+  const fake = createNoAgentRunner({ home: r.home, getWorkspace: () => r.ws, runIdOf: () => 'r', scriptEnv: () => ({}), hostEnv: { DISPLAY: ':1' }, sock: () => SOCK, registerKey: (id, k) => { r.keys.push({ id, key: k }); }, forgetKey: (id) => { r.forgotten.push(id); }, platform: 'linux',
+    spawn: () => { const { EventEmitter } = require_events(); const e = new EventEmitter() as import('node:child_process').ChildProcess; (e as { pid?: number }).pid = 2 ** 22 - 7; (e as { unref?: () => void }).unref = () => {}; setImmediate(() => e.emit('spawn')); return e; } });
+  const a = await fake.start('ws-na');
+  assert.ok(!a.ok && /exited immediately/.test(a.error));
+  assert.equal(fs.existsSync(path.join(r.home, 'noagent', 'ws-na.json')), false);
+  assert.deepEqual(r.forgotten, ['ws-na']);
 });

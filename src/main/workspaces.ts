@@ -734,9 +734,9 @@ export async function archiveWorkspace(id: string): Promise<void> {
     // workspace record (flagged archived) and the worktree. The sidebar hides
     // archived workspaces from the main list and surfaces them under a
     // dedicated Archived section where they can be restored or hard-deleted.
+    await stopNoAgentCommand(ws.id); // #612: its detached command is its only process — an archive stops it
     stopPty(`${ws.id}:run`);
     stopPty(`${ws.id}:nvim`);
-    await stopNoAgentCommand(ws.id); // #612: its detached command is its only process — an archive stops it
     // Tear down the embedded browser panel as well. Its content is a native
     // WebContentsView composited ABOVE the renderer, so it is invisible to both
     // React and CSS: an archived workspace that still has one attached paints an
@@ -825,9 +825,9 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   // Hard delete: the agent session is stopped above; now the Run/nvim terminals, then the user's archive script (best-effort),
   // the git worktree and the leftover `logs/<id>.log` (the pre-#233 agent-PTY log — nothing writes it now). The archive script
   // runs BEFORE worktree removal so it can still see the files / cwd.
+  await stopNoAgentCommand(id); // #612: a no-agent workspace's detached command (no-op for any other)
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
-  await stopNoAgentCommand(id); // #612: a no-agent workspace's detached command (no-op for any other)
   removeAgentTmpDir(id);
   destroyBrowserPanel(id); // #396: every delete path (socket `orchestra delete`, bulk, repo removal) — its tabs and popup windows must not outlive it
 
@@ -1058,6 +1058,7 @@ export async function pruneOrphanedWorkspaces(): Promise<void> {
       }
 
       closeRunsOf([ws.id]); // #437: an out-of-band removal (worktree gone) is a delete too
+      await stopNoAgentCommand(ws.id); // #612: its detached command would otherwise keep running in a deleted cwd
       await store.removeWorkspace(ws.id);
       expireBusAsksForDeleted(ws.id);
       forgetSessionKey(ws.id); // #379
@@ -1608,7 +1609,7 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
       ...(input.account ? { account: input.account } : {}),
       ...(input.from ? { accountFrom: input.from } : {}), // #480: also for --detached (it skips only the parent nesting)
-    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.reuseBranch ? { reuseBranch: true } : {}), ...(input.noAgent ? { noAgent: { runCommand: input.noAgent.runCommand.trim() } } : {}) }, input.profile !== undefined ? decideProfile : undefined);
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.noAgent ? { noAgent: { runCommand: input.noAgent.runCommand.trim() } } : {}), ...(input.reuseBranch ? { reuseBranch: true } : {}) }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
     if (input.noAgent) {
       // #612: no agent, so no dispatch and no start funnel — the HOST starts the command (detached, vouched). A start that fails removes the workspace again: a refusal creates nothing.

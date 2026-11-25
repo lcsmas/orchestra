@@ -102,7 +102,7 @@ import {
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, homeOf as fanoutHomeOf, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
-import { callerRefusal, pausedVerbResult, resolveCaller as resolveFanoutCaller, type CallerVerb } from '../shared/fanout-caller.ts';
+import { callerRefusal, CALLER_REFUSALS as CALLER_REFUSAL_NAMES, pausedVerbResult, ticketArgOf, resolveCaller as resolveFanoutCaller, type CallerVerb } from '../shared/fanout-caller.ts';
 import { readState as readFanoutState, resolveFanoutRun, seatRecordsOn as fanoutSeatRecordsOn, stateFile as fanoutStateFile } from '../shared/fanout-state.ts';
 import { pauseGateDecision } from '../shared/bus-pause.ts';
 import { runStart } from './fanout-start.ts';
@@ -854,10 +854,14 @@ async function fanoutVerbGate(verb: 'open' | 'gate' | 'check' | 'deliver', args:
   const runs = [...new Set([own, process.env.ORCHESTRA_RUN_ID?.trim() || null].filter((r): r is string => !!r))];
   if (runs.length === 0) return null; // no run to attribute (a human terminal, a store-less call): nothing to judge
   if (verb !== 'deliver') {
-    const ticket = verb === 'check' ? args[1] : args.includes('--ticket') ? args[args.indexOf('--ticket') + 1] : undefined;
+    const ticket = ticketArgOf(verb, args);
     for (const run of runs) {
+      const file = fanoutStateFile(fanoutHomeOf(process.env), run);
       let state = null;
-      try { state = readFanoutState(fanoutStateFile(fanoutHomeOf(process.env), run)); } catch { state = null; }
+      try { state = readFanoutState(file); } catch {
+        // a state file that EXISTS and cannot be read is not "no state": fail closed (an absent file = a run with no state = not judged)
+        if (fs.existsSync(file)) return { exit: 2, stdout: '', stderr: `refused: [${CALLER_REFUSAL_NAMES[verb as CallerVerb]}] the fanout state of run ${run} exists but cannot be read (${file}) — the caller cannot be judged; fix or restore it\n` };
+      }
       if (!state || !fanoutSeatRecordsOn(state)) continue;
       await settleHostIdentity();
       const refused = callerRefusal(verb as CallerVerb, state, true, resolveFanoutCaller(state, process.env, hostIdentity), ticket);
@@ -1409,7 +1413,7 @@ async function main(argv: string[]): Promise<void> {
       }
       // `from` is always sent (it also drives repo inheritance server-side);
       // `detached` tells the server to skip only the parent nesting.
-      const body: Record<string, unknown> = noAgent ? { noAgent: true, runCommand: runCommand!.trim(), from: selfWorkspaceId(), name: named.name } : { task, from: selfWorkspaceId(), name: named.name };
+      const body: Record<string, unknown> = noAgent ? { noAgent: true, runCommand: runCommand!.trim(), name: named.name, from: selfWorkspaceId() } : { task, from: selfWorkspaceId(), name: named.name };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;
