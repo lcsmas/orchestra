@@ -18,10 +18,10 @@ export async function runStart(args: string[], deps: FanoutDeps, host: (body: Re
     const r = runOf(p, deps, 'write');
     const state = readState(stateFile(homeOf(deps.env), r.run));
     if (!state) throw new FanoutStateError(`no state for run ${r.run} — run \`orchestra fanout state init\` first`);
-    const caller = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+    const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id (index.ts), never the bare env
     const refusal = startRefusal(state, r.run, caller);
     if (refusal) throw refusal;
-    const res = await host({ op: 'start', run: r.run, from: caller });
+    const res = await host({ op: 'start', run: r.run, from: caller, key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined });
     if (!res.ok) {
       const msg = String(res.error ?? 'the host refused');
       if (msg.startsWith('[')) throw new SeatRefusal(msg.slice(1, msg.indexOf(']')), msg.slice(msg.indexOf(']') + 2));

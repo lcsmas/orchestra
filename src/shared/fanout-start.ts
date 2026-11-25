@@ -10,6 +10,8 @@ export interface StartDeps {
   now: () => string;
   /** Is this implementer workspace alive? A workspace that exists and is not archived is live (a stopped / hibernated one is woken by its coordinator, never replaced). */
   implementerLive: (id: string) => boolean;
+  /** BLOCKING-1 (pre-review): a LIVE workspace of this run already named for `ticket` (`impl-<ticket>` or its `-N` suffix) that the state does not record as any ticket's implementer — the spawn answered and the state write was lost (a crash, a lock). It is ADOPTED, never duplicated. `recorded` = every implementer id the state holds; `others` = the other tickets' implementer names (so `impl-A-2` of ticket `A-2` is not taken for ticket `A`'s). null = none. */
+  orphanImplementer?: (i: { run: string; ticket: string; name: string; recorded: string[]; others: string[] }) => { id: string; branch: string } | null;
   /** The coordinator's checkout (the repo the implementers work in). undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; repo: string | null }) => string | undefined;
   /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = a respawn continues from the dead agent's branch. */
@@ -32,10 +34,11 @@ export function implementerName(ticket: string): string {
 }
 
 /** Why `start` is refused for `state` and `caller` (null = fine): the I6 refusal names. */
+/** `caller` = the workspace id the HOST vouched (never the bare env). */
 export function startRefusal(state: FanoutState | null, run: string, caller: string | undefined): SeatRefusal | null {
   if (!state) return null;
   if (!seatRecordsOn(state)) return new SeatRefusal('start-off', `run ${run} has seatRecords=off: \`fanout start\` is a seatRecords rule (choose it before the first spawn: state set --switch seatRecords=on)`);
-  if (!caller || caller !== run) return new SeatRefusal('start-caller', `only the run's coordinator (${run}) starts its implementers${caller ? `, not ${caller}` : ' (no workspace identity: ORCHESTRA_WS_ID is empty)'}`);
+  if (!caller || caller !== run) return new SeatRefusal('start-caller', `only the run's coordinator (${run}) starts its implementers${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof)'}`);
   const missing = planMissing(state);
   if (missing.length) return new SeatRefusal('plan-incomplete', `cannot start: ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
   return null;
@@ -47,11 +50,11 @@ export function handSpawnRefusal(i: { name: string; state: FanoutState | null; v
   return `refusing to spawn ${i.name}: run ${i.state.run} has seatRecords=on — its implementers are launched by \`orchestra fanout start\` (the brief is rendered by code). Declare the plan (\`state set --plan\`, \`--plan-add\`) and run \`orchestra fanout start\`. Nothing was created.`;
 }
 
-/** The hand-spawn rule read from disk (the host side of `orchestra spawn`): only an `impl-` name by a caller that owns a fanout state is looked at — anything else costs no read and answers null. A state that cannot be read never refuses. */
-export function handSpawnRefusalFor(home: string, from: string | undefined, name: string, viaStart: boolean): string | null {
-  if (viaStart || !from || roleOfName(name) !== 'implementer') return null;
+/** The hand-spawn rule read from disk (the host side of `orchestra spawn`): `run` = the RUN of the caller (its own id for a coordinator, its direct parent's for a helper child: a helper cannot spawn the `impl-` agent the coordinator may not). Only an `impl-` name is looked at — anything else costs no read and answers null. A state that cannot be read never refuses. */
+export function handSpawnRefusalFor(home: string, run: string | undefined, name: string, viaStart: boolean): string | null {
+  if (viaStart || !run || roleOfName(name) !== 'implementer') return null;
   let state: FanoutState | null = null;
-  try { state = readState(stateFile(home, from)); } catch { return null; }
+  try { state = readState(stateFile(home, run)); } catch { return null; }
   return handSpawnRefusal({ name, state, viaStart });
 }
 
@@ -78,11 +81,17 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
       const t = cur.tickets[ticket];
       if (t.status !== 'todo' && t.status !== 'started') { out.skipped.push({ ticket, reason: t.status }); continue; }
       if (t.implementer && deps.implementerLive(t.implementer)) { out.skipped.push({ ticket, reason: 'live' }); continue; }
-      const kind: 'spawn' | 'respawn' = t.implementer || t.status === 'started' ? 'respawn' : 'spawn';
+      const recordedIds = Object.values(cur.tickets).map((x) => x.implementer).filter((x): x is string => !!x);
+      const orphan = deps.orphanImplementer?.({ run, ticket, name: implementerName(ticket), recorded: recordedIds, others: Object.keys(cur.tickets).filter((x) => x !== ticket).map(implementerName) });
+      if (orphan) { // adopt the agent the state lost track of: record it, start nothing
+        try { updateState(file, (s) => { if (!s) throw new Error(`no fanout state for run ${run}`); return applyTicketPatch(s, ticket, { implementer: orphan.id, branch: orphan.branch, status: 'started' }, deps.now()); }); out.skipped.push({ ticket, reason: 'live' }); } catch (e) { out.failed.push({ ticket, error: `${orphan.id} is live for ${ticket} but could not be recorded: ${e instanceof Error ? e.message : String(e)}` }); }
+        continue;
+      }
+      const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn'; // a dead recorded implementer is replaced; a ticket set `started` by hand with none is a first spawn
       const task = renderImplementerBrief({ state: cur, ticket, ...(kind === 'respawn' && t.branch ? { continueFrom: { branch: t.branch, head: t.head } } : {}) });
       let res: Awaited<ReturnType<StartDeps['spawn']>>;
       try {
-        res = await deps.spawn({ from: run, name: implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), ...(kind === 'respawn' && t.branch ? { baseBranch: t.branch } : {}) });
+        res = await deps.spawn({ from: run, name: implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: kind === 'respawn' && t.branch ? t.branch : cur.target }); // the brief says "Branch base: origin/<target>": the worktree is cut from it, not from the repo's default
       } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
       if (!res.id || !res.branch) { out.failed.push({ ticket, error: res.error ?? 'spawn failed' }); continue; } // no workspace: nothing to record, a second call retries
       const id = res.id, branch = res.branch, hash = briefHash(task);
@@ -102,8 +111,8 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
       }
       if (!recorded) continue;
       if (!res.ok) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'} (workspace ${id} was kept and is recorded as the implementer: restart it, do not start again)` }); continue; } // a KEPT child: recorded so a second call never spawns a duplicate
-      (kind === 'spawn' ? out.started : out.respawned).push({ ticket, ws: id, branch });
-      if (res.held) out.waiting.push({ ticket, why: 'its start is held by Admission (low memory): the agent exists and starts by itself when memory is back' });
+      if (!res.held) (kind === 'spawn' ? out.started : out.respawned).push({ ticket, ws: id, branch });
+      if (res.held) out.waiting.push({ ticket, why: `${id} (${branch}): its start is held by Admission (low memory): the agent exists and starts by itself when memory is back` });
     }
     return out;
   });
