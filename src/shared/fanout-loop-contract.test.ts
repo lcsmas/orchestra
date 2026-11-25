@@ -502,3 +502,11 @@ test('live forge: with neither `deliver` nor the rigs\' bareMerge, merge REFUSES
   const p = createLiveForge({ gh: new FakeForge().gh });
   await assert.rejects(p.merge(1, sha40()), /no `deliver` wired/);
 });
+test('live fleet: a reviewer is never spawned on a head the state does not hold (the head moved under the loop)', async () => {
+  const h = await fleetHarness('live');
+  await h.fleet.start();
+  const head = sha40();
+  updateState(stateFile(h.home, h.run), (s) => applyTicketPatch(s!, 'T1', { head, status: 'nominated', pr: 1 }, NOW, { tree: sha40() }));
+  await assert.rejects(h.fleet.spawnReviewer('T1', sha40()), /the head moved/);
+  assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 0, 'nothing was spawned');
+});
