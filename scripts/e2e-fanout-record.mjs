@@ -130,7 +130,11 @@ const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf
 const base = run();
 const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 25 && base.pass === base.tests;
 console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
-if (!baseOk) { console.log(base.out.slice(-3000)); fs.rmSync(scratch, { recursive: true, force: true }); process.exit(1); }
+if (!baseOk) { // name every failing subtest + its message (a CI log that only says 39/41 cannot be acted on)
+  const lines = base.out.split('\n');
+  lines.forEach((l, i) => { if (/^\s*not ok \d+ - /.test(l)) console.log(`FAILING SUBTEST: ${l.trim()}\n${lines.slice(i + 1, i + 40).filter((x) => /^\s*(error:|code:|actual:|expected:|stack:)|^\s{4,}\S/.test(x)).slice(0, 8).join('\n')}`); });
+  console.log(base.out.slice(-3000)); fs.rmSync(scratch, { recursive: true, force: true }); process.exit(1);
+}
 if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }
 
 let survived = 0, refused = 0;
