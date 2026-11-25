@@ -138,7 +138,7 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   const findings: Record<string, FindingRecord> = { ...nt0.findings };
   for (const id of a.input.fixed) findings[id] = { ...findings[id], fixedBy: { by: a.callerId, head, at: a.now } };
   const entry: ReviewEntry = { n: (t.reviews?.length ?? 0) + 1, reviewer, head, tree: a.tree, verdict: a.verdict, findings: ids, closed: a.input.fixed, at: a.now };
-  const nt: TicketState = { ...nt0, findings, reviews: [...(t.reviews ?? []), entry], ...(sameSha(head, t.head ?? '') ? { verdict: a.verdict } : {}), updatedAt: a.now };
+  const nt: TicketState = { ...nt0, findings, reviews: [...(t.reviews ?? []), entry], ...(t.head && sameSha(head, t.head) ? { verdict: a.verdict } : {}), updatedAt: a.now };
   const out: FanoutState = { ...next, tickets: { ...next.tickets, [ticketId]: nt }, updatedAt: a.now };
 
   // approve = nothing BLOCKING / MAJOR (nor, under minorPolicy spec|demonstrated, a blocking MINOR) is left open; changes-requested says what
@@ -193,4 +193,10 @@ export function unrecordedReviewers(state: FanoutState): Array<{ ticket: string;
     out.push({ ticket: id, reviewer: r.id, name: r.name, head, line: `${id}: reviewer ${r.name} (${r.id}) has recorded no verdict on ${head.slice(0, 12)} — wake it, or replace it if it died: \`orchestra fanout review ${id}\` (its worker_done is refused until it records; no verdict is typed instead)` });
   }
   return out;
+}
+
+/** `state set --decide` under seatRecords=on is the COORDINATOR's, proven by the host (an implementer / another agent cannot lift a reviewer's finding; a forged `by` in a --json patch is overwritten with the vouched id). */
+export function assertDecideCaller(state: FanoutState, caller: { id: string | null; role: string; proof: string }): void {
+  if (caller.role !== 'coordinator') refuse('decide-caller', `only the run's coordinator (${state.run}) records "not fixed" with a reason (\`state set <ticket> --decide <finding>=<reason>\`); the caller is ${caller.id ?? 'unidentified'} (${caller.role})`);
+  if (caller.proof !== 'host-vouched') refuse('decide-caller', `the host did not vouch for ${caller.id}: ${caller.proof} — run it from the coordinator's own live session (a forged ORCHESTRA_WS_ID proves nothing)`);
 }

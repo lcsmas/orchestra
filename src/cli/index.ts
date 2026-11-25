@@ -105,7 +105,7 @@ import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
-import { fanoutCompletionRefusal, runRecord } from './fanout-record.ts';
+import { fanoutCompletionRefusal, runRecord, stateSetNeedsHost } from './fanout-record.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2476,7 +2476,7 @@ async function main(argv: string[]): Promise<void> {
       }
       // #588 — `fanout review` and `state set --run-decision` are the coordinator's, proven by the HOST (an env id is forgeable; src/shared/fanout-caller.ts): ask `/identity` once and hand the answer to the verb.
       // #589 — `fanout record` is the REVIEWER's: the same host proof, and a keyed session the host cannot vouch records nothing.
-      const needsCaller = args[0] === 'review' || args[0] === 'record' || (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision'));
+      const needsCaller = args[0] === 'review' || args[0] === 'record' || (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) || stateSetNeedsHost(args, process.env); // #589: + a `--decide` under seatRecords=on
       if (needsCaller) await settleHostIdentity();
       if (args[0] === 'record' && process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session (is Orchestra running, and is this the live session of the reviewer?). Nothing was recorded.');
       const fanoutDeps: FanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8'), ...(needsCaller ? { identity: hostIdentity } : {}) };
