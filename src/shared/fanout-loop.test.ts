@@ -389,7 +389,7 @@ test('MINOR-2: a real stall still ends the run — the reason says "stalled" (ca
   const r = await go('changes-requested');
   assert.match(r.result.report.parked.find((p) => p.ticket === 'T1')!.reason, /^stalled 30 min/);
 });
-test('MINOR-3: the loop section of the implementer brief — present for a loop-led run (startRun passes it), byte-identical to before otherwise', async () => {
+test('MINOR-3: the loop section of the implementer brief — present for a loop-led run (`state.loopPlan`, set by the #604 applyPlan, turns it on), byte-identical to before otherwise', async () => {
   const r = await go('rts7');
   assert.ok(r.world.events.filter((e) => e.ev === 'spawn').every((e) => e.briefHasLoop === true), 'every brief the loop launched carries the loop section');
   for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', '`## Choices`', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
@@ -408,7 +408,7 @@ test('MINOR-4 swap gate, FLIPPED (#603 landed): `parked` is a TICKET_STATUS and 
   const home = tmp();
   updateLoopState(home, 'x', () => withLoop(parkTicket(applyPlan(newState('x', { target: 'main', switches: { seatRecords: 'on' }, now: N }), planOf(load('rts7')), N), 'T3', { cause: 'question', reason: 'no safe option' }, N)));
   const spawned: string[] = [];
-  const r = await startRun('x', 'x', { home, now: () => N, loop: true, implementerLive: () => false, repoPath: () => undefined, spawn: async ({ name }) => { spawned.push(name); return { ok: true, id: `ws-${name}`, branch: name }; } });
+  const r = await startRun('x', 'x', { home, now: () => N, implementerLive: () => false, repoPath: () => undefined, spawn: async ({ name }) => { spawned.push(name); return { ok: true, id: `ws-${name}`, branch: name }; } });
   assert.deepEqual(r.skipped.filter((x) => x.reason === 'parked').map((x) => x.ticket), ['T3', 'T5', 'T7']);
   assert.deepEqual(spawned.sort(), ['impl-T1', 'impl-T2', 'impl-T4', 'impl-T6']);
 });

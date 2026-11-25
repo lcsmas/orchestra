@@ -8,8 +8,6 @@ import { applyTicketPatch, planMissing, readState, seatRecordsOn, stateFile, upd
 export interface StartDeps {
   home: string;
   now: () => string;
-  /** #605 — the Boucle leads this run: the brief carries its loop section (src/shared/fanout-implementer-brief.ts `LOOP_BRIEF`). Absent = `state.loopPlan`. */
-  loop?: boolean;
   /** Is this implementer workspace alive? A workspace that exists and is not archived is live (a stopped / hibernated one is woken by its coordinator, never replaced). */
   implementerLive: (id: string) => boolean;
   /** BLOCKING-1 (pre-review): a LIVE workspace of this run already named for `ticket` (`impl-<ticket>` or its `-N` suffix) that the state does not record as any ticket's implementer — the spawn answered and the state write was lost (a crash, a lock). It is ADOPTED, never duplicated. `recorded` = every implementer id the state holds; `others` = the other tickets' implementer names (so `impl-A-2` of ticket `A-2` is not taken for ticket `A`'s). null = none. */
@@ -123,7 +121,7 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
       const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn'; // a dead recorded implementer is replaced; a ticket set `started` by hand with none is a first spawn
       const onBranch = kind === 'respawn' && !!t.branch; // the dead agent's branch: same name, same PR / head, the new worktree is put ON it
       const base = await resolveBase(ticket, cur.repo, cur.target); // may throw start-base-missing: before this ticket's spawn, so before ANY spawn of the call
-      const task = renderImplementerBrief({ state: cur, ticket, ...(deps.loop !== undefined ? { loop: deps.loop } : {}), ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });
+      const task = renderImplementerBrief({ state: cur, ticket, ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });
       let res: Awaited<ReturnType<StartDeps['spawn']>>;
       try {
         res = await deps.spawn({ from: run, name: onBranch ? t.branch! : implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: base.base, ...(onBranch ? { reuseBranch: true } : {}) }); // same repo: the worktree is cut from the run target; another repo (#599): from the worktree repo's default branch, the brief names the target

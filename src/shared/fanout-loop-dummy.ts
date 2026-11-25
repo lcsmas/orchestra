@@ -359,7 +359,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
   const fleet: FleetPort = {
     async start(): Promise<StartResult> {
       return startRun(i.run, i.run, {
-        home: i.home, now: () => w.iso(), loop: true,
+        home: i.home, now: () => w.iso(),
         implementerLive: (id) => w.impls.has(id),
         repoPath: () => undefined,
         spawn: async ({ name, task, reuseBranch }) => {

@@ -82,7 +82,7 @@ function run() {
   const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN);
   return { pass: n('pass'), fail: n('fail'), skipped: n('skipped'), tests: n('tests') };
 }
-const BR = 'src/shared/fanout-implementer-brief.ts', ST = 'src/shared/fanout-start.ts';
+const BR = 'src/shared/fanout-implementer-brief.ts', ST = 'src/shared/fanout-start.ts'; void ST;
 const L = 'src/shared/fanout-loop.ts', J = 'src/shared/fanout-loop-judge.ts', S = 'src/shared/fanout-state.ts', DM = 'src/shared/fanout-loop-dummy.ts';
 // [name, [[file, from, to], …]] — every `from` must occur exactly once in its file
 const mutants = [
@@ -116,8 +116,8 @@ const mutants = [
   ['r2 MAJOR-1: a dead reviewer is not replaced (waited on like a live one)', [[L, "&& (!rv || deps.fleet.live(rv))) {", ") {"]]],
   ['MINOR-3: the loop section is never added to the implementer brief', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...[]"]]],
   ['MINOR-3: the loop section is always added (a non-loop brief changes)', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...['', LOOP_BRIEF]"]]],
-  ['MINOR-3: startRun does not pass the loop flag to the brief', [[ST, "...(deps.loop !== undefined ? { loop: deps.loop } : {}), ", ""]]],
-  ['round 2: an ask is listed uncut (recordChoice refuses it, the run ends)', [[L, "m.body.split('\\n')[0].slice(0, ASK_MAX);", "m.body.split('\\n')[0];"]]],
+  ['MINOR-3: the #604 marker (state.loopPlan) does not turn the loop section on', [[BR, "input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan", "input.loop ?? false"]]],
+  ['round 2: an ask is listed uncut (recordChoice refuses it, the run ends)', [[L, "clean(m.body.split('\\n')[0]).slice(0, ASK_MAX);", "clean(m.body.split('\\n')[0]);"]]],
   ['round 2: a respawned author is not asked again (the ask is keyed by head alone)', [[L, " && s.loop.askedTo[id]?.[up] === t.implementer) continue;", ") continue;"]]],
   ['round 2: the dummy forge close() closes nothing', [[DM, "async close(n) { w.closePr(n); },", "async close(_n) { /* nothing */ },"]]],
   ['round 2: the dummy forge merges a closed PR', [[DM, "if (p.state !== 'open') return { ok: false,", "if (p.state === 'merged') return { ok: false,"]]],
