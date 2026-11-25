@@ -284,27 +284,31 @@ read that run's check on the head. `permissions: contents: read`, no secret, no 
 `concurrency` group `ci-pr-<PR number>` with `cancel-in-progress` (a new push cancels the previous head's run); `ubuntu-latest` x64; pnpm via `pnpm/action-setup` + Node 22
 (`--experimental-strip-types`; the release workflow's Node 20 cannot run the suite).
 
+**20 jobs per PR (#594)** = `typecheck` + 2 `tests` shards + 16 `rigs` groups + `suite` (`jobCount` in `src/shared/ci-rigs.ts`, ≤ `MAX_JOBS` = 20 = the free account's concurrent limit, enforced by `validateRigs`). **No inventory job**: both matrices are static lists in `ci.yml` (`shard: [1, 2]`, `group: [1..16]`), pinned to `suiteShards` / `groups` of `.github/ci-rigs.json` by `ci-rigs.test.ts` (and at run time: `run-group.mjs` refuses an empty/absent group, `run-job.mjs suite` refuses a shard count that is not the file's). `rigs.mjs matrix` / `shards` still print the include lists (a dynamic matrix = re-add an inventory job, #595).
+
 | Job | What it runs | Verdict |
 |---|---|---|
 | `typecheck` | `npx tsc --noEmit` | exit 0 |
-| `suite` | `pnpm run test > suite.tap` (step `continue-on-error`), then the verdict step `scripts/ci/run-job.mjs suite` (reads the step's `outcome`; full TAP uploaded as artifact `suite-tap` on failure) | TAP summary: red if tests = 0, fail > 0, **skipped > 0** unless the test is in `.github/ci-skips.json` `skips` with a reason (3 btrfs-only tests measured on the runner), or no summary (truncated run). `knownFail` lists tests red on the runner for a runner reason (5: 4 in `keyring-rig-driver.test.ts` hardcode uid 1000, the runner is 1001; 1 in `keeper-docker-relay.test.ts` compares socket inodes and ext4 reuses them — a ~1-in-3 flake): tolerated only when EVERY failed test is listed, matched by name |
-| `rigs (group N/…)` | the `RUNS_IN_CI` rigs of `.github/ci-rigs.json` spread over `groups` jobs (D5, ledger #569; `fail-fast: false`): each group installs once, then `scripts/ci/run-group.mjs N` runs its rigs **in sequence** through `scripts/ci/run-job.mjs rig <id>`; a red rig does NOT stop the group, the step fails at the end, and ONE per-rig table (pass/fail, counts, duration, attempts) goes to the job summary | per rig: exit 0 **and** ≥ 1 PASS arm counted (TAP summary, else the rig's own PASS lines / `passPattern`), and no VOID / BROKEN / not-exercised line (counted as skipped). A contained rig whose headless sway never came up (`[rig] ABORT: could not set the marker…`) ran no arm: it is retried up to 3 attempts; any other red (not a timeout) gets ONE fresh re-run (a timing clause that flakes once on a shared runner — measured: e2e-pause-gates `redrive`, e2e-acces-mobile `distinct-request-ids` — passes on a fresh process, a regression is red twice); attempts are printed and shown in the table, a timeout is final. After each rig the runner SIGKILLs its process group (what the rig left behind must not reach the next rig of the group). Per-rig timeout = `timeoutMin` |
-| `summary` | `needs` all, `if: always()`; downloads every `result-*` artifact, `scripts/ci/rigs.mjs summary` | red if any needed job failed / was cancelled / was skipped, if a result file is missing, or a `RUNS_IN_CI` rig did not report |
+| `tests (shard i/n)` | `pnpm run suite:shard > suite.tap` (= `node --test --test-shard=$SUITE_SHARD/$SUITE_SHARDS` over the same `src/**/*.test.ts` as `test`, same `build:cli` pre-hook; step `continue-on-error`), then the verdict step `scripts/ci/run-job.mjs suite` (reads the step's `outcome`; env `SUITE_SHARD`/`SUITE_SHARDS` → result file `suite_shard_i_n.json` with `shard`/`shards`; full TAP uploaded as artifact `suite-tap-shard-i` on failure) | TAP summary of the shard: red if tests = 0, fail > 0, **skipped > 0** unless the test is in `.github/ci-skips.json` `skips` with a reason (3 btrfs-only tests measured on the runner), or no summary (truncated run). `knownFail` lists tests red on the runner for a runner reason (5: 4 in `keyring-rig-driver.test.ts` hardcode uid 1000, the runner is 1001; 1 in `keeper-docker-relay.test.ts` compares socket inodes and ext4 reuses them — a ~1-in-3 flake): tolerated only when EVERY failed test of the shard is listed, matched by name |
+| `rigs (group N)` | the `RUNS_IN_CI` rigs of `.github/ci-rigs.json` spread over `groups` jobs (D5, ledger #569; `fail-fast: false`): each group installs once, then `scripts/ci/run-group.mjs N` runs its rigs **in sequence** through `scripts/ci/run-job.mjs rig <id>`; a red rig does NOT stop the group, the step fails at the end, and ONE per-rig table (pass/fail, counts, duration, attempts) goes to the job summary | per rig: exit 0 **and** ≥ 1 PASS arm counted (TAP summary, else the rig's own PASS lines / `passPattern`), and no VOID / BROKEN / not-exercised line (counted as skipped). A contained rig whose headless sway never came up (`[rig] ABORT: could not set the marker…`) ran no arm: it is retried up to 3 attempts; any other red (not a timeout) gets ONE fresh re-run (a timing clause that flakes once on a shared runner — measured: e2e-pause-gates `redrive`, e2e-acces-mobile `distinct-request-ids` — passes on a fresh process, a regression is red twice); attempts are printed and shown in the table, a timeout is final. After each rig the runner SIGKILLs its process group (what the rig left behind must not reach the next rig of the group). Per-rig timeout = `timeoutMin` |
+| `suite` | **THE check `orchestra fanout deliver --require-check suite` pins** (the job id is the name — never add `name:`); `needs: [typecheck, tests, rigs]`, `if: always()`; downloads every `result-*` artifact, runs `scripts/ci/rigs.mjs summary` (the former `summary` job, renamed) | red if ANY suite shard is red, **missing / cancelled** (no result file, `judgeShards`), or ran 0 tests, if a shard's `shards` ≠ the file's `suiteShards`, if typecheck or any needed job failed / was cancelled / was skipped, or a `RUNS_IN_CI` rig did not report. Prints the per-job table, the suite total (`N tests over S shards`) and the LOCAL-ONLY list |
 
 Every job writes `$GITHUB_STEP_SUMMARY`: run / passed / failed / skipped (rigs: their
 own arm counts). **No silent green**: a job that ran 0 tests/arms is red. The
-`summary` job prints the per-job table and the **LOCAL-ONLY rig list with each reason**
+`suite` job prints the per-job table and the **LOCAL-ONLY rig list with each reason**
 on every run.
 
 **Files.** `.github/ci-rigs.json` (the ONE rig list: `id`, `command`, `class` =
 `RUNS_IN_CI` | `LOCAL_ONLY`, `reason`, optional `pre` / `timeoutMin` / `passPattern` /
-`failPattern` / `wallSec`) · `src/shared/ci-rigs.ts` (reader, validator, TAP + arm
-parsers, `judge`) · `src/shared/ci-rigs.test.ts` (the guard) · `scripts/ci/run-job.mjs`
-(runs/judges one job) · `scripts/ci/rigs.mjs` (`matrix` / `summary`) ·
+`failPattern` / `wallSec`; top level `groups` = rig-group jobs, `suiteShards` = suite-shard jobs, #594) · `src/shared/ci-rigs.ts` (reader, validator, job budget, TAP + arm
+parsers, `judge`, `judgeShards`) · `src/shared/ci-rigs.test.ts` (the guard) · `scripts/ci/run-job.mjs`
+(runs/judges one job) · `scripts/ci/rigs.mjs` (`matrix` / `shards` / `assign` / `summary`) ·
 `scripts/ci/run-group.mjs` (one group, sequentially) · `scripts/ci/each-arm.mjs` (one-arm-per-process rigs, arms read from the rig's own source, an arm gets up to 3 fresh-process attempts — all printed, a deterministic red fails 3×,
 `--expect-abort` for a must-abort self-test arm) · `scripts/ci/rig-table.mjs` (renders the
 classification table) · `.github/actions/setup` (pnpm, Node 22, install, **runner prep**,
-`build:bus-abi`, bundles, and the desktop stack for rigs).
+`build:bus-abi` — its two ~80 s node-gyp compiles are cached, below —, bundles, and the desktop stack for rigs).
+
+**bus-abi cache (#594).** `.github/actions/setup` restores `build/bus-abi` (`actions/cache@v4`, key = image + arch + `hashFiles(pnpm-lock.yaml, scripts/build-bus-abi.mjs)`); on an exact hit it runs `build:bus-abi` with `BUS_ABI_REUSE=true`, which skips both compiles, copies the cached Electron binding into `node_modules` and STILL runs the 4 construct arms + the require-trap on the reused files (a corrupt cache is red, never reused blindly). A PR's caches are readable by that PR and by master only: the first run of a PR compiles in every job (no master run warms it), its next pushes hit.
 
 **Runner prep the rigs assume** (environment only — no rig is rewritten, nothing mocked):
 `node` on `/usr/local/bin:/usr/bin:/bin` (the rigs resolve it on that PATH; the image's own node
@@ -323,7 +327,9 @@ branch with the entry as `RUNS_IN_CI`; a red job tells you the reason). A stale 
 
 **Groups (D5, measured).** Same content, same classification: one job per rig (140 jobs) 49 / 63 min (queue-bound);
 `groups: 4` 71 min (rigs run sequentially, ~65 min of rigs per group); `groups: 12` **28 min** (groups 16–25 min). Local gate of
-the same content: 20–50 min. Shipped: `groups: 12` in `.github/ci-rigs.json` (one number; `rigs.mjs assign` re-balances from `wallSec`).
+the same content: 20–50 min. `rigs.mjs assign` re-balances from `wallSec` (longest-first onto the lightest group).
+
+**Shards + groups (#594, measured on run 45652549477, PR #597 tree, 2026-11-25).** Rigs total **14,906 s** measured (the file's `wallSec` was stale: 5 rigs unmeasured, 119 off; now refreshed from that run), the suite 946–1,074 s for 9,439 tests, setup 79 s (suite job) to 86–142 s (rig job: 85 s of it is the two bus-abi compiles). Time of a PR ≈ setup + rig work / groups: groups = 12 → ~27 min unqueued (4 jobs more than needed idle for the suite). With the 20-job budget (`typecheck`, `suite` fixed → 18 left) every job given to the suite is one taken from the rigs, so the suite gets 2 shards (~10 min each, never the longest job) and the rigs 16 groups of ~15.5 min of rigs + ~60 s of setup (bus-abi cached). **16 min is not reachable inside 20 jobs**: 14,906 s / 16 groups = 932 s + 60 s setup + the spread of the slowest of 16 runners (measured ±8 %) ≈ 17.5 min; even 17 groups give ≈ 16.5 min, and the largest single rig (861 s) + setup is already 15.4 min. Only less rig work (path selection, #595) or running rigs two-at-a-time per runner goes under it. A second PR in flight queues behind the first (20 jobs = the whole account).
 
 **Rig time budget.** A `RUNS_IN_CI` rig finishes in < 15 min on the runner; slower ones are
 `LOCAL_ONLY` ("over the per-PR time budget"). The classification table (rig, class, reason or
@@ -337,17 +343,17 @@ a running Orchestra's generated files, systemd/cgroup specifics of the hosted ru
 master (mutant anchors no longer match, an OFF-by-default switch, a stubbed `window`), and rigs
 over the time budget. The authoritative list is `node scripts/ci/rig-table.mjs --local-only`.
 
-**For the verifier and `fanout deliver`.** The suite step is `continue-on-error` (a verdict step decides),
+**For the verifier and `fanout deliver`.** The suite shards' step is `continue-on-error` (a verdict step decides),
 so `fanout gate` cannot DERIVE the suite check (`suiteJobsOf` refuses such a step — pinned by
-`ci-rigs.test.ts`): run it with `--require-check suite`. A PR that edits `.github/` (every new rig does: its `ci-rigs.json` entry) is gated `fullSuite: verifier` by design — the CI that ran is the candidate's own — so "green CI ⇒ rerun nothing" does not apply to it. The `summary` row of the suite prints `failed 5 (tolerated: …  — NOT covered by CI)`: those tests are the verifier's to run. With a green PR CI on exactly the verified head
+`ci-rigs.test.ts`): run it with `--require-check suite`. A PR that edits `.github/` (every new rig does: its `ci-rigs.json` entry) is gated `fullSuite: verifier` by design — the CI that ran is the candidate's own — so "green CI ⇒ rerun nothing" does not apply to it. The `suite` check's table row of a shard prints `failed 5 (tolerated: …  — NOT covered by CI)`: those tests are the verifier's to run. With a green PR CI on exactly the verified head
 (`orchestra fanout gate --require-check suite` says `fullSuite: ci`, `ciGreenOnHead`) the verifier does NOT rerun
 tsc, the suite or the CI-run rigs: it runs only the LOCAL-ONLY rigs the diff touches and its
 own probes. `fanout deliver` needs no change: `ciVerdict` (src/shared/fanout-deliver.ts)
 already refuses a head with a failed check (`ci-red`), waits on pending ones, refuses
 `no-checks` after the grace and `zero-steps` for a green job that ran no step — so a PR
-with this workflow can only merge on a green `typecheck` + `suite` + every rig + `summary`
-(the `summary` job also fails when a needed job was skipped or cancelled, which `deliver`
-reads as neutral).
+with this workflow can only merge on a green `typecheck` + every `tests` shard + every rig + `suite`
+(`suite` also fails when a needed job was skipped or cancelled, or a shard's result is missing or empty, which `deliver`
+reads as neutral; the pinned `suite` check is that job — one check, however many shards).
 
 ## Bundled skills (.claude/skills/, version-controlled)
 `.gitignore` ignores `.claude/*` but **un-ignores** `.claude/skills/` so these

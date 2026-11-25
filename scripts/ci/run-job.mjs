@@ -2,7 +2,7 @@
 // #568 — run ONE CI job command, count its tests/arms, write the step summary + a result file, judge it (no silent green).
 //   node --experimental-strip-types scripts/ci/run-job.mjs rig <id>      a rig from .github/ci-rigs.json
 //   node --experimental-strip-types scripts/ci/run-job.mjs suite <tap-log>  verdict on a finished `pnpm run test > <tap-log>` (env SUITE_OUTCOME = that step's outcome, SUITE_T0 = its start, epoch s): TAP summary, skips vs .github/ci-skips.json.
-//     The suite is run by a plain `run: pnpm run test > …` step on purpose: `orchestra fanout gate` derives the suite check only from a plain runner step.
+//     #594: with SUITE_SHARD=i SUITE_SHARDS=n the log is shard i of n (`pnpm run suite:shard`); it writes `suite_shard_i_n.json` (shard, shards) and the `suite` job (rigs.mjs summary) judges ALL shards together (`judgeShards`).
 //   node --experimental-strip-types scripts/ci/run-job.mjs typecheck     `npx tsc --noEmit`
 // Env: CI_RESULT_DIR (default $RUNNER_TEMP/ci-result) gets <job>.json; CI_DISCOVERY=1 never fails the step (the verdict is in the JSON).
 import { spawn } from 'node:child_process';
@@ -22,7 +22,14 @@ if (kind === 'rig') {
   entry = readRigFile(root).rigs.find((r) => r.id === arg);
   if (!entry) { console.error(`::error::no rig "${arg}" in .github/ci-rigs.json`); process.exit(2); }
   name = `rig:${arg}`; command = entry.pre ? `${entry.pre} && ${entry.command}` : entry.command; timeoutMin = entry.timeoutMin ?? 10;
-} else if (kind === 'suite') { name = 'suite'; command = 'pnpm run test'; }
+} else if (kind === 'suite') {
+  name = 'suite'; command = 'pnpm run test';
+  if (process.env.SUITE_SHARD !== undefined || process.env.SUITE_SHARDS !== undefined) {
+    var shard = Number(process.env.SUITE_SHARD); var shards = Number(process.env.SUITE_SHARDS);
+    if (!Number.isInteger(shard) || !Number.isInteger(shards) || shard < 1 || shard > shards) { console.error(`::error::SUITE_SHARD=${process.env.SUITE_SHARD} SUITE_SHARDS=${process.env.SUITE_SHARDS} is not a valid shard`); process.exit(2); }
+    name = `suite shard ${shard}/${shards}`; command = 'pnpm run suite:shard';
+  }
+}
 else if (kind === 'typecheck') { name = 'typecheck'; command = 'npx tsc --noEmit'; timeoutMin = 15; }
 else { console.error('usage: run-job.mjs rig <id> | suite <tap-log> | typecheck'); process.exit(2); }
 
@@ -83,7 +90,8 @@ if (kind === 'typecheck') {
     const fails = tapFails(log);
     const tolerated = fails.length > 0 && fails.length === counts.fail && fails.every((f) => known.some((k) => k.name === f && k.reason?.trim()));
     if (tolerated) { var toleratedNames = fails; counts = { ...counts, pass: counts.pass, fail: 0, source: `TAP summary (${fails.length} known-fail tolerated)` }; skipNote += `\n\nKnown-fail tests tolerated (.github/ci-skips.json knownFail):\n` + fails.map((f) => `- ${f}`).join('\n'); }
-    verdict = bad.length ? { ok: false, why: `ci-skips.json entry without name/reason` } : judge(timedOut ? 124 : tolerated && exit === 1 ? 0 : exit, counts, { skippedAllowed: allowed.length });
+    const wantShards = readRigFile(root).suiteShards ?? 1;
+    verdict = bad.length ? { ok: false, why: `ci-skips.json entry without name/reason` } : typeof shards === 'number' && shards !== wantShards ? { ok: false, why: `the workflow ran ${shards} shards but .github/ci-rigs.json says suiteShards = ${wantShards}` } : judge(timedOut ? 124 : tolerated && exit === 1 ? 0 : exit, counts, { skippedAllowed: allowed.length });
     if (skips.length) skipNote = '\n\nSkipped tests:\n' + skips.map((s) => `- ${allowed.includes(s) ? '(allow-listed) ' : ''}${s.name}${s.reason ? ` — ${s.reason}` : ''}`).join('\n');
   }
 } else {
@@ -94,7 +102,7 @@ if (timedOut) verdict = { ok: false, why: `timed out after ${timeoutMin} min` };
 
 const tail = stripAnsi(log).split('\n').filter((l) => l.trim()).slice(-25).join('\n');
 const armRetries = [...stripAnsi(log).matchAll(/^ARM .*, (\d+) attempts\)/gm)].reduce((n, m) => n + Number(m[1]) - 1, 0);
-const result = { name, attempts: typeof attempts === 'number' ? attempts : 1, armRetries, tolerated: typeof toleratedNames !== 'undefined' ? toleratedNames : [], id: kind === 'rig' ? arg : name, command, exit, timedOut, wallSec, counts, ok: verdict.ok, why: verdict.why, tail };
+const result = { name, ...(typeof shards === 'number' ? { shard, shards } : {}), attempts: typeof attempts === 'number' ? attempts : 1, armRetries, tolerated: typeof toleratedNames !== 'undefined' ? toleratedNames : [], id: kind === 'rig' ? arg : name, command, exit, timedOut, wallSec, counts, ok: verdict.ok, why: verdict.why, tail };
 fs.writeFileSync(path.join(resultDir, `${name.replace(/[^\w.-]+/g, '_')}.json`), JSON.stringify(result, null, 1));
 const md = `### ${verdict.ok ? '✅' : '❌'} ${name}\n\n| run | passed | failed | skipped | wall | source |\n|---|---|---|---|---|---|\n| ${counts.run} | ${counts.pass} | ${counts.fail} | ${counts.skipped} | ${wallSec}s${typeof attempts === 'number' && attempts > 1 ? ` (${attempts} attempts)` : ''}${armRetries > 0 ? ` (${armRetries} arm re-run${armRetries > 1 ? 's' : ''})` : ''} | ${counts.source} |\n\n${verdict.ok ? '' : `**${verdict.why}**\n\n\`\`\`\n${tail}\n\`\`\`\n`}${skipNote}\n`;
 if (process.env.GITHUB_STEP_SUMMARY && !(process.env.CI_GROUP === '1' && verdict.ok)) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md); // a group prints ONE table; only a red rig adds its tail

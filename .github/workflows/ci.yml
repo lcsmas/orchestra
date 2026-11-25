@@ -1,5 +1,7 @@
 # Pull-request CI (#568): tsc + the full suite + the rig matrix, no silent green. No secret, read-only token.
-# The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the suite job when a rig is in neither.
+# The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the `tests` jobs when a rig is in neither.
+# #594: 20 jobs per PR = typecheck + 2 suite shards (`tests`) + 16 rig groups (`rigs`) + `suite` (the verdict over all of them). The matrices are STATIC
+# (no inventory job); src/shared/ci-rigs.test.ts pins them to `suiteShards` / `groups` of .github/ci-rigs.json — change a number in both.
 # How to add a rig / the local-only list: docs/codebase-map/build-release.md § Pull-request CI.
 name: CI
 
@@ -37,19 +39,28 @@ jobs:
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
           if-no-files-found: warn
 
-  suite:
+  tests:
+    name: tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+        shards: [2]
+    env:
+      SUITE_SHARD: ${{ matrix.shard }}
+      SUITE_SHARDS: ${{ matrix.shards }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: echo "SUITE_T0=$(date +%s)" >> "$GITHUB_ENV"
       # continue-on-error: the NEXT step is the verdict (it reads this step's `outcome`, and tolerates only the knownFail tests of .github/ci-skips.json).
-      # Consequence: `orchestra fanout gate` cannot DERIVE this job as the suite check (it refuses a continue-on-error step): pin it with `--require-check suite`.
-      - name: Run the suite
+      # `node --test --test-shard=$SUITE_SHARD/$SUITE_SHARDS` over the same `src/**/*.test.ts` (package.json `suite:shard`).
+      - name: Run suite shard
         id: suite
         continue-on-error: true
-        run: pnpm run test > "$RUNNER_TEMP/suite.tap" 2>&1
+        run: pnpm run suite:shard > "$RUNNER_TEMP/suite.tap" 2>&1
       - name: Verdict — tests run / passed / failed / skipped (a skip or a zero fails)
         if: always()
         run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs suite "$RUNNER_TEMP/suite.tap"
@@ -58,7 +69,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: result-suite
+          name: result-tests-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/ci-result
           retention-days: 1
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
@@ -66,35 +77,20 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: suite-tap
+          name: suite-tap-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/suite.tap
           retention-days: 3
           overwrite: true
 
-  inventory:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.m.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - id: m
-        run: |
-          m="$(node --experimental-strip-types --no-warnings scripts/ci/rigs.mjs matrix)"
-          echo "matrix=$m" >> "$GITHUB_OUTPUT"
-
   rigs:
-    needs: inventory
-    runs-on: ubuntu-latest
-    # each group installs once and runs its rigs in sequence (D5, ledger #569); the longest group is ~45 min of rigs
+    # each group installs once and runs its rigs in sequence (D5, ledger #569); the rigs of a group total ~15 min (.github/ci-rigs.json, `rigs.mjs assign`)
     timeout-minutes: 150
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.inventory.outputs.matrix) }}
-    name: rigs (group ${{ matrix.group }}, ${{ matrix.count }} rigs)
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    name: rigs (group ${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
         with:
@@ -113,8 +109,10 @@ jobs:
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
           if-no-files-found: warn
 
-  summary:
-    needs: [typecheck, suite, inventory, rigs]
+  # THE check named `suite` (`orchestra fanout deliver --require-check suite` pins this exact name): red when ANY suite shard is red, missing, cancelled or ran 0 tests,
+  # and when typecheck or a rig group is. It also prints the per-job table and the LOCAL-ONLY rig list.
+  suite:
+    needs: [typecheck, tests, rigs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
