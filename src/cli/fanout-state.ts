@@ -40,6 +40,7 @@ import {
   type TicketState,
 } from '../shared/fanout-state.ts';
 import type { CheckExec } from '../shared/fanout-checks.ts';
+import type { IdentityResolution } from '../shared/session-identity.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 
@@ -62,6 +63,8 @@ export interface FanoutDeps {
   vouchedCaller?: string | null;
   /** #564 — runs one shell command of `fanout check` (undefined = the real `sh -c`; tests hand a fake). */
   exec?: CheckExec;
+  /** #588 — the host's answer to `/identity` for THIS call (index.ts `settleHostIdentity`); undefined / null = the host was not asked or did not vouch. The caller proof of `fanout review` (src/shared/fanout-caller.ts). */
+  identity?: IdentityResolution | null;
 }
 
 /** #554 — is this `fanout state init|set … --switch …`? Returns the run it acts on (for the host question), else null. */
@@ -323,6 +326,7 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
     throw e;
   }
 }
+
 
 function runState(args: string[], deps: FanoutDeps): RunResult {
   const [verb, ...rest] = args;

@@ -4,6 +4,7 @@ import { dispatchFanoutAcceptance, type AcceptanceHostDeps, type AcceptanceHostR
 import { send, getBus } from './bus.ts';
 import { orchestraHome } from './platform/index.ts';
 import { store } from './store';
+import { sessionKeys } from './session-identity-host.ts';
 import { dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
 
 const productionDeps: AcceptanceHostDeps = {
@@ -19,6 +20,8 @@ const productionDeps: AcceptanceHostDeps = {
     const r = await dispatchAgentSpawnRequest({ from: i.from, repoPath: i.repoPath, task: i.task, agent: 'claude', name: i.name });
     return { ok: r.ok, id: r.id, error: r.error };
   },
+  verifyCaller: (id, key) => sessionKeys().verify(id, key), // #588: `op: review` is re-proved here, not only by the CLI
+  isLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; }, // #588: a deleted or archived reviewer is replaced, a live one woken
   childrenOf: (run) => store.workspaces.filter((w) => w.parentId === run).map((w) => w.id), // #554 m1: the run owner's direct children
   // #554: the stamp carries the run's switches, so this rewrites the skill only when they changed
   refreshSkills: async (ids) => {

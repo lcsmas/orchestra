@@ -102,6 +102,7 @@ import {
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
+import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
 
@@ -2476,6 +2477,7 @@ async function main(argv: string[]): Promise<void> {
         await settleHostIdentity();
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
       }
+      if (args[0] === 'review') { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; } // #588: `fanout review` is the coordinator's, proven by the host's /identity (src/shared/fanout-caller.ts)
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
       const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);
       if (switchRun) {
@@ -2484,7 +2486,7 @@ async function main(argv: string[]): Promise<void> {
           fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
         } catch { fanoutDeps.spawned = null; }
       }
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
@@ -2497,6 +2499,9 @@ async function main(argv: string[]): Promise<void> {
         if (call.body.op === 'skills') { // #554: best effort — the state is the truth, the skill re-render is a courtesy
           if (!res.ok) process.stderr.write(`note: the host did not re-render the verified-fanout skill (${String(res.error ?? 'refused')}): it follows the switches at the next session start\n`);
           else if (((res.refreshed as string[] | undefined) ?? []).length) process.stdout.write('verified-fanout skill re-rendered from the switches\n');
+        } else if (call.body.op === 'review') { // #588
+          if (!res.ok) fail(`${ticket}: the reviewer was NOT spawned or woken: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout review ${ticket}`);
+          process.stdout.write(res.action === 'noop' ? `${ticket}: nothing to do — ${String(res.note)}\n` : `${ticket}: ${res.action === 'wake' ? 'woke its reviewer' : res.action === 'replace' ? 'replaced its reviewer with' : 'spawned its reviewer'} ${String(res.name)} (${String(res.id)}) — brief ${String(res.hash).slice(0, 12)}\n`);
         } else if (call.body.op === 'spawn') {
           if (!res.ok) fail(`ticket ${ticket} is registered but its test writer was NOT spawned: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout acceptance spawn ${ticket}`);
           process.stdout.write(`${ticket}: Orchestra spawned its test writer ${String(res.name)} (${String(res.id)}) — it freezes the tests to the shared acceptance branch\n`);
