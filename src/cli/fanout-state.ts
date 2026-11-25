@@ -48,7 +48,7 @@ import type { CheckExec } from '../shared/fanout-checks.ts';
 import type { IdentityResolution } from '../shared/session-identity.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
-import { resolveCaller } from '../shared/fanout-caller.ts';
+import { callerRefusal, resolveCaller } from '../shared/fanout-caller.ts';
 import { assertDecideCaller, countsThrough, unrecordedReviewers } from '../shared/fanout-record.ts';
 import { renderHold } from '../shared/fanout-closeout.ts';
 
@@ -167,7 +167,7 @@ export const SEAT_USAGE = `seatRecords (#585/#587) — switch \`state set --swit
   orchestra fanout state set --run-decision <text|file|->      append a decision of the run (coordinator only): every brief carries the decisions verbatim
   orchestra fanout state set <ticket> --follows <up>=<version>[,…]   the interface version a dependent built on (a nomination on an older one is refused with the reason of the change)
   Refused with exit 2, the message starting with its name: [plan-incomplete] (first spawn and --status started|nominated|gated: lists the plan tickets absent from the state, the tickets with no declared dependencies,
-  the depended-on tickets with no interface) · [interface-blank] · [interface-reason-missing] · [interface-stale] · [interface-unfollowed] · [follows-invalid] · [plan-frozen] · [decision-blank] · [decision-after-plan] · [decision-caller] · [seat-records-off].
+  the depended-on tickets with no interface) · [interface-blank] · [interface-reason-missing] · [interface-stale] · [interface-unfollowed] · [follows-invalid] · [plan-frozen] · [decision-blank] · [decision-after-plan] · [decision-caller] · [state-caller] (#612: --status merged under seatRecords=on is the run owner's, host-vouched) · [seat-records-off].
   orchestra fanout start [--run <id>]                           launch the implementer of every plan ticket that has none live, brief rendered by code (coordinator only; orchestra fanout start --help)
   orchestra fanout plan --tickets <id,id,…> [--run <id>]        the plan step (#604): spawns ONE single-use plan agent (brief rendered by code), returns when its plan is accepted; the agent submits with \`plan submit <file>\` (coordinator only; orchestra fanout plan --help)
   \`orchestra spawn --name impl-…\` by the coordinator of such a run is refused: [start] is the one door.
@@ -516,6 +516,10 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       const caller = resolveCaller(before, deps.env, deps.identity);
       assertDecideCaller(before, caller);
       patch.decide = Object.fromEntries(Object.entries(patch.decide as Record<string, Record<string, unknown>>).map(([k, v]) => [k, { ...v, by: caller.id }]));
+    }
+    if (before && patch.status === 'merged') { // #612: marking a ticket merged is the run OWNER's (the coordinator, vouched by the host) — the spike found it open to any member
+      const refused = callerRefusal('state', before, seatRecordsOn(before), resolveCaller(before, deps.env, deps.identity));
+      if (refused) throw new SeatRefusal(refused.name, refused.detail);
     }
     const repo = before?.repo ?? null;
     if (before && seatRecordsOn(before) && p.vals['--depends-on'] !== undefined) { // #587: only an explicit `none` declares an empty list — an empty value declares nothing

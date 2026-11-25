@@ -84,6 +84,7 @@ import {
   supersededRefusalMessage,
   type IdentityResolution,
 } from '../shared/session-identity.ts';
+import { noDisplayRefusal, runCommandRefusal } from '../shared/noagent.ts';
 import { fenceRunForHold } from '../shared/bus-fencing.ts';
 import { resolveBody, splitAtSeparator } from './body-args.ts';
 import { checkSpawnName } from '../shared/naming-policy.ts';
@@ -100,7 +101,10 @@ import {
   type AgentTabView,
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
-import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
+import { defaultRunner as fanoutRunner, homeOf as fanoutHomeOf, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
+import { callerRefusal, CALLER_REFUSALS as CALLER_REFUSAL_NAMES, pausedVerbResult, ticketArgOf, resolveCaller as resolveFanoutCaller, type CallerVerb } from '../shared/fanout-caller.ts';
+import { readState as readFanoutState, resolveFanoutRun, seatRecordsOn as fanoutSeatRecordsOn, stateFile as fanoutStateFile } from '../shared/fanout-state.ts';
+import { pauseGateDecision } from '../shared/bus-pause.ts';
 import { runStart } from './fanout-start.ts';
 import { runPlan } from './fanout-plan.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
@@ -838,6 +842,58 @@ export function coverFor(
       : busPause.activePauseForCoordinator(d, runId);
 }
 
+/**
+ * #612 — what `fanout open|gate|check|deliver` ask BEFORE they act. (1) Caller (open / gate / check; seatRecords=on runs only, host-vouched, fail closed): see `callerRefusal`.
+ * (2) Pause (C5, open / gate / deliver): a paused run refuses with reason `run-paused`, exit 2, the text of a refused spawn — the same live-tree walk `run resume` / `run status` use.
+ * An unreadable bus never refuses (the host's own pause gate is fail-open by design, bus.md §Fleet PAUSE) but says so. null = go ahead.
+ */
+async function fanoutVerbGate(verb: 'open' | 'gate' | 'check' | 'deliver', args: string[]): Promise<{ exit: number; stdout: string; stderr: string } | null> {
+  if (args.includes('--help') || args.includes('-h')) return null;
+  const ri = args.indexOf('--run');
+  // every run the caller may be acting in: --run, its OWN workspace's, and the run the env / the host puts it in ($ORCHESTRA_RUN_ID — a worker's is its coordinator's); a forged env is the accepted gap (ADR 0008)
+  const own = resolveFanoutRun(ri >= 0 ? args[ri + 1] : undefined, process.env).run;
+  const runs = [...new Set([own, process.env.ORCHESTRA_RUN_ID?.trim() || null].filter((r): r is string => !!r))];
+  if (runs.length === 0) return null; // no run to attribute (a human terminal, a store-less call): nothing to judge
+  if (verb !== 'deliver') {
+    const ticket = ticketArgOf(verb, args);
+    for (const run of runs) {
+      const file = fanoutStateFile(fanoutHomeOf(process.env), run);
+      let state = null;
+      try { state = readFanoutState(file); } catch {
+        // a state file that EXISTS and cannot be read is not "no state": fail closed (an absent file = a run with no state = not judged)
+        if (fs.existsSync(file)) return { exit: 2, stdout: '', stderr: `refused: [${CALLER_REFUSAL_NAMES[verb as CallerVerb]}] the fanout state of run ${run} exists but cannot be read (${file}) — the caller cannot be judged; fix or restore it\n` };
+      }
+      if (!state || !fanoutSeatRecordsOn(state)) continue;
+      await settleHostIdentity();
+      const refused = callerRefusal(verb as CallerVerb, state, true, resolveFanoutCaller(state, process.env, hostIdentity), ticket);
+      if (refused) return { exit: 2, stdout: '', stderr: `refused: [${refused.name}] ${refused.detail}\n` };
+    }
+  }
+  if (verb === 'check') return null; // a check records a result; only the three verbs that ACT on the run's PR are held by a Pause
+  let text: string | null = null;
+  let pausedRun = runs[0];
+  const exitBefore = process.exitCode;
+  try {
+    const { db } = await openBusForVerb();
+    try {
+      const busPause = await import('../main/bus-pause.ts');
+      for (const run of runs) {
+        const info = coverFor(db, run, busPause);
+        if (info) { text = pauseGateDecision({ runId: info.runId }); pausedRun = run; break; }
+      }
+    } finally {
+      db.close();
+    }
+  } catch (e) {
+    if (!(e instanceof CliFailure)) throw e;
+    process.exitCode = exitBefore; // `fail` set rc 1 — an unreadable bus is a note here, not the verb's failure
+    process.stderr.write('note: could not read the run\'s pause state (the bus did not open, above) — not refusing on a guess\n');
+  }
+  if (!text) return null;
+  const r = pausedVerbResult(verb, pausedRun, text);
+  return { exit: r.exit, stdout: r.stdout, stderr: r.stderr };
+}
+
 /** Read the persisted workspace list off disk when the app is DOWN (#144), from the file the RUNNING APP writes ({@link appStoreFile}:
  *  `$ORCHESTRA_HOME/userData/orchestra/` when ORCHESTRA_HOME is set, else Electron's default userData — NOT `~/.orchestra/userData`, which a
  *  default install never writes). Returns `[]` on any read/parse failure — the caller then refuses the send with "matches no workspace",
@@ -1306,17 +1362,26 @@ async function main(argv: string[]): Promise<void> {
       const { value: rawName, rest: r4c } = takeFlag(r4b, '--name');
       const { value: profile, rest: r4d } = takeFlag(r4c, '--profile');
       const { value: account, rest: r4e } = takeFlag(r4d, '--account');
-      const { present: detached, rest: r5 } = takeBoolFlag(r4e, '--detached');
+      const { present: detached, rest: r4f } = takeBoolFlag(r4e, '--detached');
+      const { present: noAgent, rest: r4g } = takeBoolFlag(r4f, '--no-agent'); // #612
+      const { value: runCommand, rest: r5 } = takeFlag(r4g, '--run-command'); // #612
       if (account !== undefined && !account.trim()) fail('refusing to spawn: --account needs a value (an account id or label, or `default`).\nNothing was created.');
-      if (!task)
+      if (noAgent) {
+        // #612 — a no-agent workspace: its command (started by the host, detached) owns a fan-out run; no agent ever reads a task, a model, a profile or an account.
+        const stray = ['--task', '--model', '--effort', '--profile', '--account'].filter((f) => args.includes(f));
+        if (stray.length) fail(`refusing to spawn: ${stray.join(', ')} mean nothing with --no-agent (no agent session is ever started; the command is --run-command).\nNothing was created.`);
+        const bad = runCommandRefusal(runCommand);
+        if (bad) fail(`refusing to spawn: ${bad}`);
+      } else if (runCommand !== undefined) fail('refusing to spawn: --run-command belongs to --no-agent (a normal workspace\'s agent takes --task).\nNothing was created.');
+      else if (!task)
         fail(
-          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--account <id|label|default>] [--detached]',
+          'usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--account <id|label|default>] [--detached]\n       orchestra spawn --no-agent --name ops-<object> --run-command "<cmd>" [--repo <path>] [--base <branch>] [--detached]   (#612: no agent session; the command owns the run)',
         );
       // A value option with no value (last on the line) or whose "value" is exactly the NEXT option was swallowed by the parser: `--repo` last silently
       // spawned in the caller's repo, `--model --detached` lost the detach. Refused before the socket. A value that merely STARTS with `--` (a brief
       // beginning `--- notes`) is still a value. (`--name` has its own, convention-restating refusal.)
-      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--profile', '--account', '--detached'];
-      for (const f of ['--task', '--repo', '--base', '--model', '--effort', '--profile', '--account']) {
+      const SPAWN_OPTIONS = ['--task', '--repo', '--base', '--model', '--effort', '--name', '--profile', '--account', '--detached', '--no-agent', '--run-command'];
+      for (const f of ['--task', '--repo', '--base', '--model', '--effort', '--profile', '--account', '--run-command']) {
         const i = args.indexOf(f);
         if (i !== -1 && (args[i + 1] === undefined || SPAWN_OPTIONS.includes(args[i + 1])))
           fail(`refusing to spawn: ${f} needs a value (got ${args[i + 1] === undefined ? 'nothing' : JSON.stringify(args[i + 1])}).\nNothing was created.`);
@@ -1340,7 +1405,7 @@ async function main(argv: string[]): Promise<void> {
       // sidebar. Knowing the rule demonstrably isn't enough (this shipped wrong
       // by an agent that had just read the rule), so the tool checks instead of
       // trusting the caller to remember.
-      if (!detached && taskAsksForStandaloneWorkspace(task)) {
+      if (!noAgent && !detached && taskAsksForStandaloneWorkspace(task!)) {
         fail(
           'refusing to spawn: the task text asks for a STANDALONE/independent agent, ' +
             'but --detached was not passed, so this child would nest under you instead.\n' +
@@ -1349,7 +1414,7 @@ async function main(argv: string[]): Promise<void> {
       }
       // `from` is always sent (it also drives repo inheritance server-side);
       // `detached` tells the server to skip only the parent nesting.
-      const body: Record<string, unknown> = { task, from: selfWorkspaceId(), name: named.name };
+      const body: Record<string, unknown> = noAgent ? { noAgent: true, runCommand: runCommand!.trim(), name: named.name, from: selfWorkspaceId() } : { task, from: selfWorkspaceId(), name: named.name };
       if (repo !== undefined) body.repoPath = path.resolve(repo);
       if (base !== undefined) body.baseBranch = base;
       if (model !== undefined) body.model = model;
@@ -1363,7 +1428,15 @@ async function main(argv: string[]): Promise<void> {
         if (key) body.key = key;
       }
       if (detached) body.detached = true;
-      const res = await request('/spawn', body);
+      let res: OrchestraResponse;
+      try {
+        res = await request('/spawn', body, noAgent ? { timeoutMs: 60_000 } : {});
+      } catch (e) {
+        // #612: a host with NO display cannot run Orchestra (Electron aborts before any of our code) — when the app does not answer, say THAT, not a bare socket error.
+        const nd = noAgent ? noDisplayRefusal(process.env) : null;
+        if (nd && /could not reach|not running|no Orchestra/i.test(e instanceof Error ? e.message : String(e))) fail(`refusing to spawn: ${nd}`);
+        throw e;
+      }
       // #401: what became of the pass is told in EVERY outcome — the worker WAS created either way (a refused pass says so on stderr, an honoured one on stdout);
       // an app that predates --profile ignores it and answers no decision: said too, never a silent ephemeral worker.
       const reportProfile = (): void => {
@@ -2446,6 +2519,15 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case 'fanout': {
+      // #612 — caller + Pause checks BEFORE open / gate / check / deliver act (`deliver --open-only` is `open`).
+      if (args[0] === 'open' || args[0] === 'gate' || args[0] === 'check' || args[0] === 'deliver') {
+        const held = await fanoutVerbGate(args[0] === 'deliver' && args.includes('--open-only') ? 'open' : args[0], args);
+        if (held) {
+          if (held.stdout) process.stdout.write(held.stdout);
+          if (held.stderr) process.stderr.write(held.stderr);
+          exitWith(held.exit);
+        }
+      }
       // #467 — `fanout deliver` (src/cli/fanout-deliver.ts): store-less gh; exit 0 merged · 2 refused · 1 could-not-check.
       // #479 — `fanout open` / `deliver --open-only` (src/cli/fanout-open.ts): open or reuse the PR at nomination, never merges; same exits.
       const o = await runOpenRoute(args);
