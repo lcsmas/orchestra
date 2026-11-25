@@ -7,7 +7,7 @@ export interface Violation { rule: string; ticket?: string; detail: string }
 export interface JudgeInput { events: Ev[]; deps: Record<string, string[]>; tickets: string[]; startAt: Record<string, number | null> }
 
 export const RULES = [
-  'start-all-before-first-merge', 'implementer-waited', 'duplicate-agent', 'connected-before-approval', 'connected-after-merge',
+  'start-all-before-first-merge', 'implementer-waited', 'duplicate-agent', 'connected-before-approval', 'connected-after-merge', 'connect-asked-twice',
   'merge-no-approval', 'merge-ci-not-green', 'merge-upstream-unmerged', 'merge-order', 'question-unanswered', 'mail-read-by-other',
 ] as const;
 
@@ -28,7 +28,7 @@ export function judgeRun(i: JudgeInput): Violation[] {
   }
   for (const tk of i.tickets) for (const up of i.deps[tk] ?? []) {
     const m = mergeOf(up);
-    if (!m) continue;
+    if (!m || i.events.some((e) => e.ev === 'ask' && e.ticket === tk && e.kind === 'no-safe-option')) continue; // a ticket that declared "no safe option" is parked, not waiting
     const coded = i.events.some((e) => e.ev === 'code' && e.ticket === tk && idx(e) < idx(m) && e.t <= m.t);
     if (!coded) v('implementer-waited', `${tk} wrote no code before its upstream ${up} merged`, tk);
   }
@@ -46,6 +46,12 @@ export function judgeRun(i: JudgeInput): Violation[] {
     if (!approved) v('connected-before-approval', `${e.ticket} was asked to connect to ${up} at ${String(e.head).slice(0, 12)} before any approval of it`, e.ticket);
     const m = mergeOf(up);
     if (m && idx(m) < idx(e)) v('connected-after-merge', `${e.ticket} was asked to connect to ${up} after ${up} merged`, e.ticket);
+  }
+  const askKeys = new Set<string>();
+  for (const e of i.events.filter((x) => x.ev === 'connect-ask')) {
+    const k = `${String(e.ticket)}|${String(e.up)}|${String(e.head)}`;
+    if (askKeys.has(k)) v('connect-asked-twice', `${e.ticket} was asked twice to connect to ${String(e.up)} at ${String(e.head).slice(0, 12)}`, e.ticket);
+    askKeys.add(k);
   }
   // decision 10 — merge = recorded approval on the head + green CI on the head + upstreams merged, in readiness order
   const readiness: Array<{ tk: string; at: number; i: number }> = [];

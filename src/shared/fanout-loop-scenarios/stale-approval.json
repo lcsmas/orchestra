@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "run": "stale-approval",
+  "repo": {
+    "tickets": [
+      {
+        "id": "A",
+        "dependsOn": [],
+        "spec": "spec/A.md"
+      }
+    ]
+  },
+  "timing": {
+    "ciMs": 900000
+  },
+  "agents": {
+    "A": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        },
+        {
+          "do": "fix",
+          "afterMs": 450000
+        }
+      ],
+      "reviewer": [
+        {
+          "do": "approve"
+        },
+        {
+          "do": "approve",
+          "afterMs": 3600000
+        }
+      ]
+    }
+  }
+}

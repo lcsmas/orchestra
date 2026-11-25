@@ -291,6 +291,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
     const dc: DeliverCheck[] = checks.map((c) => ({ name: c.name, state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending', steps: 1 }));
     const verdict = recordedVerdictOf(s0, id, t.head, t.tree);
     const rec = verdict.ok ? verdict.recorded : null;
+    if (!rec) continue; // no recorded verdict on this content: nothing to merge on (defence in depth: `ctx.approved` already says so)
     const dec = decideDelivery({
       pr: { state: 'OPEN', baseRefName: s0.target, headRefOid: pr.head, mergeable: 'MERGEABLE' }, checks: dc, into: s0.target, verifiedHead: t.head,
       verdict: rec ? { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head } : undefined,
