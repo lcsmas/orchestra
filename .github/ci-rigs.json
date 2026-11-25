@@ -43,7 +43,7 @@
    "command": "pnpm run test:wiring",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:hung-cli",
@@ -57,7 +57,7 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-claude-code-update.sh .",
    "class": "RUNS_IN_CI",
    "wallSec": 89,
-   "group": 6
+   "group": 5
   },
   {
    "id": "test:liveness-failed-call",
@@ -289,13 +289,15 @@
    "id": "test:fanout-run",
    "command": "pnpm run test:fanout-run",
    "class": "RUNS_IN_CI",
-   "wallSec": 12
+   "wallSec": 15,
+   "group": 6
   },
   {
    "id": "test:fanout-run-mutants",
    "command": "pnpm run test:fanout-run-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 150
+   "wallSec": 450,
+   "group": 6
   },
   {
    "id": "test:acceptance-forced",
@@ -362,7 +364,7 @@
    "command": "pnpm run test:role-guard-cli",
    "class": "RUNS_IN_CI",
    "wallSec": 10,
-   "group": 6
+   "group": 14
   },
   {
    "id": "test:session-identity",
@@ -549,7 +551,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 135,
-   "group": 6
+   "group": 4
   },
   {
    "id": "test:git-identity-mutants",
@@ -589,7 +591,7 @@
    "command": "pnpm run test:container-memory",
    "class": "RUNS_IN_CI",
    "wallSec": 58,
-   "group": 4
+   "group": 11
   },
   {
    "id": "test:container-memory-mutants",
@@ -996,7 +998,7 @@
    "command": "pnpm run test:session-key-keeper",
    "class": "RUNS_IN_CI",
    "wallSec": 6,
-   "group": 6
+   "group": 14
   },
   {
    "id": "test:session-identity-mutants",
@@ -1030,7 +1032,7 @@
    "command": "pnpm run test:rig-selftest",
    "class": "RUNS_IN_CI",
    "wallSec": 48,
-   "group": 6
+   "group": 7
   },
   {
    "id": "test:fork-control",
@@ -1084,7 +1086,7 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-attach-any-agent.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 30,
-   "group": 6
+   "group": 8
   },
   {
    "id": "scripts/e2e-boot-heal-bound.mjs",
@@ -1374,7 +1376,7 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 15,
-   "group": 6
+   "group": 12
   },
   {
    "id": "scripts/e2e-spawn-name.sh",
