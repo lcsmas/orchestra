@@ -57,6 +57,7 @@ export function startRefusal(state: FanoutState | null, run: string, caller: str
   if (!state) return null;
   if (!seatRecordsOn(state)) return new SeatRefusal('start-off', `run ${run} has seatRecords=off: \`fanout start\` is a seatRecords rule (choose it before the first spawn: state set --switch seatRecords=on)`);
   if (!caller || caller !== run) return new SeatRefusal('start-caller', `only the run's coordinator (${run}) starts its implementers${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof)'}`);
+  if (state.planRefusal) return new SeatRefusal(state.planRefusal.code, `the plan step of run ${run} ended (${state.planRefusal.at}) without a plan: ${state.planRefusal.detail} — the run does not start`); // #604 (r1 m3): refused twice / unrecordable = no start, even by hand
   const missing = planMissing(state);
   if (missing.length) return new SeatRefusal('plan-incomplete', `cannot start: ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
   // never launch an agent whose task is empty: a ticket to spawn needs the spec reference or its text (the run-12 failure class: an implementer with nothing to build)

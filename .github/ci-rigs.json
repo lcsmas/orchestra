@@ -257,6 +257,18 @@
    "group": 13
   },
   {
+   "id": "test:fanout-plan",
+   "command": "pnpm run test:fanout-plan",
+   "class": "RUNS_IN_CI",
+   "wallSec": 12
+  },
+  {
+   "id": "test:fanout-plan-mutants",
+   "command": "pnpm run test:fanout-plan-mutants",
+   "class": "RUNS_IN_CI",
+   "wallSec": 210
+  },
+  {
    "id": "test:fanout-start",
    "command": "pnpm run test:fanout-start",
    "class": "RUNS_IN_CI",

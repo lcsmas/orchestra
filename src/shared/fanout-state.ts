@@ -208,6 +208,10 @@ export interface FanoutState {
   choices?: ChoiceRecord[];
   /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
   pause?: PauseRecord;
+  /** #604 (ledger #613 FROZEN v1) — set ONLY by `applyPlan` (src/shared/fanout-plan.ts): the run's plan came from the plan step of the Boucle (hash = sha256 of the normalised plan JSON, attempts = submissions it took). From then on `--run-decision` is refused `decision-after-plan`. Not settable by `state set`. */
+  loopPlan?: { at: string; hash: string; attempts: number };
+  /** #604 (review r1 m3) — set ONLY by the plan step when it ENDS without a plan (`plan-refused-twice` | `plan-apply-failed`): `fanout start` / `applyPlan` refuse while it stands, so deleting the plan record does not reopen the run. Not settable by `state set`. */
+  planRefusal?: { at: string; code: 'plan-refused-twice' | 'plan-apply-failed'; detail: string };
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
@@ -256,7 +260,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
   return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'loopPlan', 'planRefusal', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
 TICKET_KEYS.add('reviews'); // #589 (I4)
 TICKET_KEYS.add('parked'); // #603
@@ -347,6 +351,20 @@ function planOf(v: unknown): NonNullable<FanoutState['plan']> {
   if (tickets.length === 0) throw new FanoutStateError('plan.tickets is empty');
   return { tickets, declaredAt: isoOf(v.declaredAt, 'plan.declaredAt') };
 }
+function loopPlanOf(v: unknown): NonNullable<FanoutState['loopPlan']> {
+  if (!isObj(v)) throw new FanoutStateError('loopPlan must be {at, hash, attempts}');
+  refuseUnknown(v, new Set(['at', 'hash', 'attempts']), 'loopPlan');
+  if (typeof v.hash !== 'string' || !SHA256.test(v.hash)) throw new FanoutStateError('loopPlan.hash must be a sha256');
+  if (!Number.isInteger(v.attempts) || (v.attempts as number) < 1) throw new FanoutStateError('loopPlan.attempts must be an integer ≥ 1');
+  return { at: isoOf(v.at, 'loopPlan.at'), hash: v.hash, attempts: v.attempts as number };
+}
+function planRefusalOf(v: unknown): NonNullable<FanoutState['planRefusal']> {
+  if (!isObj(v)) throw new FanoutStateError('planRefusal must be {at, code, detail}');
+  refuseUnknown(v, new Set(['at', 'code', 'detail']), 'planRefusal');
+  if (v.code !== 'plan-refused-twice' && v.code !== 'plan-apply-failed') throw new FanoutStateError('planRefusal.code must be plan-refused-twice|plan-apply-failed');
+  if (typeof v.detail !== 'string' || !v.detail.trim()) throw new FanoutStateError('planRefusal.detail must be non-blank');
+  return { at: isoOf(v.at, 'planRefusal.at'), code: v.code, detail: v.detail };
+}
 function ifaceOfStored(v: unknown, where: string): Iface | null {
   if (v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: iface must be {version, text, history}`);
@@ -410,6 +428,7 @@ function decisionsOf(v: unknown): NonNullable<FanoutState['decisions']> {
 export function addDecision(state: FanoutState, text: string, by: string, now: string): FanoutState {
   const st = stampDefaults(state);
   if (!seatRecordsOn(st)) throw seatOff('--run-decision');
+  if (st.loopPlan) throw new SeatRefusal('decision-after-plan', `run ${st.run} has a plan of the loop (#604, ${st.loopPlan.at}): nothing writes a run decision after it — an order to wait cannot exist; what every seat needs is in the plan's interfaces`);
   const t = text.replace(/\r\n/g, '\n').trim();
   if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
   if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
@@ -1057,6 +1076,8 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
     ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
+    ...(raw.loopPlan !== undefined ? { loopPlan: loopPlanOf(raw.loopPlan) } : {}),
+    ...(raw.planRefusal !== undefined ? { planRefusal: planRefusalOf(raw.planRefusal) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,
