@@ -1,5 +1,5 @@
 // #608 (spec #601 stories 22–23, decision 12) — the loop's `reconcile` and `end` steps: at EVERY start git and the PR host overrule the state (a merge made by hand is adopted, a closed PR parks its ticket, nothing is concluded from a read that failed),
-// and the run ends with a report DERIVED from the state. No agent is started here: adopting live agents / respawning dead ones on their branch is `startRun` (fanout-start.ts), reviewers are claim/settle (fanout-review.ts) — both already idempotent; this step only makes the STATE true first.
+// and the run ends with a report DERIVED from the state. No agent is started here: adopting live agents / respawning dead ones on their branch is `startRun` (a dead author of a nominated|gated ticket is #606's lazy revival, not reconcile's) (fanout-start.ts), reviewers are claim/settle (fanout-review.ts) — both already idempotent; this step only makes the STATE true first.
 // #605's `stepReconcile(ctx)` / `stepEnd(ctx)` stubs call these with the ports the loop already holds. Ports and the park helper are structural (the frozen names of ledger #613), so this file builds before #603 / #605 land.
 import { applyWriteBack, readState, reconcile, sameContent, stateFile, updateState, type Divergence, type FanoutState, type Reality, type TicketReality, type TicketState } from './fanout-state.ts';
 import { buildReport, collectCosts, isParked, parkedOf, reportExit, type ParkCauseView, type Report, type TokenCost } from './fanout-report.ts';
@@ -20,7 +20,7 @@ export function fileStatePort(home: string, run: string): StatePort {
   };
 }
 
-export interface RelaunchCtx { now: () => string; log: (line: string) => void; git: RelaunchGit; forge: RelaunchForge; state: StatePort; park: ParkFn; /** `FleetPort.live`: does this workspace exist and run? */ live: (ws: string) => boolean }
+export interface RelaunchCtx { now: () => string; log: (line: string) => void; git: RelaunchGit; forge: RelaunchForge; state: StatePort; park: ParkFn }
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const short = (sha: string | null | undefined): string => (sha ?? '?').slice(0, 8);
@@ -65,8 +65,6 @@ export interface ReconcileOutcome {
   /** divergences this step reports and does not act on (state claims merged, reality does not; a PR head moved…). */
   diverged: Divergence[];
   unreadable: string[];
-  /** nominated|gated tickets with an open PR whose author is dead: put back to `started` so the loop's start step respawns the author on its branch. */
-  revived: string[];
 }
 
 const TERMINAL = new Set(['merged', 'dropped']);
@@ -114,14 +112,12 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
   const reality = await readReality(state0, ctx);
   const plan = reconcile(state0, reality);
   const writeBack = writeBackFor(state0, reality, plan.writeBack);
-  const out: ReconcileOutcome = { adopted: [], parked: [], released: [], diverged: [], unreadable: [], revived: [] };
+  const out: ReconcileOutcome = { adopted: [], parked: [], released: [], diverged: [], unreadable: [] };
   for (const d of plan.divergences) {
     if (d.kind === 'reality-unreadable') { out.unreadable.push(d.ticket); ctx.log(`reconcile: ${d.ticket}: ${d.detail}`); }
   }
   const toPark = plan.divergences.map((d) => ({ d, why: parkReason(d, state0.tickets[d.ticket]) })).filter((x): x is { d: Divergence; why: { cause: ParkCauseView; reason: string } } => x.why !== null && !isParked(state0.tickets[x.d.ticket]) && !TERMINAL.has(state0.tickets[x.d.ticket].status));
-  // a dead author of a published ticket (PR open): `startRun` only respawns todo|started tickets, so the ticket goes back to `started` (implementer, branch, PR, head kept) — the same rule as #606's author revival
-  const toRevive = Object.entries(state0.tickets).filter(([id, t]) => (t.status === 'nominated' || t.status === 'gated') && t.pr !== null && !!t.implementer && reality[id]?.pr?.state === 'OPEN' && !reality[id]?.error && !ctx.live(t.implementer)).map(([id]) => id);
-  if (!writeBack.length && !toPark.length && !toRevive.length) {
+  if (!writeBack.length && !toPark.length) {
     out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(state0.tickets[d.ticket])));
     for (const d of out.diverged) ctx.log(`reconcile: ${d.ticket}: ${d.kind}: ${d.detail}`);
     return out;
@@ -135,23 +131,18 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
     s = { ...s, tickets: Object.fromEntries(Object.entries(s.tickets).map(([id, t]) => [id, out.adopted.includes(id) && isParked(before.tickets[id]) ? (({ parked: _p, ...rest }) => rest as TicketState)(t as TicketState & { parked?: unknown }) : t])) };
     const rel = releaseDependents(s, now);
     s = rel.state; out.released = rel.released;
-    out.parked = []; out.revived = [];
+    out.parked = [];
     for (const { d, why } of toPark) {
       const t = s.tickets[d.ticket];
       if (!t || TERMINAL.has(t.status) || isParked(t)) continue; // adopted or already parked meanwhile
       s = ctx.park(s, d.ticket, why, now);
       out.parked.push({ ticket: d.ticket, ...why });
     }
-    for (const id of toRevive) {
-      const t = s.tickets[id];
-      if (t && (t.status === 'nominated' || t.status === 'gated') && !isParked(t)) { s = { ...s, tickets: { ...s.tickets, [id]: { ...t, status: 'started', updatedAt: now } }, updatedAt: now }; out.revived.push(id); }
-    }
     return s;
   });
   out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(after.tickets[d.ticket])) && !out.adopted.includes(d.ticket)); // a parking kind is handled once its ticket is parked; on a ticket recorded merged it stays visible
   for (const id of out.adopted) ctx.log(`reconcile: ${id}: merged outside the loop (or by the loop before a kill) — adopted`);
   for (const id of out.released) ctx.log(`reconcile: ${id}: its parked upstream was merged — released`);
-  for (const id of out.revived) ctx.log(`reconcile: ${id}: its author (${state0.tickets[id].implementer}) is dead and the PR is open — back to started, the loop respawns it on ${state0.tickets[id].branch}`);
   for (const p of out.parked) ctx.log(`reconcile: ${p.ticket}: parked [${p.cause}] ${p.reason}`);
   for (const d of out.diverged) ctx.log(`reconcile: ${d.ticket}: ${d.kind}: ${d.detail}`);
   return out;

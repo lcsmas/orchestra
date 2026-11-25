@@ -30,7 +30,6 @@ class World {
   merged = new Set<string>();
   prs = new Map<number, { state: 'open' | 'merged' | 'closed'; head: string }>();
   fail = new Set<string>();
-  dead = new Set<string>();
   calls: string[] = [];
   branch(b: string, head: string | null, tree?: string): this { this.heads.set(b, head); if (head) this.trees.set(head, tree ?? head); return this; }
   pr(n: number, state: 'open' | 'merged' | 'closed', head: string): this { this.prs.set(n, { state, head }); return this; }
@@ -64,7 +63,7 @@ function memPort(init: FanoutState): StatePort & { cur: FanoutState; writes: num
 }
 function rctx(w: World, port: StatePort, log: string[] = []): RelaunchCtx {
   let tick = 0;
-  return { now: () => new Date(Date.parse(T0) + ++tick * 1000).toISOString(), log: (l) => log.push(l), git: w.git, forge: w.forge, state: port, park: parkShim, live: (ws) => !w.dead.has(ws) };
+  return { now: () => new Date(Date.parse(T0) + ++tick * 1000).toISOString(), log: (l) => log.push(l), git: w.git, forge: w.forge, state: port, park: parkShim };
 }
 const status = (s: FanoutState, id: string): string => s.tickets[id].status as string;
 const parkedOf = (s: FanoutState, id: string): { cause: string; reason: string; blockedBy?: string } => (s.tickets[id] as unknown as { parked: { cause: string; reason: string; blockedBy?: string } }).parked;
@@ -245,32 +244,18 @@ test('the same head on a rebased sha (same tree) follows silently; a moved head 
   assert.equal(status(p2.cur, 'A'), 'nominated');
 });
 
-// ── a dead author of a published ticket ─────────────────────────────────────────────────────────────────────────
-test('a nominated|gated ticket with an OPEN PR whose author is dead goes back to started (implementer, branch, PR kept) so the start step respawns it; a live author, a merged or closed PR are left alone', async () => {
-  const w = new World().branch('b1', sha('a')).pr(1, 'open', sha('a')).branch('b2', sha('b')).pr(2, 'open', sha('b')).branch('b3', sha('c')).pr(3, 'open', sha('c'));
-  w.dead.add('ws-a'); w.dead.add('ws-c');
+// ── a dead author is not reconcile's business ───────────────────────────────────────────────────────────────────
+test('a nominated|gated ticket with an open PR and a dead author is left UNTOUCHED, and so is its dependent (#606 revives an author lazily when a batch needs one)', async () => {
+  const w = new World().branch('b1', sha('a')).pr(1, 'open', sha('a')).branch('b2', sha('b')).pr(2, 'open', sha('b'));
   const port = memPort(stateOf({
-    A: { status: 'nominated', branch: 'b1', pr: 1, head: sha('a'), tree: sha('a'), implementer: 'ws-a' },
-    B: gated(2, 'b', { implementer: 'ws-b' }), // live author
-    C: gated(3, 'c', { implementer: 'ws-c' }), // dead, gated
+    A: gated(1, 'a', { implementer: 'ws-dead' }),
+    B: { status: 'nominated', branch: 'b2', pr: 2, head: sha('b'), tree: sha('b'), dependsOn: ['A'], implementer: 'ws-dead-b' },
   }));
+  const snap = JSON.stringify(port.cur);
   const out = await stepReconcile(rctx(w, port));
-  assert.deepEqual(out.revived.sort(), ['A', 'C']);
-  for (const id of ['A', 'C']) { assert.equal(status(port.cur, id), 'started', id); assert.equal(port.cur.tickets[id].implementer, `ws-${id.toLowerCase()}`); assert.equal(port.cur.tickets[id].pr, id === 'A' ? 1 : 3); assert.ok(port.cur.tickets[id].branch); }
-  assert.equal(status(port.cur, 'B'), 'gated');
-  const writes = port.writes;
-  await stepReconcile(rctx(w, port)); // `started` + dead author is startRun's business now
-  assert.equal(port.writes, writes);
-});
-
-test('MUST-FAIL arm: no revival without an open PR (closed → parked, merged → adopted) or when the PR read failed', async () => {
-  const w = new World().branch('b1', sha('a')).pr(1, 'merged', sha('a')).branch('b2', sha('b')).pr(2, 'open', sha('b'));
-  w.merged.add('b1'); w.dead.add('ws-a'); w.dead.add('ws-b'); w.fail.add('pr2');
-  const port = memPort(stateOf({ A: gated(1, 'a', { implementer: 'ws-a' }), B: gated(2, 'b', { implementer: 'ws-b' }) }));
-  const out = await stepReconcile(rctx(w, port));
-  assert.deepEqual(out.revived, []);
-  assert.equal(status(port.cur, 'A'), 'merged');
-  assert.equal(status(port.cur, 'B'), 'gated');
+  assert.deepEqual([out.adopted, out.parked, out.released], [[], [], []]);
+  assert.equal(JSON.stringify(port.cur), snap);
+  assert.equal(port.writes, 0);
 });
 
 // ── killed at every window of one merge: the same final state ──────────────────────────────────────────────────
