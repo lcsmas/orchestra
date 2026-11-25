@@ -2,8 +2,8 @@
 // and each finding of the exact head it read; counts are derived. `gate` / `deliver` read nothing else. Rule = `recordReview` (src/shared/fanout-record.ts); the caller = `resolveCaller` (#588).
 import fs from 'node:fs';
 import path from 'node:path';
-import { FanoutStateError, readState, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
-import { resolveCaller } from '../shared/fanout-caller.ts';
+import { FanoutStateError, SeatRefusal, readState, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
+import { isVouched, resolveCaller } from '../shared/fanout-caller.ts';
 import { countsThrough, parseRecordJson, recordReview, reviewerDoneRefusal } from '../shared/fanout-record.ts';
 import { citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { fileOnHead, homeOf, parseArgs, runOf, treeOfSha, type FanoutDeps, type RunResult } from './fanout-state.ts';
@@ -21,7 +21,8 @@ export const RECORD_USAGE = `usage: orchestra fanout record <ticket> --head <sha
 
 export function runRecord(args: string[], deps: FanoutDeps): RunResult {
   try { return record(args, deps); } catch (e) {
-    if (e instanceof FanoutStateError) return { code: /^\[[a-z-]+\]/.test(e.message) ? 2 : 1, stdout: '', stderr: `${e.message}\n` };
+    if (e instanceof SeatRefusal) return { code: 2, stdout: '', stderr: `${e.message}\n` };
+    if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };
     throw e;
   }
 }
@@ -51,10 +52,10 @@ function record(args: string[], deps: FanoutDeps): RunResult {
     const obs = (f.demonstration as { observed?: unknown } | undefined)?.observed;
     if (/^[0-9a-f]{7,40}$/.test(head) && typeof obs === 'string') for (const c of citationsOf(obs)) if (isProductPath(c.path) && !known.has(c.path)) known.set(c.path, fileOnHead(deps.runner, head, c.path, deps.cwd, repo));
   }
-  const caller = resolveCaller(cur, deps.env);
+  const caller = resolveCaller(cur, deps.env, deps.identity); // #588: the host's answer for THIS call, never the env alone
   const next = updateState(file, (s) => {
     if (!s) throw new FanoutStateError(`no state at ${file}`);
-    return recordReview(s, ticket, { head, verdict: p.vals['--verdict'], input, callerId: caller.id, tree, now: deps.now(), fileOnHead: (h, f) => (known.has(f) ? known.get(f)! : null) });
+    return recordReview(s, ticket, { head, verdict: p.vals['--verdict'], input, callerId: caller.id, callerVouched: isVouched(caller), tree, now: deps.now(), fileOnHead: (h, f) => (known.has(f) ? known.get(f)! : null) });
   });
   const t = next.tickets[ticket];
   const rv = t.reviews![t.reviews!.length - 1];

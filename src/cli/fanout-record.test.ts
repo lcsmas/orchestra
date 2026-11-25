@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runFanout, type FanoutDeps, type Runner } from './fanout-state.ts';
 import { fanoutCompletionRefusal, runRecord, RECORD_USAGE } from './fanout-record.ts';
+import type { IdentityResolution } from '../shared/session-identity.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { deliver, realDeps, type DeliverDeps, type DeliverOpts, type GhResult } from './fanout-deliver.ts';
 import { gatePr, type GateOpts } from './fanout-gate.ts';
@@ -36,8 +37,10 @@ function mkHome(t: { after: (fn: () => void) => void }): string {
   return d;
 }
 const envOf = (home: string, who: string): NodeJS.ProcessEnv => ({ ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: who });
-const depsOf = (home: string, who: string, runner: Runner = offline, stdin = ''): FanoutDeps => ({ env: envOf(home, who), cwd: home, runner, now: () => NOW, readStdin: () => stdin });
-const brief = (n: number, kind: 'spawn' | 'wake' | 'replace', head: string, reviewer: string) => ({ n, kind, head, base: null, hash: `h${n}`, text: 'brief', reviewer, at: NOW });
+/** the host vouched this session (index.ts `settleHostIdentity` for `record`): the tests pass what the host would say */
+const HOST: IdentityResolution = { source: 'host', runId: 'r1', generation: null };
+const depsOf = (home: string, who: string, runner: Runner = offline, stdin = '', identity: IdentityResolution | null = HOST): FanoutDeps => ({ env: envOf(home, who), cwd: home, runner, now: () => NOW, readStdin: () => stdin, identity });
+const brief = (n: number, kind: 'spawn' | 'wake' | 'replace', head: string, reviewer: string) => ({ n, kind, head, base: null, hash: String(n).padStart(64, '0'), text: 'brief', reviewer, at: NOW });
 const reviewOf = (id: string, name: string, head: string) => ({ reviewer: { id, name, at: NOW }, head, base: null, briefs: [brief(1, 'spawn', head, id)] });
 
 /** A run `r1` (coordinator ws r1) with seatRecords chosen, T1 nominated at A (reviewer rev1, implementer impl1), T2 nominated at C (reviewer rev2). */
@@ -268,7 +271,7 @@ test('state set must-FAIL [finding-source]: the coordinator\'s --finding, --find
     ['T1', '--json', '{"settle":{"F1":{"how":"fixed","ref":"abc1234"}}}'],
   ]) {
     const r = setT(home, 'r1', ...args);
-    assert.equal(r.code, 1, `${args.join(' ')}: ${r.stderr}`); // a verb refusal is exit 1 in the state verb (as every state set refusal)
+    assert.equal(r.code, 2, `${args.join(' ')}: ${r.stderr}`); // a seatRecords refusal exits 2 (SeatRefusal, #587)
     assert.ok(r.stderr.startsWith('[finding-source]'), `${args.join(' ')}: ${r.stderr}`);
   }
   assert.equal(fs.readFileSync(stateFile(home, 'r1'), 'utf8'), before, 'nothing written');
@@ -302,7 +305,7 @@ test('decide: a written reason is required ([decision-reason-blank]); with one t
   assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR()).code, 0);
   for (const arg of ['F1=', 'F1=   ']) {
     const r = setT(home, 'r1', 'T1', '--decide', arg);
-    assert.equal(r.code, 1);
+    assert.equal(r.code, 2);
     assert.ok(r.stderr.startsWith('[decision-reason-blank]'), r.stderr);
   }
   assert.equal(T(home).findings.F1.decision, undefined);
@@ -666,15 +669,29 @@ test('wiring pin: index.ts routes `fanout record` and hands the bus `send` its c
   const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'index.ts'), 'utf8');
   assert.ok(src.includes("args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) :"), 'fanout record is routed');
   assert.ok(src.includes('completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId)'), 'verbSend gets the hook');
-  assert.ok(src.includes("if (args[0] === 'record') {") && src.includes('refusing to record: the host could not vouch this session'), 'a keyed session the host cannot vouch records nothing');
+  assert.ok(src.includes("const needsCaller = args[0] === 'review' || args[0] === 'record' ||"), 'the host is asked who the recorder is, and its answer is handed to the verb (`...(needsCaller ? { identity: hostIdentity } : {})`)');
+  assert.ok(src.includes("if (args[0] === 'record' && process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session"), 'a keyed session the host cannot vouch records nothing');
 });
 
 test('recordReview (the pure rule): off the switch it records nothing, whoever calls — [record-off] — and a refusal never returns a state', (t) => {
   const home = mkHome(t);
   const off = seed(home, { switches: { seatRecords: 'off' } });
-  assert.throws(() => recordReview(off, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'rev1', tree: null, now: NOW }), /^FanoutStateError: \[record-off\]|\[record-off\] seatRecords is off/);
+  assert.throws(() => recordReview(off, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'rev1', callerVouched: true, tree: null, now: NOW }), /^FanoutStateError: \[record-off\]|\[record-off\] seatRecords is off/);
   const on = seed(mkHome(t));
-  assert.throws(() => recordReview(on, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'r1', tree: null, now: NOW }), /\[record-not-reviewer\]/);
-  assert.equal(recordReview(on, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'rev1', tree: null, now: NOW }).tickets.T1.reviews!.length, 1);
+  assert.throws(() => recordReview(on, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'r1', callerVouched: true, tree: null, now: NOW }), /\[record-not-reviewer\]/);
+  assert.equal(recordReview(on, 'T1', { head: A, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: 'rev1', callerVouched: true, tree: null, now: NOW }).tickets.T1.reviews!.length, 1);
   assert.equal(on.tickets.T1.reviews, undefined, 'the input state is never mutated');
+});
+
+test('record must-FAIL [record-not-reviewer]: the reviewer\'s id asserted by the environment ALONE is not proof — a coordinator that exports the reviewer\'s ws id records nothing (the host did not vouch)', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  const forged = (identity: IdentityResolution | null) => runRecord(['T1', '--run', 'r1', '--head', A, '--verdict', 'approve', '--json', '-'], depsOf(home, 'rev1', offline, '{}', identity));
+  for (const id of [null, { source: 'env', why: 'unvouched' } as IdentityResolution, { source: 'env', why: 'no-key' } as IdentityResolution, { source: 'env', why: 'unreachable' } as IdentityResolution]) {
+    const r = forged(id);
+    refused(r, 'record-not-reviewer');
+    assert.match(r.stderr, /the host could not vouch that you are review-T1 \(rev1\)/);
+  }
+  assert.equal(T(home).reviews, undefined);
+  assert.equal(forged(HOST).code, 0);
 });

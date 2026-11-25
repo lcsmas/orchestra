@@ -147,7 +147,7 @@ const mutants = [
   ["563: SWITCH_VALUES drops the verifier switch", S, ", verifier: ['on', 'off'], preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;", ", preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;"],
   ["563: state set --verifier records a seat under verifier=off", S, "if (next.verifier && switchesOf(state).verifier === 'off') throw", "if (next.verifier && switchesOf(state).verifier === 'never') throw"],
   ["563: the stamp ignores a non-default verifier", S, "sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]", "n !== 'verifier' && sw[n] !== undefined && sw[n] !== DEFAULT_SWITCHES[n]"],
-  ["563: deliver never reads the verifier switch", "src/cli/fanout-deliver.ts", "if (opts.noReviewGate && deps.verifierSwitch) {", "if (false as boolean && deps.verifierSwitch) {"],
+  ["563: deliver never reads the verifier switch", "src/cli/fanout-deliver.ts", "if (!recState && opts.noReviewGate && deps.verifierSwitch) {", "if (false as boolean && deps.verifierSwitch) {"],
   ["563: deliver reads off as on", "src/cli/fanout-deliver.ts", "if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict'", "if (sw === 'never' as string) return done({ verdict: 'refused', reason: 'no-verdict'"],
   ["563: deliver's off refusal is not the no-verdict answer", "src/cli/fanout-deliver.ts", "if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict'", "if (sw === 'off') return done({ verdict: 'refused', reason: 'bad-args' as never"],
   ["563: production deliver wires no switch reader", "src/cli/fanout-deliver.ts", "  verifierSwitch: (o) => verifierSwitchFromState(o),\n", ""],
