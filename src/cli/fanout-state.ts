@@ -46,7 +46,6 @@ import { assertReviewCaller } from '../shared/fanout-review.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
 import { assertDecideCaller, countsThrough, unrecordedReviewers } from '../shared/fanout-record.ts';
-import { resolveCaller } from '../shared/fanout-caller.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
 export interface HostCall { route: '/fanoutAcceptance'; body: Record<string, unknown> }
