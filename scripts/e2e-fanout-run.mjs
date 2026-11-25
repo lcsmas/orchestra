@@ -83,7 +83,7 @@ function run() {
   return { pass: n('pass'), fail: n('fail'), skipped: n('skipped'), tests: n('tests') };
 }
 const BR = 'src/shared/fanout-implementer-brief.ts', ST = 'src/shared/fanout-start.ts';
-const L = 'src/shared/fanout-loop.ts', J = 'src/shared/fanout-loop-judge.ts', C = 'src/shared/fanout-loop-compat.ts', DM = 'src/shared/fanout-loop-dummy.ts';
+const L = 'src/shared/fanout-loop.ts', J = 'src/shared/fanout-loop-judge.ts', S = 'src/shared/fanout-state.ts', DM = 'src/shared/fanout-loop-dummy.ts';
 // [name, [[file, from, to], …]] — every `from` must occur exactly once in its file
 const mutants = [
   ['decision 3 (the fleet): every dependent\'s implementer waits for its upstream to merge before it codes', [[DM, "return [{ do: 'code' }, { do: 'nominate' }, ...deps.map", "return [...(deps.length ? [{ do: 'wait' } as Step] : []), { do: 'code' }, { do: 'nominate' }, ...deps.map"]]],
@@ -95,7 +95,7 @@ const mutants = [
   ['decision 5: a question is not listed (no choice recorded)', [[L, "        if (!h) ctx.update((x) => { const y = recordChoice(x,", "        if (false as boolean) ctx.update((x) => { const y = recordChoice(x,"]]],
   ['decision 5: "NO SAFE OPTION" is read as a plain question', [[L, "        if (nso) {", "        if (false as boolean && nso) {"]]],
   ['decision 5: "NO SAFE OPTION" records a choice but parks nothing', [[L, "recordChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), {", "recordChoice(x, {"]]],
-  ['decision 5: a parked ticket does not park its dependents', [[C, "for (const d of dependentsOf(s, id)) if (!parked[d]", "for (const d of [] as string[]) if (!parked[d]"]]],
+  ['decision 5 (the real #603 transition): a parked ticket does not park its dependents', [[S, "for (const d of dependentsOf(state, id)) {", "for (const d of [] as string[]) {"]]],
   ['one reader: the loop reads the mail and acks it unprocessed (a read-and-drop)', [[L, "  const mails = [...(await deps.fleet.mail())].sort(", "  const dropped = await deps.fleet.mail(); if (dropped.length) await deps.fleet.ack(dropped[dropped.length - 1].seq);\n  const mails = [...(await deps.fleet.mail())].sort("]]],
   ['a dependent is nominated on the mere presence of builtOn (an upstream that moved crashes the run)', [[L, "const clear = unmergedUpstreams(s, id).every((u) => upstreamBlocker(view, view.tickets[id], u) === null);", "const clear = unmergedUpstreams(s, id).every((u) => builtOn[u]);"]]],
   ['a nomination the state refuses ends the run', [[L, "      if (!(e instanceof FanoutStateError)) throw e;\n      // the state refuses", "      throw e;\n      // the state refuses"]]],
@@ -122,10 +122,14 @@ const mutants = [
   ['round 2: the dummy forge close() closes nothing', [[DM, "async close(n) { w.closePr(n); },", "async close(_n) { /* nothing */ },"]]],
   ['round 2: the dummy forge merges a closed PR', [[DM, "if (p.state !== 'open') return { ok: false,", "if (p.state === 'merged') return { ok: false,"]]],
   ['r3: a dead reviewer is replaced for ever (no cap)', [[L, "      if (died >= cap) {", "      if (false as boolean) {"]]],
+  ['r3 OPS: the replacement is charged BEFORE the spawn (a failed spawn burns the cap)', [[L, "    const r = await deps.fleet.spawnReviewer(id, t.head);\n    if (last && sameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));", "    if (last && sameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));\n    const r = await deps.fleet.spawnReviewer(id, t.head);"]]],
   ['r3: the reviewer replacements are not counted', [[L, "[key]: died + 1 } } }));", "[key]: died } } }));"]]],
   ['r3: a dead implementer is respawned for ever (no cap)', [[L, "    if (n >= cap) {", "    if (false as boolean) {"]]],
   ['r3: the implementer respawns are not counted', [[L, "replaced: { ...y.loop.replaced, [key]: (y.loop.replaced[key] ?? 0) + 1 } } }));\n    ctx.did(`restarted", "replaced: y.loop.replaced } }));\n    ctx.did(`restarted"]]],
   ['r3: a second hold inherits the first hold\'s age', [[L, "busySince: Object.fromEntries(Object.entries(y.loop.busySince).filter(([k]) => !fresh.some((x) => k === `held:${x.ticket}`))) } }));", "busySince: y.loop.busySince } }));"]]],
+  ['swap: a parked ticket still counts as active (the loop reads no status)', [[L, "t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'parked';", "t.status !== 'merged' && t.status !== 'dropped';"]]],
+  ['swap: the loop does not park through the state (no status change: startRun would respawn it)', [[L, "ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));\n        ctx.did(`parked ${id}: ${reason}`);\n        return;", "ctx.did(`parked ${id}: ${reason}`);\n        return;"]]],
+  ['swap: an ask is listed with its control characters (the state refuses it, the message is retried for ever)', [[L, "const clean = (t: string): string => t.replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f]/g, ' ').trim() || '(empty)';", "const clean = (t: string): string => t.trim() || '(empty)';"]]],
   ['decision 12: the nomination signal is not durable (a kill between the mail and the nomination loses it)', [[L, "if (ctx.signals.has(id) || s.loop.signalled[id]) {", "if (ctx.signals.has(id)) {"]]],
   ['decision 11: a start held by Admission parks the ticket (read as a fault)', [[L, "for (const x of r.waiting) { ctx.waitOn(`held:${x.ticket}`, holdMs); ctx.note(`waiting: ${x.ticket} — ${x.why}`); }", "for (const x of r.waiting) ctx.update((y) => parkTicket(y, x.ticket, { cause: 'situation', reason: x.why }, deps.now()));"]]],
   ['decision 10: a merge with NO recorded approval (any nominated ticket counts as approved)', [[L, "if (!r.ok || r.recorded.verdict !== 'approve' || r.recorded.blocking > 0 || r.recorded.major > 0) continue;", "if (false as boolean) continue;"], [L, "if (entry) ctx.approved.set(id, { head: t.head, at: entry.at, round: r.recorded.round });", "ctx.approved.set(id, { head: t.head, at: entry?.at ?? s.updatedAt, round: 0 });"], [L, "    if (!rec) return; // no recorded verdict on this content: nothing to merge on (defence in depth: `ctx.approved` already says so)\n", ""], [L, "      verdict: { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head },", "      verdict: rec ? { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head } : undefined,"]]],

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { FanoutStateError, SeatRefusal, assertRunId, stateFile, readState } from '../shared/fanout-state.ts';
 import type { LoopOptions } from '../shared/fanout-loop.ts';
 import { parseScenario, runDummyLoop } from '../shared/fanout-loop-dummy.ts';
-import type { Plan } from '../shared/fanout-loop-compat.ts';
+import type { Plan } from '../shared/fanout-plan.ts';
 import { homeOf, parseArgs, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
 export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,b,c | --plan <plan.json>] [--scenario <scenario.json>] [--start-check] [--minor-policy <legacy|refuse|spec|demonstrated>]

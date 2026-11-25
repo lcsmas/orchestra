@@ -2,10 +2,11 @@
 // Disposable by design (decision 12): every pass re-reads the state, git and the forge; the only thing carried between passes is the stall clock. The #606 / #607 / #608 steps are stubs here (see `stepCorrections`, `stepCi`,
 // `stepReconcile`): they fill their step, never reorder `LOOP_STEPS`.
 import type { FleetPort, ForgePort, GitPort } from './fanout-loop-ports.ts';
-import { applyPlan, parkTicket, pausedOf, parkedTickets, readLoopState, recordChoice, updateLoopState, withLoop, type LoopState, type Plan } from './fanout-loop-compat.ts';
+import { readLoopState, updateLoopState, withLoop, type LoopState } from './fanout-loop-side.ts';
+import { applyPlan, type Plan } from './fanout-plan.ts';
 import { buildReport, type Report } from './fanout-report.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
-import { blockingMinors, applyTicketPatch, FanoutStateError, newState, planMissing, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
+import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
 import { recordedVerdictOf, reviewOn } from './fanout-record.ts';
 
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
@@ -77,7 +78,7 @@ export interface LoopCtx {
   /** run one ticket's (or one message's) share of a step: a thrown PORT error is logged and retried next pass — it never ends the run (a refusal or a kill does) */
   guard(label: string, fn: () => Promise<void>): Promise<boolean>;
   st(): LoopState;
-  update(fn: (s: LoopState) => LoopState): LoopState;
+  update(fn: (s: LoopState) => FanoutState | LoopState): LoopState;
   did(msg: string): void;
 }
 
@@ -85,9 +86,9 @@ const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWi
 const ms = (iso: string): number => Date.parse(iso);
 
 export const isMerged = (s: LoopState, id: string): boolean => s.tickets[id]?.status === 'merged';
-export const isParked = (s: LoopState, id: string): boolean => !!s.loop.parked[id];
+export const isParked = (s: LoopState, id: string): boolean => s.tickets[id]?.status === 'parked'; // #603: parked is a STATUS (startRun skips it)
 /** Plan tickets still to deliver: not merged, not dropped, not parked. */
-export const activeTickets = (s: LoopState): string[] => (s.plan?.tickets ?? []).filter((id) => { const t = s.tickets[id]; return !!t && t.status !== 'merged' && t.status !== 'dropped' && !isParked(s, id); });
+export const activeTickets = (s: LoopState): string[] => (s.plan?.tickets ?? []).filter((id) => { const t = s.tickets[id]; return !!t && t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'parked'; });
 const implementerTicket = (s: LoopState, ws: string): string | null => Object.entries(s.tickets).find(([, t]) => t.implementer === ws)?.[0] ?? null;
 
 export function renderConnectAsk(i: { ticket: string; upstream: string; branch: string | null; head: string }): string {
@@ -168,11 +169,13 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
 }
 
 /** Decision 5, fail CLOSED: the marker opening ANY line of the body (any case, spacing or punctuation) parks; only a body without it is a question that gets the fixed answer. */
+/** An agent's text goes into `choices` / a park reason: control characters would be refused by the state ([choice-bad]) and the message would be retried for ever. */
+const clean = (t: string): string => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim() || '(empty)';
 export function parseNoSafeOption(body: string): { reason: string } | null {
   const m = /^[ \t\W_]*no[ \t_-]*safe[ \t_-]*option\b/im.exec(body); // the marker OPENS a line (any case/spacing/punctuation): a question that merely contains the words ("is there no safe option name collision?") stays a question
   if (!m) return null;
   const rest = body.slice(m.index + m[0].length).replace(/^[\s:.\-–—]+/, '').trim();
-  return { reason: rest.split('\n')[0].slice(0, 300) || '(no reason given)' };
+  return { reason: clean(rest.split('\n')[0]).slice(0, 300).replace(/^\(empty\)$/, '(no reason given)') };
 }
 
 /** The loop is the ONLY reader of the run's mail (one `fleet.mail()` per pass). The mail is acked only AFTER its batch is processed, and each message is handled idempotently (`loop.handled`): a kill mid-batch loses nothing — the
@@ -192,13 +195,13 @@ export async function stepMail(ctx: LoopCtx): Promise<void> {
         const nso = parseNoSafeOption(m.body);
         if (nso) {
           if (ticket && s.tickets[ticket] && !isMerged(s, ticket)) {
-            ctx.update((x) => { const y = recordChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now()); return { ...y, loop: { ...y.loop, handled: { ...y.loop.handled, [m.seq]: 'done' as const } } }; });
+            ctx.update((x) => { const y = recordChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now()); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'done' as const } } }; });
             ctx.did(`parked ${ticket}: no safe option — ${nso.reason}`);
           } else markDone(m.seq);
           return;
         }
-        const first = m.body.split('\n')[0].slice(0, ASK_MAX); // `recordChoice` refuses longer text ([choice-bad]); the full text stays in the agent's PR body
-        if (!h) ctx.update((x) => { const y = recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()); return { ...y, loop: { ...y.loop, handled: { ...y.loop.handled, [m.seq]: 'listed' as const } } }; });
+        const first = clean(m.body.split('\n')[0]).slice(0, ASK_MAX); // `recordChoice` refuses longer text ([choice-bad]); the full text stays in the agent's PR body
+        if (!h) ctx.update((x) => { const y = recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'listed' as const } } }; });
         await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');
         markDone(m.seq);
         ctx.did(`answered ${ticket ?? m.sender}'s question with the fixed answer`);
@@ -296,9 +299,9 @@ export async function stepReview(ctx: LoopCtx): Promise<void> {
         ctx.did(`parked ${id}: ${reason}`);
         return;
       }
-      ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));
     }
     const r = await deps.fleet.spawnReviewer(id, t.head);
+    if (last && sameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } })); // counted AFTER the spawn succeeded: a host op that fails (busy, down) is retried, never charged to the cap
     ctx.did(`reviewer ${r.id} reads ${id} at ${t.head.slice(0, 12)}`);
   });
 }

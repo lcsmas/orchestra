@@ -8,8 +8,10 @@ import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
 import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, NO_SAFE_OPTION, parseNoSafeOption, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
-import { applyPlan, recordChoice, parkTicket, pauseRun, readLoopState, recordRound, resumeRun, situationFingerprint, updateLoopState, withLoop, parkedTickets } from './fanout-loop-compat.ts';
-import { applyTicketPatch, newState, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
+import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
+import { applyPlan } from './fanout-plan.ts';
+import { startRun } from './fanout-start.ts';
+import { applyTicketPatch, newState, parkTicket, pauseRun, recordChoice, resumeRun, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
 import { LOOP_BRIEF, renderImplementerBrief } from './fanout-implementer-brief.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
@@ -179,18 +181,16 @@ test('frozen names: the steps, the fixed answer, the no-safe-option marker', () 
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), new RegExp(`^CONNECT T1 ${H('a')}\\n`));
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), /MERGE COMMIT/);
 });
-test('compat (#603 names): park is transitive, refuses merged / unknown / no reason; the fingerprint is the frozen sha256; a repeat is the second sighting', async () => {
-  let s = withLoop(applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: 'n' }), planOf(load('rts7')), 'n'));
-  s = parkTicket(s, 'T3', { cause: 'ci', reason: 'check build is red' }, 'now');
-  assert.deepEqual(parkedTickets(s).map((p) => [p.ticket, p.cause, p.blockedBy ?? null]), [['T3', 'ci', null], ['T5', 'upstream', 'T3'], ['T7', 'upstream', 'T3']]);
-  assert.throws(() => parkTicket(s, 'T9', { cause: 'ci', reason: 'x' }, 'now'), /\[park-unknown-ticket\]/);
-  assert.throws(() => parkTicket(s, 'T1', { cause: 'ci', reason: '' }, 'now'), /\[park-no-reason\]/);
-  assert.throws(() => parkTicket(s, 'T1', { cause: 'nope' as never, reason: 'x' }, 'now'), /\[park-bad-cause\]/);
-  assert.equal(situationFingerprint({ openFindings: ['b', 'a'], tree: 'abc' }), sha256Hex('findings:a,b\ntree:abc'));
-  const first = recordRound(s, 'T1', 'fp', 't1');
-  assert.equal(first.repeat, false);
-  assert.equal(recordRound(first.state, 'T1', 'fp', 't2').repeat, true);
-  assert.equal(recordRound(first.state, 'T1', 'other', 't2').repeat, false);
+test('the loop writes the REAL #603 records: parked is a status (cause, blockedBy), choices and the pause live in state.json — the sidecar holds the loop-only fields', async () => {
+  const home = tmp();
+  const r = await runDummyLoop({ home, scenario: load('nosafe'), options: { stallMs: 30 * 60_000 } });
+  const st = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'state.json'), 'utf8'));
+  assert.deepEqual(['T3', 'T5', 'T7'].map((id) => [st.tickets[id].status, st.tickets[id].parked.cause, st.tickets[id].parked.blockedBy ?? null]), [['parked', 'question', null], ['parked', 'upstream', 'T3'], ['parked', 'upstream', 'T3']]);
+  assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'no-safe-option']]);
+  const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
+  for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
+  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'replaced', 'signalled']);
+  assert.deepEqual(r.result.report.parked.map((p) => p.ticket), ['T3', 'T5', 'T7']);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {
   const home = tmp();
@@ -319,7 +319,7 @@ test('MAJOR-1: killed between the choice and the answer, the restart answers and
   let killed = false;
   const fleet = { ...d.fleet, async send(to: string, text: string, kind: 'status' | 'answer') { if (kind === 'answer' && !killed) { killed = true; throw new LoopKilled('killed before the answer'); } return d.fleet.send(to, text, kind); } };
   await assert.rejects(runLoop(depsOf(home, d, { fleet })), /killed before the answer/);
-  assert.equal(readLoopState(home, 'question')!.loop.choices.length, 1, 'the choice is durable before the answer goes out');
+  assert.equal(readLoopState(home, 'question')!.choices?.length, 1, 'the choice is durable before the answer goes out');
   assert.ok(d.world.drainMail().some((m) => m.kind === 'ask'), 'and the mail was NOT acked: the restart is handed it again');
   const again = await runLoop(depsOf(home, d));
   assert.equal(again.exit, 0);
@@ -393,15 +393,24 @@ test('MINOR-3: the loop section of the implementer brief — present for a loop-
   const r = await go('rts7');
   assert.ok(r.world.events.filter((e) => e.ev === 'spawn').every((e) => e.briefHasLoop === true), 'every brief the loop launched carries the loop section');
   for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', '`## Choices`', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
-  const st = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
+  const planned = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
+  const { loopPlan: _lp, ...st } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T1' })), 'b88073ddf1793f4e7e5254289b14f78400f52a408c2b12b7c15a942aa30aa560');
   assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: false }), renderImplementerBrief({ state: st, ticket: 'T3' }));
   assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: true }), `${renderImplementerBrief({ state: st, ticket: 'T3' })}\n\n${LOOP_BRIEF}`);
-  assert.ok(renderImplementerBrief({ state: { ...st, loopPlan: { at: 'x', hash: 'y', attempts: 1 } } as never, ticket: 'T3' }).endsWith(LOOP_BRIEF), 'the #604 marker (state.loopPlan) turns it on too');
+  assert.ok(planned.loopPlan, 'a loop-planned run carries #604\'s marker');
+  assert.ok(renderImplementerBrief({ state: planned, ticket: 'T3' }).endsWith(LOOP_BRIEF), 'the #604 marker (state.loopPlan) turns the loop section on by itself');
 });
-test('MINOR-4 SWAP GATE (#603): while `parked` is not a TICKET_STATUS the shipped startRun respawns a parked ticket — when this fails #603 landed: delete fanout-loop-compat.ts, import its names from fanout-state.ts, flip this to "startRun skips a parked ticket"', () => {
-  assert.equal((TICKET_STATUSES as readonly string[]).includes('parked'), false);
+const N = '2026-01-01T00:00:00.000Z';
+test('MINOR-4 swap gate, FLIPPED (#603 landed): `parked` is a TICKET_STATUS and the shipped startRun SKIPS a parked ticket — a parked ticket whose agent is gone is never respawned', async () => {
+  assert.equal((TICKET_STATUSES as readonly string[]).includes('parked'), true);
+  const home = tmp();
+  updateLoopState(home, 'x', () => withLoop(parkTicket(applyPlan(newState('x', { target: 'main', switches: { seatRecords: 'on' }, now: N }), planOf(load('rts7')), N), 'T3', { cause: 'question', reason: 'no safe option' }, N)));
+  const spawned: string[] = [];
+  const r = await startRun('x', 'x', { home, now: () => N, loop: true, implementerLive: () => false, repoPath: () => undefined, spawn: async ({ name }) => { spawned.push(name); return { ok: true, id: `ws-${name}`, branch: name }; } });
+  assert.deepEqual(r.skipped.filter((x) => x.reason === 'parked').map((x) => x.ticket), ['T3', 'T5', 'T7']);
+  assert.deepEqual(spawned.sort(), ['impl-T1', 'impl-T2', 'impl-T4', 'impl-T6']);
 });
 test('MINOR-5: a port error on ONE ticket (prState, wake, openPr) is logged and retried next pass — the run still ends in a report', async () => {
   const home = tmp();
@@ -423,7 +432,7 @@ test('an agent\'s ask is cut to ASK_MAX before it is listed (recordChoice refuse
   assert.equal(r.result.exit, 0);
   assert.equal(r.result.report.choices.length, 1);
   assert.equal(r.result.report.choices[0].question.length, ASK_MAX);
-  assert.throws(() => recordChoice(withLoop(newState('r', { now: 'n', switches: { seatRecords: 'on' } })), { ticket: 'T', question: 'q'.repeat(2001), rule: 'reversible-default', answer: 'a' }, 'n'), /\[choice-bad\]/);
+  assert.throws(() => recordChoice(newState('r', { now: 'n', switches: { seatRecords: 'on' } }), { ticket: 'T', question: 'q'.repeat(2001), rule: 'reversible-default', answer: 'a' }, 'n'), /\[choice-bad\]/);
 });
 test('the dummy forge CONTRACT: close(n) really closes — prState says closed, a merge is refused, nothing is merged', async () => {
   const d = buildDummy({ home: tmp(), run: 'x', scenario: load('held') });
@@ -524,4 +533,23 @@ test('r3 MINOR: a SECOND hold of the same ticket starts its own clock (it does n
   assert.equal(r.result.exit, 0, r.result.reason);
   assert.deepEqual([...r.result.report.merged].sort(), ['A', 'B']);
   assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'A' && e.held === true).length, 2, 'two hold episodes');
+});
+
+test('r3 MINOR (OPS): a replacement that FAILS to spawn is not charged to the cap — three host failures, then a working reviewer: merged, nothing parked', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'changes-requested', scenario: sc('changes-requested', { agents: { T1: { reviewer: [{ do: 'die' }, { do: 'approve' }] } } }) });
+  let fails = 3, calls = 0;
+  const fleet = { ...d.fleet, async spawnReviewer(t: string, h: string) { calls++; if (t === 'T1' && d.world.events.some((e) => e.ev === 'review-died') && fails-- > 0) throw new Error('host busy'); return d.fleet.spawnReviewer(t, h); } };
+  const r = await runLoop(depsOf(home, d, { fleet }, { maxPasses: 400 }));
+  assert.equal(r.exit, 0, r.reason);
+  assert.equal(r.report.merged.length, 2);
+  assert.ok(fails < 0 && calls >= 6, 'the replacement was tried 4 times: 3 failures + 1 success');
+  assert.equal(readLoopState(home, 'changes-requested')!.loop.replaced[`rev:T1:${d.world.events.find((e) => e.ev === 'review-record' && e.ticket === 'T1')!.head}`], 1, 'one replacement charged');
+});
+test('swap: an ask with control characters is cleaned before it is listed ([choice-bad] would retry the message for ever); the NO SAFE OPTION reason too', async () => {
+  const q = await runDummyLoop({ home: tmp(), scenario: sc('question', { events: { T2: [{ at: 'code', kind: 'question', body: 'Which name?\u0007 \u0001beep' } as never] } }), options: { stallMs: 30 * 60_000 } });
+  assert.equal(q.result.exit, 0, q.result.reason);
+  assert.equal(q.result.report.choices[0].question, 'Which name?   beep');
+  const n = await runDummyLoop({ home: tmp(), scenario: sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body: 'NO SAFE OPTION: bad\u0000spec' } as never] } }), options: { stallMs: 30 * 60_000 } });
+  assert.equal(n.result.report.parked.find((p) => p.ticket === 'T3')?.reason, 'bad spec');
 });
