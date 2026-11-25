@@ -98,7 +98,7 @@ const mutants = [
   ['decide: a non-coordinator may decide', R, "if (caller.role !== 'coordinator') refuse('decide-caller'", `if (${F}) refuse('decide-caller'`],
   ['state set: the typed approve / changes-requested word is accepted from the coordinator', S, "if (patch.verdict === 'approve' || patch.verdict === 'changes-requested') throw", `if (${F}) throw`],
   ['deliver: a decoy run with the switch off skips the recorded-verdict rule', D, "if (ownState && seatRecordsOn(ownState)) throw", `if (${F}) throw`],
-  ['wiring: a `state set --decide` never asks the host who the caller is', I, " || stateSetNeedsHost(args, process.env); // #589: + a `--decide` under seatRecords=on", "; // #589: + a `--decide` under seatRecords=on"],
+  ['wiring: a `state set --decide` never asks the host who the caller is', I, "if (stateSetNeedsHost(args, process.env)) {", `if (${F}) {`],
   // deliver / gate
   ['deliver: a typed --review-verdict is accepted under the switch', D, "if (opts.reviewVerdict) return done({ verdict: 'refused', reason: 'typed-verdict'", `if (${F}) return done({ verdict: 'refused', reason: 'typed-verdict'`],
   ['deliver: --no-review-gate is accepted under the switch', D, "if (opts.noReviewGate) return done({ verdict: 'refused', reason: 'ungated-merge'", `if (${F}) return done({ verdict: 'refused', reason: 'ungated-merge'`],
@@ -118,6 +118,8 @@ const mutants = [
   ['closeout: the decided list is printed off the switch', CO, "const decided = seatRecordsOn(state) ? decidedCloseout(state) : null;", "const decided = decidedCloseout(state);"],
   ['closeout: the decided list drops the written reason', 'src/shared/fanout-closeout.ts', "decided by ${x.by} at ${x.at}: ${oneLine(x.text, 300)}", "decided by ${x.by} at ${x.at}"],
   // wiring
+  ['brief: "How to end" does not name `fanout record`', 'src/shared/fanout-review-brief.ts', "`  orchestra fanout record ${i.ticket} --run ${i.run} --head ${i.head} --verdict approve|changes-requested --json <file|->`", "`  (record your verdict)`"],
+  ['brief: the json shape (findings / fixed) is not given', 'src/shared/fanout-review-brief.ts', "\"fixed\":[\"<id of an open finding you raised on an earlier head and have now read FIXED on this head>\"]}'", "\"fixed\":[]}'"],
   ['wiring: `fanout record` is not routed', I, "args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) :", ""],
   ['wiring: the send verb gets no completionRefusal', I, "completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId)", "completionRefusalOff: (sender, runId) => fanoutCompletionRefusal(sender, runId)"],
 ];

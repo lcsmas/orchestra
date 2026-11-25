@@ -105,7 +105,11 @@ export function renderReviewerBrief(i: BriefInput): string {
   out.push('## Rules', REVIEWER_RULES, MERGE_RULES[i.switches.minorPolicy], '');
   if (i.reviewerSkillPath) out.push(`Your role file: ${i.reviewerSkillPath}`, '');
   out.push('## How to end',
-    `Write your findings (id, severity, measured|argued, the evidence) and your verdict (approve | changes-requested) on the head ${i.head}, then end with: orchestra send --type worker_done --to ${i.coordinator} --cap "$(orchestra token)" "<verdict + findings>".`,
+    `Record your verdict and EVERY finding with ONE command — gate and deliver read nothing else (a verdict written in prose or typed by the coordinator is not read):`,
+    `  orchestra fanout record ${i.ticket} --run ${i.run} --head ${i.head} --verdict approve|changes-requested --json <file|->`,
+    '  json = {"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"<the finding>","specSentence"?:"<verbatim spec text>","kind"?:"code|process","report"?:{…},"demonstration"?:{…}}},"fixed":["<id of an open finding you raised on an earlier head and have now read FIXED on this head>"]}',
+    'Counts are derived from the findings you list; approve is refused while a BLOCKING / MAJOR finding is open, changes-requested needs one. A finding you do not list does not exist for the merge.',
+    `Then end with: orchestra send --type worker_done --to ${i.coordinator} --cap "$(orchestra token)" "<one line>" — it is refused until your verdict for ${briefShort(i.head)} is recorded.`,
     'Review this head only; if the ticket moves, the coordinator wakes you with the delta.');
   return `${out.join('\n')}\n`;
 }

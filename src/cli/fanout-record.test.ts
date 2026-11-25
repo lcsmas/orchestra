@@ -19,6 +19,7 @@ import * as bus from '../main/bus.ts';
 import * as busRuns from '../main/bus-runs.ts';
 import { withReceipt } from '../main/bus-receipts.ts';
 import { applyTicketPatch, newState, readState, setPlan, stateFile, switchesOf, writeStateAtomic, type FanoutState, type TicketState } from '../shared/fanout-state.ts';
+import { renderBriefOf } from '../shared/fanout-review.ts';
 import { recordReview, reviewCounts, reviewerDoneRefusal, unrecordedReviewers } from '../shared/fanout-record.ts';
 
 const NOW = '2026-11-25T10:00:00.000Z';
@@ -832,4 +833,15 @@ test('resume / worker_done: a merged or dropped ticket has no reviewer owing a r
 test('wiring pin: the `--as <other handle>` nudge — the caller\'s own workspace id is asked too, not only the handle it sends as', () => {
   const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'index.ts'), 'utf8');
   assert.ok(src.includes('?? (selfWorkspaceId() && selfWorkspaceId() !== sender ? fanoutCompletionRefusal(selfWorkspaceId()!, runId) : null)'), 'the own-workspace fallback');
+});
+
+test('m1: the reviewer\'s brief ends with the record command (ticket, run, head, verdict, --json) and the json shape; the worker_done comes after, and says it is refused until recorded', (t) => {
+  const home = mkHome(t);
+  const s = seed(home);
+  const b = renderBriefOf(s, 'T1', { kind: 'spawn', head: A, base: null }).text;
+  assert.ok(b.includes(`orchestra fanout record T1 --run r1 --head ${A} --verdict approve|changes-requested --json <file|->`), 'the exact record command');
+  assert.ok(b.includes('"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":') && b.includes('"fixed":["<id of an open finding'), 'the json shape');
+  assert.ok(b.indexOf('orchestra fanout record') < b.indexOf('worker_done'), 'record first, worker_done after');
+  assert.ok(b.includes('is refused until your verdict for aaaaaaaaaaaa is recorded'), 'the worker_done rule');
+  assert.ok(!/write your findings/i.test(b), 'no prose-verdict instruction left');
 });
