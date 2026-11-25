@@ -8,7 +8,7 @@ import { createLiveGit, type Exec, type ExecResult } from '../shared/fanout-loop
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from '../shared/fanout-loop.ts';
 import { tokensOfFiles, transcriptFilesIn, workspacesOfTicket } from '../shared/fanout-report.ts';
 import { readState, stateFile } from '../shared/fanout-state.ts';
-import { deliver, realDeps } from './fanout-deliver.ts';
+import { deliver, realDeps, type DeliverDeps } from './fanout-deliver.ts';
 
 /** `execFile` behind the {@link Exec} seam: argv, never a shell; a missing binary is a result, not a throw. */
 export const realExec: Exec = (cmd, args, opts) => new Promise<ExecResult>((resolve) => {
@@ -34,13 +34,13 @@ export interface LiveRunInput {
 }
 
 /** The merge, through the shipped `deliver`: its verdict (recorded approval, CI, upstream order, acceptance, follow-up) is the loop's — nothing here merges around it. */
-export function mergeThroughDeliver(i: { home: string; run: string; log: (l: string) => void }): (x: { n: number; head: string }) => Promise<MergeAnswer> {
+export function mergeThroughDeliver(i: { home: string; run: string; log: (l: string) => void; deps?: Partial<DeliverDeps> }): (x: { n: number; head: string }) => Promise<MergeAnswer> {
   return async ({ n, head }) => {
     const s = readState(stateFile(i.home, i.run));
     const entry = Object.entries(s?.tickets ?? {}).find(([, t]) => t.pr === n);
     if (!s || !entry || !entry[1].branch) return { ok: false, reason: 'no-ticket', detail: `no ticket of run ${i.run} has pull request #${n}` };
     const [ticket, t] = entry;
-    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, { ...realDeps(), log: i.log });
+    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, { ...realDeps(), ...i.deps, log: i.log });
     const r = out.result;
     if (out.exit === 0 && (r.verdict === 'merged' || r.verdict === 'already-merged')) return { ok: true };
     return { ok: false, reason: String(r.reason ?? r.verdict), ...(r.detail ? { detail: r.detail } : {}) };

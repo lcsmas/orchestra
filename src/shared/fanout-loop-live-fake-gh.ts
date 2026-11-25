@@ -1,6 +1,7 @@
 // #614 — a FAKE `gh` for the live ForgePort's contract test: an in-memory pull-request host speaking the exact subset of `gh` the port uses, answering in the shapes the real binary prints (`statusCheckRollup` CheckRun rows with
 // Actions job URLs, `pr create` printing the PR URL, `pr merge --match-head-commit` refusing a moved head). Anything else exits 1 `unsupported`: the instrument never answers a question it was not built for.
 // CI is SCRIPTED per branch: one result per CI run ("green" | "red:<check>"), a re-run (`run rerun --failed`) consumes the next one and gives the failed jobs NEW job ids — the property #607 reads.
+import crypto from 'node:crypto';
 import type { ExecResult } from './fanout-loop-live-git.ts';
 
 export const CHECKS = ['build', 'test', 'lint'];
@@ -42,6 +43,21 @@ export class FakeForge {
     this.runs.push(r);
     return r;
   }
+  /** The git tree this fake reports for a commit (`gh api commits/<sha>`): deterministic, so a test can record the same tree in the run state. */
+  treeOf(sha: string): string { return crypto.createHash('sha1').update(`tree:${sha}`).digest('hex'); }
+  private field(pr: Pr, k: string): unknown {
+    switch (k) {
+      case 'state': return pr.state;
+      case 'headRefOid': return this.heads.get(pr.branch);
+      case 'statusCheckRollup': return this.rollup(pr);
+      case 'baseRefName': return pr.base;
+      case 'number': return pr.n;
+      case 'url': return `https://github.com/o/r/pull/${pr.n}`;
+      case 'mergeable': return 'MERGEABLE';
+      case 'mergeCommit': return pr.state === 'MERGED' ? { oid: this.treeOf(`merge:${pr.n}`) } : null;
+      default: return undefined;
+    }
+  }
   private rollup(pr: Pr): unknown[] {
     const r = this.runOf(pr);
     if (!r) return [];
@@ -58,7 +74,8 @@ export class FakeForge {
     const [a, b] = args;
     if (a === 'pr' && b === 'list') {
       const head = this.flag(args, '--head'), base = this.flag(args, '--base');
-      return this.ok(JSON.stringify([...this.prs.values()].filter((p) => p.branch === head && (!base || p.base === base)).map((p) => ({ number: p.n, state: p.state }))));
+      const want = (this.flag(args, '--json') ?? '').split(',');
+      return this.ok(JSON.stringify([...this.prs.values()].filter((p) => p.branch === head && (!base || p.base === base)).map((p) => Object.fromEntries(want.map((k) => [k, this.field(p, k)])))));
     }
     if (a === 'pr' && b === 'create') {
       const branch = this.flag(args, '--head'), base = this.flag(args, '--base'), title = this.flag(args, '--title');
@@ -75,8 +92,7 @@ export class FakeForge {
       const pr = this.prs.get(Number(args[2]));
       if (!pr) return this.no(`could not resolve to a PullRequest with the number of ${args[2]}`);
       const want = (this.flag(args, '--json') ?? '').split(',');
-      const all: Record<string, unknown> = { state: pr.state, headRefOid: this.heads.get(pr.branch), statusCheckRollup: this.rollup(pr), baseRefName: pr.base, number: pr.n };
-      return this.ok(JSON.stringify(Object.fromEntries(want.map((k) => [k, all[k]]))));
+      return this.ok(JSON.stringify(Object.fromEntries(want.map((k) => [k, this.field(pr, k)]))));
     }
     if (a === 'pr' && b === 'close') {
       const pr = this.prs.get(Number(args[2]));
@@ -95,9 +111,14 @@ export class FakeForge {
       pr.mergeParents = 2; // a merge commit
       return this.ok('');
     }
+    if (a === 'api') {
+      const m = /\/commits\/([0-9a-f]{7,40})$/.exec(args[1] ?? '');
+      return m ? this.ok(JSON.stringify({ commit: { tree: { sha: this.treeOf(m[1]) } } })) : this.no(`fake gh: unsupported api call ${args[1]}`);
+    }
     if (a === 'run' && b === 'view') {
       const run = this.runs.find((r) => String(r.id) === args[2]);
       if (!run) return this.no(`run ${args[2]} not found`);
+      if (args.includes('jobs')) return this.ok(JSON.stringify({ jobs: CHECKS.map((c) => ({ databaseId: Number(run.jobs[c]), steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run it', conclusion: 'success' }, { name: 'Complete job', conclusion: 'success' }] })) }));
       const job = this.flag(args, '--job');
       const name = CHECKS.find((c) => run.jobs[c] === job) ?? 'test';
       return this.ok(`${name}\tRun tests\tFAIL ${name}: expected 1 to equal 2\n`);
