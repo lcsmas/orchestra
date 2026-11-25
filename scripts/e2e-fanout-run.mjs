@@ -110,6 +110,8 @@ const mutants = [
   ['the judge: a read by someone else is fine', [[J, "x.ev === 'mail-read' && x.reader !== 'loop'", "x.ev === 'mail-read' && false"]]],
   ['the judge: a connect before the approval is fine', [[J, "if (!approved) v('connected-before-approval'", "if (false as boolean) v('connected-before-approval'"]]],
   ['the judge: a connect after the merge is fine', [[J, "if (m && idx(m) < idx(e)) v(", "if (false as boolean) v("]]],
+  ['the dummy: a second openPr for the same branch opens a second PR', [[DM, "for (const p of this.prs.values()) if (p.branch === branch) return p.n;\n", ""]]],
+  ['the dummy: a re-run keeps the same jobId', [[DM, "jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`", "jobId: `job-${p.n}-${name}`"]]],
   ['the dummy: the world answers the question with anything (the fixed answer is not what unblocks)', [[DM, "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text });", "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text: 'whatever' });"]]],
 ];
 const control = run();

@@ -305,7 +305,7 @@ export class DummyWorld {
     const run = this.runFor(p, head);
     if (this.t < run.doneAt) return CHECK_NAMES.map((name) => ({ name, status: 'pending' as const }));
     const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
-    return CHECK_NAMES.map((name) => ({ name, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
+    return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
   }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
   merge(n: number, matchHead: string): { ok: boolean; reason?: string } {
@@ -369,6 +369,8 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async head(branch) { return w.branches.get(branch) ?? null; },
     async tree(s) { return w.commits.get(w.resolve(s) ?? '')?.tree ?? null; },
     async isMerged(branch, base) { return w.contains(branch, base); },
+    async emptyBranch(branch, base) { const h = w.resolve(base)!; w.branches.set(branch, h); return { head: h }; },
+    async deleteBranch(branch) { w.branches.delete(branch); },
   };
   return { world: w, fleet, forge, git, now: () => w.iso(), plan, async sleep(ms) { w.tickHolds(); w.advance(ms); } };
 }

@@ -269,3 +269,31 @@ test('one ticket that never records --follows is refused its nomination and told
   assert.ok(told.length >= 1, 'the author got the refusal');
   assert.deepEqual(r.violations, []);
 });
+
+test('decision 12 (OPS arm): killed after openPr and before the state write, the restart calls openPr again and gets the SAME PR — never a second one', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
+  let crashed = false;
+  const forge = { ...d.forge, async openPr(i: Parameters<typeof d.forge.openPr>[0]) { const r = await d.forge.openPr(i); if (!crashed) { crashed = true; throw new Error('killed after openPr'); } return r; } };
+  const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  await assert.rejects(runLoop(deps), /killed after openPr/);
+  assert.equal(readLoopState(home, 'rts7')!.tickets.T1.pr, null, 'the crash really landed between the forge call and the state write');
+  const again = await runLoop(deps);
+  assert.equal(again.exit, 0);
+  assert.equal(again.report.merged.length, 7);
+  assert.equal(d.world.events.filter((e) => e.ev === 'pr-open').length, 7, 'one pull request per ticket, the first one adopted');
+  assert.deepEqual(judgeRun({ events: d.world.events, deps: { T1: [] }, tickets: ['T1'], startAt: { T1: 0 } }).filter((v) => v.rule === 'duplicate-agent'), []);
+});
+test('the dummy forge hands out a NEW jobId when a check is re-run (Interface log v1.1)', async () => {
+  const d = buildDummy({ home: tmp(), run: 'x', scenario: load('held') });
+  const w = d.world;
+  w.commits.set('a'.repeat(40), { parents: [], tree: 't', at: w.t });
+  w.branches.set('b', 'a'.repeat(40));
+  const n = w.openPr('b', 'T1');
+  w.advance(10 * 60_000);
+  const first = w.checks(n, 'a'.repeat(40)).map((c) => c.jobId);
+  w.rerun(n);
+  w.advance(10 * 60_000);
+  const second = w.checks(n, 'a'.repeat(40)).map((c) => c.jobId);
+  assert.ok(first.every((j, i) => j && j !== second[i]));
+});

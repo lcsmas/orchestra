@@ -20,7 +20,7 @@ export interface FleetPort {
   costOf(ticket: string): Promise<{ tokens: number } | null>;
 }
 
-export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red'; jobId?: string; logExtract?: string; /** additive: ISO time the check reached its status (the loop's readiness order reads it) */ at?: string }
+export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red'; /** Interface log v1.1: MUST change on a re-run (#607's one-re-run-per-ticket rule reads it) */ jobId?: string; logExtract?: string; /** additive: ISO time the check reached its status (the loop's readiness order reads it) */ at?: string }
 
 export interface ForgePort {
   /** Idempotent per branch: a second call for the same branch answers the same number. */
@@ -38,4 +38,7 @@ export interface GitPort {
   tree(sha: string): Promise<string | null>;
   /** Is `branch` (a ref or a sha) an ancestor of `base` — i.e. contained in it. */
   isMerged(branch: string, base: string): Promise<boolean>;
+  /** Interface log v1.1 (#607's start check): a branch holding nothing over `base`. */
+  emptyBranch(branch: string, base: string): Promise<{ head: string }>;
+  deleteBranch(branch: string): Promise<void>;
 }
