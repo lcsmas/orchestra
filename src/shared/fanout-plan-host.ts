@@ -66,8 +66,6 @@ export function submitPlan(i: { home: string; run: string; text: string; caller:
     if (cur.loopPlan) throw new SeatRefusal('plan-closed', `the plan of run ${run} was accepted (${cur.loopPlan.at}): you are done — end your session`);
     if (cur.planRefusal) throw new SeatRefusal(cur.planRefusal.code, `the plan step of run ${run} ended (${cur.planRefusal.at}): ${cur.planRefusal.detail}`); // the state remembers it: deleting the plan record reopens nothing
     if (!sc) throw new SeatRefusal('plan-not-requested', `run ${run} has no plan request (the coordinator asks for one with \`orchestra fanout plan --tickets <id,…>\`)`);
-    if (sc.outcome === 'refused-twice') throw new SeatRefusal('plan-refused-twice', `the plan of run ${run} was refused twice — the run does not start; nothing more is accepted`);
-    if (sc.outcome === 'failed') throw new SeatRefusal('plan-apply-failed', `the plan of run ${run} could not be recorded: ${sc.failure ?? 'unknown'}`);
     if (!i.caller || !sc.agent?.id || i.caller !== sc.agent.id) throw new SeatRefusal('plan-caller', `only the plan agent of run ${run}${sc.agent?.id ? ` (${sc.agent.name})` : ' (not recorded yet — retry in a few seconds)'} submits its plan${i.caller ? `, not ${i.caller}` : ' — the host could not vouch this session'}`);
     const v = validatePlan(i.text, sc.tickets);
     const n = sc.attempts.length + 1;
@@ -121,8 +119,6 @@ export type PlanAgentDecision = { action: 'spawn' | 'respawn' | 'adopt' | 'in-fl
 /** Pure: what a `plan` call does given the sidecar, the clock and liveness. */
 export function decidePlanAgent(sc: PlanSidecar | null, tickets: string[], now: string, live: (id: string) => boolean): PlanAgentDecision {
   if (!sc) return { action: 'spawn' };
-  if (sc.outcome === 'refused-twice') return { action: 'refuse', refusal: 'plan-refused-twice', detail: 'the plan was refused twice — the run does not start' };
-  if (sc.outcome === 'failed') return { action: 'refuse', refusal: 'plan-apply-failed', detail: `the plan could not be recorded: ${sc.failure ?? 'unknown'}` };
   const same = sc.tickets.length === tickets.length && sc.tickets.every((t) => tickets.includes(t));
   if (!same) return { action: 'refuse', refusal: 'plan-tickets-changed', detail: `the plan of this run was requested for ${sc.tickets.join(', ')} — not for ${tickets.join(', ')}` };
   const a = sc.agent;

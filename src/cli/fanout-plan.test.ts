@@ -462,3 +462,10 @@ test('m2/m4 through the plan file path: a decision before the plan → plan-afte
   assert.throws(() => applyPlanText({ home, run: RUN, text: JSON.stringify(goodPlan()), now: NOW }), /plan-after-decision/);
   assert.equal(load(home).loopPlan, undefined);
 });
+
+test('m3: a remembered refusal also stops a plan handed over by file (applyPlanText)', (t) => {
+  const { home } = run(t);
+  updateState(stateFile(home, RUN), (cur) => ({ ...cur!, planRefusal: { at: NOW, code: 'plan-refused-twice', detail: 'refused twice' } }));
+  assert.throws(() => applyPlanText({ home, run: RUN, text: JSON.stringify(goodPlan()), now: NOW }), /plan-refused-twice/);
+  assert.equal(load(home).loopPlan, undefined);
+});

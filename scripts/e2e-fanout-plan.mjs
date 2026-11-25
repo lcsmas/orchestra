@@ -103,7 +103,6 @@ const mutants = [
   // the submit
   ['submit: a second refusal does not end the run', PH, "const final = n >= PLAN_MAX_SUBMISSIONS;", "const final = n >= 99;"],
   ['submit: the first refusal ends the run (no second try)', PH, "export const PLAN_MAX_SUBMISSIONS = 2;", "export const PLAN_MAX_SUBMISSIONS = 1;"],
-  ['submit: after [plan-refused-twice] a plan is still accepted', PH, "if (sc.outcome === 'refused-twice') throw new SeatRefusal('plan-refused-twice', `the plan of run", "if (false as boolean) throw new SeatRefusal('plan-refused-twice', `the plan of run"],
   ['submit: any caller submits', PH, "if (!i.caller || !sc.agent?.id || i.caller !== sc.agent.id) throw", "if (false as boolean) throw"],
   ['submit: an unrecorded agent id lets anyone in', PH, "if (!i.caller || !sc.agent?.id || i.caller !== sc.agent.id) throw", "if (!i.caller || (sc.agent?.id && i.caller !== sc.agent.id)) throw"],
   ['submit: a second plan after an accepted one is not refused', PH, "if (cur.loopPlan) throw new SeatRefusal('plan-closed'", "if (false as boolean) throw new SeatRefusal('plan-closed'"],
@@ -127,10 +126,7 @@ const mutants = [
   ['host: a run that already spawned is asked for a plan', PH, "if (locked) { early = refusal('plan-after-spawn'", "if (false as boolean) { early = refusal('plan-after-spawn'"],
   ['host: a taken-over claim is overwritten by the late spawn', PH, "if (!sc || sc.agent?.id !== null || sc.agent.at !== now) { mine = false; return cur as FanoutState; }", "if (!sc) { mine = false; return cur as FanoutState; }"],
   ['submit: an apply failure is not recorded (the coordinator waits out its timeout)', PH, "writePlanSidecar(i.home, run, { ...sc, outcome: 'failed', failure: msg });", "void msg;"],
-  ['submit: a failed step can be submitted again', PH, "if (sc.outcome === 'failed') throw new SeatRefusal('plan-apply-failed'", "if (false as boolean) throw new SeatRefusal('plan-apply-failed'"],
-  ['host: a failed step spawns a new agent', PH, "if (sc.outcome === 'failed') return { action: 'refuse', refusal: 'plan-apply-failed'", "if (false as boolean) return { action: 'refuse', refusal: 'plan-apply-failed'"],
   ['host: a corrupt record is a raw SyntaxError', PH, "catch (e) { throw new FanoutStateError(`${planSidecarFile(home, run)} is not JSON", "catch (e) { throw new SyntaxError(`${planSidecarFile(home, run)} is not JSON"],
-  ['cli: a failed step is not reported (the verb waits out its timeout)', C, "if (sc?.outcome === 'failed') return { code: 2,", "if (false as boolean) return { code: 2,"],
   ['host: a failed spawn stays claimed', PH, "{ ...sc, agent: null, spawns: Math.max(0, sc.spawns - 1) }", "{ ...sc }"],
   ['host: a failed spawn is reported as ok', PH, "if (!res.ok || !res.id) { const error", "if (false as boolean) { const error"],
   ['host: an accepted plan spawns another agent', PH, "if (cur.loopPlan) { adopted = { action: 'accepted', id: null }; return cur; }", ""],
@@ -145,7 +141,6 @@ const mutants = [
   // the verb
   ['cli: the caller is the bare env id', C, "const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id (index.ts), never the bare env", "const caller = (deps.vouchedCaller ?? deps.env.ORCHESTRA_WS_ID ?? '').trim();", true],
   ['cli: the submitter is the bare env id', C, "const caller = (deps.vouchedCaller ?? '').trim() || null; // the HOST-vouched id, null = nobody", "const caller = (deps.vouchedCaller ?? deps.env.ORCHESTRA_WS_ID ?? '').trim() || null;", true],
-  ['cli: a refused-twice plan is not detected (the verb waits out its timeout)', C, "if (sc?.outcome === 'refused-twice') {", "if (false as boolean) {"],
   ['cli: the session key is not sent to the host', C, "key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined, tickets", "key: undefined, tickets"],
   ['cli: a dead agent is never re-asked', C, "if (nowMs() - lastAsk >= recheckMs) {", "if (false as boolean) {"],
   ['cli: a timeout exits 0', C, "return { code: 1, stdout: '', stderr: `${note}no accepted plan after", "return { code: 0, stdout: '', stderr: `${note}no accepted plan after"],
@@ -164,7 +159,7 @@ function only_and_main() {
   const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
   build();
   const base = run([...UNIT, ...CLI_TEST]);
-  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 51 && base.pass === base.tests;
+  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 52 && base.pass === base.tests;
   console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
   if (!baseOk) { console.log(base.out.split('\n').filter((l) => /^not ok|error:/.test(l)).slice(0, 12).join('\n')); process.exit(1); }
   if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }

@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import { TICKET_ID } from '../shared/fanout-plan.ts';
 import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stateFile } from '../shared/fanout-state.ts';
-import { readPlanSidecar, submitPlan, submitText } from '../shared/fanout-plan-host.ts';
+import { submitPlan, submitText } from '../shared/fanout-plan-host.ts';
 import { renderPlanBrief } from '../shared/fanout-plan-brief.ts';
 import { homeOf, parseArgs, runOf, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
@@ -68,13 +68,6 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
       const st = readState(file);
       if (st?.loopPlan) return accepted(st, note);
       if (st?.planRefusal) return { code: 2, stdout: '', stderr: `${note}[${st.planRefusal.code}] the plan step ended without a plan (loopPlan not set) — the run does not start: ${st.planRefusal.detail}\n` }; // the state remembers it, whatever happened to the record
-      const sc = readPlanSidecar(homeOf(deps.env), r.run);
-      if (sc?.outcome === 'refused-twice') {
-        const last = sc.attempts[sc.attempts.length - 1];
-        const why = (last?.reasons ?? []).map((x) => `[${x.code}] ${x.detail}`).join('\n');
-        return { code: 2, stdout: '', stderr: `${note}[plan-refused-twice] the plan agent's plan was refused twice — the run does not start (loopPlan not set). Last reasons:\n${why}\n` };
-      }
-      if (sc?.outcome === 'failed') return { code: 2, stdout: '', stderr: `${note}[plan-apply-failed] the plan passed the check but could not be recorded (loopPlan not set): ${sc.failure ?? 'unknown'}\n` };
       if (nowMs() - start > timeoutMin * 60_000) return { code: 1, stdout: '', stderr: `${note}no accepted plan after ${timeoutMin} min — nothing was recorded (run \`orchestra fanout plan --tickets …\` again: a live agent is adopted, never duplicated)\n` };
       if (nowMs() - lastAsk >= recheckMs) { // a dead plan agent is replaced ONCE; a second death is [plan-agent-dead]
         lastAsk = nowMs();
