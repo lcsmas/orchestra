@@ -16,7 +16,7 @@ export const RECORD_USAGE = `usage: orchestra fanout record <ticket> --head <sha
          Counts (BLOCKING / MAJOR / MINOR) are DERIVED from the open findings, never typed. approve is refused while a BLOCKING / MAJOR (or a blocking MINOR under this run's minorPolicy) finding is open; changes-requested needs one.
          Refusals (each starts with its name): [record-off] [record-wrong-ticket] (no recorded reviewer on the ticket) [record-not-reviewer] (you are not the ticket's recorded reviewer: coordinator, implementer, another ticket's reviewer)
          [record-head-mismatch] (--head is not the head you were briefed on) [record-verdict] [record-json] [finding-exists] [fixed-not-open] [fixed-same-head] [fixed-by-non-reviewer] [approve-open-finding] [changes-no-finding].
-         Your worker_done is refused ([record-missing]) until the verdict of your head is recorded. The coordinator's way of NOT fixing a finding: \`state set <ticket> --decide <finding>=<reason>\` (a reason is required, listed by \`fanout closeout\`).
+         Your worker_done is refused ([record-missing]) until the verdict of your head is recorded. The coordinator's way of NOT fixing a finding: \`state set <ticket> --decide <finding>=<reason>\` (the coordinator only, vouched by the host: [decide-caller]; a reason is required: [decision-reason-blank]; listed by \`fanout closeout\`). \`state set --verdict approve|changes-requested\` is refused too ([typed-verdict]).
          A reviewer has no run of its own: --run defaults to your coordinator's run (as for \`state show\`). Exit 0 recorded · 2 refused · 1 usage / unreadable.`;
 
 export function runRecord(args: string[], deps: FanoutDeps): RunResult {
