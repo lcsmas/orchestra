@@ -6,7 +6,7 @@ import {
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
 import { dispatchReview, type ReviewHostDeps, type ReviewHostResult } from './fanout-review-host.ts';
-import { startRun, type StartResult } from './fanout-start.ts';
+import { startRun, type StartDeps, type StartResult } from './fanout-start.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
 export interface AcceptanceHostDeps {
@@ -32,6 +32,10 @@ export interface AcceptanceHostDeps {
   implementerLive?: (id: string) => boolean;
   /** #587 PR B — the implementer spawn of `fanout start` (the ONLY door `handSpawnRefusal` leaves open for an `impl-` name of a seatRecords run). */
   spawnImplementer?: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
+  /** #587 PR B — did the host vouch `id` with this session key (the live session of that workspace)? Absent = nobody is vouched and `start` is refused. */
+  vouches?: (id: string, key: string | undefined) => boolean;
+  /** #587 PR B — see StartDeps.orphanImplementer. */
+  orphanImplementer?: StartDeps['orphanImplementer'];
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -71,7 +75,9 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
     if (input.op === 'start') { // #587 PR B: launch the implementers of the plan (every refusal is a SeatRefusal: its message starts with [name])
       if (!deps.implementerLive || !deps.spawnImplementer) return { ok: false, error: 'this host does not launch implementers (fanout start is not wired)' };
       const spawnImplementer = deps.spawnImplementer;
-      const result = await startRun(run, str(input.from), { home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
+      const caller = str(input.from);
+      const vouched = !!caller && !!deps.vouches && deps.vouches(caller, str(input.key)); // the caller is the coordinator only on the HOST's word, not on an env id
+      const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
       return { ok: true, op: 'start', result };
     }
     const ticket = str(input.ticket);

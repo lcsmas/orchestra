@@ -1629,7 +1629,8 @@ export async function dispatchAgentSpawnRequest(
 ): Promise<SpawnResult> {
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
-  const handSpawn = handSpawnRefusalFor(orchestraHome(), input.from, checked.name, opts.viaFanoutStart === true); // #587 PR B: under seatRecords=on an `impl-` spawn by the run's coordinator goes through `fanout start`
+  const fromWs = input.from ? store.getWorkspace(input.from) : undefined;
+  const handSpawn = handSpawnRefusalFor(orchestraHome(), fromWs ? resolveWaveRunId(fromWs) : input.from, checked.name, opts.viaFanoutStart === true); // #587 PR B: under seatRecords=on an `impl-` spawn by the run's coordinator goes through `fanout start`
   if (handSpawn) return { ok: false, error: handSpawn };
   const { name: _name, ...rest } = input;
   // #465: no --model/--effort → the role's pin (name prefix + optional <ORCHESTRA_HOME>/fleet-roles.json); an explicit flag wins; a bad override file refuses the spawn.

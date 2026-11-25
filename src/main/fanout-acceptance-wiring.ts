@@ -28,6 +28,13 @@ const productionDeps: AcceptanceHostDeps = {
     const r = await dispatchAgentSpawnRequest({ from: i.from, repoPath: i.repoPath, task: i.task, agent: 'claude', name: i.name, ...(i.baseBranch ? { baseBranch: i.baseBranch } : {}) }, { viaFanoutStart: true });
     return { ok: r.ok, id: r.id, branch: r.branch, held: r.held, error: r.error };
   },
+  vouches: (id, key) => !!key && sessionKeys().verify(id, key) === 'ok',
+  // the spawn answered but the state write was lost: a live child of the run already named for the ticket is adopted, never duplicated
+  orphanImplementer: ({ run, name, recorded, others }) => {
+    const named = (b: string): boolean => b === name || (b.startsWith(`${name}-`) && /^\d+$/.test(b.slice(name.length + 1)));
+    const w = store.workspaces.find((x) => x.parentId === run && !x.archived && !recorded.includes(x.id) && named(x.branch) && !others.includes(x.branch));
+    return w ? { id: w.id, branch: w.branch } : null;
+  },
   childrenOf: (run) => store.workspaces.filter((w) => w.parentId === run).map((w) => w.id), // #554 m1: the run owner's direct children
   // #554: the stamp carries the run's switches, so this rewrites the skill only when they changed
   refreshSkills: async (ids) => {

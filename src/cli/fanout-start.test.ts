@@ -20,7 +20,7 @@ function mkHome(t: { after: (fn: () => void) => void }): string {
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   return d;
 }
-const mkDeps = (home: string, ws = 'r1'): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, cwd: home, runner: offline, now: () => NOW, readStdin: () => '' });
+const mkDeps = (home: string, ws = 'r1'): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, vouchedCaller: ws, cwd: home, runner: offline, now: () => NOW, readStdin: () => '' });
 const sh = (d: FanoutDeps, ...a: string[]) => runFanout(['state', ...a], d);
 const set = (d: FanoutDeps, ...a: string[]) => sh(d, 'set', '--run', 'r1', ...a);
 const load = (d: FanoutDeps): FanoutState => readState(stateFile(d.env.ORCHESTRA_HOME!, 'r1'))!;
@@ -83,10 +83,12 @@ test('start must-FAIL: off → [start-off]; not the coordinator → [start-calle
   let r = await runStart(['--run', 'r1'], off, host);
   assert.equal(r.code, 2); assert.ok(r.stderr.startsWith('[start-off] '), r.stderr);
   const d = planned(t);
-  r = await runStart(['--run', 'r1'], { ...d, env: { ...d.env, ORCHESTRA_WS_ID: 'impl-x' } }, host);
+  r = await runStart(['--run', 'r1'], { ...d, vouchedCaller: 'impl-x' }, host);
   assert.equal(r.code, 2); assert.ok(r.stderr.startsWith('[start-caller] '), r.stderr);
-  r = await runStart(['--run', 'r1'], { ...d, env: { ORCHESTRA_HOME: d.env.ORCHESTRA_HOME } }, host);
-  assert.ok(r.stderr.startsWith('[start-caller] ') && /no workspace identity/.test(r.stderr));
+  r = await runStart(['--run', 'r1'], { ...d, vouchedCaller: null }, host); // ORCHESTRA_WS_ID=r1 is in the env, the host did NOT vouch it
+  assert.ok(r.stderr.startsWith('[start-caller] ') && /could not vouch/.test(r.stderr));
+  r = await runStart(['--run', 'r1'], { ...d, vouchedCaller: undefined }, host);
+  assert.ok(r.stderr.startsWith('[start-caller] '));
   set(d, '--plan-add', 'D');
   r = await runStart(['--run', 'r1'], d, host);
   assert.equal(r.code, 2); assert.ok(r.stderr.startsWith('[plan-incomplete] '), r.stderr);
@@ -115,7 +117,7 @@ test('start: one implementer per plan ticket (a dependent WITH the others), the 
   assert.deepEqual(r.started.map((s) => s.ticket), ['A', 'B', 'C']);
   assert.deepEqual(r.respawned, []); assert.deepEqual(r.waiting, []); assert.deepEqual(r.skipped, []); assert.deepEqual(r.failed, []);
   assert.deepEqual(f.calls.map((c) => c.name), ['impl-A', 'impl-B', 'impl-C']);
-  assert.ok(f.calls.every((c) => c.from === 'r1' && c.repoPath === '/repo' && c.baseBranch === undefined));
+  assert.ok(f.calls.every((c) => c.from === 'r1' && c.repoPath === '/repo' && c.baseBranch === 'master'), 'the worktree is cut from the run target the brief names');
   const s = load(d);
   for (const [i, id] of ['A', 'B', 'C'].entries()) {
     const tk = s.tickets[id];
@@ -166,7 +168,7 @@ test('start: a start held by Admission is a WAIT (exit 0, listed, the agent reco
   const f = fake(d);
   f.answer = async (name, n) => name === 'impl-A' ? { ok: true, id: 'wsA', branch: 'impl-A', held: { since: 1 } } : name === 'impl-B' ? { ok: false, error: 'no room' } : name === 'impl-C' ? { ok: false, id: 'wsC', branch: 'impl-C', error: 'first turn failed' } : { ok: true, id: `x${n}`, branch: `b${n}` };
   const r = await startRun('r1', 'r1', f.deps);
-  assert.deepEqual(r.started.map((x) => x.ticket), ['A']);
+  assert.deepEqual(r.started, [], 'a held start is a WAIT, listed once: not also in started');
   assert.equal(r.waiting.length, 1); assert.equal(r.waiting[0].ticket, 'A'); assert.match(r.waiting[0].why, /Admission/);
   assert.deepEqual(r.failed.map((x) => x.ticket), ['B', 'C']);
   assert.match(r.failed[1].error, /kept and is recorded as the implementer: restart it/);
@@ -191,7 +193,10 @@ test('start via the CLI: prints the result JSON (exit 0), "failed" non-empty exi
   let r = await runStart(['--run', 'r1'], d, async (body) => { seen = body; return { ok: true, op: 'start', result: ok }; });
   assert.equal(r.code, 0);
   assert.deepEqual(JSON.parse(r.stdout), ok);
-  assert.deepEqual(seen, { op: 'start', run: 'r1', from: 'r1' });
+  assert.deepEqual(seen, { op: 'start', run: 'r1', from: 'r1', key: undefined });
+  const keyed = await runStart(['--run', 'r1'], { ...d, env: { ...d.env, ORCHESTRA_SESSION_KEY: ' k-1 ' } }, async (body) => { seen = body; return { ok: true, result: ok }; });
+  assert.equal(keyed.code, 0);
+  assert.equal(seen.key, 'k-1', 'the host verifies the key itself'); 
   r = await runStart(['--run', 'r1'], d, async () => ({ ok: true, result: { ...ok, failed: [{ ticket: 'B', error: 'no room' }] } }));
   assert.equal(r.code, 2); assert.match(r.stderr, /B \(no room\)/); assert.equal(JSON.parse(r.stdout).failed.length, 1);
   r = await runStart(['--run', 'r1'], d, async () => ({ ok: false, error: '[plan-incomplete] the host saw more missing' }));
@@ -203,13 +208,18 @@ test('start via the CLI: prints the result JSON (exit 0), "failed" non-empty exi
 test('host op `start`: refused when the host has no implementer wiring; with it, the same result as startRun; `start` is not settable by `state set`', async (t) => {
   const d = planned(t);
   const f = fake(d);
-  const base = { home: f.deps.home, now: f.deps.now, isWorkspace: () => true, repoPath: () => '/repo', spawn: async () => ({ ok: false }), post: () => {} } as unknown as AcceptanceHostDeps;
-  const no = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1' }, base);
-  assert.equal(no.ok, false);
-  const yes = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1' }, { ...base, implementerLive: f.deps.implementerLive, spawnImplementer: f.deps.spawn });
+  const base = { home: f.deps.home, now: f.deps.now, isWorkspace: () => true, repoPath: () => '/repo', spawn: async () => ({ ok: false }), post: () => {}, vouches: (id: string, key: string | undefined) => id === 'r1' && key === 'k-r1' } as unknown as AcceptanceHostDeps;
+  const no = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1', key: 'k-r1' }, base);
+  assert.ok(!no.ok && /not wired/.test(no.error));
+  const yes = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1', key: 'k-r1' }, { ...base, implementerLive: f.deps.implementerLive, spawnImplementer: f.deps.spawn });
   assert.ok(yes.ok && yes.op === 'start' && yes.result.started.length === 3);
-  const refused = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'someone' }, { ...base, implementerLive: f.deps.implementerLive, spawnImplementer: f.deps.spawn });
-  assert.ok(!refused.ok && refused.error.startsWith('[start-caller]'));
+  const wired = { ...base, implementerLive: f.deps.implementerLive, spawnImplementer: f.deps.spawn };
+  for (const input of [{ from: 'someone', key: 'k-r1' }, { from: 'r1', key: 'wrong' }, { from: 'r1' }]) { // env-asserted: the id is right, the host does not vouch it
+    const refused = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', ...input }, wired);
+    assert.ok(!refused.ok && refused.error.startsWith('[start-caller]'), JSON.stringify(input));
+  }
+  const unwired = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1', key: 'k-r1' }, { ...wired, vouches: undefined });
+  assert.ok(!unwired.ok && unwired.error.startsWith('[start-caller]'), 'a host that cannot vouch refuses');
   const bad = set(d, 'A', '--json', JSON.stringify({ start: { at: NOW, kind: 'spawn', briefHash: 'a'.repeat(64), briefs: 1 } }));
   assert.equal(bad.code, 1);
   assert.match(bad.stderr, /unknown field "start"/);
@@ -277,4 +287,46 @@ test('a stored start is validated: bad kind, 0 briefs, a non-sha hash, an unknow
     bad((j) => { j.tickets.A.start.extra = 1; });
     bad((j) => { j.tickets.A.start.at = 'yesterday'; });
   });
+});
+
+test('start: a live child of the run already named for the ticket but NOT recorded (the state write was lost) is ADOPTED, never duplicated', async (t) => {
+  const d = planned(t);
+  const f = fake(d);
+  const lost = { id: 'ws-lost', branch: 'impl-A-3' };
+  f.deps.orphanImplementer = ({ ticket, name, recorded }) => { assert.equal(name, implementerName(ticket)); return ticket === 'A' && !recorded.includes(lost.id) ? lost : null; };
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.deepEqual(f.calls.map((c) => c.name), ['impl-B', 'impl-C'], 'A is not spawned a second time');
+  assert.deepEqual(r.skipped, [{ ticket: 'A', reason: 'live' }]);
+  assert.equal(load(d).tickets.A.implementer, 'ws-lost');
+  assert.equal(load(d).tickets.A.branch, 'impl-A-3');
+  assert.equal(load(d).tickets.A.status, 'started');
+  f.live.add('ws-lost');
+  f.deps.orphanImplementer = ({ recorded }) => (recorded.includes(lost.id) ? null : lost);
+  const again = await startRun('r1', 'r1', f.deps);
+  assert.equal(f.calls.length, 2, 'a second call spawns nothing');
+  assert.ok(again.skipped.every((x) => x.reason === 'live'));
+});
+
+test('start: a ticket set `started` by hand with no implementer is a first SPAWN from the target (not a respawn)', async (t) => {
+  const d = planned(t);
+  set(d, 'A', '--status', 'started', '--branch', 'feature-x');
+  const f = fake(d);
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.deepEqual(r.started.map((x) => x.ticket), ['A', 'B', 'C']);
+  assert.deepEqual(r.respawned, []);
+  assert.equal(f.calls[0].baseBranch, 'master');
+  assert.equal(load(d).tickets.A.start!.kind, 'spawn');
+});
+
+test('start: the orphan scan is told which implementers the state records (a recorded dead one is respawned, never "adopted")', async (t) => {
+  const d = planned(t);
+  const f = fake(d);
+  await startRun('r1', 'r1', f.deps);
+  const old = load(d).tickets.A.implementer!;
+  f.live.delete(old);
+  const seen: string[][] = [];
+  f.deps.orphanImplementer = ({ ticket, recorded }) => { seen.push(recorded); return ticket === 'A' && !recorded.includes(old) ? { id: old, branch: 'x' } : null; };
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.deepEqual(r.respawned.map((x) => x.ticket), ['A']);
+  assert.ok(seen[0].includes(old) && seen[0].length === 3, 'every recorded implementer id is passed');
 });

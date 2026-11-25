@@ -14,7 +14,7 @@ test('dispatchAgentSpawnRequest asks handSpawnRefusalFor right after the name ch
   assert.match(head, /opts: \{ viaFanoutStart\?: boolean \} = \{\}/);
   const body = bodyOf(src, 'export async function dispatchAgentSpawnRequest(');
   const iName = body.indexOf('checkSpawnName(input.name)');
-  const iHand = body.indexOf('handSpawnRefusalFor(orchestraHome(), input.from, checked.name, opts.viaFanoutStart === true)');
+  const iHand = body.indexOf('handSpawnRefusalFor(orchestraHome(), fromWs ? resolveWaveRunId(fromWs) : input.from, checked.name, opts.viaFanoutStart === true)');
   const iDispatch = body.indexOf('return dispatchSpawnRequest(');
   assert.ok(iName >= 0 && iHand > iName && iDispatch > iHand, 'name check → hand-spawn refusal → dispatch');
   assert.match(body, /if \(handSpawn\) return \{ ok: false, error: handSpawn \}/);
@@ -32,6 +32,9 @@ test('only the implementer door of `fanout start` passes viaFanoutStart; the acc
   assert.match(impl, /baseBranch/);
   const acc = src.slice(src.indexOf('spawn: async (i)'), src.indexOf('implementerLive'));
   assert.doesNotMatch(acc, /viaFanoutStart/);
+  assert.match(src, /vouches: \(id, key\) => !!key && sessionKeys\(\)\.verify\(id, key\) === 'ok'/);
+  assert.match(src, /orphanImplementer: \(\{ run, name, recorded, others \}\) =>/);
+  assert.match(src, /store\.workspaces\.find\(\(x\) => x\.parentId === run && !x\.archived && !recorded\.includes\(x\.id\) && named\(x\.branch\) && !others\.includes\(x\.branch\)\)/);
   assert.match(src, /implementerLive: \(id\) => \{ const w = store\.getWorkspace\(id\); return !!w && !w\.archived; \}/);
 });
 
@@ -41,6 +44,7 @@ test('the CLI routes `fanout start` through runStart, vouched by the host like a
   assert.ok(i > 0);
   const blk = src.slice(i, i + 900);
   assert.match(blk, /settleHostIdentity\(\)/);
-  assert.match(blk, /hostIdentity\?\.source !== 'host'/);
+  assert.match(blk, /if \(hostIdentity\?\.source !== 'host'\) fail\('refusing to start:/, 'fail closed: no key is not a vouch either');
+  assert.match(blk, /fanoutDeps\.vouchedCaller = /);
   assert.match(blk, /runStart\(args\.slice\(1\), fanoutDeps, \(body\) => request\('\/fanoutAcceptance', body/);
 });
