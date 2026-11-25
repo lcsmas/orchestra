@@ -39,7 +39,27 @@ const IMPORT_SPEC = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"])([^'
 /** Comment-only lines carry names that reach nothing (a name in a comment must not widen a rig). */
 const code = (t: string): string => t.split('\n').filter((l) => !/^\s*(#|\/\/|\*|\/\*)/.test(l)).join('\n');
 
-export interface Closure { files: Set<string>; /** why each file is in: the file (or command) that reached it. */ via: Map<string, string> }
+export interface Closure {
+  files: Set<string>;
+  /** why each file is in: the file (or command) that reached it. */
+  via: Map<string, string>;
+  /** package.json script names the command reaches (`pnpm run x` hops through commands and .sh files): a changed script selects every rig that reaches it. */
+  scripts: Set<string>;
+  /** Repo directories a script of the closure WALKS (`walk(path.join(root, 'src'))`, readdirSync over `src/main`): every file under them is an input the import graph cannot show (#595 review F2). */
+  walked: Set<string>;
+}
+
+// A call that enumerates a repo directory: walk-ish / readdirSync / cpSync / globSync whose arguments name a `src…` directory literal (directly or as a path.join segment).
+const WALK_CALL = /\b(?:walk\w*|readdirSync|readdir|globSync|scan\w*)\(([^\n;]*)/g;
+export function walkedDirs(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of code(text).matchAll(WALK_CALL)) {
+    const args = m[1];
+    const lit = /['"`](src(?:\/[\w.-]+)*)\/?['"`]/.exec(args);
+    if (lit) out.add(lit[1]);
+  }
+  return [...out];
+}
 
 /** One walker per tree: the direct edges of a file are computed once and shared by every rig's walk. */
 export function createWalker(tree: Tree, pkgScripts: Record<string, string>): { closure(command: string): Closure } {
@@ -77,6 +97,13 @@ export function createWalker(tree: Tree, pkgScripts: Record<string, string>): { 
       if (rel) out.push(rel);
       else if (have.has(plain)) out.push(plain);
       else if (!tok.includes('/')) { const cands = byBase.get(tok); if (cands?.length === 1) out.push(cands[0]); }
+    }
+    // `path.join(REPO, 'scripts', 'fixtures', 'payloads')` — a path built from literal segments (review F4): the walker sees the joined string.
+    if (o.dirs) for (const m of c.matchAll(/\bjoin\(([^()]*)\)/g)) {
+      const segs = [...m[1].matchAll(/['"`]([^'"`\n]+)['"`]/g)].map((x) => x[1].replace(/^\/+|\/+$/g, ''));
+      if (segs.length < 2 || !/^(?:src|scripts|packages|docs|build|public|sandbox|\.github)$/.test(segs[0])) continue;
+      const tok = segs.join('/');
+      if (have.has(tok)) out.push(tok); else if (dirs.has(tok) && tok.includes('/')) { const u = underDir(tok); if (u.length <= MAX_DIR_FILES) out.push(...u); }
     }
     if (o.dirs) for (const m of c.matchAll(DIR_TOKEN)) {
       const tok = m[1].replace(/[/.]+$/, '');
@@ -131,7 +158,10 @@ export function createWalker(tree: Tree, pkgScripts: Record<string, string>): { 
         const runsSrc = !n.startsWith('src/') && bundlesWithEsbuild(n); // a script that esbuild-bundles the modules it names RUNS them: their graph is its graph
         for (const e of edges(n)) reach(e, n, e.startsWith('src/') ? grant || runsSrc || TEST_FILE.test(e) : false); // a test file named by a rig is executed: its imports are inputs
       }
-      return { files, via };
+      const scripts = new Set([...seen].filter((n) => n.startsWith('pnpm:')).map((n) => n.slice(5)));
+      const walked = new Set<string>();
+      for (const f of files) if (!f.startsWith('src/') && JS_FILE.test(f) && !TEST_FILE.test(f)) for (const d of walkedDirs(tree.read(f))) walked.add(d);
+      return { files, via, scripts, walked };
     },
   };
 }

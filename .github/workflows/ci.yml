@@ -10,6 +10,8 @@ name: CI
 on:
   pull_request:
     branches: [master]
+    # `labeled`: adding `ci-full` after the push re-runs the CI with every rig (the label is read from the event payload). Another label also starts a run — same selection, the old run is cancelled.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:

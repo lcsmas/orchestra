@@ -417,7 +417,7 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '  [dry-run] full rig run: gh run list --workflow ci.yml --event workflow_dispatch --status success -> a commit with this tree (package.json version line masked)%s\n' \
     "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
 elif [ "$SKIP_GATE" = 1 ]; then
-  printf 'release-gate: BYPASSED (--skip-release-gate) — the full rig run (ci.yml workflow_dispatch) was NOT required. Reason: %s\n' "$SKIP_GATE_REASON" >&2
+  printf 'full-ci: NOT REQUIRED (--skip-release-gate) — the full rig run (ci.yml workflow_dispatch) was NOT required. Reason: %s\n' "$SKIP_GATE_REASON" >&2
 else
   _rg_ci="$(rg_full_ci_check)" || exit 1
   echo "  $_rg_ci"

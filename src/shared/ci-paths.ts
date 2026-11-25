@@ -55,7 +55,12 @@ export function validatePatterns(owner: string, patterns: unknown): string[] {
 // ---- delta files: shared files whose CHANGE can be read ---------------------------------------------------------------------------
 // package.json and .github/ci-rigs.json are in `sharedPaths` (a change runs everything) but almost every PR edits one of them to add a rig. When the caller can read the file
 // at the base and at the head, an edit that touches ONLY rig entries / rig scripts selects exactly those rigs; anything else (deps, build scripts, groups, sharedPaths …) is shared.
-export interface DeltaCtx { before(p: string): string | null; after(p: string): string | null }
+export interface DeltaCtx {
+  before(p: string): string | null;
+  after(p: string): string | null;
+  /** The package.json scripts a rig's command reaches through commands AND script files (the closure walk); absent ⇒ the command text only. */
+  scriptsReachedBy?(rig: RigEntry): ReadonlySet<string>;
+}
 export const DELTA_FILES = ['package.json', '.github/ci-rigs.json'] as const;
 type Delta = { full: string } | { ids: string[]; why: string };
 
@@ -70,7 +75,7 @@ function scriptsReached(command: string, scripts: Record<string, string>): Set<s
   return seen;
 }
 
-function packageJsonDelta(file: RigFile, before: string | null, after: string | null): Delta {
+function packageJsonDelta(file: RigFile, before: string | null, after: string | null, reached?: (r: RigEntry) => ReadonlySet<string>): Delta {
   const b = parse(before); const a = parse(after);
   if (!b || !a) return { full: 'package.json is unreadable at the base or the head' };
   for (const k of new Set([...Object.keys(b), ...Object.keys(a)])) if (k !== 'scripts' && !same(b[k], a[k])) return { full: `package.json: \`${k}\` changed (not a rig script)` };
@@ -78,7 +83,7 @@ function packageJsonDelta(file: RigFile, before: string | null, after: string | 
   const changed = [...new Set([...Object.keys(sb), ...Object.keys(sa)])].filter((k) => sb[k] !== sa[k]).sort();
   const other = changed.filter((k) => !RIG_SCRIPT.test(k));
   if (other.length) return { full: `package.json: script ${other.slice(0, 3).join(', ')} changed (not a test:/canary: rig script)` };
-  const ids = file.rigs.filter((r) => r.class === 'RUNS_IN_CI' && (changed.includes(r.id) || [...scriptsReached(r.command, sa)].some((k) => changed.includes(k)))).map((r) => r.id);
+  const ids = file.rigs.filter((r) => r.class === 'RUNS_IN_CI' && (changed.includes(r.id) || [...(reached ? reached(r) : scriptsReached(r.command, sa))].some((k) => changed.includes(k)))).map((r) => r.id);
   return { ids, why: `package.json script${changed.length > 1 ? 's' : ''} ${few(changed)} changed` };
 }
 
@@ -98,7 +103,7 @@ function rigsJsonDelta(before: string | null, after: string | null): Delta {
 }
 
 function deltaOf(file: RigFile, f: string, ctx: DeltaCtx): Delta {
-  return f === 'package.json' ? packageJsonDelta(file, ctx.before(f), ctx.after(f)) : rigsJsonDelta(ctx.before(f), ctx.after(f));
+  return f === 'package.json' ? packageJsonDelta(file, ctx.before(f), ctx.after(f), ctx.scriptsReachedBy?.bind(ctx)) : rigsJsonDelta(ctx.before(f), ctx.after(f));
 }
 
 // ---- selection --------------------------------------------------------------------------------------------------------------------
@@ -137,7 +142,7 @@ export function selectRigs(file: RigFile, changed: string[] | null | undefined, 
     const p = matchPaths(shared, f);
     if (!p) { rest.push(f); continue; }
     const d = ctx && (DELTA_FILES as readonly string[]).includes(f) ? deltaOf(file, f, ctx) : { full: `shared file ${f} (matches sharedPaths ${p})` };
-    if ('full' in d) return everything(d.full.startsWith('shared file') ? d.full : `shared file ${f}: ${d.full}`);
+    if ('full' in d) return everything(d.full.startsWith('shared file') ? d.full : `shared file ${d.full.startsWith(`${f}:`) ? '' : `${f}: `}${d.full}`);
     for (const id of d.ids) if (!forced.has(id)) forced.set(id, d.why);
   }
   const noRig = file.noRigPaths ?? [];
@@ -182,6 +187,7 @@ export function recallProblems(file: RigFile, tree: Tree, pkgScripts: Record<str
     if (!r.paths) continue;
     const pats = expandPaths(file, r.paths);
     const missed = [...w.closure(r.command).files].filter((f) => !matchPaths(pats, f) && !matchPaths(file.sharedPaths ?? [], f)).sort();
+    for (const d of w.closure(r.command).walked) { const probe = `${d}/__any_file__.ts`; if (!matchPaths(pats, probe) && !matchPaths(file.sharedPaths ?? [], probe)) missed.push(`${d}/** (a script of its command walks ${d}/)`); }
     if (missed.length) out.push(`${r.id}: its own command reaches ${missed.length} file(s) its declared paths do not cover — e.g. ${missed.slice(0, 4).join(', ')} (add them to its \`paths\` in .github/ci-rigs.json, or run \`node --experimental-strip-types scripts/ci/rigs.mjs paths ${r.id}\`)`);
   }
   return out;
@@ -199,7 +205,9 @@ export function generatePaths(file: RigFile, tree: Tree, pkgScripts: Record<stri
     const closure = new Set([...w.closure(r.command).files].filter((f) => f !== 'package.json'));
     const used = sets.filter((s) => [...s.files].every((f) => closure.has(f) || f === 'package.json'));
     const rest = new Set(closure); for (const s of used) for (const f of s.files) rest.delete(f);
-    paths[r.id] = [...used.map((s) => `@${s.name}`), ...compressPaths(rest, tree.files), ...(r.pathsExtra ?? [])];
+    const cl = w.closure(r.command);
+    const walked = [...cl.walked].sort().map((d) => `${d}/**`); // a gate that WALKS a directory depends on every file in it
+    paths[r.id] = [...used.map((s) => `@${s.name}`), ...compressPaths(rest, tree.files), ...walked, ...(r.pathsExtra ?? [])];
   }
   return { pathSets, paths };
 }

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { selectRigs } from '../../src/shared/ci-paths.ts';
+import { createWalker, repoTree } from '../../src/shared/ci-closure.ts';
 
 export const pathSelectionOn = () => process.env.CI_PATH_SELECTION === '1';
 
@@ -15,9 +16,15 @@ export function currentSelection(root, file, o = {}) {
   const base = o.base || process.env.CI_BASE || 'HEAD^1';
   let changed = null;
   try { changed = o.changedFile ? fs.readFileSync(o.changedFile, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean) : git('diff', '--name-only', '--no-renames', '-z', base, 'HEAD').split('\0').filter(Boolean); } catch { changed = null; }
+  let walker;
   const ctx = {
     before: (p) => { try { return git('show', `${base}:${p}`); } catch { return null; } },
     after: (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return null; } },
+    // a rig reaches a package.json script through its command AND the script files it runs (review F6): the closure walk of the head tree, built only when package.json changed
+    scriptsReachedBy: (rig) => {
+      walker ??= createWalker(repoTree(root), JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {});
+      return walker.closure(rig.command).scripts;
+    },
   };
   return selectRigs(file, changed, full, ctx);
 }

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createWalker, repoTree, type Tree } from './ci-closure.ts';
+import { createWalker, repoTree, walkedDirs, type Tree } from './ci-closure.ts';
 import { compressPaths, expandPaths, generatePaths, matchPaths, recallProblems, renderSelection, selectRigs, toWire, validatePatterns } from './ci-paths.ts';
 import { readRigFile, validateRigs, requiredRigIds, type RigFile } from './ci-rigs.ts';
 
@@ -176,6 +176,68 @@ test('the repo: a shared file, an unclaimed file and `ci-full` each run every RU
     ['an unclaimed file', selectRigs(real, ['zz-unclaimed-top-level-file.xyz'])],
     ['ci-full', selectRigs(real, ['docs/a.md'], 'the ci-full label forces every rig')],
   ] as const) { assert.equal(s.mode, 'all', label); assert.equal(s.ran.length, total, label); }
-  const docs = selectRigs(real, ['docs/codebase-map/git.md', 'src/shared/types.test.ts']);
+  const docs = selectRigs(real, ['docs/codebase-map/git.md', '.claude/skills/ship/SKILL.md']);
   assert.equal(docs.mode, 'paths'); assert.equal(docs.ran.length, 0);
+});
+
+// ---- review round 1 (#615): walked directories, scripts reached through script files, the ci.yml triggers ---------------------------------------------------
+const walkTree = (extra: Record<string, string> = {}): Tree => { const files: Record<string, string> = {
+  'scripts/e2e-w.sh': 'node scripts/check-w.mjs\n',
+  'scripts/check-w.mjs': "const walk = (d) => fs.readdirSync(d);\nfor (const f of walk(path.join(root, 'src'))) {}\n",
+  'src/a/x.ts': '', 'src/b/y.ts': '', ...extra }; return { files: Object.keys(files), read: (p) => files[p] ?? '' }; };
+const walkRig = (paths?: string[]): RigFile => ({ rigs: [{ id: 'scripts/e2e-w.sh', command: 'bash scripts/e2e-w.sh', class: 'RUNS_IN_CI', ...(paths ? { paths } : {}) }] });
+
+test('F2: a gate script that WALKS src is detected, generated into `src/**`, and a rig without it is refused (must-FAIL); the other walk arguments are not src', () => {
+  assert.deepEqual(walkedDirs("for (const f of walk(path.join(root, 'src'))) {}"), ['src']);
+  assert.deepEqual(walkedDirs("walk(path.join(root, 'src/main'))"), ['src/main']);
+  assert.deepEqual(walkedDirs("// walk(path.join(root, 'src'))\nfs.cpSync(path.join(ROOT, 'src'), tmp)"), [], 'a comment and a copy are not a walk');
+  assert.deepEqual(walkedDirs("fs.readdirSync(path.join(PKG, 'lib'))"), []);
+  assert.deepEqual([...createWalker(walkTree(), {}).closure('bash scripts/e2e-w.sh').walked], ['src']);
+  const gen = generatePaths(walkRig(), walkTree(), {});
+  assert.ok(gen.paths['scripts/e2e-w.sh'].includes('src/**'), JSON.stringify(gen.paths));
+  assert.deepEqual(recallProblems({ ...walkRig(gen.paths['scripts/e2e-w.sh']), pathSets: gen.pathSets }, walkTree(), {}), []);
+  const noWalk = recallProblems(walkRig(['scripts/e2e-w.sh', 'scripts/check-w.mjs']), walkTree(), {});
+  assert.equal(noWalk.length, 1); assert.match(noWalk[0], /walks src\//);
+  // the selection consequence: an unrelated src file selects the gate rig only when `src/**` is declared
+  assert.ok(selectRigs(walkRig(gen.paths['scripts/e2e-w.sh']), ['src/b/y.ts']).ran.length === 1);
+  assert.equal(selectRigs(walkRig(['scripts/e2e-w.sh', 'scripts/check-w.mjs']), ['src/b/y.ts']).mode, 'all', 'unclaimed ⇒ all (the rig above does not claim it)');
+});
+
+test('F2 repo: every rig whose closure scripts walk a repo dir declares it, and the three single-reader gates carry `src/**`', () => {
+  const w = createWalker(realTree, pkgScripts);
+  const gated = real.rigs.filter((r) => r.class === 'RUNS_IN_CI' && w.closure(r.command).walked.size > 0);
+  assert.ok(gated.some((r) => r.id === 'test:spawn-account-inherit') && gated.some((r) => r.id === 'test:plain-parent-mutants'), gated.map((r) => r.id).join());
+  for (const r of gated) for (const d of w.closure(r.command).walked) assert.ok(matchPaths(expandPaths(real, r.paths!), `${d}/__any__.ts`), `${r.id} walks ${d}/ but does not declare it`);
+  assert.ok(!selectRigs(real, ['src/renderer/App.tsx']).ran.every((x) => x.id !== 'test:spawn-account-inherit'), 'App.tsx selects the resolver gate (the review\'s demonstration)');
+});
+
+test('F4: a path built from literal join segments is seen (a fixture dir copied by path.join(REPO, "scripts", "fixtures", …))', () => {
+  const t: Tree = { files: ['scripts/m.mjs', 'scripts/fixtures/payloads/a.json', 'scripts/fixtures/payloads/b.json'], read: (p) => (p === 'scripts/m.mjs' ? "copyTree(path.join(REPO, 'scripts', 'fixtures', 'payloads'), dest);\n" : '') };
+  assert.deepEqual([...createWalker(t, {}).closure('node scripts/m.mjs').files].sort(), ['scripts/fixtures/payloads/a.json', 'scripts/fixtures/payloads/b.json', 'scripts/m.mjs']);
+  assert.ok(selectRigs(real, ['scripts/fixtures/payloads/local-command.capture.json']).ran.some((r) => r.id === 'test:command-output-mutants'));
+});
+
+test('F6: a changed package.json script selects every rig that reaches it THROUGH a script file (scriptsReachedBy), not only through its own command', () => {
+  const t: Tree = { files: ['scripts/gate.sh', 'scripts/verify.sh'], read: (p) => (p === 'scripts/verify.sh' ? 'bash scripts/gate.sh\n' : p === 'scripts/gate.sh' ? 'pnpm run test:inner\n' : '') };
+  const scripts = { 'test:inner': 'node a.mjs', 'test:outer': 'bash scripts/verify.sh' };
+  const file: RigFile = { sharedPaths: ['package.json'], rigs: [{ id: 'test:outer', command: 'pnpm run test:outer', class: 'RUNS_IN_CI', paths: ['scripts/**'] }, ci('test:other', ['src/o.ts'])] };
+  const pkg = (inner: string) => JSON.stringify({ scripts: { ...scripts, 'test:inner': inner } });
+  const ctx = { before: () => pkg('node a.mjs'), after: () => pkg('node a2.mjs') };
+  assert.ok(!selectRigs(file, ['package.json'], null, ctx).ran.some((r) => r.id === 'test:outer'), 'command text alone does not see the hop (the review\'s 4 cases)');
+  const w = createWalker(t, scripts);
+  const withWalk = selectRigs(file, ['package.json'], null, { ...ctx, scriptsReachedBy: (r) => w.closure(r.command).scripts });
+  assert.equal(withWalk.mode, 'paths'); assert.ok(withWalk.ran.some((r) => r.id === 'test:outer') && !withWalk.ran.some((r) => r.id === 'test:other'));
+  // repo: the review's 4 cases
+  const rw = createWalker(realTree, pkgScripts);
+  for (const [rig, script] of [['test:release-gate', 'test:session-budget'], ['test:release-receipt', 'test:admission-hold'], ['test:release-receipt-mutants', 'test:admission-wake'], ['test:rig-selftest', 'test:rig-selftest']] as const) {
+    assert.ok(rw.closure(real.rigs.find((r) => r.id === rig)!.command).scripts.has(script) || rig === 'test:rig-selftest', `${rig} reaches ${script}`);
+  }
+});
+
+test('F5: ci.yml re-runs on `labeled` (ci-full added after the push) and only the `ci-full` label forces everything', () => {
+  const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(wf, /^    types: \[opened, synchronize, reopened, labeled\]$/m);
+  assert.match(wf, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci-full'\) && 'the ci-full label forces every rig'/);
+  assert.equal(wf.match(/'ci-full'/g)!.length, 1, 'no other label is read');
+  assert.match(wf, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
 });

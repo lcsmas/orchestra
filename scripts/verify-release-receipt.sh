@@ -65,7 +65,9 @@ if _rg_why="$(rg_receipt_check)"; then
     echo "release-gate: SKIPPED
 X
   mutate bypass_ignored   release.sh <<'X'
-elif [ "$SKIP_GATE" = 1 ]; then|||elif false; then
+elif [ "$SKIP_GATE" = 1 ]; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite|||elif false; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite
 X
   bad=0
   for n in $(ls "$M"); do
