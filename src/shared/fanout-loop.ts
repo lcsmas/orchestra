@@ -5,7 +5,7 @@ import type { FleetPort, ForgePort, GitPort } from './fanout-loop-ports.ts';
 import { applyPlan, parkTicket, pausedOf, parkedTickets, readLoopState, recordChoice, updateLoopState, withLoop, type LoopState, type Plan } from './fanout-loop-compat.ts';
 import { buildReport, type Report } from './fanout-report.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
-import { blockingMinors, applyTicketPatch, FanoutStateError, newState, planMissing, SeatRefusal, unmergedUpstreams } from './fanout-state.ts';
+import { blockingMinors, applyTicketPatch, FanoutStateError, newState, planMissing, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
 import { recordedVerdictOf, reviewOn } from './fanout-record.ts';
 
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
@@ -146,6 +146,7 @@ export async function stepMail(ctx: LoopCtx): Promise<void> {
       }
     } else if ((m.kind === 'status' || m.kind === 'worker_done') && ticket && s.tickets[ticket]?.implementer === m.sender) {
       ctx.signals.add(ticket);
+      ctx.update((x) => ({ ...x, loop: { ...x.loop, signalled: { ...x.loop.signalled, [ticket]: true as const } } })); // durable before this pass ends: the mail is gone once read
     }
   }
 }
@@ -159,7 +160,9 @@ export async function stepNominations(ctx: LoopCtx): Promise<void> {
     const t = s.tickets[id];
     if (!t.branch) continue;
     let head = t.head;
-    if (ctx.signals.has(id)) { const h = await deps.git.head(t.branch); if (h) head = h; }
+    let read = false; // a signalled ticket whose head git showed: its signal is spent when this iteration ends
+    if (ctx.signals.has(id) || s.loop.signalled[id]) { const h = await deps.git.head(t.branch); if (h) { head = h; read = true; } }
+    const spend = (): void => { if (read) ctx.update((x) => { const { [id]: _g, ...rest } = x.loop.signalled; return { ...x, loop: { ...x.loop, signalled: rest } }; }); };
     if (!head) continue;
     const builtOn = { ...t.builtOn };
     const builtOnTree = { ...t.builtOnTree };
@@ -173,19 +176,25 @@ export async function stepNominations(ctx: LoopCtx): Promise<void> {
       connected = true;
     }
     const headChanged = !t.head || !sameSha(head, t.head);
-    const admissible = unmergedUpstreams(s, id).every((u) => builtOn[u]);
-    const toNominated = admissible && t.status === 'started';
-    if (!headChanged && !connected && !toNominated) continue;
+    // the state's early-gate rule decides: nominated needs, for every unmerged upstream, a candidate (nominated|gated) whose CURRENT content is what `builtOn` says this head was built on
+    const view: LoopState = { ...s, tickets: { ...s.tickets, [id]: { ...t, head, builtOn, builtOnTree } } };
+    const clear = unmergedUpstreams(s, id).every((u) => upstreamBlocker(view, view.tickets[id], u) === null);
+    const want = clear ? (t.status === 'started' || t.status === 'nominated' ? 'nominated' : t.status) : (t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status); // an upstream that moved under a nominated dependent: back to started until it is connected again
+    if (!headChanged && !connected && want === t.status) { spend(); continue; }
     const tree = headChanged ? await deps.git.tree(head) : t.tree;
     const patch = (status: string): Record<string, unknown> => ({ head, ...(connected ? { builtOn } : {}), status });
     const derived = { tree, ...(connected ? { builtOnTree } : {}) };
     try {
-      ctx.update((x) => withLoop(applyTicketPatch(x, id, patch(admissible && (t.status === 'started' || t.status === 'nominated') ? 'nominated' : t.status), deps.now(), derived), x.loop));
+      ctx.update((x) => withLoop(applyTicketPatch(x, id, patch(want), deps.now(), derived), x.loop));
     } catch (e) {
-      if (!(e instanceof FanoutStateError) || t.status !== 'nominated') throw e;
-      ctx.update((x) => withLoop(applyTicketPatch(x, id, patch('started'), deps.now(), derived), x.loop)); // the upstream moved under it: back to started until it is connected again
+      if (!(e instanceof FanoutStateError)) throw e;
+      // the state refuses this nomination (e.g. `--follows` not recorded): the head is kept, the ticket stays as it was, the author is told what to fix — one ticket's omission never ends the run
+      ctx.note(`${id}: cannot be ${want} yet — ${e.message}`);
+      ctx.update((x) => withLoop(applyTicketPatch(x, id, { head, ...(connected ? { builtOn } : {}), status: t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status }, deps.now(), derived), x.loop));
+      if ((headChanged || connected) && t.implementer && deps.fleet.live(t.implementer)) await deps.fleet.send(t.implementer, `orchestra could not nominate ${id}: ${e.message}`, 'status');
     }
-    if (headChanged) ctx.did(`${id} ${admissible ? 'nominated' : 'has a head'} at ${head.slice(0, 12)}`);
+    spend();
+    if (headChanged) ctx.did(`${id} ${want === 'nominated' ? 'nominated' : 'has a head'} at ${head.slice(0, 12)}`);
     if (connected) ctx.did(`${id} is connected to ${Object.keys(s.loop.asked[id] ?? {}).filter((u) => builtOn[u]).join(', ')}`);
   }
 }

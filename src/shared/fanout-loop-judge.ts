@@ -57,7 +57,8 @@ export function judgeRun(i: JudgeInput): Violation[] {
   const readiness: Array<{ tk: string; at: number; i: number }> = [];
   for (const m of merges) {
     const tk = String(m.ticket);
-    const approvals = i.events.filter((x) => x.ev === 'review-record' && x.ticket === tk && x.verdict === 'approve' && sameSha(x.head, m.head) && idx(x) < idx(m));
+    const records = i.events.filter((x) => x.ev === 'review-record' && x.ticket === tk && sameSha(x.head, m.head) && idx(x) < idx(m));
+    const approvals = records.length && records[records.length - 1].verdict === 'approve' ? records.filter((x) => x.verdict === 'approve') : []; // the LAST record on this head decides: a later changes-requested voids an earlier approve
     if (!approvals.length) v('merge-no-approval', `${tk} merged at ${String(m.head).slice(0, 12)} with no recorded approval on that head`, tk);
     if (m.ci !== 'green') v('merge-ci-not-green', `${tk} merged with its CI at "${String(m.ci)}"`, tk);
     for (const up of i.deps[tk] ?? []) { const um = mergeOf(up); if (!um || idx(um) > idx(m)) v('merge-upstream-unmerged', `${tk} merged before its upstream ${up}`, tk); }

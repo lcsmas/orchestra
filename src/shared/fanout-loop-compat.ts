@@ -17,11 +17,13 @@ export interface LoopSide {
   pause: PauseInfo | null;
   /** #605-only (not in the freeze): upstream → the head the author was asked to connect to, per dependent. Asked once per (dependent, upstream, head). */
   asked: Record<string, Record<string, string>>;
+  /** #605-only: tickets whose implementer said it nominated, read from the mail but not yet turned into a head in the state (mail is consumed on read: this makes the hand-off from `mail` to `nominations` survive a kill). */
+  signalled: Record<string, true>;
 }
 /** `FanoutState` + the sidecar. The frozen helpers below take and return this. */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {} });
+const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, signalled: {} });
 const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function readSide(file: string): LoopSide {

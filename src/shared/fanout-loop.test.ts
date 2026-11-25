@@ -151,6 +151,7 @@ test('judge MUST-FAIL: each rule fires on a log that breaks it', () => {
   assert.ok(rules([...base(), { t: 22, ev: 'connect-ask', ticket: 'B', up: 'A', head: H('a') }, { t: 23, ev: 'connect-ask', ticket: 'B', up: 'A', head: H('a') }].sort((a, b) => a.t - b.t)).includes('connect-asked-twice'));
   assert.ok(rules(base().filter((e) => e.ev !== 'review-record')).includes('merge-no-approval'));
   assert.ok(rules(base().map((e) => (e.ev === 'merge' ? { ...e, ci: 'red:test' } : e))).includes('merge-ci-not-green'));
+  assert.ok(rules([...base().slice(0, 6), { t: 22, ev: 'review-record', ticket: 'A', head: H('a'), verdict: 'changes-requested' }, base()[6]]).includes('merge-no-approval'), 'a later changes-requested on the same head voids the approve');
   assert.ok(rules(base().map((e) => (e.ev === 'review-record' ? { ...e, head: H('c') } : e))).includes('merge-no-approval'), 'an approval of ANOTHER head is not the head that merged');
   const unmerged = [{ t: 0, ev: 'spawn', ticket: 'B' }, { t: 5, ev: 'code', ticket: 'B' }, { t: 21, ev: 'review-record', ticket: 'B', head: H('b'), verdict: 'approve' }, { t: 30, ev: 'merge', ticket: 'B', head: H('b'), ci: 'green' }] as Ev[];
   assert.ok(rules(unmerged).includes('merge-upstream-unmerged'));
@@ -232,5 +233,39 @@ test('decision 10: an approval of an OLD head does not merge a new head (the rev
   assert.equal(String(m.head), String(records[1].head), 'merged on the head the SECOND record speaks about');
   assert.ok(m.t >= records[1].t);
   assert.notEqual(String(records[0].head), String(m.head));
+  assert.deepEqual(r.violations, []);
+});
+
+test('decision 12: killed between reading the mail and writing the nomination, the loop started again still nominates (the signal is durable, the mail is gone)', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
+  let crashed = false;
+  const git = { ...d.git, async head(b: string) { if (!crashed && b === 'impl-T1' && d.world.events.some((e) => e.ev === 'mail-posted' && e.ticket === 'T1')) { crashed = true; throw new Error('killed mid-pass'); } return d.git.head(b); } };
+  const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge: d.forge, git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  await assert.rejects(runLoop(deps), /killed mid-pass/);
+  const again = await runLoop(deps);
+  assert.equal(again.exit, 0);
+  assert.equal(again.report.merged.length, 7);
+  assert.equal(d.world.events.filter((e) => e.ev === 'spawn').length, 7, 'no second agent for any ticket');
+  assert.equal(d.world.events.filter((e) => e.ev === 'pr-open').length, 7, 'no second pull request');
+});
+
+test('an upstream that moves after it was approved: the dependent connected to the OLD head is asked again, no crash, merged in order (pre-review BLOCKING)', async () => {
+  const r = await go('upstream-moves', { stallMs: 4 * 3_600_000 });
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
+  const asks = r.world.events.filter((e) => e.ev === 'connect-ask' && e.ticket === 'T2');
+  assert.equal(asks.length, 2, 'asked at the first approved head, then at the new one');
+  assert.notEqual(String(asks[0].head), String(asks[1].head));
+  assert.equal(r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status').length, 0, 'the loop handled it itself: no refusal was relayed to an author');
+  assert.deepEqual(r.violations, []);
+});
+test('one ticket that never records --follows is refused its nomination and told so — the run goes on without it (pre-review MAJOR)', async () => {
+  const r = await go('follows-missing');
+  assert.equal(r.result.exit, 3);
+  assert.deepEqual(r.result.report.merged, ['T1', 'T3']);
+  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T2', 'situation']]);
+  const told = r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status' && /could not nominate T2: .*interface-unfollowed/.test(String(e.text)));
+  assert.ok(told.length >= 1, 'the author got the refusal');
   assert.deepEqual(r.violations, []);
 });

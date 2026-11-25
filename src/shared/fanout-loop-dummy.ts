@@ -24,7 +24,7 @@ export interface Scenario {
   ci?: Record<string, string[]>;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option' }>>;
-  faults?: { stealMail?: boolean };
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[] };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -198,7 +198,7 @@ export class DummyWorld {
       case 'fix': { const c = this.commitOn(a, `fix${a.idx}`); this.ev('fix', a.ticket, { head: c }); this.post('status', a.ws, a.ticket, `fixed — head ${c}`); break; }
       case 'nominate': {
         const deps = this.sc.repo.tickets.find((t) => t.id === a.ticket)?.dependsOn ?? [];
-        if (deps.length) updateLoopState(this.home, this.run, (cur) => withLoop(applyTicketPatch(cur!, a.ticket, { follows: Object.fromEntries(deps.map((d) => [d, cur!.tickets[d].iface?.version ?? 1])) }, this.iso()), cur!.loop)); // what a real implementer records before it nominates (`state set --follows`)
+        if (deps.length && !this.sc.faults?.noFollows?.includes(a.ticket)) updateLoopState(this.home, this.run, (cur) => withLoop(applyTicketPatch(cur!, a.ticket, { follows: Object.fromEntries(deps.map((d) => [d, cur!.tickets[d].iface?.version ?? 1])) }, this.iso()), cur!.loop)); // what a real implementer records before it nominates (`state set --follows`)
         this.ev('nominate', a.ticket, { head: this.branches.get(a.branch) }); this.post('status', a.ws, a.ticket, `nominated ${a.branch}`); break; }
       case 'connect': {
         const ask = a.asks.shift();
