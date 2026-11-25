@@ -20,7 +20,7 @@ export function fileStatePort(home: string, run: string): StatePort {
   };
 }
 
-export interface RelaunchCtx { now: () => string; log: (line: string) => void; git: RelaunchGit; forge: RelaunchForge; state: StatePort; park: ParkFn }
+export interface RelaunchCtx { now: () => string; log: (line: string) => void; git: RelaunchGit; forge: RelaunchForge; state: StatePort; park: ParkFn; /** `FleetPort.live`: does this workspace exist and run? */ live: (ws: string) => boolean }
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const short = (sha: string | null | undefined): string => (sha ?? '?').slice(0, 8);
@@ -65,6 +65,8 @@ export interface ReconcileOutcome {
   /** divergences this step reports and does not act on (state claims merged, reality does not; a PR head moved…). */
   diverged: Divergence[];
   unreadable: string[];
+  /** nominated|gated tickets with an open PR whose author is dead: put back to `started` so the loop's start step respawns the author on its branch. */
+  revived: string[];
 }
 
 const TERMINAL = new Set(['merged', 'dropped']);
@@ -112,12 +114,14 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
   const reality = await readReality(state0, ctx);
   const plan = reconcile(state0, reality);
   const writeBack = writeBackFor(state0, reality, plan.writeBack);
-  const out: ReconcileOutcome = { adopted: [], parked: [], released: [], diverged: [], unreadable: [] };
+  const out: ReconcileOutcome = { adopted: [], parked: [], released: [], diverged: [], unreadable: [], revived: [] };
   for (const d of plan.divergences) {
     if (d.kind === 'reality-unreadable') { out.unreadable.push(d.ticket); ctx.log(`reconcile: ${d.ticket}: ${d.detail}`); }
   }
   const toPark = plan.divergences.map((d) => ({ d, why: parkReason(d, state0.tickets[d.ticket]) })).filter((x): x is { d: Divergence; why: { cause: ParkCauseView; reason: string } } => x.why !== null && !isParked(state0.tickets[x.d.ticket]) && !TERMINAL.has(state0.tickets[x.d.ticket].status));
-  if (!writeBack.length && !toPark.length) {
+  // a dead author of a published ticket (PR open): `startRun` only respawns todo|started tickets, so the ticket goes back to `started` (implementer, branch, PR, head kept) — the same rule as #606's author revival
+  const toRevive = Object.entries(state0.tickets).filter(([id, t]) => (t.status === 'nominated' || t.status === 'gated') && t.pr !== null && !!t.implementer && reality[id]?.pr?.state === 'OPEN' && !reality[id]?.error && !ctx.live(t.implementer)).map(([id]) => id);
+  if (!writeBack.length && !toPark.length && !toRevive.length) {
     out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(state0.tickets[d.ticket])));
     for (const d of out.diverged) ctx.log(`reconcile: ${d.ticket}: ${d.kind}: ${d.detail}`);
     return out;
@@ -131,18 +135,23 @@ export async function stepReconcile(ctx: RelaunchCtx): Promise<ReconcileOutcome>
     s = { ...s, tickets: Object.fromEntries(Object.entries(s.tickets).map(([id, t]) => [id, out.adopted.includes(id) && isParked(before.tickets[id]) ? (({ parked: _p, ...rest }) => rest as TicketState)(t as TicketState & { parked?: unknown }) : t])) };
     const rel = releaseDependents(s, now);
     s = rel.state; out.released = rel.released;
-    out.parked = [];
+    out.parked = []; out.revived = [];
     for (const { d, why } of toPark) {
       const t = s.tickets[d.ticket];
       if (!t || TERMINAL.has(t.status) || isParked(t)) continue; // adopted or already parked meanwhile
       s = ctx.park(s, d.ticket, why, now);
       out.parked.push({ ticket: d.ticket, ...why });
     }
+    for (const id of toRevive) {
+      const t = s.tickets[id];
+      if (t && (t.status === 'nominated' || t.status === 'gated') && !isParked(t)) { s = { ...s, tickets: { ...s.tickets, [id]: { ...t, status: 'started', updatedAt: now } }, updatedAt: now }; out.revived.push(id); }
+    }
     return s;
   });
   out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(after.tickets[d.ticket])) && !out.adopted.includes(d.ticket)); // a parking kind is handled once its ticket is parked; on a ticket recorded merged it stays visible
   for (const id of out.adopted) ctx.log(`reconcile: ${id}: merged outside the loop (or by the loop before a kill) — adopted`);
   for (const id of out.released) ctx.log(`reconcile: ${id}: its parked upstream was merged — released`);
+  for (const id of out.revived) ctx.log(`reconcile: ${id}: its author (${state0.tickets[id].implementer}) is dead and the PR is open — back to started, the loop respawns it on ${state0.tickets[id].branch}`);
   for (const p of out.parked) ctx.log(`reconcile: ${p.ticket}: parked [${p.cause}] ${p.reason}`);
   for (const d of out.diverged) ctx.log(`reconcile: ${d.ticket}: ${d.kind}: ${d.detail}`);
   return out;
@@ -163,7 +172,7 @@ function parkBehindDropped(state: FanoutState, ctx: EndCtx): FanoutState {
   for (const [id, t] of Object.entries(state.tickets)) {
     if (TERMINAL.has(t.status) || isParked(t)) continue;
     const dropped = t.dependsOn.find((u) => s.tickets[u]?.status === 'dropped');
-    if (dropped && !isParked(s.tickets[id])) s = ctx.park(s, id, { cause: 'upstream', reason: `blocked by ${dropped} (dropped, never merged)` }, ctx.now());
+    if (dropped && !isParked(s.tickets[id])) s = ctx.park(s, id, { cause: 'situation', reason: `blocked by ${dropped} (dropped, never merged)` }, ctx.now()); // 'upstream' is never a chosen cause (#603): the dependents of THIS ticket get it
   }
   return s;
 }

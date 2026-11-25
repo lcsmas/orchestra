@@ -30,6 +30,7 @@ class World {
   merged = new Set<string>();
   prs = new Map<number, { state: 'open' | 'merged' | 'closed'; head: string }>();
   fail = new Set<string>();
+  dead = new Set<string>();
   calls: string[] = [];
   branch(b: string, head: string | null, tree?: string): this { this.heads.set(b, head); if (head) this.trees.set(head, tree ?? head); return this; }
   pr(n: number, state: 'open' | 'merged' | 'closed', head: string): this { this.prs.set(n, { state, head }); return this; }
@@ -45,6 +46,7 @@ class World {
 const parkShim: ParkFn = (state, id, why, now) => {
   const t = state.tickets;
   if (t[id].status === 'merged') throw new Error('park-merged');
+  if (why.cause === 'upstream') throw new Error('[park-bad-cause] upstream is given to dependents, never chosen (as #603)');
   const out: Record<string, TicketState> = { ...t, [id]: { ...t[id], status: 'parked', parked: { ...why, at: now }, updatedAt: now } as unknown as TicketState };
   for (let more = true; more;) {
     more = false;
@@ -62,7 +64,7 @@ function memPort(init: FanoutState): StatePort & { cur: FanoutState; writes: num
 }
 function rctx(w: World, port: StatePort, log: string[] = []): RelaunchCtx {
   let tick = 0;
-  return { now: () => new Date(Date.parse(T0) + ++tick * 1000).toISOString(), log: (l) => log.push(l), git: w.git, forge: w.forge, state: port, park: parkShim };
+  return { now: () => new Date(Date.parse(T0) + ++tick * 1000).toISOString(), log: (l) => log.push(l), git: w.git, forge: w.forge, state: port, park: parkShim, live: (ws) => !w.dead.has(ws) };
 }
 const status = (s: FanoutState, id: string): string => s.tickets[id].status as string;
 const parkedOf = (s: FanoutState, id: string): { cause: string; reason: string; blockedBy?: string } => (s.tickets[id] as unknown as { parked: { cause: string; reason: string; blockedBy?: string } }).parked;
@@ -243,6 +245,34 @@ test('the same head on a rebased sha (same tree) follows silently; a moved head 
   assert.equal(status(p2.cur, 'A'), 'nominated');
 });
 
+// ── a dead author of a published ticket ─────────────────────────────────────────────────────────────────────────
+test('a nominated|gated ticket with an OPEN PR whose author is dead goes back to started (implementer, branch, PR kept) so the start step respawns it; a live author, a merged or closed PR are left alone', async () => {
+  const w = new World().branch('b1', sha('a')).pr(1, 'open', sha('a')).branch('b2', sha('b')).pr(2, 'open', sha('b')).branch('b3', sha('c')).pr(3, 'open', sha('c'));
+  w.dead.add('ws-a'); w.dead.add('ws-c');
+  const port = memPort(stateOf({
+    A: { status: 'nominated', branch: 'b1', pr: 1, head: sha('a'), tree: sha('a'), implementer: 'ws-a' },
+    B: gated(2, 'b', { implementer: 'ws-b' }), // live author
+    C: gated(3, 'c', { implementer: 'ws-c' }), // dead, gated
+  }));
+  const out = await stepReconcile(rctx(w, port));
+  assert.deepEqual(out.revived.sort(), ['A', 'C']);
+  for (const id of ['A', 'C']) { assert.equal(status(port.cur, id), 'started', id); assert.equal(port.cur.tickets[id].implementer, `ws-${id.toLowerCase()}`); assert.equal(port.cur.tickets[id].pr, id === 'A' ? 1 : 3); assert.ok(port.cur.tickets[id].branch); }
+  assert.equal(status(port.cur, 'B'), 'gated');
+  const writes = port.writes;
+  await stepReconcile(rctx(w, port)); // `started` + dead author is startRun's business now
+  assert.equal(port.writes, writes);
+});
+
+test('MUST-FAIL arm: no revival without an open PR (closed → parked, merged → adopted) or when the PR read failed', async () => {
+  const w = new World().branch('b1', sha('a')).pr(1, 'merged', sha('a')).branch('b2', sha('b')).pr(2, 'open', sha('b'));
+  w.merged.add('b1'); w.dead.add('ws-a'); w.dead.add('ws-b'); w.fail.add('pr2');
+  const port = memPort(stateOf({ A: gated(1, 'a', { implementer: 'ws-a' }), B: gated(2, 'b', { implementer: 'ws-b' }) }));
+  const out = await stepReconcile(rctx(w, port));
+  assert.deepEqual(out.revived, []);
+  assert.equal(status(port.cur, 'A'), 'merged');
+  assert.equal(status(port.cur, 'B'), 'gated');
+});
+
 // ── killed at every window of one merge: the same final state ──────────────────────────────────────────────────
 test('killed at every window of a ticket\'s merge sequence and started again: the same final state, one merge', async () => {
   const canon = (v: unknown): unknown => (Array.isArray(v) ? v.map(canon) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'updatedAt' && k !== 'reconciledAt').sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, x]) => [k, canon(x)])) : v);
@@ -313,6 +343,7 @@ test('stepEnd: a ticket behind a DROPPED upstream is parked, so the run ends ins
   assert.equal(e.done, true);
   assert.equal(e.exit, 3);
   assert.equal(e.report!.parked[0].ticket, 'B');
+  assert.equal(e.report!.parked[0].cause, 'situation', 'upstream is never a chosen cause');
   assert.match(e.report!.parked[0].reason, /blocked by A \(dropped/);
   assert.deepEqual(e.report!.dropped, ['A']);
 });
@@ -350,7 +381,10 @@ test('reportExit: 0 merged · 3 parked · 4 paused (wins) · 1 unfinished withou
   assert.equal(mk({ A: { status: 'merged' } }), 0);
   assert.equal(mk({ A: { status: 'merged' }, B: { status: 'dropped' } }), 0);
   assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } } }), 3);
-  assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } } }, { pause: { at: T0, reason: 'r', check: null, prs: [] } }), 4);
+  const pause = { pause: { at: T0, reason: 'r', check: null, prs: [] } };
+  assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } }, B: { status: 'started' } }, pause), 4);
+  assert.equal(mk({ A: { status: 'parked', parked: { cause: 'ci', reason: 'x' } } }, pause), 3, 'paused with nothing left to resume: the run is finished');
+  assert.equal(mk({ A: { status: 'merged' } }, pause), 0);
   assert.equal(mk({ A: { status: 'started' } }), 1);
   assert.equal(mk({}), 1, 'an empty run delivered nothing');
   assert.equal(mk({ A: { status: 'dropped' } }), 1, 'only dropped tickets delivered nothing');

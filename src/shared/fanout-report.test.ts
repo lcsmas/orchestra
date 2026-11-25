@@ -59,6 +59,27 @@ test('a message copied into a second file (a resumed / forked session) is counte
   assert.equal(tokensOfFiles(['a', 'b'], (p) => files[p])!.tokens, 17);
 });
 
+test('transcriptFilesIn reads <session>/subagents/*.jsonl too (Agent-tool transcripts are the ticket\'s cost)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cost-sub-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'sess1', 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'sess1.jsonl'), asst('m1', { input_tokens: 100 }));
+    fs.writeFileSync(path.join(dir, 'sess1', 'subagents', 'agent-a.jsonl'), asst('s1', { input_tokens: 40 }, { isSidechain: true }));
+    fs.writeFileSync(path.join(dir, 'sess1', 'subagents', 'agent-b.jsonl'), asst('s2', { input_tokens: 2 }, { isSidechain: true }));
+    fs.writeFileSync(path.join(dir, 'sess1', 'notes.txt'), 'x');
+    assert.equal(transcriptFilesIn(dir).length, 3);
+    const costOf = makeCostOf({ workspacesOf: () => ['w'], transcriptsOf: () => transcriptFilesIn(dir) });
+    assert.equal((await costOf('A'))!.tokens, 142);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('one message.id in two files with different usage: the per-field MAX wins, in either file order', () => {
+  const files: Record<string, string> = { a: asst('m1', { input_tokens: 1, output_tokens: 5 }), b: asst('m1', { input_tokens: 1, output_tokens: 500 }) };
+  const read = (p: string): string => files[p];
+  assert.equal(tokensOfFiles(['a', 'b'], read)!.tokens, 501);
+  assert.equal(tokensOfFiles(['b', 'a'], read)!.tokens, 501);
+});
+
 test('workspacesOfTicket: implementer + every reviewer ever briefed, unique, in order', () => {
   const t = { ...blankTicket('t'), implementer: 'ws-i', review: { reviewer: { id: 'ws-r2', name: 'review-A-r2', at: 't' }, head: null, base: null, briefs: [
     { n: 1, kind: 'spawn', head: 'a', base: null, hash: 'h', text: '', reviewer: 'ws-r1', at: 't' }, { n: 2, kind: 'replace', head: 'a', base: null, hash: 'h', text: '', reviewer: 'ws-r2', at: 't' }, { n: 3, kind: 'wake', head: 'b', base: null, hash: 'h', text: '', reviewer: 'ws-r2', at: 't' }] } };

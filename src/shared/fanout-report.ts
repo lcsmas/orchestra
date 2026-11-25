@@ -85,9 +85,9 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
   };
 }
 
-/** Exit code of `fanout run` (frozen, #605): 0 every ticket merged · 3 ≥ 1 parked · 4 paused (resumable) · 1 the run stopped with tickets unfinished and nothing to say why. A `dropped` ticket is the human's word and does not fail the run. */
+/** Exit code of `fanout run` (frozen, #605): 0 every ticket merged · 3 ≥ 1 parked · 4 paused with tickets still unfinished (resumable) · 1 the run stopped with tickets unfinished and nothing to say why. A `dropped` ticket is the human's word and does not fail the run. */
 export function reportExit(r: Report): 0 | 1 | 3 | 4 {
-  if (r.paused) return 4;
+  if (r.paused && r.unfinished.length) return 4; // paused with nothing left to resume is a finished run
   if (r.parked.length) return 3;
   if (r.unfinished.length || !r.merged.length) return 1; // nothing merged and nothing parked (an empty run, or only dropped tickets) did not deliver
   return 0;
@@ -122,7 +122,7 @@ export function renderReport(r: Report): string {
 
 type Usage = { i: number; o: number; r: number; c: number };
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
-/** Add one transcript's assistant usages to `byId` (one entry per `message.id`: a message streamed as several lines repeats its usage, the LAST line carries the final `output_tokens`; a resumed or forked session that copies history into a new file repeats ids — one map per COUNT keeps them single). Lines with no id are each their own message. */
+/** Add one transcript's assistant usages to `byId` (one entry per `message.id`, each field at its MAX: a message streamed as several lines repeats its usage and the last carries the final `output_tokens`; a resumed or forked session that copies history into a new file repeats ids — one map per COUNT keeps them single). Lines with no id are each their own message. */
 function collect(jsonl: string, byId: Map<string, Usage>, anon: { n: number }): void {
   for (const raw of jsonl.split('\n')) {
     const line = raw.trim();
@@ -131,7 +131,10 @@ function collect(jsonl: string, byId: Map<string, Usage>, anon: { n: number }): 
     try { e = JSON.parse(line); } catch { continue; }
     if (e.type !== 'assistant' || !e.message?.usage) continue;
     const u = e.message.usage;
-    byId.set(typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`, { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) });
+    const key = typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`;
+    const prev = byId.get(key);
+    const cur = { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) };
+    byId.set(key, prev ? { i: Math.max(prev.i, cur.i), o: Math.max(prev.o, cur.o), r: Math.max(prev.r, cur.r), c: Math.max(prev.c, cur.c) } : cur); // streamed lines of one message only grow: the max per field is the final count, whatever the order of lines or files
   }
 }
 function total(byId: Map<string, Usage>): Required<TokenCost> {
@@ -161,9 +164,19 @@ export function tokensOfFiles(files: string[], read: (p: string) => string = (p)
   return any ? total(byId) : null;
 }
 
-/** Every `*.jsonl` of a transcript directory (a workspace restarted or cleared has one file per session — all of them are the ticket's cost). [] when the directory is absent. */
+/** Every `*.jsonl` under a transcript directory, recursively: the session files AND `<session>/subagents/*.jsonl` (Agent-tool transcripts — measured 28 % of a real session's tokens). A workspace restarted or cleared has one file per session: all are the ticket's cost. [] when the directory is absent. */
 export function transcriptFilesIn(dir: string): string[] {
-  try { return fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort().map((n) => path.join(dir, n)); } catch { return []; }
+  const out: string[] = [];
+  const walk = (d: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries.sort((x, y) => (x.name < y.name ? -1 : 1))) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (depth < 4) walk(p, depth + 1); } else if (e.name.endsWith('.jsonl')) out.push(p);
+    }
+  };
+  walk(dir, 0);
+  return out;
 }
 
 /** `FleetPort.costOf` from three seams: the workspaces that worked on a ticket (implementer + every reviewer), the transcript files of a workspace, the file reader. */
