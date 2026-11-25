@@ -187,10 +187,12 @@ const RULES: ReadonlyArray<readonly [string, string, string?]> = [
   ["<!-- orchestra-generated: fan-out role text ", 'RI', 'n'],
   ["# Fan-out reviewer — your rules", 'R', 'n'],
   ["You are the reviewer of ONE merge candidate ", 'R', 'n'],
-  ["Two rules ride in your brief, verbatim:", 'RI', 'n'],
+  ["Two rules ride in your brief, verbatim:", 'I', 'n'],
+  ["Two rules ride in every fleet message that na", 'R', 'n'],
   ["## Adversarial review: what you do", 'R', 'n'],
   ["It: it reads the diff, the ledger spec, and ", 'R'],
-  ["The traps file is .claude/skills/verified-fa", 'R', 'n'],
+  ["The traps file, when the repo has Orchestra's", 'R', 'n'],
+  ["Your brief names no ledger: your verdict goes", 'R', 'n'],
   ["Severity scale (the §4 merge rule keys on it", 'R'],
   ["(§4 is the coordinator's merge rule: 0 BLOCK", 'R', 'n'],
   ["BLOCKING — must not merge as is (red CI/buil", 'R'],
@@ -419,4 +421,25 @@ test('#590 on: every `orchestra fanout state set …` / `fanout review` flag of 
   for (const c of COMBOS) assert.deepEqual(lint(renderVerifiedFanoutSkill(asSw(c, 'on'))), [], `ON text at ${comboKey(c)}`);
   assert.ok(spans(renderVerifiedFanoutSkill(asSw({}, 'on'))).length >= 4, 'the extractor found the spans');
   assert.deepEqual(lint('`orchestra fanout state set --made-up-flag x`'), ['--made-up-flag in: orchestra fanout state set --made-up-flag x'], 'a made-up flag is caught');
+});
+
+// F1 (review r1): the references the coordinator reads are coordinator text too — no implementer-only / reviewer-only rule of them stays under ON
+const REF_ROLE_MARKERS: ReadonlyArray<readonly [string, string]> = [
+  ['Every report, verdict and blocking question lands as a LEDGER COMMENT', 'implementer+reviewer'], ['Fixed report format, ≤15 lines', 'implementer+reviewer'], ['One ping per event', 'implementer+reviewer'],
+  ['in the first round AND every fix round, is the typecheck', 'implementer'], ['Self-gate BEFORE nominating', 'implementer'], ['Then a fresh-context PRE-REVIEW', 'implementer'],
+  ['**Rebase onto current master BEFORE nominating**', 'implementer'], ['Mutation runs: FULL set', 'implementer'], ['do NOT add cases at the layer you already test', 'implementer'],
+  ['**Severity scale (the §4 merge rule keys on it):**', 'reviewer'], ['It: it reads the diff, the ledger spec, and', 'reviewer'], ['A MINOR that breaks a sentence of the ticket', 'reviewer'],
+  ['A finding with a demonstration (#572', 'reviewer'], ["**Done when:** the reviewer's comment is on the ledger", 'reviewer'],
+];
+const refViolations = (renderRef: (c: Record<string, string>) => string): string[] => {
+  const bad: string[] = [];
+  for (const c of COMBOS) { const t = renderRef(c).replace(/\s+/g, ' '); for (const [m, who] of REF_ROLE_MARKERS) if (t.includes(m.replace(/\s+/g, ' '))) bad.push(`a ${who}-only rule stays in a coordinator reference at ${comboKey(c)}: ${m}`); }
+  return bad;
+};
+const allRefs = (sw: (c: Record<string, string>) => Partial<Switches>) => (c: Record<string, string>): string => VERIFIED_FANOUT_V2_REFERENCES.map((f) => (f.path.endsWith('.md') ? renderSwitchBlocks(f.content, sw(c)) : '')).join('\n');
+
+test('#590 on (review F1): no implementer-only or reviewer-only rule stays in the references the coordinator reads — and the check fails on the OFF render, where they all are', () => {
+  assert.deepEqual(refViolations(allRefs((c) => asSw(c, 'on'))), []);
+  const off = new Set(COMBOS.flatMap((c) => refViolations(allRefs((x) => asSw(x, 'off'))).filter((v) => v.includes(comboKey(c)))).map((v) => v.split(': ').slice(1).join(': ')));
+  for (const [m] of REF_ROLE_MARKERS) assert.ok(off.has(m), `the marker ${JSON.stringify(m)} is present in some OFF render (a stale marker would pass vacuously)`);
 });

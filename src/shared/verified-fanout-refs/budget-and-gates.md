@@ -39,6 +39,7 @@ Churn, not preload, is where a fleet burns tokens and wall-clock (measured:
 ~10 tip moves × full re-gates, 500-word reports per round, ack loops). Caps,
 carried in every brief:
 
+<!--sw seatRecords=off-->
 - **Every report, verdict and blocking question lands as a LEDGER COMMENT.**
   Issue comments are ordered and durable; the message channel is neither — so
   the message channel carries ONE thing: the ping "new comment on ledger". A
@@ -57,6 +58,7 @@ carried in every brief:
 - **One ping per event** — checkpoint landed, gate verdict, blocking
   question. Silence otherwise, and a closed loop stays closed: "Closed 👍"
   ends an exchange; replying to it reopens it.
+<!--/sw-->
 - **Peer-to-peer for facts** (ledger as authority); the coordinator handles
   decisions only. A fact relayed through the coordinator pays twice and can
   arrive stale.
@@ -66,21 +68,33 @@ Gate rhythm:
 - **Write the full gate checklist into the ledger before the first gate** —
   each axis discovered mid-run costs one full cycle. Its review line is the §4
   merge rule's verbatim sentence, copied whole.
-<!--sw verifier=on-->
+<!--sw verifier=on seatRecords=off-->
 - **The full suite and the build run on the verifier's seat, once per
   candidate — unless the target has PR CI** (`orchestra fanout gate` derives it;
   the verifier then waits for CI green on its head). An implementer's self-gate,
 <!--/sw-->
-<!--sw verifier=off-->
+<!--sw verifier=off seatRecords=off-->
 - **The PR's CI is the build and the full suite; nobody re-runs it by hand**
   (`deliver` refuses no CI, a red CI and a check that ran nothing). An implementer's self-gate,
 <!--/sw-->
+<!--sw seatRecords=off-->
   in the first round AND every fix round, is the typecheck, the test files its
   diff touches and its own rig arms; a red run is reported with the failing
   test names. N full suites share one host (measured, ledger orchestra#423:
   load 17–20, timing failures in files no diff touched, six runs for one green;
   a vague that re-ran a 15-min suite locally per candidate and per fix round,
   beside a CI running the same one, lost ~130 min, `orchestra#495`/`#497`).
+<!--/sw-->
+<!--sw verifier=on seatRecords=on-->
+- **The full suite and the build run on the verifier's seat, once per
+  candidate — unless the target has PR CI** (`orchestra fanout gate` derives it;
+  the verifier then waits for CI green on its head).
+<!--/sw-->
+<!--sw verifier=off seatRecords=on-->
+- **The PR's CI is the build and the full suite; nobody re-runs it by hand**
+  (`deliver` refuses no CI, a red CI and a check that ran nothing).
+<!--/sw-->
+<!--sw seatRecords=off-->
 - **Self-gate BEFORE nominating — the implementer runs the adversarial
   checklist on their own candidate first.** Six of six first submissions
   across two waves arrived all-green with every green NON-LOAD-BEARING
@@ -101,6 +115,7 @@ Gate rhythm:
   of reaching the defect's layer (wave-8 #90: the policy tests could not
   reach any of the three review findings by construction); if not, the fix
   is DRIVING the module, never more coverage.
+<!--/sw-->
 <!--sw verifier=on-->
 - **Gate merge candidates, not pushes.** Implementers push checkpoints
   freely; the verifier gates when the coordinator names a candidate ref.
@@ -109,9 +124,11 @@ Gate rhythm:
 - **Review merge candidates, not pushes.** Implementers push checkpoints
   freely; the reviewer reads when the coordinator names a candidate ref.
 <!--/sw-->
+<!--sw seatRecords=off-->
   **Rebase onto current master BEFORE nominating** (measured: stale-based
   candidates cost gate-merged two-steps), and a nominated ref's NAME is
   frozen (a rename+delete hands everyone a dead pointer).
+<!--/sw-->
 - **Carry verdicts by TREE IDENTITY across clean rebases** (the rebased tip's
   tree object byte-equals the gated merged tree); the carry is VOID across
   any conflict resolution, squash-with-edits, or cherry-pick — and patch-id
@@ -122,8 +139,10 @@ Gate rhythm:
   delta carries the previous verdict forward when the built artifact hashes
   byte-identical (measured: an E2E verdict carried across an 11-line comment
   amend by bundle md5).
+<!--sw seatRecords=off-->
 - **Mutation runs: FULL set at the first nomination and at the final merge
   gate; intermediate rounds mutate only the clauses the delta changed.** A
   sequential in-place harness costs 10–47 min per pass (audit 2026-09-30:
   18.7 h of agent wait across 4 waves); the final full pass is what catches a
   fix that silently de-covered an earlier arm.
+<!--/sw-->

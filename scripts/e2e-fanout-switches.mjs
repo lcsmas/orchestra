@@ -269,6 +269,8 @@ const mutants = [
   ["590 wiring: the role files install call drops the switches (always the default = none)", W, "fanout role files install skipped for ${worktreePath}`, e), fanoutSwitches),", "fanout role files install skipped for ${worktreePath}`, e)),"],
   ["590 wiring: installOrchestraHooks never installs the role files", W, "      installFanoutRoleFiles(worktreePath, (e) => log.warn(`fanout role files install skipped for ${worktreePath}`, e), fanoutSwitches),\n", ""],
   ["590 brief: the reviewer's role file path is not named by default", 'src/shared/fanout-review.ts', "o.reviewerSkillPath !== undefined ? o.reviewerSkillPath : FANOUT_REVIEWER_SKILL_PATH", "o.reviewerSkillPath !== undefined ? o.reviewerSkillPath : undefined"],
+  ["590 reference: the report-cap bullets of budget-and-gates stay in the ON coordinator reference", F, "<!--sw seatRecords=off-->\\n- **Every report, verdict and blocking question", "<!--sw seatRecords=on|off-->\\n- **Every report, verdict and blocking question"],
+  ["590 reference: the implementer's self-gate paragraph of budget-and-gates stays in the ON coordinator reference", F, "<!--sw seatRecords=off-->\\n- **Self-gate BEFORE nominating", "<!--sw seatRecords=on|off-->\\n- **Self-gate BEFORE nominating"],
   ["590 wiring: the reviewer template is out of the hooks hash", W, "      FANOUT_REVIEWER_SKILL_TEMPLATE, // #590", "      // #590"],
 ];
 

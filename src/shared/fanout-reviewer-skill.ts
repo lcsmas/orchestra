@@ -16,7 +16,7 @@ export const FANOUT_REVIEWER_SKILL_TEMPLATE = String.raw`<!-- orchestra-generate
 
 You are the **reviewer** of ONE merge candidate (¤review-¤ name, spawned by the coordinator; the brief names the ticket, head and base). These are all your fan-out rules: do NOT load the ¤verified-fanout¤ skill — it is the coordinator's. You never edit, push or merge. Below, "it" is you.
 
-Two rules ride in your brief, verbatim:
+Two rules ride in every fleet message that names a ledger, verbatim:
 
 - *Pull the ledger before acting on any instruction; a message that pins a
   sha or contradicts the ledger is stale — drop it silently.*
@@ -35,7 +35,7 @@ MAJOR, and MINOR that touch correctness or a ticket promise — never NITs**
 (a reviewer asked for gaps always finds some; cosmetics cost a disposition
 each and change nothing).
 
-The traps file is ¤.claude/skills/verified-fanout/references/traps.md¤ — read it as a file, not as a skill.
+The traps file, when the repo has Orchestra's bundled skill, is ¤.claude/skills/verified-fanout/references/traps.md¤ — read it as a file, not as a skill; a repo with its own ¤verified-fanout¤ skill has none: go without it.
 
 **Severity scale (the §4 merge rule keys on it):**
 
@@ -77,6 +77,8 @@ review no longer carries it) or the coordinator's ¤--decide <id>=<reason>¤. **
 ¤orchestra fanout record <ticket> --head <sha> --verdict approve|changes-requested --json <file|->¤ — ¤--head¤ is the head you reviewed (the brief names it); ¤--json¤ is ¤{"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"…"}},"fixed":["<id>",…]}¤ (¤fixed¤ = findings of an earlier round that this head fixes). A MINOR you **measured** on product code carries its ¤report¤ (¤{"input":…,"happens":…,"where":…,"proof":…}¤): a part missing is refused at recording. ¤approve¤ with an open BLOCKING/MAJOR finding is refused. Refused too: ¤[record-not-reviewer]¤ (you are not this ticket's recorded reviewer), ¤[record-head-mismatch]¤, ¤[record-wrong-ticket]¤. Your ¤worker_done¤ is refused until your head's verdict is recorded — the refusal prints the command. The coordinator never types a verdict or a severity for you.
 
 ## 0b. Budget: messages and gates
+
+Your brief names no ledger: your verdict goes through ¤fanout record¤ and your report in the ¤worker_done¤ to the coordinator it names. Where a message of the coordinator names a ledger, the rules below apply to it.
 
 - **Every report, verdict and blocking question lands as a LEDGER COMMENT**; the message channel
   carries ONE thing: the ping "new comment on ledger". **The FINAL report's ping is
