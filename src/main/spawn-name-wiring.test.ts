@@ -81,7 +81,7 @@ test('D4 — the HUMAN paths reusing dispatchSpawnRequest pass NO name and NO na
 test('D4 — dispatchSpawnRequest itself never demands a name: the requirement is NOT keyed on defaultKind', () => {
   const body = bodyOf(workspacesSrc, 'export async function dispatchSpawnRequest(');
   assert.doesNotMatch(body, /checkSpawnName/);
-  assert.match(body, /\{ namedBy: input\.namedBy, exactName: input\.exactName \}/); // forwarded only when the agent route set them
+  assert.match(body, /\{ namedBy: input\.namedBy, exactName: input\.exactName, \.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}/); // #587 PR B: + the in-process reuseBranch // forwarded only when the agent route set them
   assert.doesNotMatch(body, /namedBy: input\.from/); // dispatchSpawnRequest never invents a namer from `from`
 });
 
@@ -105,7 +105,7 @@ test('createWorkspace: the branch-NAME pick is serialised per REAL repo path and
   assert.match(picked, /taken\.add\(chosen\);/, 'the pick is RESERVED before the lock is released');
   assert.match(picked, /if \(requested && !free && naming\?\.exactName\) \{[\s\S]*?throw new Error\(/, 'an exact name with every slot taken REFUSES');
   assert.doesNotMatch(picked, /createWorktree/, 'the slow checkout is NOT under the lock (a fan-out stays parallel; a hung checkout blocks only itself)');
-  assert.match(body, /try \{\s*await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath\);\s*\} finally \{\s*taken\.delete\(branch\);/, 'created or failed, the reservation is released');
+  assert.match(body, /try \{\s*await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath, naming\?\.reuseBranch \? \{ reuse: true \} : undefined\);\s*\} finally \{\s*taken\.delete\(branch\);/, 'created or failed, the reservation is released');
 });
 
 test('freeBranchName delegates to the pure picker (one suffix rule for rename, human spawns and agent spawns)', () => {

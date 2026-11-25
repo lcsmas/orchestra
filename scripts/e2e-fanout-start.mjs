@@ -16,7 +16,8 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-start-rig-'));
 if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw new Error(`refusing scratch outside ${tmpBase}`);
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' })); // quiet the module-type reparse warning
-const TESTS = ['src/cli/fanout-start.test.ts', 'src/main/fanout-start-wiring.test.ts'].map((f) => path.join(scratch, f));
+fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir'); // git.ts imports simple-git (git-reuse-branch.test.ts)
+const TESTS = ['src/cli/fanout-start.test.ts', 'src/main/fanout-start-wiring.test.ts', 'src/main/git-reuse-branch.test.ts'].map((f) => path.join(scratch, f));
 
 function run() {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
@@ -34,6 +35,7 @@ const W = 'src/main/workspaces.ts';
 const FW = 'src/main/fanout-acceptance-wiring.ts';
 const X = 'src/cli/index.ts';
 const S = 'src/shared/fanout-state.ts';
+const G = 'src/main/git.ts';
 const mutants = [
   // refusals
   ['start under off is allowed', SS, "if (!seatRecordsOn(state)) return new SeatRefusal('start-off',", "if (false) return new SeatRefusal('start-off',"],
@@ -51,14 +53,13 @@ const mutants = [
   ['a merged ticket is started again', SS, "      if (t.status !== 'todo' && t.status !== 'started') {", "      if (false) {"],
   ['the plan is ignored: every state ticket is started', SS, "for (const ticket of state0.plan!.tickets) {", "for (const ticket of Object.keys(state0.tickets)) {"],
   ['concurrent starts are not serialised', SS, "  const next = prev.then(fn, fn);", "  const next = fn();"],
-  ['a respawn brief does not say it continues', SS, "...(kind === 'respawn' && t.branch ? { continueFrom: { branch: t.branch, head: t.head } } : {}) });", "});"],
   ['the implementer is not recorded', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { branch, status: 'started' }, now)"],
   ['the branch is not recorded', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { implementer: id, status: 'started' }, now)"],
   ['the ticket is not set started', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { implementer: id, branch }, now)"],
   ['the start record is not written', SS, "{ ...tk, start: { at: now, kind, briefHash: hash, briefs: (t.start?.briefs ?? 0) + 1 } }", "tk"],
   ['the brief hash is of something else', SS, "briefHash: hash,", "briefHash: briefHash(ticket),"],
   ['the brief counter does not increase', SS, "briefs: (t.start?.briefs ?? 0) + 1", "briefs: 1"],
-  ['the spawn is not given the rendered brief', SS, "name: implementerName(ticket), task, repoPath", "name: implementerName(ticket), task: ticket, repoPath"],
+  ['the spawn is not given the rendered brief', SS, "task, repoPath: deps.repoPath", "task: ticket, repoPath: deps.repoPath"],
   ['a held start fails the call', SS, "      if (!res.ok) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}", "      if (!res.ok || res.held) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}"],
   ['a failed spawn is thrown, not listed', SS, "} catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }", "} catch (e) { throw e; }"],
   ['a spawn with no workspace is recorded anyway', SS, "if (!res.id || !res.branch) { out.failed.push", "if (false) { out.failed.push"],
@@ -80,8 +81,8 @@ const mutants = [
   ['host: op start is unknown', H, "    if (input.op === 'start') {", "    if (input.op === 'start-off') {"],
   ['host: start works with no wiring', H, "if (!deps.implementerLive || !deps.spawnImplementer) return", "if (false) return"],
   ['host: start uses the acceptor spawn', H, "implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer", "implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: async (i) => ({ ok: false, error: 'no' })"],
-  ['cli: start accepts an unvouched host (no key = env id)', X, "if (hostIdentity?.source !== 'host') fail('refusing to start:", "if (false as boolean) fail('refusing to start:"],
-  ['cli: start is not settled with the host', X, "      if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)\n        await settleHostIdentity();", "      if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)"],
+  ['cli: start accepts an unvouched host (no key = env id)', X, "if (!helpOnly && hostIdentity?.source !== 'host') fail('refusing to start:", "if (false as boolean) fail('refusing to start:"],
+  ['cli: start is not settled with the host', X, "if (!helpOnly) await settleHostIdentity();", "if (false as boolean) await settleHostIdentity();"],
   ['cli: the caller is the bare env id', C, "const caller = (deps.vouchedCaller ?? '').trim();", "const caller = (deps.vouchedCaller ?? deps.env.ORCHESTRA_WS_ID ?? '').trim();"],
   ['cli: the session key is not sent to the host', C, "key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined", "key: undefined"],
   ['host: the caller is trusted without the key', H, "const vouched = !!caller && !!deps.vouches && deps.vouches(caller, str(input.key));", "const vouched = !!caller;"],
@@ -90,14 +91,33 @@ const mutants = [
   ['an adopted implementer is not recorded', SS, "applyTicketPatch(s, ticket, { implementer: orphan.id, branch: orphan.branch, status: 'started' }, deps.now())", "s"],
   ['an adopted implementer is not told as live', SS, "out.skipped.push({ ticket, reason: 'live' }); } catch (e) { out.failed.push({ ticket, error: `${orphan.id}", "} catch (e) { out.failed.push({ ticket, error: `${orphan.id}"],
   ['the orphan scan sees the recorded ones too', SS, "recorded: recordedIds,", "recorded: [],"],
-  ['the first spawn is cut from the repo default, not the target', SS, "baseBranch: kind === 'respawn' && t.branch ? t.branch : cur.target });", "baseBranch: kind === 'respawn' && t.branch ? t.branch : undefined });"],
-  ['a respawn is cut from the target, not the dead branch', SS, "baseBranch: kind === 'respawn' && t.branch ? t.branch : cur.target });", "baseBranch: cur.target });"],
   ['a hand-set started ticket is respawned', SS, "const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn';", "const kind: 'spawn' | 'respawn' = t.implementer || t.status === 'started' ? 'respawn' : 'spawn';"],
   ['a dead recorded implementer is spawned as new (not a respawn)', SS, "const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn';", "const kind: 'spawn' | 'respawn' = 'spawn';"],
   ['a held start is listed as started too', SS, "      if (!res.held) (kind === 'spawn' ? out.started : out.respawned).push(", "      (kind === 'spawn' ? out.started : out.respawned).push("],
   ['main: the hand-spawn rule reads the caller id, not its run', W, "fromWs ? resolveWaveRunId(fromWs) : input.from,", "input.from,"],
   ['main: the host cannot vouch', FW, "vouches: (id, key) => !!key && sessionKeys().verify(id, key) === 'ok',", "vouches: () => true,"],
   ['main: orphans are never looked for', FW, "const w = store.workspaces.find((x) => x.parentId === run &&", "const w = store.workspaces.find((x) => false && x.parentId === run &&"],
+  ['the spawn is cut from the repo default, not the run target', SS, "baseBranch: cur.target, ...(onBranch", "baseBranch: undefined, ...(onBranch"],
+  ['a respawn is cut from the dead branch (diff base = the dead branch)', SS, "baseBranch: cur.target, ...(onBranch", "baseBranch: onBranch ? t.branch! : cur.target, ...(onBranch"],
+  ['a respawn asks for a fresh name (a suffixed copy of the branch)', SS, "name: onBranch ? t.branch! : implementerName(ticket),", "name: implementerName(ticket),"],
+  ['a respawn does not ask to reuse the branch', SS, "...(onBranch ? { reuseBranch: true } : {}) });", "});"],
+  ['a respawn brief does not say it is on the branch', SS, "...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}) });", "});"],
+  ['brief: the respawn text says the branch starts from the old one', IB, "you are ON its branch ${input.continueFrom.branch}", "your branch starts from ${input.continueFrom.branch}"],
+  ['start-no-spec: a spec-less ticket is launched', SS, "  if (bare.length) return new SeatRefusal('start-no-spec',", "  if (false) return new SeatRefusal('start-no-spec',"],
+  ['start-no-spec: a ticket with a spec is listed too', SS, "&& !t.spec && !t.specText; });", "&& !t.specText; });"],
+  ['start-no-spec: a ticket that is already running is listed', SS, "(t.status === 'todo' || (t.status === 'started' && !t.implementer)) && !t.spec", "(t.status !== 'merged') && !t.spec"],
+  ['start-no-spec: the plan check is skipped for a bare ticket (host)', SS, "    const refusal = startRefusal(state0, run, caller);\n    if (refusal) throw refusal;\n", "    const refusal = startRefusal(state0, run, caller);\n    if (refusal && refusal.refusal !== 'start-no-spec') throw refusal;\n"],
+  ['git: reuse does not force past the dead agent\'s worktree', G, "...(opts?.reuse ? ['--force'] : []), worktreePath", "worktreePath"],
+  ['git: reuse never looks at origin', G, "'-q', `refs/remotes/origin/${branch}`]).then((o) => o.trim().length > 0, () => false) : false;", "'-q', `refs/remotes/origin/${branch}`]).then((o) => false, () => false) : false;"],
+  ['git: a missing branch is always taken from origin', G, "then((o) => o.trim().length > 0, () => false)", "then((o) => true, () => false)"],
+  ['git: the DEFAULT call also forces (control unchanged)', G, "...(opts?.reuse ? ['--force'] : []), worktreePath", "'--force', worktreePath"],
+  ['main: the branch pick suffixes a reused name', W, "const free = requested && naming?.reuseBranch ? requested : requested ? await freeBranchName(", "const free = requested ? await freeBranchName("],
+  ['main: createWorkspace does not reuse in git', W, "naming?.reuseBranch ? { reuse: true } : undefined);", "undefined);"],
+  ['main: the spawn does not pass reuseBranch to createWorkspace', W, "...(input.reuseBranch ? { reuseBranch: true } : {}) }, input.profile", "}, input.profile"],
+  ['main: the implementer door drops reuseBranch', FW, "...(i.reuseBranch ? { reuseBranch: true } : {}) }, { viaFanoutStart: true });", "}, { viaFanoutStart: true });"],
+  ['cli: a --help start asks the host', X, "const helpOnly = args.includes('--help') || args.includes('-h');", "const helpOnly = false;"],
+  ['cli: usage does not name the empty-task refusal', C, "A plan ticket with no spec and no text is refused ([start-no-spec], listing them)", "A ticket may have no spec"],
+  ['cli: usage does not name the human-terminal limit', C, "Limit: it is the coordinator's door, not a lock", "It is the coordinator's door"],
   ['hand spawn: an impl- spawn of a seatRecords run is allowed', SS, "if (i.viaStart || !i.state || !seatRecordsOn(i.state) || roleOfName(i.name) !== 'implementer') return null;", "return null; if (i.viaStart || !i.state || !seatRecordsOn(i.state) || roleOfName(i.name) !== 'implementer') return null;"],
   ['hand spawn: fanout start itself is refused', SS, "if (i.viaStart || !i.state ||", "if (!i.state ||"],
   ['hand spawn: refused under off', SS, "|| !seatRecordsOn(i.state) || roleOfName(i.name)", "|| roleOfName(i.name)"],
@@ -107,7 +127,7 @@ const mutants = [
   ['main: the bypass is always on', W, "opts.viaFanoutStart === true); // #587 PR B", "true); // #587 PR B"],
   ['main: the implementer spawn does not pass the bypass', FW, "}, { viaFanoutStart: true });", "});"],
   ['main: an archived implementer counts as live', FW, "return !!w && !w.archived; },", "return !!w; },"],
-  ['main: the respawn does not pass the base branch', FW, "...(i.baseBranch ? { baseBranch: i.baseBranch } : {}) }, { viaFanoutStart: true });", "}, { viaFanoutStart: true });"],
+  ['main: the respawn does not pass the base branch', FW, "...(i.baseBranch ? { baseBranch: i.baseBranch } : {}), ", ""],
   ['cli: start is not routed', X, "if (args[0] === 'start') { // #587 PR B", "if (args[0] === 'start-off') { // #587 PR B"],
   // the state
   ['state: a start record of 0 briefs loads', S, "if (!Number.isInteger(v.briefs) || (v.briefs as number) < 1) throw", "if (false) throw"],

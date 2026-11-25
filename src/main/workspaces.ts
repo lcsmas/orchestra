@@ -343,7 +343,7 @@ export async function createWorkspace(
   defaultKind: ModelDefaultKind = 'workspace',
   /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record.
    *  `exactName` = the agent route: when the requested name and all its suffixes are taken, REFUSE instead of falling back to a random branch. */
-  naming?: { namedBy?: string; exactName?: boolean },
+  naming?: { namedBy?: string; exactName?: boolean; /** #587 PR B: a respawn on the ticket's branch — the requested name IS the existing branch (no suffix pick). Set only by `fanout start`. */ reuseBranch?: boolean },
   /** #401: asks the agent spawn route which profil navigateur this workspace inherits. Called SYNCHRONOUSLY at the record build — after the worktree
    *  exists (the slow part), with no `await` before the first upsert — so a human detach / switch of the parent meanwhile is honoured. Deliberately not
    *  a {@link CreateWorkspaceInput} field: that type crosses the renderer IPC. */
@@ -403,7 +403,7 @@ export async function createWorkspace(
     // No `current` branch to exempt — nothing exists yet — so pass ''.
     // `new Set(taken)` is a SNAPSHOT taken BEFORE the listing's await: any in-flight name is in the snapshot or already in the listing. Passing the live
     // set instead lets a creation that finishes DURING the listing delete its reservation before this pick reads it, while the listing predates its branch.
-    const free = requested ? await freeBranchName(input.repoPath, requested, '', { reserved: new Set(taken), avoidFolders: naming?.exactName === true }) : '';
+    const free = requested && naming?.reuseBranch ? requested : requested ? await freeBranchName(input.repoPath, requested, '', { reserved: new Set(taken), avoidFolders: naming?.exactName === true }) : '';
     if (requested && !free && naming?.exactName) {
       // Every other caller keeps the random fallback (pinned-Linear, accès mobile); an AGENT's name is its human label — never silently swapped.
       throw new Error(`refusing to spawn: the name "${requested}" and all its suffixes (-2 … -99) are taken — pick another name. Nothing was created.`);
@@ -417,7 +417,7 @@ export async function createWorkspace(
 
   log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
   try {
-    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+    await createWorktree(input.repoPath, branch, baseBranch, worktreePath, naming?.reuseBranch ? { reuse: true } : undefined);
   } finally {
     taken.delete(branch); // created ⇒ git now holds the name; failed ⇒ the name is free again
   }
@@ -1506,6 +1506,8 @@ export async function dispatchSpawnRequest(
     key?: string;
     /** #480: `orchestra spawn --account` (id / label / `default`). Absent → the child takes the CALLER's (`from`) account — see `resolveChildAccount`. */
     account?: string;
+    /** #587 PR B: respawn ON the existing branch `branch` (see createWorkspace). Set only by `fanout start` (in-process: hooks-server /spawn never passes it). */
+    reuseBranch?: boolean;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1593,7 +1595,7 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
       ...(input.account ? { account: input.account } : {}),
       ...(input.from ? { accountFrom: input.from } : {}), // #480: also for --detached (it skips only the parent nesting)
-    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, input.profile !== undefined ? decideProfile : undefined);
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.reuseBranch ? { reuseBranch: true } : {}) }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({

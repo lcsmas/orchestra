@@ -14,8 +14,8 @@ export interface StartDeps {
   orphanImplementer?: (i: { run: string; ticket: string; name: string; recorded: string[]; others: string[] }) => { id: string; branch: string } | null;
   /** The coordinator's checkout (the repo the implementers work in). undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; repo: string | null }) => string | undefined;
-  /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = a respawn continues from the dead agent's branch. */
-  spawn: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
+  /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = the run target (the diff / merge base). `reuseBranch` = a respawn: `name` IS the ticket's existing branch and the new worktree is put ON it (never a suffixed copy). */
+  spawn: (i: { from: string; name: string; task: string; repoPath?: string; baseBranch?: string; reuseBranch?: boolean }) => Promise<{ ok: boolean; id?: string; branch?: string; held?: { since: number }; error?: string }>;
 }
 
 export interface StartResult {
@@ -41,6 +41,9 @@ export function startRefusal(state: FanoutState | null, run: string, caller: str
   if (!caller || caller !== run) return new SeatRefusal('start-caller', `only the run's coordinator (${run}) starts its implementers${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof)'}`);
   const missing = planMissing(state);
   if (missing.length) return new SeatRefusal('plan-incomplete', `cannot start: ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
+  // never launch an agent whose task is empty: a ticket to spawn needs the spec reference or its text (the run-12 failure class: an implementer with nothing to build)
+  const bare = state.plan!.tickets.filter((id) => { const t = state.tickets[id]; return !!t && (t.status === 'todo' || (t.status === 'started' && !t.implementer)) && !t.spec && !t.specText; });
+  if (bare.length) return new SeatRefusal('start-no-spec', `cannot start: ${bare.length} plan ticket(s) carry no spec and no text — ${bare.join(', ')} (register each: state set <ticket> --spec <file|url|ledger section> [--spec-text <file|->]); an implementer is never launched with an empty task`);
   return null;
 }
 
@@ -88,13 +91,14 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
         continue;
       }
       const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn'; // a dead recorded implementer is replaced; a ticket set `started` by hand with none is a first spawn
-      const task = renderImplementerBrief({ state: cur, ticket, ...(kind === 'respawn' && t.branch ? { continueFrom: { branch: t.branch, head: t.head } } : {}) });
+      const onBranch = kind === 'respawn' && !!t.branch; // the dead agent's branch: same name, same PR / head, the new worktree is put ON it
+      const task = renderImplementerBrief({ state: cur, ticket, ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}) });
       let res: Awaited<ReturnType<StartDeps['spawn']>>;
       try {
-        res = await deps.spawn({ from: run, name: implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: kind === 'respawn' && t.branch ? t.branch : cur.target }); // the brief says "Branch base: origin/<target>": the worktree is cut from it, not from the repo's default
+        res = await deps.spawn({ from: run, name: onBranch ? t.branch! : implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: cur.target, ...(onBranch ? { reuseBranch: true } : {}) }); // the brief says "Branch base: origin/<target>": the worktree is cut from it, not from the repo's default
       } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
       if (!res.id || !res.branch) { out.failed.push({ ticket, error: res.error ?? 'spawn failed' }); continue; } // no workspace: nothing to record, a second call retries
-      const id = res.id, branch = res.branch, hash = briefHash(task);
+      const id = res.id, branch = onBranch ? t.branch! : res.branch, hash = briefHash(task);
       let recorded = false;
       for (let k = 0; ; k++) { // the agent exists once the spawn answered: losing its id (a lock timeout…) would strand the ticket, so the write is retried
         try {

@@ -23,7 +23,7 @@ const productionDeps: AcceptanceHostDeps = {
   // #587 PR B: `fanout start` — the implementer spawn (the one `impl-` door of a seatRecords run), and liveness = the workspace exists and is not archived
   implementerLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; },
   spawnImplementer: async (i) => {
-    const r = await dispatchAgentSpawnRequest({ from: i.from, repoPath: i.repoPath, task: i.task, agent: 'claude', name: i.name, ...(i.baseBranch ? { baseBranch: i.baseBranch } : {}) }, { viaFanoutStart: true });
+    const r = await dispatchAgentSpawnRequest({ from: i.from, repoPath: i.repoPath, task: i.task, agent: 'claude', name: i.name, ...(i.baseBranch ? { baseBranch: i.baseBranch } : {}), ...(i.reuseBranch ? { reuseBranch: true } : {}) }, { viaFanoutStart: true });
     return { ok: r.ok, id: r.id, branch: r.branch, held: r.held, error: r.error };
   },
   vouches: (id, key) => !!key && sessionKeys().verify(id, key) === 'ok',

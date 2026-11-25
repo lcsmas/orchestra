@@ -139,14 +139,19 @@ export async function createWorktree(
   branch: string,
   baseBranch: string,
   worktreePath: string,
+  /** #587 PR B: `reuse` = put a worktree on the EXISTING branch `branch` (a respawn on the ticket's branch): the branch may still be
+   *  checked out by the dead agent's archived worktree, or listed by a worktree whose directory is gone (`--force`), and a branch that exists only on origin is created from it. Absent = unchanged. */
+  opts?: { reuse?: boolean },
 ): Promise<void> {
   const git = simpleGit(repoPath);
   // Create branch from base, then worktree.
   const branches = await git.branchLocal();
   if (!branches.all.includes(branch)) {
-    await git.raw(['branch', branch, baseBranch]);
+    // `-q` prints nothing (exit 1) for a missing ref: only a printed sha means the branch is on origin
+    const onOrigin = opts?.reuse ? await git.raw(['rev-parse', '--verify', '-q', `refs/remotes/origin/${branch}`]).then((o) => o.trim().length > 0, () => false) : false;
+    await git.raw(['branch', branch, onOrigin ? `origin/${branch}` : baseBranch]);
   }
-  await git.raw(['worktree', 'add', worktreePath, branch]);
+  await git.raw(['worktree', 'add', ...(opts?.reuse ? ['--force'] : []), worktreePath, branch]);
   // #513: the ONE worktree-creation chokepoint (createWorkspace, adopt-repo, sandbox eject) — never throws.
   await ensureWorktreeGitIdentity(repoPath, worktreePath);
 }

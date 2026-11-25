@@ -2478,8 +2478,9 @@ async function main(argv: string[]): Promise<void> {
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
       }
       if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)
-        await settleHostIdentity();
-        if (hostIdentity?.source !== 'host') fail('refusing to start: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof). Nothing was started.');
+        const helpOnly = args.includes('--help') || args.includes('-h'); // a `--help` start is not a start: usage, rc 0, host never asked
+        if (!helpOnly) await settleHostIdentity();
+        if (!helpOnly && hostIdentity?.source !== 'host') fail('refusing to start: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof). Nothing was started.');
         fanoutDeps.vouchedCaller = (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null;
         const sr = await runStart(args.slice(1), fanoutDeps, (body) => request('/fanoutAcceptance', body, { timeoutMs: 600_000 }));
         if (sr.stdout) process.stdout.write(sr.stdout);
