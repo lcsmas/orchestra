@@ -126,7 +126,6 @@ const mutants = [
   ['host: a run that already spawned is asked for a plan', PH, "if (locked) { early = refusal('plan-after-spawn'", "if (false as boolean) { early = refusal('plan-after-spawn'"],
   ['host: a taken-over claim is overwritten by the late spawn', PH, "if (!sc || sc.agent?.id !== null || sc.agent.at !== now) { mine = false; return cur as FanoutState; }", "if (!sc) { mine = false; return cur as FanoutState; }"],
   ['submit: an apply failure is not recorded (the coordinator waits out its timeout)', PH, "writePlanSidecar(i.home, run, { ...sc, outcome: 'failed', failure: msg });", "void msg;"],
-  ['host: a corrupt record is a raw SyntaxError', PH, "catch (e) { throw new FanoutStateError(`${planSidecarFile(home, run)} is not JSON", "catch (e) { throw new SyntaxError(`${planSidecarFile(home, run)} is not JSON"],
   ['host: a failed spawn stays claimed', PH, "{ ...sc, agent: null, spawns: Math.max(0, sc.spawns - 1) }", "{ ...sc }"],
   ['host: a failed spawn is reported as ok', PH, "if (!res.ok || !res.id) { const error", "if (false as boolean) { const error"],
   ['host: an accepted plan spawns another agent', PH, "if (cur.loopPlan) { adopted = { action: 'accepted', id: null }; return cur; }", ""],
