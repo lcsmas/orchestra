@@ -327,10 +327,10 @@ test('a cost the host cannot read is "not measured" (null), never 0 — and neve
 
 test('the report EQUALS the state: every merged / parked / choice / finding line comes from it, a changed state changes the report, a rebuilt one is identical', () => {
   const s = parkShim(stateOf({
-    A: { status: 'merged', branch: 'b1', pr: 11, findings: { m1: { severity: 'MINOR', evidence: 'measured' } as never, f2: { severity: 'MAJOR', settled: { how: 'fixed', at: T0, ref: sha('a') } } as never } },
+    A: { status: 'merged', branch: 'b1', pr: 11, ci: { flaky: ['e2e'] } as never, findings: { m1: { severity: 'MINOR', evidence: 'measured' } as never, f2: { severity: 'MAJOR', settled: { how: 'fixed', at: T0, ref: sha('a') } } as never } },
     B: { status: 'started', branch: 'b2', pr: 12, findings: { f3: { severity: 'MAJOR', decision: { by: 'run1', text: 'accepted: out of scope', at: T0 } } as never, f4: { severity: 'BLOCKING', settled: { how: 'pr-body', at: T0, ref: 'PR #12 body' } } as never } },
     C: { status: 'started', branch: 'b3', dependsOn: ['B'] },
-  }, { choices: [{ n: 1, ticket: 'A', question: 'which index?', rule: 'reversible-default', answer: 'take the reversible option', at: T0 }], flaky: [{ ticket: 'A', check: 'e2e' }] }), 'B', { cause: 'ci', reason: 'same failure after the fix: test/foo' }, T0);
+  }, { choices: [{ n: 1, ticket: 'A', question: 'which index?', rule: 'reversible-default', answer: 'take the reversible option', at: T0 }] }), 'B', { cause: 'ci', reason: 'same failure after the fix: test/foo' }, T0);
   const r = buildReport(s, { A: { tokens: 10 }, B: { tokens: 20 }, C: null });
   assert.deepEqual(r.merged, ['A']);
   assert.deepEqual(r.parked.map((p) => [p.ticket, p.cause, p.reason]), [['B', 'ci', 'same failure after the fix: test/foo'], ['C', 'upstream', 'blocked by B']]);

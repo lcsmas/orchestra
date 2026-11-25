@@ -10,12 +10,12 @@ export type ParkCauseView = 'question' | 'situation' | 'ci' | 'upstream';
 export interface ParkedView { cause: ParkCauseView; reason: string; at?: string; blockedBy?: string }
 export interface ChoiceView { n: number; ticket: string; question: string; rule: 'reversible-default' | 'no-safe-option'; answer: string; at: string }
 export interface PauseInfo { at: string; reason: string; check: string | null; prs: number[] }
-export interface FlakyView { ticket: string; check: string; at?: string }
 
 export const parkedOf = (t: TicketState | undefined): ParkedView | null => (t as { parked?: ParkedView } | undefined)?.parked ?? null;
 export const choicesOf = (s: FanoutState): ChoiceView[] => (s as { choices?: ChoiceView[] }).choices ?? [];
 export const pauseOf = (s: FanoutState): PauseInfo | null => (s as { pause?: PauseInfo }).pause ?? null;
-const flakyOf = (s: FanoutState): FlakyView[] => (s as { flaky?: FlakyView[] }).flaky ?? [];
+/** #607 (ledger v1.2): `TicketState.ci.flaky` = the check names that went red, then green on the one re-run — read per ticket (delete the cast when #607 is merged). */
+const flakyOf = (t: TicketState): string[] => (t as { ci?: { flaky?: string[] } }).ci?.flaky ?? [];
 /** `status === 'parked'` (#603) — a string compare so this file reads a state of either vintage. */
 export const isParked = (t: TicketState | undefined): boolean => (t?.status as string) === 'parked' || !!parkedOf(t);
 
@@ -36,7 +36,7 @@ export interface Report {
   unfinished: string[];
   choices: ReportChoice[];
   findingsLeft: ReportFinding[];
-  /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607 records it as `flaky` on the state). */
+  /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607: `TicketState.ci.flaky`). */
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
   paused: PauseInfo | null;
@@ -79,7 +79,7 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
   return {
     run: state.run, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
-    flaky: flakyOf(state).map((f) => `${f.ticket}/${f.check}`),
+    flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
     paused: pauseOf(state),
   };

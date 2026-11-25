@@ -48,6 +48,7 @@ const MUTANTS = [
   ['decision-flattened-to-open', RP, [["if (f.decision) out.push(", "if (false) out.push("]]],
   ['cost-unmeasured-is-zero', RP, [["costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),", "costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? { tokens: 0 }])),"]]],
   ['cost-throw-fails-report', RP, [["try { out[id] = await costOf(id); } catch { out[id] = null; }", "out[id] = await costOf(id);"]]],
+  ['flaky-not-read', RP, [["flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),", 'flaky: [],']]],
   ['choice-pointer-lost', RP, [["pr: state.tickets[c.ticket]?.pr ?? null, branch: state.tickets[c.ticket]?.branch ?? null }));", "pr: null, branch: null }));"]]],
   ['tokens-no-dedupe', RP, [["byId.set(typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`,", "byId.set(`anon-${anon.n++}`,"]]],
   ['tokens-unreadable-is-zero', RP, [["  return any ? total(byId) : null;\n}\n\n/** Every", "  return total(byId);\n}\n\n/** Every"]]],
