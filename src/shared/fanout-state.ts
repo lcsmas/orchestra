@@ -891,7 +891,7 @@ export function parseState(raw: unknown): FanoutState {
       implementer: wsIdOf(t.implementer, 'implementer'),
       verifier: wsIdOf(t.verifier, 'verifier'),
       accept: acceptFlowOf(t.accept, `ticket ${id}`),
-      ...(t.depsDeclared !== undefined ? { depsDeclared: t.depsDeclared === true ? true : (() => { throw new FanoutStateError(`ticket ${id}: depsDeclared must be true when present`); })() } : {}),
+      ...(t.depsDeclared === true ? { depsDeclared: true as const } : t.depsDeclared === undefined || t.depsDeclared === false ? {} : (() => { throw new FanoutStateError(`ticket ${id}: depsDeclared must be a boolean`); })()),
       ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),
       ...(t.follows !== undefined ? { follows: followsOf(t.follows, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
@@ -1117,6 +1117,7 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   if ('verdict' in patch) next.verdict = enumOf(patch.verdict, VERDICTS, 'verdict');
   if ('dependsOn' in patch) {
     next.dependsOn = depsOf(patch.dependsOn);
+    if (seat && next.dependsOn.includes('none')) throw new FanoutStateError(`${id}: "none" is not a ticket id under seatRecords — \`--depends-on none\` alone means "no dependencies"`);
     if (seat) { // #587: giving the dependencies (even none) declares them; a follow on an upstream no longer depended on goes
       next.depsDeclared = true;
       if (next.follows) { const kept = Object.entries(next.follows).filter(([k]) => next.dependsOn.includes(k)); if (kept.length) next.follows = Object.fromEntries(kept); else delete next.follows; }
@@ -1243,7 +1244,7 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   }
   if (seat) { // #587 (I2): the plan + the interfaces are declared before a ticket starts / is nominated / is gated, and a dependent names the interface version it follows
     const starts = 'status' in patch && (next.status === 'started' || next.status === 'nominated' || next.status === 'gated');
-    const spawns = !firstSpawnSignal(state) && !!firstSpawnSignal(out);
+    const spawns = (!!next.implementer && next.implementer !== prev.implementer) || (!!next.verifier && next.verifier !== prev.verifier); // a seat recorded on the ticket IS a spawn (the first one, and a follow-up's later one)
     if (starts || spawns) {
       const missing = planMissing(out);
       if (missing.length) throw new SeatRefusal('plan-incomplete', `${id}: cannot ${starts ? `be ${next.status}` : 'record the first spawn'} — ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
@@ -1254,11 +1255,13 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
       if (!f) throw new SeatRefusal('follows-invalid', `${id}: --follows ${up}=${v}: ${up} has no interface to follow (state set ${up} --interface <text|file|->)`);
       if (v > f.version) throw new SeatRefusal('follows-invalid', `${id}: --follows ${up}=${v}: ${up}'s interface is at v${f.version}, there is no v${v}`);
     }
-    if ((next.status === 'nominated' || next.status === 'gated') && ('status' in patch || 'head' in patch || 'verdict' in patch || 'follows' in patch)) {
+    const merging = next.status === 'merged' && prev.status !== 'merged' && 'status' in patch; // a recorded follow that went stale does not merge either (an unfollowed one is the nomination's rule)
+    if (((next.status === 'nominated' || next.status === 'gated') && ('status' in patch || 'head' in patch || 'verdict' in patch || 'follows' in patch)) || merging) {
       for (const up of next.dependsOn) {
         const f = out.tickets[up]?.iface;
         if (!f) continue;
         const v = next.follows?.[up];
+        if (v === undefined && merging) continue;
         if (v === undefined) throw new SeatRefusal('interface-unfollowed', `${id} cannot be ${next.status}: it names no version of ${up}'s interface (now v${f.version}) — build on it and record --follows ${up}=${f.version}`);
         if (v !== f.version) throw new SeatRefusal('interface-stale', `${id} cannot be ${next.status}: it follows ${up} v${v} but ${up}'s interface is now v${f.version} (${ifaceChanges(f, v)}) — rebuild on v${f.version} and record --follows ${up}=${f.version}`);
       }

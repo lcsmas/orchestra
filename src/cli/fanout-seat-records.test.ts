@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runFanout, SEAT_USAGE, FANOUT_USAGE, type FanoutDeps } from './fanout-state.ts';
 import { DEFAULT_SWITCHES, V378_DEFAULT_SWITCHES, SeatRefusal, applyTicketPatch, interfaceOf, newState, parseState, planMissing, readState, readyTickets, seatRecordsOn, stateFile, switchesOf, type FanoutState } from '../shared/fanout-state.ts';
+import { claimAcceptor } from '../shared/fanout-acceptance.ts';
 import { renderVerifiedFanoutSkill } from '../shared/verified-fanout-skill.ts';
 
 const NOW = '2026-11-24T10:00:00.000Z';
@@ -268,6 +269,8 @@ test('on: a follow-up added after the first spawn is listed as missing until dec
   let r = set(d, 'B', '--status', 'started');
   refused(r, 'plan-incomplete');
   assert.match(r.stderr, /F: in the plan but not in the state/);
+  refused(set(d, 'F', '--implementer', 'ws-f'), 'plan-incomplete'); // a seat recorded on a ticket is a spawn, the later ones too
+  refused(set(d, 'F', '--verifier', 'ws-v'), 'plan-incomplete');
   set(d, 'F', '--follow-up-of', 'A', '--fixes', 'x');
   r = set(d, 'B', '--status', 'started');
   assert.match(r.stderr, /F: dependencies not declared/);
@@ -335,7 +338,7 @@ test('a state file of master (no plan / depsDeclared / iface / follows) loads an
   bad((j) => { j.tickets.A.iface.version = 3; });
   bad((j) => { j.tickets.A.iface.extra = 1; });
   bad((j) => { j.tickets.B.follows = { A: 0 }; });
-  bad((j) => { j.tickets.B.depsDeclared = false; });
+  bad((j) => { j.tickets.B.depsDeclared = 'yes'; });
   bad((j) => { j.plan.tickets = []; });
   bad((j) => { j.plan.extra = 1; });
 });
@@ -346,4 +349,52 @@ test('applyTicketPatch (library path): the refusals are SeatRefusal with their n
   assert.throws(() => applyTicketPatch(s0, 'A', { interface: ' ' }, NOW), (e: unknown) => e instanceof SeatRefusal && e.refusal === 'interface-blank');
   assert.equal(readyTickets(s0).length, 0);
   assert.equal(interfaceOf(s0, 'nope'), null);
+});
+
+test('on: a recorded follow that went stale does not MERGE; a stale head update on a nominated dependent is refused (merge is not a way round)', (t) => {
+  const d = onRun(t);
+  assert.equal(set(d, 'A', '--branch', 'a', '--head', H2, '--status', 'nominated').code, 0);
+  assert.equal(set(d, 'B', '--branch', 'b', '--head', H1, '--built-on', `A=${H2}`, '--status', 'nominated', '--follows', 'A=1').code, 0);
+  set(d, 'A', '--interface', 'table t(id, name, age)', '--interface-reason', 'age');
+  const m = set(d, 'B', '--status', 'merged');
+  refused(m, 'interface-stale');
+  assert.match(m.stderr, /cannot be merged/);
+  assert.equal(load(d).tickets.B.status, 'nominated');
+});
+
+test('on: a merge with no recorded follow is not the nomination\'s rule (A merged first, B merges)', (t) => {
+  const d = onRun(t);
+  assert.equal(set(d, 'A', '--status', 'merged').code, 0);
+  const r = set(d, 'B', '--status', 'merged');
+  assert.equal(r.code, 0, r.stderr);
+});
+
+test('on: `--depends-on A,none` / a JSON dependsOn naming `none` is refused (no ticket called none)', (t) => {
+  const d = onRun(t);
+  const r = set(d, 'B', '--depends-on', 'A,none');
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /"none" is not a ticket id/);
+  assert.equal(set(d, 'B', '--json', JSON.stringify({ dependsOn: ['none'] })).code, 1);
+  assert.deepEqual(load(d).tickets.B.dependsOn, ['A']);
+});
+
+test('on: the acceptance writer spawn (claimAcceptor, the host\'s only door) is a spawn: refused while the plan is incomplete', (t) => {
+  const d = onRun(t, { declared: false });
+  set(d, '--switch', 'acceptance=on');
+  set(d, '--plan', 'A'); set(d, 'A', '--depends-on', 'none', '--spec', 'x');
+  set(d, '--plan-add', 'Z');
+  const cur = load(d);
+  assert.throws(() => claimAcceptor(cur, 'A', 'accept-A', NOW), (e: unknown) => e instanceof SeatRefusal && e.refusal === 'plan-incomplete' && /Z: in the plan but not in the state/.test(e.message));
+  set(d, 'Z', '--depends-on', 'none');
+  const claimed = claimAcceptor(load(d), 'A', 'accept-A', NOW);
+  assert.equal(claimed.tickets.A.accept?.acceptor?.name, 'accept-A');
+});
+
+test('a stored depsDeclared:false (I2 types it boolean) loads as not declared; a non-boolean is refused', (t) => {
+  const on = onRun(t);
+  const j = JSON.parse(JSON.stringify(load(on)));
+  j.tickets.B.depsDeclared = false;
+  assert.equal(parseState(j).tickets.B.depsDeclared, undefined);
+  j.tickets.B.depsDeclared = 'yes';
+  assert.throws(() => parseState(j), /depsDeclared must be a boolean/);
 });
