@@ -331,3 +331,47 @@ test('catching up: an older review that reads the SAME content as the head is no
   assert.match(w.woken[0].text, /\bb2\b/);
   assert.doesNotMatch(w.woken[0].text, /\bb1\b/);
 });
+
+// ── the process-finding stall (pre-review MAJOR; OPS default: the author's status mail wakes the same reviewer) ──────
+const processWorld = async (): Promise<World> => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { p1: finding('MINOR', 'say so in the PR body', { kind: 'process', demonstration: DEMO }) });
+  await runCorrections(w.ctx);
+  return w;
+};
+test('a process finding: the batch tells the author how it is closed (PR body + a commit + one status)', async () => {
+  const w = await processWorld();
+  assert.match(w.woken[0].text, /edit the PR body, then push a commit/);
+});
+test('the author ANSWERS a process batch by status mail with no new head: the SAME reviewer is woken to re-read the PR body + head (raw wake, no second reviewer)', async () => {
+  const w = await processWorld();
+  w.woken.length = 0;
+  w.ctx.mails = [{ kind: 'status', sender: 'ws-A', ticket: 'A', body: 'PR body edited' }];
+  const out = await runCorrections(w.ctx);
+  assert.deepEqual(out, [{ ticket: 'A', action: 'reviewer-woken', head: sha('1'), reviewer: 'rv-A' }]);
+  assert.equal(w.woken.length, 1);
+  assert.equal(w.woken[0].ws, 'rv-A');
+  assert.match(w.woken[0].text, /re-read the PR body and the head/);
+  assert.equal(w.reviewerCalls.length, 0);
+});
+test('MUST-FAIL: no answer → the reviewer is not woken; a mail from someone else or a plain `ask` is not an answer', async () => {
+  const w = await processWorld();
+  w.woken.length = 0;
+  assert.deepEqual(await runCorrections(w.ctx), []);
+  w.ctx.mails = [{ kind: 'status', sender: 'ws-other', ticket: null, body: 'hi' }, { kind: 'ask', sender: 'ws-A', ticket: 'A', body: 'question?' }];
+  assert.deepEqual(await runCorrections(w.ctx), []);
+  assert.equal(w.woken.length, 0);
+});
+test('the answer arrives with a DEAD reviewer: the host op replaces it (same call as a new head)', async () => {
+  const w = await processWorld();
+  w.live.delete('rv-A');
+  w.ctx.mails = [{ kind: 'worker_done', sender: 'ws-A', ticket: 'A', body: 'done' }];
+  await runCorrections(w.ctx);
+  assert.equal(w.reviewerCalls.length, 1);
+});
+test('an empty commit (new sha, same tree) wakes the reviewer: the finding can only be closed on a LATER head', async () => {
+  const w = await processWorld();
+  push(w, 'A', sha('2'), 't1');
+  const out = await runCorrections(w.ctx);
+  assert.deepEqual(out, [{ ticket: 'A', action: 'reviewer-woken', head: sha('2'), reviewer: 'rv-A' }]);
+});

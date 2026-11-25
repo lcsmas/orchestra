@@ -2,7 +2,7 @@
 // a fresh author only when the author is dead, and the situation (open findings + candidate tree) seen twice parks the ticket. No counters, nothing in memory between passes: the state file is the memory.
 // Built on the FROZEN NAMES v1 of ledger #613 (LoopDeps / FleetPort / GitPort, #603's rounds + parkTicket): the narrow `CorrectionsDeps` below is a structural SUBSET of LoopDeps, so the real LoopCtx assigns to it.
 import crypto from 'node:crypto';
-import { countsThrough, reviewOn } from './fanout-record.ts';
+import { countsThrough } from './fanout-record.ts';
 import {
   blockingMinors, readState, sameContent, stateFile, switchesOf, updateState,
   type FanoutState, type FindingRecord, type ReviewEntry, type TicketState,
@@ -59,7 +59,9 @@ export interface CorrectionsDeps {
 }
 /** Where the state lives: the file under `home` by default; a test hands an in-memory one. */
 export interface CorrectionsStore { read(): FanoutState | null; update(fn: (s: FanoutState) => FanoutState): FanoutState }
-export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore }
+/** The mail of THIS pass, as the loop's own mail step read it (the loop is the ONLY reader of the run's mail: this step never calls `fleet.mail()`). Absent = none. */
+export interface CorrectionsMail { kind: string; sender: string; ticket: string | null; body: string }
+export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore; mails?: CorrectionsMail[] }
 
 export type CorrectionsOutcome =
   | { ticket: string; action: 'sent'; to: string; round: number; findings: string[]; noted: string[]; replaced: boolean }
@@ -98,6 +100,7 @@ export function renderBatch(state: FanoutState, ticket: string, c: { r: ReviewEn
     ...(fresh ? ['You replace the previous author of this ticket: the branch already holds its work — read it before changing anything.'] : []),
     `Fix ALL ${c.fix.length} in ONE push to ${t.branch ?? 'your branch'}, then stop; your reviewer reads the fix. Do not message anyone and do not record a verdict.`,
     ...lines,
+    ...(c.fix.some((id) => t.findings[id].kind === 'process') ? ['For a "process" finding: edit the PR body, then push a commit (`git commit --allow-empty` if nothing else changes) and send ONE `orchestra send --type status` saying it is done — a finding is only closed on a later head than the one it was raised on.'] : []),
   ].join('\n');
 }
 
@@ -153,12 +156,18 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
     // (2) the author pushed: the recorded reviewer reads the fix (host op: same live reviewer, a replacement only for a dead one, noop when already briefed on this head)
     const t2 = store.read()!.tickets[id] as T3;
     const last = changing[changing.length - 1];
-    if (last && done(store.read()!, last) && !reviewOn(t2, head, tree) && t2.review?.reviewer?.id) {
-      const want = t2.review.reviewer.id;
+    const reviewed = (h: string): boolean => (t2.reviews ?? []).some((r) => r.head.startsWith(h) || h.startsWith(r.head));
+    const want = t2.review?.reviewer?.id ?? null;
+    if (last && want && done(store.read()!, last) && !reviewed(head)) {
       const live = deps.fleet.live(want);
-      const got = await deps.fleet.spawnReviewer(id, head);
+      const got = await deps.fleet.spawnReviewer(id, head); // a NEW sha (even with the same tree) is read: a finding raised on a head is only closed on a later one
       if (live && got.id !== want) { deps.log(`corrections: ${id} — a second reviewer ${got.id} for the live ${want}: its verdict is not the one that read the findings`); out.push({ ticket: id, action: 'reviewer-changed', expected: want, got: got.id }); continue; }
       out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: got.id });
+    } else if (last && want && done(store.read()!, last) && t2.implementer && (ctx.mails ?? []).some((m) => m.sender === t2.implementer && (m.kind === 'status' || m.kind === 'worker_done'))) {
+      // the author ANSWERED the batch without a new head (a PR-body edit): the same reviewer re-reads the PR body + the head — raw wake, the host op is a noop on an already-briefed head; a dead one is replaced there
+      if (!deps.fleet.live(want)) { const got = await deps.fleet.spawnReviewer(id, head); out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: got.id }); continue; }
+      await deps.fleet.wake(want, `The author of ${id} answered your corrections on ${short(head)} with no new commit (a PR-body edit): re-read the PR body and the head, then record your verdict on ${short(head)}.`);
+      out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: want });
     }
   }
   return out;
