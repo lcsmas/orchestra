@@ -28,6 +28,8 @@ export interface LoopOptions {
   /** No progress for this long ⇒ every unfinished ticket is parked (cause `situation`) and the run ends: the loop never waits for a person (decision 11). */
   stallMs: number;
   maxPasses: number;
+  /** check names that must exist on a head before it can merge (decideDelivery's `requiredChecks`); absent = none declared */
+  requiredChecks?: string[];
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -46,6 +48,8 @@ export interface LoopDeps {
 export interface LoopResult { exit: 0 | 2 | 3 | 4; report: Report; passes: number; reason?: string }
 
 export class LoopRefusal extends SeatRefusal {}
+/** A process death (a test's seam): never swallowed by `ctx.guard`. */
+export class LoopKilled extends Error {}
 
 export interface Approval { head: string; at: string; round: number }
 export interface LoopCtx {
@@ -60,6 +64,10 @@ export interface LoopCtx {
   finished: boolean;
   /** log a line once per distinct text (a log filter, not state: a restart merely logs it again) */
   note(line: string): void;
+  /** work is under way that the loop cannot see as a state change (a held start, a CI running, a reviewer reading): it counts as progress for the stall clock */
+  busy: boolean;
+  /** run one ticket's (or one message's) share of a step: a thrown PORT error is logged and retried next pass — it never ends the run (a refusal or a kill does) */
+  guard(label: string, fn: () => Promise<void>): Promise<boolean>;
   st(): LoopState;
   update(fn: (s: LoopState) => LoopState): LoopState;
   did(msg: string): void;
@@ -114,56 +122,82 @@ export async function stepPlan(ctx: LoopCtx): Promise<void> {
 export async function stepStart(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
   const s = ctx.st();
+  const heldNow = activeTickets(s).filter((id) => s.loop.held[id] && !s.tickets[id].head);
+  if (heldNow.length) ctx.busy = true; // an Admission hold reported earlier, not released yet: a wait, not a stall
+  if (Object.keys(s.loop.held).some((id) => !heldNow.includes(id))) ctx.update((x) => ({ ...x, loop: { ...x.loop, held: Object.fromEntries(Object.entries(x.loop.held).filter(([id]) => heldNow.includes(id))) } }));
   const need = activeTickets(s).filter((id) => { const t = s.tickets[id]; return (t.status === 'todo' || t.status === 'started') && (!t.implementer || !deps.fleet.live(t.implementer)); });
   if (!need.length) return;
   if (deps.options.startCheck && !Object.values(s.tickets).some((t) => t.start)) await stepStartCheck(ctx);
   const r = await deps.fleet.start();
   for (const x of r.started) ctx.did(`started ${x.ticket} (${x.ws})`);
   for (const x of r.respawned) ctx.did(`restarted ${x.ticket} (${x.ws})`);
-  for (const x of r.waiting) ctx.note(`waiting: ${x.ticket} — ${x.why}`);
+  if (r.waiting.length) ctx.update((y) => ({ ...y, loop: { ...y.loop, held: { ...y.loop.held, ...Object.fromEntries(r.waiting.map((x) => [x.ticket, true as const])) } } }));
+  for (const x of r.waiting) { ctx.busy = true; ctx.note(`waiting: ${x.ticket} — ${x.why}`); } // an Admission hold is a wait, not a fault, and not a stall
   for (const x of r.failed) ctx.note(`could not start ${x.ticket}: ${x.error} (tried again next pass)`);
 }
 
-/** The loop is the ONLY reader of the run's mail (one `fleet.mail()` per pass). */
+/** Decision 5, fail CLOSED: the marker anywhere in the body, any case, any spacing or punctuation, parks; only a body without it is a question that gets the fixed answer. */
+export function parseNoSafeOption(body: string): { reason: string } | null {
+  const m = /no[\s_-]*safe[\s_-]*option/i.exec(body);
+  if (!m) return null;
+  const rest = body.slice(m.index + m[0].length).replace(/^[\s:.\-–—]+/, '').trim();
+  return { reason: rest.split('\n')[0].slice(0, 300) || '(no reason given)' };
+}
+
+/** The loop is the ONLY reader of the run's mail (one `fleet.mail()` per pass). The mail is acked only AFTER its batch is processed, and each message is handled idempotently (`loop.handled`): a kill mid-batch loses nothing — the
+ *  question's choice is written BEFORE its answer is sent (`listed` → send → `done`), so a restart answers it once more (harmless: a constant) and lists it once. */
 export async function stepMail(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
   const mails = [...(await deps.fleet.mail())].sort((a, b) => a.seq - b.seq);
+  const failed: number[] = [];
+  const markDone = (seq: number): void => { ctx.update((x) => ({ ...x, loop: { ...x.loop, handled: { ...x.loop.handled, [seq]: 'done' as const } } })); };
   for (const m of mails) {
-    const s = ctx.st();
-    const ticket = m.ticket ?? implementerTicket(s, m.sender);
-    if (m.kind === 'ask') {
-      const first = m.body.split('\n')[0];
-      if (first.startsWith(NO_SAFE_OPTION)) {
-        const reason = first.slice(NO_SAFE_OPTION.length).trim() || '(no reason given)';
-        if (ticket && s.tickets[ticket] && !isMerged(s, ticket)) {
-          ctx.update((x) => recordChoice(parkTicket(x, ticket, { cause: 'question', reason }, deps.now()), { ticket, question: reason, rule: 'no-safe-option', answer: 'parked' }, deps.now()));
-          ctx.did(`parked ${ticket}: no safe option — ${reason}`);
+    const ok = await ctx.guard(`mail #${m.seq}`, async () => {
+      const s = ctx.st();
+      const h = s.loop.handled[m.seq];
+      if (h === 'done') return;
+      const ticket = m.ticket ?? implementerTicket(s, m.sender);
+      if (m.kind === 'ask') {
+        const nso = parseNoSafeOption(m.body);
+        if (nso) {
+          if (ticket && s.tickets[ticket] && !isMerged(s, ticket)) {
+            ctx.update((x) => { const y = recordChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now()); return { ...y, loop: { ...y.loop, handled: { ...y.loop.handled, [m.seq]: 'done' as const } } }; });
+            ctx.did(`parked ${ticket}: no safe option — ${nso.reason}`);
+          } else markDone(m.seq);
+          return;
         }
-      } else {
+        const first = m.body.split('\n')[0];
+        if (!h) ctx.update((x) => { const y = recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()); return { ...y, loop: { ...y.loop, handled: { ...y.loop.handled, [m.seq]: 'listed' as const } } }; });
         await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');
-        ctx.update((x) => recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()));
+        markDone(m.seq);
         ctx.did(`answered ${ticket ?? m.sender}'s question with the fixed answer`);
-      }
-    } else if ((m.kind === 'status' || m.kind === 'worker_done') && ticket && s.tickets[ticket]?.implementer === m.sender) {
-      ctx.signals.add(ticket);
-      ctx.update((x) => ({ ...x, loop: { ...x.loop, signalled: { ...x.loop.signalled, [ticket]: true as const } } })); // durable before this pass ends: the mail is gone once read
-    }
+      } else if ((m.kind === 'status' || m.kind === 'worker_done') && ticket && s.tickets[ticket]?.implementer === m.sender) {
+        ctx.signals.add(ticket);
+        ctx.update((x) => ({ ...x, loop: { ...x.loop, signalled: { ...x.loop.signalled, [ticket]: true as const }, handled: { ...x.loop.handled, [m.seq]: 'done' as const } } })); // durable before the ack: the mail is gone once acked
+      } else markDone(m.seq);
+    });
+    if (!ok) failed.push(m.seq);
   }
+  if (!mails.length) return;
+  const ackTo = failed.length ? Math.min(...failed) - 1 : mails[mails.length - 1].seq; // never past a message that is not handled yet
+  if (ackTo < mails[0].seq) return;
+  const acked = await ctx.guard('ack', async () => { await deps.fleet.ack(ackTo); });
+  if (acked) ctx.update((x) => ({ ...x, loop: { ...x.loop, handled: Object.fromEntries(Object.entries(x.loop.handled).filter(([k]) => Number(k) > ackTo)) } }));
 }
 
 /** A head enters the state only when the implementer SIGNALLED it and git shows it (git is read, the message is not trusted). A dependent is `nominated` only once it is connected to every unmerged upstream (the state's early-gate rule:
  *  `builtOn` = the upstream head it was asked to connect to, contained in its own head) — until then it stays `started` with its head recorded, and its PR waits for the connection. */
 export async function stepNominations(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
-  for (const id of activeTickets(ctx.st())) {
+  for (const id of activeTickets(ctx.st())) await ctx.guard(`${id} nominations`, async () => {
     const s = ctx.st();
     const t = s.tickets[id];
-    if (!t.branch) continue;
+    if (!t.branch) return;
     let head = t.head;
     let read = false; // a signalled ticket whose head git showed: its signal is spent when this iteration ends
     if (ctx.signals.has(id) || s.loop.signalled[id]) { const h = await deps.git.head(t.branch); if (h) { head = h; read = true; } }
     const spend = (): void => { if (read) ctx.update((x) => { const { [id]: _g, ...rest } = x.loop.signalled; return { ...x, loop: { ...x.loop, signalled: rest } }; }); };
-    if (!head) continue;
+    if (!head) return;
     const builtOn = { ...t.builtOn };
     const builtOnTree = { ...t.builtOnTree };
     let connected = false;
@@ -180,7 +214,7 @@ export async function stepNominations(ctx: LoopCtx): Promise<void> {
     const view: LoopState = { ...s, tickets: { ...s.tickets, [id]: { ...t, head, builtOn, builtOnTree } } };
     const clear = unmergedUpstreams(s, id).every((u) => upstreamBlocker(view, view.tickets[id], u) === null);
     const want = clear ? (t.status === 'started' || t.status === 'nominated' ? 'nominated' : t.status) : (t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status); // an upstream that moved under a nominated dependent: back to started until it is connected again
-    if (!headChanged && !connected && want === t.status) { spend(); continue; }
+    if (!headChanged && !connected && want === t.status) { spend(); return; }
     const tree = headChanged ? await deps.git.tree(head) : t.tree;
     const patch = (status: string): Record<string, unknown> => ({ head, ...(connected ? { builtOn } : {}), status });
     const derived = { tree, ...(connected ? { builtOnTree } : {}) };
@@ -196,33 +230,33 @@ export async function stepNominations(ctx: LoopCtx): Promise<void> {
     spend();
     if (headChanged) ctx.did(`${id} ${want === 'nominated' ? 'nominated' : 'has a head'} at ${head.slice(0, 12)}`);
     if (connected) ctx.did(`${id} is connected to ${Object.keys(s.loop.asked[id] ?? {}).filter((u) => builtOn[u]).join(', ')}`);
-  }
+  });
 }
 
 /** One PR per ticket (idempotent per branch). */
 export async function stepOpen(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
-  for (const id of activeTickets(ctx.st())) {
+  for (const id of activeTickets(ctx.st())) await ctx.guard(`${id} open`, async () => {
     const t = ctx.st().tickets[id];
-    if ((t.status !== 'nominated' && t.status !== 'gated') || !t.head || !t.branch || t.pr) continue;
+    if ((t.status !== 'nominated' && t.status !== 'gated') || !t.head || !t.branch || t.pr) return;
     const { n } = await deps.forge.openPr({ branch: t.branch, base: ctx.st().target, title: `${id}${t.spec ? `: ${t.spec}` : ''}`.slice(0, 120) });
     ctx.update((x) => withLoop(applyTicketPatch(x, id, { pr: n }, deps.now()), x.loop));
     ctx.did(`opened PR #${n} for ${id}`);
-  }
+  });
 }
 
 /** The ticket's reviewer reads its current head: spawned once, woken on a new head, never twice on the same one. */
 export async function stepReview(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
-  for (const id of activeTickets(ctx.st())) {
+  for (const id of activeTickets(ctx.st())) await ctx.guard(`${id} review`, async () => {
     const t = ctx.st().tickets[id];
-    if (!t.pr || !t.head) continue;
-    if (reviewOn(t, t.head, t.tree)) continue; // a verdict on this content is recorded
+    if (!t.pr || !t.head) return;
+    if (reviewOn(t, t.head, t.tree)) return; // a verdict on this content is recorded
     const last = t.review?.briefs[t.review.briefs.length - 1];
-    if (last && sameSha(last.head, t.head)) continue; // briefed on this head: the reviewer owes its record
+    if (last && sameSha(last.head, t.head)) { ctx.busy = true; return; } // briefed on this head: the reviewer owes its record (a reviewer reading is work under way)
     const r = await deps.fleet.spawnReviewer(id, t.head);
     ctx.did(`reviewer ${r.id} reads ${id} at ${t.head.slice(0, 12)}`);
-  }
+  });
 }
 
 /** Approved = a RECORDED approve on the current content with nothing blocking left open. The loop never types a verdict. */
@@ -243,10 +277,10 @@ export async function stepApprovals(ctx: LoopCtx): Promise<void> {
 /** Decision 4: a dependent is asked to connect to its upstream when the upstream's reviewer approved it — not at nomination, not at merge. Once per (dependent, upstream, head); a changed upstream asks again. */
 export async function stepConnect(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
-  for (const id of activeTickets(ctx.st())) {
+  for (const id of activeTickets(ctx.st())) await ctx.guard(`${id} connect`, async () => {
     const s = ctx.st();
     const t = s.tickets[id];
-    if (!t.implementer || !deps.fleet.live(t.implementer)) continue;
+    if (!t.implementer || !deps.fleet.live(t.implementer)) return;
     for (const up of t.dependsOn) {
       const u = s.tickets[up];
       const a = ctx.approved.get(up);
@@ -258,7 +292,7 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
       ctx.update((x) => ({ ...x, loop: { ...x.loop, asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } } } }));
       ctx.did(`asked ${id} to connect to ${up} at ${a.head.slice(0, 12)}`);
     }
-  }
+  });
 }
 
 interface Ready { id: string; readyAt: number; order: number; head: string; pr: number }
@@ -268,17 +302,17 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
   const s0 = ctx.st();
   const ready: Ready[] = [];
   const plan = s0.plan?.tickets ?? [];
-  for (const id of activeTickets(s0)) {
+  for (const id of activeTickets(s0)) await ctx.guard(`${id} deliver`, async () => {
     const t = s0.tickets[id];
     const a = ctx.approved.get(id);
-    if (!a || !t.pr || !t.head) continue;
-    if (t.dependsOn.some((u) => !isMerged(s0, u))) continue; // an unmerged upstream: never first
+    if (!a || !t.pr || !t.head) return;
+    if (t.dependsOn.some((u) => !isMerged(s0, u))) return; // an unmerged upstream: never first
     const pr = await deps.forge.prState(t.pr);
-    if (pr.state === 'closed') continue;
+    if (pr.state === 'closed') return;
     if (pr.state === 'merged') { // merged by hand: git and the forge overrule the state (#608 does the general case)
       ctx.update((x) => withLoop(applyTicketPatch(x, id, { status: 'merged' }, deps.now()), x.loop));
       ctx.did(`${id} was already merged on the forge: adopted`);
-      continue;
+      return;
     }
     // upstreams: merged on the forge at the head this ticket was built on, and this head sits on it
     const facts: UpstreamFacts[] = [];
@@ -295,29 +329,34 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
       });
     }
     const upDecision = decideUpstreams(facts.map((f) => (f.builtOn === null ? { ...f, builtOn: f.pr?.headRefOid ?? null } : f)), s0.target); // never connected: it must at least contain the merged head
-    if (!upDecision.ok) { ctx.note(`${id}: not deliverable — ${upDecision.reason}: ${upDecision.detail}`); continue; }
+    if (!upDecision.ok) { ctx.note(`${id}: not deliverable — ${upDecision.reason}: ${upDecision.detail}`); return; }
     const checks = await deps.forge.checks(t.pr, t.head);
-    const dc: DeliverCheck[] = checks.map((c) => ({ name: c.name, state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending', steps: 1 }));
+    // `decideDelivery`'s own guards, fed with what the forge says: the check set must be IDENTICAL on two polls of this head (kept in the sidecar) and a green check must have run ≥1 step
+    const names = checks.map((c) => c.name).sort().join(',');
+    const stable = s0.loop.checksSeen[t.head] === names;
+    if (!stable) ctx.update((x) => ({ ...x, loop: { ...x.loop, checksSeen: { ...x.loop.checksSeen, [t.head!]: names } } }));
+    const dc: DeliverCheck[] = checks.map((c) => ({ name: c.name, state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending', steps: c.steps ?? null }));
     const verdict = recordedVerdictOf(s0, id, t.head, t.tree);
     const rec = verdict.ok ? verdict.recorded : null;
-    if (!rec) continue; // no recorded verdict on this content: nothing to merge on (defence in depth: `ctx.approved` already says so)
+    if (!rec) return; // no recorded verdict on this content: nothing to merge on (defence in depth: `ctx.approved` already says so)
     const dec = decideDelivery({
       pr: { state: 'OPEN', baseRefName: s0.target, headRefOid: pr.head, mergeable: 'MERGEABLE' }, checks: dc, into: s0.target, verifiedHead: t.head,
-      verdict: rec ? { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head } : undefined,
-      waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable: true,
+      verdict: { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head },
+      waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [],
     });
-    if (dec.action !== 'merge') { if (dec.action === 'refuse') ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); continue; }
+    if (dec.action === 'wait') { ctx.busy = true; return; } // a CI running / registering is work under way
+    if (dec.action !== 'merge') { if (dec.action === 'refuse') ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); return; }
     const upMergedAt = Math.max(0, ...t.dependsOn.map((u) => ms(s0.tickets[u].updatedAt)));
     const checkAt = Math.max(0, ...checks.map((c) => (c.at ? ms(c.at) : 0)));
     ready.push({ id, readyAt: Math.max(ms(a.at), checkAt, upMergedAt), order: plan.indexOf(id), head: dec.head, pr: t.pr });
-  }
+  });
   ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);
-  for (const r of ready) {
-    const res = await deps.forge.merge(r.pr, r.head);
-    if (!res.ok) { deps.log(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}`); continue; }
+  for (const r of ready) await ctx.guard(`${r.id} merge`, async () => {
+    const res = await deps.forge.merge(r.pr, r.head, 'merge'); // a MERGE COMMIT, never a squash (decision 3: dependents connect by merge commit)
+    if (!res.ok) { ctx.note(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}`); return; }
     ctx.update((x) => withLoop(applyTicketPatch(x, r.id, { status: 'merged' }, deps.now()), x.loop));
     ctx.did(`merged ${r.id} (PR #${r.pr})`);
-  }
+  });
 }
 
 /** The run is finished when every plan ticket is merged, dropped or parked (a parked ticket parks its dependents). */
@@ -334,7 +373,14 @@ const STEPS: Record<LoopStep, (ctx: LoopCtx) => Promise<void>> = {
 function newCtx(deps: LoopDeps, pass: number, seen: Set<string>): LoopCtx {
   const ctx: LoopCtx = {
     note: (line) => { if (!seen.has(line)) { seen.add(line); deps.log(`[pass ${pass}] ${line}`); } },
-    deps, run: deps.run, pass, signals: new Set(), approved: new Map(), progress: [], finished: false,
+    deps, run: deps.run, pass, signals: new Set(), approved: new Map(), progress: [], finished: false, busy: false,
+    guard: async (label, fn) => {
+      try { await fn(); return true; } catch (e) {
+        if (e instanceof LoopKilled || e instanceof SeatRefusal) throw e;
+        ctx.note(`${label}: ${e instanceof Error ? e.message : String(e)} (retried next pass)`);
+        return false;
+      }
+    },
     st: () => { const s = readLoopState(deps.home, deps.run); if (!s) throw new LoopRefusal('run-no-state', `no state for run ${deps.run}`); return s; },
     update: (fn) => updateLoopState(deps.home, deps.run, (cur) => fn(cur!)),
     did: (msg) => { ctx.progress.push(msg); deps.log(`[pass ${pass}] ${msg}`); },
@@ -359,13 +405,13 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
       if (e instanceof SeatRefusal) { deps.log(`refused ${e.message}`); return finish(2, e.message); }
       throw e;
     }
-    if (ctx.progress.length) lastProgress = ms(deps.now());
+    if (ctx.progress.length || ctx.busy) lastProgress = ms(deps.now());
     const s = ctx.st();
     if (pausedOf(s)) return finish(4, `paused: ${pausedOf(s)!.reason}`);
     if (ctx.finished) return finish(parkedTickets(s).length ? 3 : 0);
     const stalled = ms(deps.now()) - lastProgress > deps.options.stallMs;
     if (stalled || passes >= deps.options.maxPasses) {
-      const reason = stalled ? `no progress for ${Math.round(deps.options.stallMs / 60_000)} min` : `pass limit ${deps.options.maxPasses}`;
+      const reason = stalled ? `stalled ${Math.round(deps.options.stallMs / 60_000)} min: no change, no start waiting, no CI or review under way` : `pass limit ${deps.options.maxPasses}`;
       for (const id of activeTickets(s)) ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));
       deps.log(`ending: ${reason}; the unfinished tickets are parked`);
       return finish(3, reason);

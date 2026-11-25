@@ -15,12 +15,14 @@ export interface FleetPort {
   send(to: string, text: string, kind: 'status' | 'answer'): Promise<void>;
   /** The run's unread mail. The loop is the ONLY reader (one call per pass, in `stepMail`). */
   mail(): Promise<LoopMail[]>;
+  /** MAJOR-1 (review 605 r1): `mail()` leaves a message unread until it is acked — the loop acks `upToSeq` (inclusive) only AFTER the batch is processed, so a kill mid-batch loses nothing. */
+  ack(upToSeq: number): Promise<void>;
   /** The shipped `review` verb's host op: spawn the ticket's reviewer on `head`, or wake the live one on a new head, or replace a dead one; a no-op when it is already briefed on this head. */
   spawnReviewer(ticket: string, head: string): Promise<{ id: string }>;
   costOf(ticket: string): Promise<{ tokens: number } | null>;
 }
 
-export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red'; /** Interface log v1.1: MUST change on a re-run (#607's one-re-run-per-ticket rule reads it) */ jobId?: string; logExtract?: string; /** additive: ISO time the check reached its status (the loop's readiness order reads it) */ at?: string }
+export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red'; /** Interface log v1.1: MUST change on a re-run (#607's one-re-run-per-ticket rule reads it) */ jobId?: string; /** MAJOR-2: job step count when the forge knows it; 0 = a green that ran nothing (refused), absent = unknown (refused too: nothing proves it ran) */ steps?: number; logExtract?: string; /** additive: ISO time the check reached its status (the loop's readiness order reads it) */ at?: string }
 
 export interface ForgePort {
   /** Idempotent per branch: a second call for the same branch answers the same number. */
@@ -29,7 +31,7 @@ export interface ForgePort {
   checks(n: number, head: string): Promise<ForgeCheck[]>;
   rerun(n: number, names: string[]): Promise<void>;
   /** A MERGE COMMIT bound to `matchHead` (refused with `reason: 'head-moved'` when the PR head is another). */
-  merge(n: number, matchHead: string): Promise<{ ok: boolean; reason?: string }>;
+  merge(n: number, matchHead: string, method: 'merge' | 'squash' | 'rebase'): Promise<{ ok: boolean; reason?: string }>;
   close(n: number): Promise<void>;
 }
 

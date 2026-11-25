@@ -19,11 +19,17 @@ export interface LoopSide {
   asked: Record<string, Record<string, string>>;
   /** #605-only: tickets whose implementer said it nominated, read from the mail but not yet turned into a head in the state (mail is consumed on read: this makes the hand-off from `mail` to `nominations` survive a kill). */
   signalled: Record<string, true>;
+  /** #605-only: mail seq → `listed` (a question's choice is written, its answer not yet sent) | `done`. Pruned past each ack. */
+  handled: Record<string, 'listed' | 'done'>;
+  /** #605-only: head → the check names the last poll saw (the "identical on two polls" guard of decideDelivery). */
+  checksSeen: Record<string, string>;
+  /** #605-only: tickets whose start Admission held (reported once by `fleet.start()`); busy for the stall clock until the ticket shows a head. */
+  held: Record<string, true>;
 }
 /** `FanoutState` + the sidecar. The frozen helpers below take and return this. */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, signalled: {} });
+const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, signalled: {}, handled: {}, checksSeen: {}, held: {} });
 const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function readSide(file: string): LoopSide {

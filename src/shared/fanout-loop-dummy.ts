@@ -8,6 +8,7 @@ import type { FleetPort, ForgeCheck, ForgePort, GitPort, LoopMail } from './fano
 import { readLoopState, updateLoopState, withLoop, type Plan } from './fanout-loop-compat.ts';
 import { decideReview, claimReviewer, recordWake, reviewerName, nthReviewer, settleReviewer } from './fanout-review.ts';
 import { recordReview, reviewHeadOf } from './fanout-record.ts';
+import { LOOP_BRIEF } from './fanout-implementer-brief.ts';
 import { implementerName, startRun, type StartResult } from './fanout-start.ts';
 import { applyTicketPatch, FanoutStateError, stateFile } from './fanout-state.ts';
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
@@ -23,8 +24,8 @@ export interface Scenario {
   agents?: Record<string, { implementer?: Step[]; reviewer?: Step[] }>;
   ci?: Record<string, string[]>;
   admissionHold?: Record<string, number>;
-  events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option' }>>;
-  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[] };
+  events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -141,11 +142,13 @@ export class DummyWorld {
     this.mailbox.push({ seq, kind, sender, ticket, body, read: false });
     this.ev('mail-posted', ticket ?? undefined, { seq, kind, sender, body: body.split('\n')[0] });
   }
+  /** Unread = not ACKED: a message the loop was handed stays here until `ackMail` (a kill mid-batch loses nothing). */
   drainMail(): LoopMail[] {
     const out = this.mailbox.filter((m) => !m.read);
-    for (const m of out) { m.read = true; this.ev('mail-read', m.ticket ?? undefined, { reader: 'loop', seq: m.seq, kind: m.kind }); }
+    for (const m of out) this.ev('mail-read', m.ticket ?? undefined, { reader: 'loop', seq: m.seq, kind: m.kind });
     return out.map(({ read: _r, ...m }) => m);
   }
+  ackMail(upTo: number): void { for (const m of this.mailbox) if (m.seq <= upTo) m.read = true; }
 
   // ── implementers ──
   scriptOf(ticket: string): Step[] {
@@ -154,13 +157,13 @@ export class DummyWorld {
     const deps = this.sc.repo.tickets.find((t) => t.id === ticket)?.dependsOn ?? [];
     return [{ do: 'code' }, { do: 'nominate' }, ...deps.map((): Step => ({ do: 'connect' }))];
   }
-  spawnImpl(ticket: string, branch: string): { ws: string; held: boolean } {
+  spawnImpl(ticket: string, branch: string, briefHasLoop = false): { ws: string; held: boolean } {
     const ws = `ws-${branch}`;
     if (!this.branches.has(branch)) this.branches.set(branch, this.branches.get(this.target)!);
     const hold = this.sc.admissionHold?.[ticket] ?? 0;
     const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], fired: new Set(), heldTicks: hold };
     this.impls.set(ws, a);
-    this.ev('spawn', ticket, { ws, branch, held: hold > 0 });
+    this.ev('spawn', ticket, { ws, branch, held: hold > 0, briefHasLoop });
     if (!hold) this.begin(a);
     return { ws, held: hold > 0 };
   }
@@ -184,7 +187,7 @@ export class DummyWorld {
     const evt = this.sc.events?.[a.ticket]?.find((e) => e.at === step.do && !a.fired.has(`${e.at}:${e.kind}`));
     if (evt) {
       a.fired.add(`${evt.at}:${evt.kind}`);
-      if (evt.kind === 'no-safe-option') { this.post('ask', a.ws, a.ticket, `${'NO SAFE OPTION: '}the spec of ${a.ticket} contradicts itself`); this.ev('ask', a.ticket, { kind: 'no-safe-option', ws: a.ws }); a.mode = 'stuck'; return; }
+      if (evt.kind === 'no-safe-option') { this.post('ask', a.ws, a.ticket, evt.body ?? `${'NO SAFE OPTION: '}the spec of ${a.ticket} contradicts itself`); this.ev('ask', a.ticket, { kind: 'no-safe-option', ws: a.ws }); a.mode = 'stuck'; return; }
       this.post('ask', a.ws, a.ticket, `Which of the two names should ${a.ticket} use?`); this.ev('ask', a.ticket, { kind: 'question', ws: a.ws }); a.mode = 'asking'; return;
     }
     switch (step.do) {
@@ -303,13 +306,18 @@ export class DummyWorld {
   checks(n: number, head: string): ForgeCheck[] {
     const p = this.prs.get(n)!;
     const run = this.runFor(p, head);
-    if (this.t < run.doneAt) return CHECK_NAMES.map((name) => ({ name, status: 'pending' as const }));
+    const steps = this.sc.faults?.zeroStepCi?.includes(p.ticket) ? 0 : 3;
+    const late = this.sc.faults?.lateCheck?.[p.ticket];
+    const lint: ForgeCheck = { name: 'lint', jobId: `job-${p.n}-${p.runs.indexOf(run)}-lint`, status: 'green', steps, at: this.iso(run.startedAt) };
+    if (late !== undefined && this.t < run.startedAt + late) return [lint]; // the workflow has not registered its other checks yet
+    if (this.t < run.doneAt) return CHECK_NAMES.map((name) => (name === 'lint' ? lint : { name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: 'pending' as const }));
     const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
-    return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
+    return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
   }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
-  merge(n: number, matchHead: string): { ok: boolean; reason?: string } {
+  merge(n: number, matchHead: string, method: string): { ok: boolean; reason?: string } {
     const p = this.prs.get(n)!;
+    if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
     if (p.state === 'merged') return { ok: false, reason: 'already merged' };
     if (!sameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
@@ -339,13 +347,13 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
   const fleet: FleetPort = {
     async start(): Promise<StartResult> {
       return startRun(i.run, i.run, {
-        home: i.home, now: () => w.iso(),
+        home: i.home, now: () => w.iso(), loop: true,
         implementerLive: (id) => w.impls.has(id),
         repoPath: () => undefined,
-        spawn: async ({ name, reuseBranch }) => {
+        spawn: async ({ name, task, reuseBranch }) => {
           const ticket = i.scenario.repo.tickets.find((t) => implementerName(t.id) === name)?.id ?? ticketOfBranch(name) ?? null;
           if (!ticket) return { ok: false, error: `the dummy fleet knows no ticket for ${name}` };
-          const r = w.spawnImpl(ticket, reuseBranch ? name : name);
+          const r = w.spawnImpl(ticket, reuseBranch ? name : name, task.includes(LOOP_BRIEF));
           return { ok: true, id: r.ws, branch: name, ...(r.held ? { held: { since: w.t } } : {}) };
         },
       });
@@ -354,6 +362,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async wake(ws, text) { w.wakeImpl(ws, text); },
     async send(to, text, kind) { if (kind === 'answer') w.answerImpl(to, text); else w.ev('send', undefined, { to, kind, text }); },
     async mail() { return w.drainMail(); },
+    async ack(upTo) { w.ackMail(upTo); },
     async spawnReviewer(ticket, head) { return w.spawnReviewer(ticket, head); },
     async costOf(ticket) { return { tokens: 1000 * w.events.filter((e) => e.ticket === ticket).length }; },
   };
@@ -362,7 +371,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async prState(n) { const p = w.prs.get(n)!; return { state: p.state, head: p.mergedHead ?? w.branches.get(p.branch)! }; },
     async checks(n, head) { return w.checks(n, head); },
     async rerun(n) { w.rerun(n); },
-    async merge(n, matchHead) { return w.merge(n, matchHead); },
+    async merge(n, matchHead, method) { return w.merge(n, matchHead, method); },
     async close(n) { const p = w.prs.get(n); if (p) w.ev('pr-close', p.ticket, { n }); },
   };
   const git: GitPort = {

@@ -6,10 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
-import { FIXED_ANSWER, LOOP_STEPS, NO_SAFE_OPTION, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
+import { FIXED_ANSWER, LOOP_STEPS, LoopKilled, NO_SAFE_OPTION, parseNoSafeOption, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
 import { applyPlan, parkTicket, pauseRun, readLoopState, recordRound, resumeRun, situationFingerprint, updateLoopState, withLoop, parkedTickets } from './fanout-loop-compat.ts';
-import { newState, sha256Hex } from './fanout-state.ts';
+import { newState, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
+import { LOOP_BRIEF, renderImplementerBrief } from './fanout-implementer-brief.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
 const load = (name: string): Scenario => parseScenario(JSON.parse(fs.readFileSync(path.join(dir, `${name}.json`), 'utf8')));
@@ -240,7 +241,7 @@ test('decision 12: killed between reading the mail and writing the nomination, t
   const home = tmp();
   const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
   let crashed = false;
-  const git = { ...d.git, async head(b: string) { if (!crashed && b === 'impl-T1' && d.world.events.some((e) => e.ev === 'mail-posted' && e.ticket === 'T1')) { crashed = true; throw new Error('killed mid-pass'); } return d.git.head(b); } };
+  const git = { ...d.git, async head(b: string) { if (!crashed && b === 'impl-T1' && d.world.events.some((e) => e.ev === 'mail-posted' && e.ticket === 'T1')) { crashed = true; throw new LoopKilled('killed mid-pass'); } return d.git.head(b); } };
   const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge: d.forge, git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
   await assert.rejects(runLoop(deps), /killed mid-pass/);
   const again = await runLoop(deps);
@@ -274,7 +275,7 @@ test('decision 12 (OPS arm): killed after openPr and before the state write, the
   const home = tmp();
   const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
   let crashed = false;
-  const forge = { ...d.forge, async openPr(i: Parameters<typeof d.forge.openPr>[0]) { const r = await d.forge.openPr(i); if (!crashed) { crashed = true; throw new Error('killed after openPr'); } return r; } };
+  const forge = { ...d.forge, async openPr(i: Parameters<typeof d.forge.openPr>[0]) { const r = await d.forge.openPr(i); if (!crashed) { crashed = true; throw new LoopKilled('killed after openPr'); } return r; } };
   const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
   await assert.rejects(runLoop(deps), /killed after openPr/);
   assert.equal(readLoopState(home, 'rts7')!.tickets.T1.pr, null, 'the crash really landed between the forge call and the state write');
@@ -296,4 +297,119 @@ test('the dummy forge hands out a NEW jobId when a check is re-run (Interface lo
   w.advance(10 * 60_000);
   const second = w.checks(n, 'a'.repeat(40)).map((c) => c.jobId);
   assert.ok(first.every((j, i) => j && j !== second[i]));
+});
+
+// ── review 605 r1 ───────────────────────────────────────────────────────────────────────────────────────────────────
+const depsOf = (home: string, d: ReturnType<typeof buildDummy>, over: Record<string, unknown> = {}, opts: Record<string, unknown> = {}) => ({ home, run: d.world.run, caller: d.world.run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000, ...opts }, ...over });
+const sc = (name: string, patch: Partial<Scenario>): Scenario => ({ ...load(name), ...patch });
+
+test('MAJOR-1: a send that throws mid-stepMail is retried next pass: the question is answered and listed ONCE', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'question', scenario: load('question') });
+  let thrown = false, answers = 0;
+  const fleet = { ...d.fleet, async send(to: string, text: string, kind: 'status' | 'answer') { if (kind === 'answer' && !thrown) { thrown = true; throw new Error('bus down'); } if (kind === 'answer') answers++; return d.fleet.send(to, text, kind); } };
+  const r = await runLoop(depsOf(home, d, { fleet }));
+  assert.equal(r.exit, 0);
+  assert.equal(answers, 1);
+  assert.equal(r.report.choices.length, 1, 'listed once: the choice was written before the first (failed) send and not again');
+});
+test('MAJOR-1: killed between the choice and the answer, the restart answers and lists the question (and the mail is acked only after)', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'question', scenario: load('question') });
+  let killed = false;
+  const fleet = { ...d.fleet, async send(to: string, text: string, kind: 'status' | 'answer') { if (kind === 'answer' && !killed) { killed = true; throw new LoopKilled('killed before the answer'); } return d.fleet.send(to, text, kind); } };
+  await assert.rejects(runLoop(depsOf(home, d, { fleet })), /killed before the answer/);
+  assert.equal(readLoopState(home, 'question')!.loop.choices.length, 1, 'the choice is durable before the answer goes out');
+  assert.ok(d.world.drainMail().some((m) => m.kind === 'ask'), 'and the mail was NOT acked: the restart is handed it again');
+  const again = await runLoop(depsOf(home, d));
+  assert.equal(again.exit, 0);
+  assert.equal(again.report.choices.length, 1);
+  assert.equal(again.report.merged.length, 7);
+  assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'T2 got its answer');
+});
+test('MAJOR-1: a NO SAFE OPTION in a batch killed before its ack is parked once on restart (not lost, not listed twice)', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'nosafe', scenario: load('nosafe') });
+  let killed = false;
+  const fleet = { ...d.fleet, async ack(n: number) { if (!killed && d.world.events.some((e) => e.ev === 'ask' && e.kind === 'no-safe-option')) { killed = true; throw new LoopKilled('killed before the ack'); } return d.fleet.ack(n); } };
+  await assert.rejects(runLoop(depsOf(home, d, { fleet })), /killed before the ack/);
+  const again = await runLoop(depsOf(home, d));
+  assert.equal(again.exit, 3);
+  assert.deepEqual(again.report.parked.map((p) => [p.ticket, p.cause]), [['T3', 'question'], ['T5', 'upstream'], ['T7', 'upstream']]);
+  assert.equal(again.report.choices.length, 1);
+});
+test('MAJOR-2: a check set that is not identical on two polls is not green — a late-registering workflow does not let a lone `lint` merge', async () => {
+  const r = await go('late-check');
+  assert.equal(r.result.exit, 0);
+  assert.ok(r.world.events.filter((e) => e.ev === 'merge').every((e) => e.ci === 'green'));
+  assert.deepEqual(r.violations, []);
+});
+test('MAJOR-2: a green that ran 0 steps is refused (the ticket is never merged)', async () => {
+  const r = await go('zero-step-ci');
+  assert.deepEqual(r.result.report.merged, ['B']);
+  assert.deepEqual(r.result.report.parked.map((p) => p.ticket), ['A']);
+  assert.ok(!r.world.events.some((e) => e.ev === 'merge' && e.ticket === 'A'));
+});
+test('MAJOR-2: the dummy forge merges by MERGE COMMIT only — a squash is refused (and the loop asks for a merge)', async () => {
+  const d = buildDummy({ home: tmp(), run: 'x', scenario: load('held') });
+  const w = d.world;
+  w.commits.set('a'.repeat(40), { parents: [], tree: 't', at: w.t });
+  w.branches.set('b', 'a'.repeat(40));
+  const n = w.openPr('b', 'T1');
+  assert.equal(w.merge(n, 'a'.repeat(40), 'squash').ok, false);
+  assert.equal(w.merge(n, 'a'.repeat(40), 'rebase').ok, false);
+  assert.equal(w.merge(n, 'a'.repeat(40), 'merge').ok, true);
+  assert.equal(w.commits.get(w.branches.get('main')!)!.parents.length, 2, 'a two-parent merge commit');
+});
+test('MINOR-1: NO SAFE OPTION is parsed fail-CLOSED (case, spacing, colon, not first line); only a body without the marker is a question', async () => {
+  for (const body of ['NO SAFE OPTION:\nthe reason', 'NO SAFE OPTION:the reason', 'NO SAFE OPTION:', 'no safe option: x', '  NO SAFE OPTION: x', 'Hello\nNO SAFE OPTION: x', 'No-Safe_Option - x']) {
+    assert.ok(parseNoSafeOption(body), body);
+    const s = sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body } as never] } });
+    const r = await runDummyLoop({ home: tmp(), scenario: s, options: { stallMs: 30 * 60_000 } });
+    assert.equal(r.result.report.parked.find((p) => p.ticket === 'T3')?.cause, 'question', body);
+    assert.equal(r.result.report.choices.filter((c) => c.rule === 'reversible-default').length, 0, `${body} was not answered with the fixed answer`);
+  }
+  assert.equal(parseNoSafeOption('Which of the two names should T3 use?'), null);
+  assert.equal(parseNoSafeOption('NO SAFE OPTION:')!.reason, '(no reason given)');
+  assert.equal(parseNoSafeOption('NO SAFE OPTION: a\nb')!.reason, 'a');
+});
+test('MINOR-2: a held start, a CI that takes hours and a reviewer that reads for hours are not a stall (4 h clock)', async () => {
+  const long = { stallMs: 4 * 3_600_000 };
+  const held = await runDummyLoop({ home: tmp(), scenario: sc('held', { admissionHold: { T2: 300 } }), options: long });
+  assert.equal(held.result.exit, 0, held.result.reason);
+  assert.equal(held.result.report.merged.length, 7);
+  const ci = await runDummyLoop({ home: tmp(), scenario: sc('slow-ci', { timing: { ciMs: 5 * 3_600_000 } }), options: long });
+  assert.equal(ci.result.exit, 0, ci.result.reason);
+  const rv = await runDummyLoop({ home: tmp(), scenario: sc('readiness', { agents: { A: { reviewer: [{ do: 'approve', afterMs: 5 * 3_600_000 }] }, B: {} } }), options: long });
+  assert.equal(rv.result.exit, 0, rv.result.reason);
+});
+test('MINOR-2: a real stall still ends the run — the reason says "stalled" (cause situation)', async () => {
+  const r = await go('changes-requested');
+  assert.match(r.result.report.parked.find((p) => p.ticket === 'T1')!.reason, /^stalled 30 min/);
+});
+test('MINOR-3: the loop section of the implementer brief — present for a loop-led run (startRun passes it), byte-identical to before otherwise', async () => {
+  const r = await go('rts7');
+  assert.ok(r.world.events.filter((e) => e.ev === 'spawn').every((e) => e.briefHasLoop === true), 'every brief the loop launched carries the loop section');
+  for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', '`## Choices`', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
+  const st = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
+  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');
+  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T1' })), 'b88073ddf1793f4e7e5254289b14f78400f52a408c2b12b7c15a942aa30aa560');
+  assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: false }), renderImplementerBrief({ state: st, ticket: 'T3' }));
+  assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: true }), `${renderImplementerBrief({ state: st, ticket: 'T3' })}\n\n${LOOP_BRIEF}`);
+  assert.ok(renderImplementerBrief({ state: { ...st, loopPlan: { at: 'x', hash: 'y', attempts: 1 } } as never, ticket: 'T3' }).endsWith(LOOP_BRIEF), 'the #604 marker (state.loopPlan) turns it on too');
+});
+test('MINOR-4 SWAP GATE (#603): while `parked` is not a TICKET_STATUS the shipped startRun respawns a parked ticket — when this fails #603 landed: delete fanout-loop-compat.ts, import its names from fanout-state.ts, flip this to "startRun skips a parked ticket"', () => {
+  assert.equal((TICKET_STATUSES as readonly string[]).includes('parked'), false);
+});
+test('MINOR-5: a port error on ONE ticket (prState, wake, openPr) is logged and retried next pass — the run still ends in a report', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
+  const hit = new Set<string>();
+  const once = (k: string): boolean => { if (hit.has(k)) return false; hit.add(k); return true; };
+  const forge = { ...d.forge, async prState(n: number) { if (n === 1 && once('prState')) throw new Error('forge 502'); return d.forge.prState(n); }, async openPr(i: Parameters<typeof d.forge.openPr>[0]) { if (i.branch === 'impl-T2' && once('openPr')) throw new Error('forge 503'); return d.forge.openPr(i); } };
+  const fleet = { ...d.fleet, async wake(ws: string, t: string) { if (ws === 'ws-impl-T3' && once('wake')) throw new Error('bus timeout'); return d.fleet.wake(ws, t); }, async spawnReviewer(t: string, h: string) { if (t === 'T4' && once('review')) throw new Error('host busy'); return d.fleet.spawnReviewer(t, h); } };
+  const r = await runLoop(depsOf(home, d, { forge, fleet }));
+  assert.equal(r.exit, 0);
+  assert.equal(r.report.merged.length, 7);
+  assert.deepEqual([...hit].sort(), ['openPr', 'prState', 'review', 'wake']);
 });
