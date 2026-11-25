@@ -669,9 +669,8 @@ test('wiring pin: index.ts routes `fanout record` and hands the bus `send` its c
   const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'index.ts'), 'utf8');
   assert.ok(src.includes("args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) :"), 'fanout record is routed');
   assert.ok(src.includes('completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId)'), 'verbSend gets the hook');
-  assert.ok(src.includes("const needsCaller = args[0] === 'review' || args[0] === 'record' ||"), 'the host is asked who the recorder is, and its answer is handed to the verb (`...(needsCaller ? { identity: hostIdentity } : {})`)');
-  assert.ok(src.includes('|| stateSetNeedsHost(args, process.env)'), 'a `state set --decide|--json` on a recording run asks the host who the caller is');
-  assert.ok(src.includes("if (args[0] === 'record' && process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session"), 'a keyed session the host cannot vouch records nothing');
+  assert.match(src, /if \(args\[0\] === 'record'\) \{[^\n]*\n\s+await settleHostIdentity\(\);\n\s+fanoutDeps\.identity = hostIdentity;\n\s+if \(process\.env\.ORCHESTRA_SESSION_KEY\?\.trim\(\) && hostIdentity\?\.source !== 'host'\) fail\('refusing to record: the host could not vouch this session/, 'the host is asked who the recorder is, its answer is handed to the verb, and a keyed session it cannot vouch records nothing');
+  assert.ok(src.includes('if (stateSetNeedsHost(args, process.env)) { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; }'), 'a `state set --decide|--json` on a recording run asks the host who the caller is');
 });
 
 test('recordReview (the pure rule): off the switch it records nothing, whoever calls — [record-off] — and a refusal never returns a state', (t) => {
