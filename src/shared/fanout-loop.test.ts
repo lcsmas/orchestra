@@ -487,3 +487,41 @@ test('r2 MAJOR-1 MUST-FAIL: a PR the forge shows no check on waits only for the 
   assert.deepEqual(r.result.report.merged, ['B']);
   assert.match(r.result.report.parked[0].reason, /A is approved but not mergeable/);
 });
+
+// ── review 605 r3: replacements are capped ─────────────────────────────────────────────────────────────────────────
+test('r3 MAJOR MUST-FAIL: a reviewer that dies every time is replaced at most `maxReplacements` times, then the ticket is parked — never 300 spawns', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: Array.from({ length: 800 }, () => ({ do: 'die' as const })) } } }), options: { ...bounded, stallMs: 30 * 60_000 } });
+  assert.equal(r.result.exit, 3);
+  assert.equal(r.world.events.filter((e) => e.ev === 'review-spawn' && e.ticket === 'T1').length, 3, '1 spawn + 2 replacements (the cap), no more');
+  assert.ok(r.result.passes < 100, `ended at pass ${r.result.passes}`);
+  const p = r.result.report.parked.find((x) => x.ticket === 'T1')!;
+  assert.deepEqual([p.cause, /^reviewer died 2 times on /.test(p.reason)], ['situation', true]);
+  assert.deepEqual(r.result.report.merged, ['T2']);
+});
+test('r3 MAJOR MUST-FAIL: an implementer that dies at once every time is replaced at most `maxReplacements` times, then parked ("implementer died N times")', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 3);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 3, '1 spawn + 2 respawns');
+  assert.ok(r.result.passes < 100, `ended at pass ${r.result.passes}`);
+  assert.match(r.result.report.parked.find((x) => x.ticket === 'T1')!.reason, /^implementer died 2 times/);
+  assert.deepEqual(r.result.report.merged, ['T2']);
+});
+test('r3: the cap is a LoopOptions field — maxReplacements 0 parks at the first death, 5 allows five replacements', async () => {
+  const die = sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }] } } });
+  const zero = await runDummyLoop({ home: tmp(), scenario: die, options: { ...bounded, maxReplacements: 0 } });
+  assert.equal(zero.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 1);
+  const five = await runDummyLoop({ home: tmp(), scenario: die, options: { ...bounded, maxReplacements: 5 } });
+  assert.equal(five.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 6);
+});
+test('r3: a replacement that WORKS is not penalised — one death then a good agent: merged, nothing parked', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }], respawn: [{ do: 'code' }, { do: 'nominate' }], reviewer: [{ do: 'die' }, { do: 'approve' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.equal(r.result.report.merged.length, 2);
+});
+test('r3 MINOR: a SECOND hold of the same ticket starts its own clock (it does not inherit the first hold\'s age)', async () => {
+  const scenario: Scenario = { version: 1, run: 'two-holds', repo: { tickets: [{ id: 'A', dependsOn: [], spec: 'spec/A.md' }, { id: 'B', dependsOn: [], spec: 'spec/B.md' }] }, admissionHold: { A: 15 }, agents: { A: { implementer: [{ do: 'code' }, { do: 'die' }], respawn: [{ do: 'code' }, { do: 'nominate' }] } } };
+  const r = await runDummyLoop({ home: tmp(), scenario, options: { stallMs: 5 * 60_000, holdMs: 25 * 60_000, maxPasses: 1500 } });
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.deepEqual([...r.result.report.merged].sort(), ['A', 'B']);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'A' && e.held === true).length, 2, 'two hold episodes');
+});

@@ -34,6 +34,8 @@ export interface LoopOptions {
   requiredChecks?: string[];
   /** how long an Admission hold may stay unreleased before it stops counting as a wait (default 12 h) */
   holdMs?: number;
+  /** how many times a dead reviewer / implementer is replaced per (ticket, head) before the ticket is parked (default 2): a replacement is progress, so an agent that dies every time must not feed the stall clock for ever */
+  maxReplacements?: number;
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -124,21 +126,43 @@ export async function stepPlan(ctx: LoopCtx): Promise<void> {
   if (planMissing(after).length) throw new LoopRefusal('run-plan-incomplete', `the plan is incomplete: ${planMissing(after).join('; ')}`);
 }
 
-/** Decision 3: every implementer starts at once, on the frozen names. A start held by Admission is a wait, never a fault. */
+/** Decision 3: every implementer starts at once, on the frozen names. A start held by Admission is a wait, never a fault. A dead implementer is replaced at most `maxReplacements` times per (ticket, head), then the ticket is parked. */
 export async function stepStart(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
   const s = ctx.st();
-  const heldNow = activeTickets(s).filter((id) => s.loop.held[id] && !s.tickets[id].head);
   const holdMs = deps.options.holdMs ?? 12 * 3_600_000;
-  for (const id of heldNow) ctx.waitOn(`held:${id}`, holdMs); // an Admission hold reported earlier, not released yet: a wait, not a stall — for `holdMs`
-  if (Object.keys(s.loop.held).some((id) => !heldNow.includes(id))) ctx.update((x) => ({ ...x, loop: { ...x.loop, held: Object.fromEntries(Object.entries(x.loop.held).filter(([id]) => heldNow.includes(id))) } }));
-  const need = activeTickets(s).filter((id) => { const t = s.tickets[id]; return (t.status === 'todo' || t.status === 'started') && (!t.implementer || !deps.fleet.live(t.implementer)); });
+  const cap = deps.options.maxReplacements ?? 2;
+  // a hold EPISODE is over once the ticket shows a head other than the one it had when it was held: its entry and its age go
+  const heldNow = activeTickets(s).filter((id) => id in s.loop.held && (s.tickets[id].head ?? '') === s.loop.held[id]);
+  for (const id of heldNow) ctx.waitOn(`held:${id}`, holdMs); // reported earlier, not released yet: a wait, not a stall — for `holdMs`
+  const over = Object.keys(s.loop.held).filter((id) => !heldNow.includes(id));
+  if (over.length) ctx.update((x) => ({ ...x, loop: { ...x.loop, held: Object.fromEntries(Object.entries(x.loop.held).filter(([id]) => !over.includes(id))), busySince: Object.fromEntries(Object.entries(x.loop.busySince).filter(([k]) => !over.some((id) => k === `held:${id}`))) } }));
+  let need = activeTickets(s).filter((id) => { const t = s.tickets[id]; return (t.status === 'todo' || t.status === 'started') && (!t.implementer || !deps.fleet.live(t.implementer)); });
+  for (const id of need) { // an implementer that is recorded but gone is a DEATH: replaced up to the cap
+    const t = s.tickets[id];
+    if (!t.implementer) continue;
+    const n = s.loop.replaced[`impl:${id}:${t.head ?? ''}`] ?? 0;
+    if (n >= cap) {
+      const reason = `implementer died ${n} times (replaced ${n}×, last at ${t.head ? t.head.slice(0, 12) : 'no head'})`;
+      ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));
+      ctx.did(`parked ${id}: ${reason}`);
+    }
+  }
+  const s2 = ctx.st();
+  need = need.filter((id) => !isParked(s2, id));
   if (!need.length) return;
   if (deps.options.startCheck && !Object.values(s.tickets).some((t) => t.start)) await stepStartCheck(ctx);
   const r = await deps.fleet.start();
   for (const x of r.started) ctx.did(`started ${x.ticket} (${x.ws})`);
-  for (const x of r.respawned) ctx.did(`restarted ${x.ticket} (${x.ws})`);
-  if (r.waiting.length) ctx.update((y) => ({ ...y, loop: { ...y.loop, held: { ...y.loop.held, ...Object.fromEntries(r.waiting.map((x) => [x.ticket, true as const])) } } }));
+  for (const x of r.respawned) {
+    const key = `impl:${x.ticket}:${s.tickets[x.ticket]?.head ?? ''}`;
+    ctx.update((y) => ({ ...y, loop: { ...y.loop, replaced: { ...y.loop.replaced, [key]: (y.loop.replaced[key] ?? 0) + 1 } } }));
+    ctx.did(`restarted ${x.ticket} (${x.ws})`);
+  }
+  if (r.waiting.length) {
+    const fresh = r.waiting; // `startRun` reports a held start exactly once, in the call that spawned it: each report is a NEW hold episode and starts its own clock
+    ctx.update((y) => ({ ...y, loop: { ...y.loop, held: { ...y.loop.held, ...Object.fromEntries(r.waiting.map((x) => [x.ticket, y.tickets[x.ticket]?.head ?? ''])) }, busySince: Object.fromEntries(Object.entries(y.loop.busySince).filter(([k]) => !fresh.some((x) => k === `held:${x.ticket}`))) } }));
+  }
   for (const x of r.waiting) { ctx.waitOn(`held:${x.ticket}`, holdMs); ctx.note(`waiting: ${x.ticket} — ${x.why}`); } // an Admission hold is a wait, not a fault, and not a stall
   for (const x of r.failed) ctx.note(`could not start ${x.ticket}: ${x.error} (tried again next pass)`);
 }
@@ -262,6 +286,18 @@ export async function stepReview(ctx: LoopCtx): Promise<void> {
     const last = t.review?.briefs[t.review.briefs.length - 1];
     const rv = t.review?.reviewer?.id;
     if (last && sameSha(last.head, t.head) && (!rv || deps.fleet.live(rv))) { ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs); return; } // briefed on this head and the reviewer is alive: it owes its record (bounded); a DEAD reviewer is replaced below
+    const key = `rev:${id}:${t.head}`;
+    const died = last && sameSha(last.head, t.head) ? ctx.st().loop.replaced[key] ?? 0 : 0; // the briefed reviewer is gone: a replacement, up to the cap
+    if (last && sameSha(last.head, t.head)) {
+      const cap = deps.options.maxReplacements ?? 2;
+      if (died >= cap) {
+        const reason = `reviewer died ${died} times on ${t.head.slice(0, 12)}`;
+        ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));
+        ctx.did(`parked ${id}: ${reason}`);
+        return;
+      }
+      ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));
+    }
     const r = await deps.fleet.spawnReviewer(id, t.head);
     ctx.did(`reviewer ${r.id} reads ${id} at ${t.head.slice(0, 12)}`);
   });

@@ -25,15 +25,17 @@ export interface LoopSide {
   handled: Record<string, 'listed' | 'done'>;
   /** #605-only: head → the check names the last poll saw (the "identical on two polls" guard of decideDelivery). */
   checksSeen: Record<string, string>;
-  /** #605-only: tickets whose start Admission held (reported once by `fleet.start()`); busy for the stall clock until the ticket shows a head. */
-  held: Record<string, true>;
+  /** #605-only: tickets whose start Admission held (reported by `fleet.start()`) → the head the ticket had when it was held ('' = none); the hold is over once the ticket shows another head. One entry = one hold EPISODE. */
+  held: Record<string, string>;
   /** #605-only: wait key (`held:T`, `review:T:head`, `ci:T:head`) → when the loop first waited on it; a wait counts as progress only for a bounded time. */
   busySince: Record<string, string>;
+  /** #605-only: `rev:T:head` / `impl:T:head` → how many times a dead reviewer / implementer was replaced for that head (the cap of `LoopOptions.maxReplacements`). */
+  replaced: Record<string, number>;
 }
 /** `FanoutState` + the sidecar. The frozen helpers below take and return this. */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {} });
+const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {} });
 const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function readSide(file: string): LoopSide {

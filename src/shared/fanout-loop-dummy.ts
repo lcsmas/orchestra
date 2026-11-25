@@ -14,14 +14,14 @@ import { applyTicketPatch, FanoutStateError, stateFile } from './fanout-state.ts
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
-export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'wait'] as const;
+export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
 export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
 export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string }
 export interface Scenario {
   version: 1;
   run?: string;
   repo: { tickets: Array<{ id: string; dependsOn: string[]; spec: string }>; plan?: Plan };
-  agents?: Record<string, { implementer?: Step[]; reviewer?: Step[] }>;
+  agents?: Record<string, { implementer?: Step[]; /** the script of the 2nd+ implementer of the ticket (a respawn); default = `implementer` */ respawn?: Step[]; reviewer?: Step[] }>;
   ci?: Record<string, string[]>;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
@@ -49,6 +49,7 @@ export function parseScenario(raw: unknown): Scenario {
     if (!ids.has(tk)) return bad(`agents.${tk} is not a ticket`);
     if (!isObj(a)) return bad(`agents.${tk} must be an object`);
     steps(a.implementer, STEP_KINDS_IMPLEMENTER, `agents.${tk}.implementer`);
+    steps(a.respawn, STEP_KINDS_IMPLEMENTER, `agents.${tk}.respawn`);
     steps(a.reviewer, STEP_KINDS_REVIEWER, `agents.${tk}.reviewer`);
   }
   for (const [tk, list] of Object.entries(isObj(raw.ci) ? raw.ci : {})) {
@@ -152,8 +153,11 @@ export class DummyWorld {
   ackMail(upTo: number): void { for (const m of this.mailbox) if (m.seq <= upTo) m.read = true; }
 
   // ── implementers ──
+  private spawns = new Map<string, number>();
   scriptOf(ticket: string): Step[] {
-    const given = this.sc.agents?.[ticket]?.implementer;
+    const nth = (this.spawns.get(ticket) ?? 0) + 1;
+    this.spawns.set(ticket, nth);
+    const given = (nth > 1 ? this.sc.agents?.[ticket]?.respawn : undefined) ?? this.sc.agents?.[ticket]?.implementer;
     if (given) return given;
     const deps = this.sc.repo.tickets.find((t) => t.id === ticket)?.dependsOn ?? [];
     return [{ do: 'code' }, { do: 'nominate' }, ...deps.map((): Step => ({ do: 'connect' }))];
@@ -198,6 +202,7 @@ export class DummyWorld {
         if (!deps.every(merged)) { this.after(30_000, () => this.runStep(a)); return; }
         break;
       }
+      case 'die': { this.impls.delete(a.ws); this.ev('impl-died', a.ticket, { ws: a.ws }); return; }
       case 'code': { const c = this.commitOn(a, `code${a.idx}`); this.ev('code', a.ticket, { head: c }); break; }
       case 'fix': { const c = this.commitOn(a, `fix${a.idx}`); this.ev('fix', a.ticket, { head: c }); this.post('status', a.ws, a.ticket, `fixed — head ${c}`); break; }
       case 'nominate': {
