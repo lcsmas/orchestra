@@ -30,7 +30,7 @@ function mkHome(t: { after: (fn: () => void) => void }): string {
   return d;
 }
 /** `ws` = the workspace id the CLI believes it is (env); `id` = what the host vouched (undefined = nothing). */
-const deps = (home: string, ws = 'r1', identity: IdentityResolution | null = HOST, stdin = ''): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, cwd: home, runner: mergeBase, now: () => NOW, readStdin: () => stdin, identity });
+const deps = (home: string, ws = 'r1', identity: IdentityResolution | null = HOST, stdin = ''): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, cwd: home, runner: mergeBase, now: () => NOW, readStdin: () => stdin, identity, vouchedCaller: identity?.source === 'host' ? ws : null }); // vouchedCaller = what index.ts derives for `--run-decision` (#587 PR A)
 const set = (d: FanoutDeps, ...a: string[]) => runFanout(['state', 'set', '--run', 'r1', ...a], d);
 const review = (d: FanoutDeps, ...a: string[]) => runReview(['--run', 'r1', ...a], d);
 const load = (home: string): FanoutState => readState(stateFile(home, 'r1'))!;
@@ -422,11 +422,9 @@ test('decideReview + reviewerName (pure): the table of who does what', () => {
   assert.equal(reviewerName('T 1/é', 2), 'review-T-1-e-r2');
 });
 
-test('index.ts wiring (source pin): `fanout review` and `state set --run-decision` ask the HOST who the caller is and hand the answer to the verb; the dispatch reaches runReview', () => {
+test('index.ts wiring (source pin): `fanout review` asks the HOST who the caller is and hands the answer to the verb; the dispatch reaches runReview', () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, 'index.ts'), 'utf8');
-  assert.match(src, /const needsCaller = args\[0\] === 'review' \|\| \(args\[0\] === 'state' && args\[1\] === 'set' && args\.includes\('--run-decision'\)\);/);
-  assert.ok(src.includes('if (needsCaller) await settleHostIdentity();'), 'the host is asked before the verb runs');
-  assert.ok(src.includes('...(needsCaller ? { identity: hostIdentity } : {})'), 'its answer is handed to the verb');
+  assert.ok(src.includes("if (args[0] === 'review') { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; }"), 'the host is asked, and its answer handed to the verb');
   assert.ok(src.includes("args[0] === 'review' ? runReview(args.slice(1), fanoutDeps)"), 'the verb is dispatched');
 });
 
@@ -478,15 +476,11 @@ test('state set --run-decision: the coordinator\'s words, numbered, by the host-
     [d, ['T1', '--run-decision', 'x'], /run-level/, 1],
     [d, ['--run-decision', 'x', '--status', 'started'], /run-level/, 1],
     [deps(home, 'impl-1', HOST), ['--run-decision', 'x'], /^\[decision-caller\] only the run's coordinator/, 2],
-    [deps(home, 'r1', null), ['--run-decision', 'x'], /^\[decision-caller\] the host did not vouch/, 2],
-    [deps(home, 'r1', UNVOUCHED), ['--run-decision', 'x'], /^\[decision-caller\]/, 2],
+    [deps(home, 'r1', null), ['--run-decision', 'x'], /^\[decision-caller\].*the host could not vouch/, 2],
+    [deps(home, 'r1', UNVOUCHED), ['--run-decision', 'x'], /^\[decision-caller\].*the host could not vouch/, 2],
   ];
   for (const [dd, a, re, code] of refused) { const r = set(dd, ...a); assert.equal(r.code, code, a.join(' ')); assert.match(r.stderr, re, a.join(' ')); }
   assert.equal(load(home).decisions!.length, 3, 'no refused call wrote');
-  // without a host answer in the deps (a unit / embedded call) PR A's env-id rule stays: the coordinator's own id passes, a worker's is refused
-  const { identity: _i, ...bare } = deps(home);
-  assert.equal(set(bare as FanoutDeps, '--run-decision', 'bare ok').code, 0);
-  assert.match(set({ ...bare, env: { ...bare.env, ORCHESTRA_WS_ID: 'impl-1' } } as FanoutDeps, '--run-decision', 'x').stderr, /^\[decision-caller\]/);
 });
 
 test('fanout-brief-common (PR A\'s ONE renderer both briefs share): decisions verbatim and numbered, the switch line with every switch, the interfaces with their change reasons, the hash — deterministic', (t) => {
