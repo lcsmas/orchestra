@@ -1469,8 +1469,11 @@ export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Rec
 // ── #603 (ledger #613 FROZEN NAMES v1): parked / rounds / choices / pause — parsers, then the pure transitions ───────────────────
 const parkRefusal = (code: string, detail: string): SeatRefusal => new SeatRefusal(code, detail);
 const HEX_FP = /^[0-9a-f]{8,64}$/;
+/** A reason / check name over its bound is CUT (`max - 1` characters + `…`), never refused: the loop's decision to park or pause must land (the full text lives in the agent's PR body). */
+const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 export const PARK_REASON_MAX = 1000;
 export const CHOICE_TEXT_MAX = 2000;
+export const PAUSE_CHECK_MAX = 300;
 export const CHOICES_MAX = 500;
 function parkOf(v: unknown, where: string): ParkRecord {
   if (!isObj(v)) throw new FanoutStateError(`${where}: parked must be {cause, reason, at}`);
@@ -1488,12 +1491,15 @@ function parkOf(v: unknown, where: string): ParkRecord {
 }
 function roundsOf(v: unknown, where: string): RoundRecord[] {
   if (!Array.isArray(v)) throw new FanoutStateError(`${where}: rounds must be a list of {n, fingerprint, at}`);
+  let last = 0;
   return v.map((r, i) => {
     if (!isObj(r)) throw new FanoutStateError(`${where}: rounds[${i}] must be an object`);
     refuseUnknown(r, new Set(['n', 'fingerprint', 'at']), `${where} rounds[${i}]`);
-    if (r.n !== i + 1) throw new FanoutStateError(`${where}: rounds[${i}].n must be ${i + 1}`);
+    // `n` is the round's own number (the review's, v1.1): any positive integer, strictly increasing — rounds with no review of their own (an approve, a connect) leave gaps
+    if (!Number.isInteger(r.n) || (r.n as number) <= last) throw new FanoutStateError(`${where}: rounds[${i}].n must be an integer greater than ${last} (rounds are numbered by review, strictly increasing)`);
+    last = r.n as number;
     if (typeof r.fingerprint !== 'string' || !HEX_FP.test(r.fingerprint)) throw new FanoutStateError(`${where}: rounds[${i}].fingerprint must be lowercase hex (a situationFingerprint)`);
-    return { n: i + 1, fingerprint: r.fingerprint, at: isoOf(r.at, `${where}: rounds[${i}].at`) };
+    return { n: r.n as number, fingerprint: r.fingerprint, at: isoOf(r.at, `${where}: rounds[${i}].at`) };
   });
 }
 function choiceFieldOf(v: unknown, where: string): string {
@@ -1520,7 +1526,7 @@ function pauseOf(v: unknown): PauseRecord {
   refuseUnknown(v, new Set(['at', 'reason', 'check', 'prs']), 'pause');
   if (typeof v.reason !== 'string' || !v.reason.trim()) throw parkRefusal('pause-no-reason', 'pause has no reason — a paused run says why');
   const reason = lineOf(v.reason, 'pause.reason', PARK_REASON_MAX);
-  if (v.check !== null && (typeof v.check !== 'string' || !v.check.trim() || v.check.length > 300 || CTRL.test(v.check))) throw new FanoutStateError('pause.check must be a check name or null');
+  if (v.check !== null && (typeof v.check !== 'string' || !v.check.trim() || v.check.length > PAUSE_CHECK_MAX || CTRL.test(v.check))) throw new FanoutStateError('pause.check must be a check name or null');
   if (!Array.isArray(v.prs) || v.prs.some((n) => !Number.isInteger(n) || (n as number) < 1)) throw new FanoutStateError('pause.prs must be a list of pull request numbers');
   return { at: isoOf(v.at, 'pause.at'), reason, check: v.check as string | null, prs: [...new Set(v.prs as number[])].sort((a, b) => a - b) };
 }
@@ -1558,7 +1564,7 @@ function withoutPark(t: TicketState, now: string): TicketState {
 export function parkTicket(state: FanoutState, id: string, input: { cause: ParkCause | string; reason: string }, now: string): FanoutState {
   if (typeof input.cause !== 'string' || !(PARK_CAUSES as readonly string[]).includes(input.cause) || input.cause === 'upstream') throw parkRefusal('park-bad-cause', `${id}: --park needs a cause: ${PARK_CAUSES.filter((c) => c !== 'upstream').join('|')} (got ${JSON.stringify(input.cause)}${input.cause === 'upstream' ? '; `upstream` is given to the dependents of a parked ticket, never chosen' : ''})`);
   if (typeof input.reason !== 'string' || !input.reason.trim()) throw parkRefusal('park-no-reason', `${id}: a parked ticket needs a reason (--park-reason <text>): the closing report prints it`);
-  const reason = lineOf(input.reason.trim(), `${id}: park reason`, PARK_REASON_MAX);
+  const reason = lineOf(clip(input.reason.trim(), PARK_REASON_MAX), `${id}: park reason`, PARK_REASON_MAX);
   const t = state.tickets[id];
   if (!t) throw parkRefusal('park-unknown-ticket', `${id}: no such ticket in run ${state.run} — nothing to park`);
   if (t.status === 'merged') throw parkRefusal('park-merged', `${id} is merged — a merged ticket is done, not parked`);
@@ -1622,14 +1628,17 @@ export function parkedTickets(state: FanoutState): Array<{ ticket: string } & Pa
 export function situationFingerprint(input: { openFindings: string[]; tree: string }): string {
   return crypto.createHash('sha256').update(`findings:${[...input.openFindings].sort().join(',')}\ntree:${input.tree}`).digest('hex');
 }
-/** Record one round of `id`'s findings. `repeat` = this fingerprint was ALREADY recorded for the ticket (the second sighting parks it). One call per round: recording the same round twice is a repeat. */
-export function recordRound(state: FanoutState, id: string, fingerprint: string, now: string): { state: FanoutState; repeat: boolean } {
+/** Record one round of `id`'s findings. `repeat` = this fingerprint was ALREADY recorded for the ticket (the second sighting parks it). One call per round: recording the same round twice is a repeat.
+ *  `n` = the round's number when the caller has one (the review's); absent = the last number + 1 (= length + 1 while the rounds are contiguous). It must exceed the last recorded `n`. */
+export function recordRound(state: FanoutState, id: string, fingerprint: string, now: string, n?: number): { state: FanoutState; repeat: boolean } {
   if (typeof fingerprint !== 'string' || !HEX_FP.test(fingerprint)) throw new FanoutStateError(`${id}: a round fingerprint is lowercase hex (situationFingerprint) — got ${JSON.stringify(fingerprint)}`);
   const t = state.tickets[id];
   if (!t) throw new FanoutStateError(`${id}: no such ticket in run ${state.run} — no round to record`);
   const rounds = t.rounds ?? [];
   const repeat = rounds.some((r) => r.fingerprint === fingerprint);
-  return { state: { ...state, tickets: { ...state.tickets, [id]: { ...t, rounds: [...rounds, { n: rounds.length + 1, fingerprint, at: now }], updatedAt: now } }, updatedAt: now }, repeat };
+  const last = rounds.length ? rounds[rounds.length - 1].n : 0;
+  if (n !== undefined && (!Number.isInteger(n) || n <= last)) throw new FanoutStateError(`${id}: round number ${n} must be an integer greater than the last recorded round (${last})`);
+  return { state: { ...state, tickets: { ...state.tickets, [id]: { ...t, rounds: [...rounds, { n: n ?? last + 1, fingerprint, at: now }], updatedAt: now } }, updatedAt: now }, repeat };
 }
 
 /** Record what an agent chose when it asked (`[choice-bad]` on a blank / unknown-rule / oversized entry). Numbered from 1, never edited. */
@@ -1643,7 +1652,7 @@ export function recordChoice(state: FanoutState, entry: { ticket: string; questi
 /** Pause the run: the same check is red on several pull requests, which is the environment, not a ticket. `[pause-no-reason]` without a reason. A second call while paused keeps the first record and adds the pull requests. */
 export function pauseRun(state: FanoutState, input: { reason: string; check: string | null; prs: number[] }, now: string): FanoutState {
   if (typeof input.reason !== 'string' || !input.reason.trim()) throw parkRefusal('pause-no-reason', 'a pause needs a reason (--pause <reason>): the report says why the run stopped');
-  const next = pauseOf({ at: now, reason: input.reason.trim(), check: input.check ?? null, prs: input.prs ?? [] });
+  const next = pauseOf({ at: now, reason: clip(input.reason.trim(), PARK_REASON_MAX), check: typeof input.check === 'string' ? clip(input.check, PAUSE_CHECK_MAX) : input.check ?? null, prs: input.prs ?? [] });
   if (state.pause) return { ...state, pause: { ...state.pause, prs: [...new Set([...state.pause.prs, ...next.prs])].sort((a, b) => a - b) }, updatedAt: now };
   return { ...state, pause: next, updatedAt: now };
 }
@@ -1780,7 +1789,7 @@ function realityMerged(r: TicketReality | undefined, status: TicketStatus, targe
 
 /** The head a MERGED ticket landed at when it differs from the head its pass/approve verdict covered; null = no such mismatch. */
 function ungatedMergeHead(t: TicketState, r: TicketReality | undefined, rm: boolean | undefined): string | null {
-  if (rm !== true || (t.status !== 'gated' && t.status !== 'merged') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
+  if (rm !== true || (t.status !== 'gated' && t.status !== 'merged' && t.status !== 'parked') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
   const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
   const mergedTree = r?.pr?.state === 'MERGED' ? r.prTree : r?.branchTree;
   return mergedHead && !sameContent(mergedHead, mergedTree, t.head, t.tree) ? mergedHead : null; // #512: the verdict's tree merged = covered
@@ -1816,6 +1825,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       add({ ticket: id, kind: 'reality-merged-state-not', detail: `reality says merged (${r?.pr?.state === 'MERGED' ? `PR #${t.pr ?? '?'} MERGED` : `tip in origin/${state.target}`}) but state says ${t.status}` });
       // An ungated-head merge is NOT recorded: the divergence must persist across resumes until the merged tree is re-gated.
       if (!ungated) writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged' }, why: 'reality merged' });
+      else if (t.status === 'parked') writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged', head: ungated, tree: (r?.pr?.state === 'MERGED' ? r.prTree : r?.branchTree) ?? null, verdict: 'none' }, why: `a parked ticket merged by hand at ${ungated.slice(0, 8)} (adopted at the head that really merged; the verdict was on another)` }); // #603 r1: the divergence below stays
     }
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
@@ -1916,7 +1926,7 @@ export function applyWriteBack(state: FanoutState, writeBack: ReconcilePlan['wri
     // Skip a ticket changed since the plan read it (`seen`), and never lower one this batch already recorded as merged.
     if (!cur || state.tickets[w.ticket].updatedAt !== w.seen || mergedHere.has(w.ticket)) continue;
     const { parked: _parked, ...curRest } = cur; // #603: reality moved the ticket on (e.g. merged by hand): its parking ends with it
-    tickets[w.ticket] = { ...(w.patch.status ? curRest : cur), ...w.patch, ...(w.patch.status === 'merged' ? { mergedHead: cur.mergedHead ?? cur.head, mergedTree: cur.mergedHead ? cur.mergedTree : cur.tree } : {}), updatedAt: now };
+    tickets[w.ticket] = { ...(w.patch.status ? curRest : cur), ...w.patch, ...(w.patch.status === 'merged' ? { mergedHead: cur.mergedHead ?? w.patch.head ?? cur.head, mergedTree: cur.mergedHead ? cur.mergedTree : w.patch.tree !== undefined ? w.patch.tree : cur.tree } : {}), updatedAt: now };
     if (w.patch.status === 'merged') mergedHere.add(w.ticket);
   }
   return parseState(releaseUpstreamParks({ ...state, tickets, updatedAt: now, reconciledAt: now }, now));

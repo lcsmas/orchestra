@@ -232,6 +232,30 @@ test('a parked ticket merged by hand (its PR is MERGED on the target) is ADOPTED
   assert.equal(statuses(after), 'A:merged B:started C:started D:started E:started');
 });
 
+test('a parked ticket merged by hand at ANOTHER head than its verdict covered: adopted at the head that really merged, and the merged-at-ungated-head divergence stays', () => {
+  const H1 = 'a'.repeat(40), H2 = 'b'.repeat(40);
+  let s = applyTicketPatch(world(), 'A', { status: 'gated', head: H1, verdict: 'approve', pr: 4 }, T);
+  s = parkTicket(s, 'A', { cause: 'ci', reason: 'red' }, T);
+  const merged: Reality = { A: { branchHead: null, mergedIntoTarget: true, pr: { state: 'MERGED', headRefOid: H2, baseRefName: 'master' }, prTree: 'c'.repeat(40) } };
+  const plan = reconcile(s, merged);
+  assert.ok(plan.divergences.some((d) => d.ticket === 'A' && d.kind === 'merged-at-ungated-head'), 'the alarm a park must not hide');
+  assert.ok(plan.divergences.some((d) => d.ticket === 'A' && d.kind === 'reality-merged-state-not'));
+  const after = applyWriteBack(s, plan.writeBack, T2);
+  assert.equal(after.tickets.A.status, 'merged');
+  assert.equal(after.tickets.A.mergedHead, H2, 'the head that really merged, not the head the verdict covered');
+  assert.equal(after.tickets.A.mergedTree, 'c'.repeat(40));
+  assert.equal(after.tickets.A.head, H2);
+  assert.equal(after.tickets.A.verdict, 'none');
+  assert.equal(after.tickets.A.parked, undefined);
+  assert.equal(statuses(after), 'A:merged B:started C:started D:started E:started', 'the dependents it held are released');
+  // dependents do not count it merged in the same pass (the re-gate is still owed)
+  assert.notEqual(plan.tickets.B.class, 'startable');
+  // control: merged at the SAME head the verdict covered → plain adoption, no ungated alarm, mergedHead = that head
+  const same = reconcile(s, { A: { ...merged.A, pr: { state: 'MERGED', headRefOid: H1, baseRefName: 'master' } } });
+  assert.ok(!same.divergences.some((d) => d.kind === 'merged-at-ungated-head'));
+  assert.equal(applyWriteBack(s, same.writeBack, T2).tickets.A.mergedHead, H1);
+});
+
 test('MUST-FAIL: parked is in no merged set — a dependent of a parked ticket is not startable on its word', () => {
   const s = parkTicket(world(), 'A', { cause: 'ci', reason: 'red' }, T);
   const plan = reconcile(s, {});
@@ -267,9 +291,49 @@ test('recordRound: the first sighting is not a repeat, the SAME fingerprint agai
 test('MUST-FAIL: a round on an unknown ticket or with a non-hex fingerprint is refused; a hand-edited round list is refused', () => {
   assert.throws(() => recordRound(world(), 'ghost', FP1, T), /no such ticket/);
   for (const bad of ['', 'xyz', 'ABCDEF12', FP1 + 'ff']) assert.throws(() => recordRound(world(), 'A', bad, T), /lowercase hex/, bad);
-  const raw = JSON.parse(JSON.stringify(recordRound(world(), 'A', FP1, T).state));
-  raw.tickets.A.rounds[0].n = 2;
-  assert.throws(() => parseState(raw), /rounds\[0\]\.n must be 1/);
+  const raw = JSON.parse(JSON.stringify(recordRound(recordRound(world(), 'A', FP1, T).state, 'A', FP2, T).state));
+  raw.tickets.A.rounds[0].n = 0; // not positive
+  assert.throws(() => parseState(raw), /rounds\[0\]\.n must be an integer greater than 0/);
+  raw.tickets.A.rounds[0].n = 3; raw.tickets.A.rounds[1].n = 3; // not strictly increasing
+  assert.throws(() => parseState(raw), /rounds\[1\]\.n must be an integer greater than 3/);
+  raw.tickets.A.rounds[0].n = 1.5;
+  assert.throws(() => parseState(raw), /rounds\[0\]\.n must be an integer/);
+});
+
+test('rounds are numbered by REVIEW (ledger v1.1): gaps are read back — #606\'s pattern (round 2 first, then 4) survives parseState; recordRound takes the number, or last + 1', () => {
+  let s = recordRound(world(), 'A', FP1, T, 2).state; // review 1 approved (no round), review 2 asked for changes
+  s = recordRound(s, 'A', FP2, T, 4).state;
+  assert.deepEqual(s.tickets.A.rounds!.map((r) => r.n), [2, 4]);
+  assert.deepEqual(roundtrip(s), s, 'read back through parseState — a refusal here bricks the run');
+  const next = recordRound(s, 'A', FP1, T2); // no number given: last + 1, still valid
+  assert.deepEqual(next.state.tickets.A.rounds!.map((r) => r.n), [2, 4, 5]);
+  assert.equal(next.repeat, true);
+  assert.deepEqual(roundtrip(next.state), next.state);
+  // the #606 shape: record with the default number, then overwrite the last round's n by the review's
+  const raw = JSON.parse(JSON.stringify(recordRound(world(), 'B', FP1, T).state));
+  raw.tickets.B.rounds[0].n = 2;
+  assert.equal(parseState(raw).tickets.B.rounds![0].n, 2);
+  // MUST-FAIL: a number that does not exceed the last one is refused (and nothing is recorded)
+  for (const bad of [4, 3, 0, -1, 4.5]) assert.throws(() => recordRound(s, 'A', FP2, T, bad), /must be an integer greater than the last recorded round \(4\)/, String(bad));
+});
+
+test('a reason / check name over its bound is CUT, never refused: the park and the pause land', () => {
+  const long = `NO SAFE OPTION: ${'x'.repeat(1500)}`;
+  const s = parkTicket(world(), 'D', { cause: 'question', reason: long }, T);
+  assert.equal(s.tickets.D.status, 'parked');
+  assert.equal(s.tickets.D.parked!.reason.length, 1000);
+  assert.ok(s.tickets.D.parked!.reason.endsWith('…') && s.tickets.D.parked!.reason.startsWith('NO SAFE OPTION: xx'));
+  assert.deepEqual(roundtrip(s), s);
+  const exact = 'y'.repeat(1000);
+  assert.equal(parkTicket(world(), 'D', { cause: 'ci', reason: exact }, T).tickets.D.parked!.reason, exact, 'a reason at the bound is kept whole');
+  const p = pauseRun(world(), { reason: 'z'.repeat(1200), check: 'c'.repeat(400), prs: [1] }, T);
+  assert.equal(p.pause!.reason.length, 1000);
+  assert.equal(p.pause!.check!.length, 300);
+  assert.ok(p.pause!.check!.endsWith('…'));
+  assert.deepEqual(roundtrip(p), p);
+  assert.equal(pauseRun(world(), { reason: 'r', check: 'c'.repeat(300), prs: [] }, T).pause!.check, 'c'.repeat(300));
+  // control: a control character is still refused (printable text only)
+  assert.throws(() => parkTicket(world(), 'D', { cause: 'ci', reason: 'bad\x00text' }, T), FanoutStateError);
 });
 
 // ── choices ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
