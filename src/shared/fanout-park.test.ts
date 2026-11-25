@@ -153,6 +153,29 @@ test('unpark returns the ticket to work and releases the dependents it held; one
   assert.deepEqual(roundtrip(all), all);
 });
 
+test('unparking a ticket whose upstream is STILL parked leaves it held by that upstream, never live under it (and it goes back to work when the upstream does)', () => {
+  let s = parkTicket(world(), 'B', { cause: 'question', reason: 'own question' }, T);
+  s = parkTicket(s, 'A', { cause: 'ci', reason: 'red' }, T);
+  assert.equal(s.tickets.B.parked?.cause, 'question', 'B keeps its own cause');
+  const b = unparkTicket(s, 'B', T2);
+  assert.equal(b.tickets.B.status, 'parked');
+  assert.deepEqual(b.tickets.B.parked, { cause: 'upstream', reason: 'blocked by A', at: T2, blockedBy: 'A' });
+  assert.equal(reconcile(b, {}).tickets.B.class, 'parked');
+  assert.equal(statuses(unparkTicket(b, 'A', T2)), 'A:started B:started C:started D:started E:started');
+  assert.deepEqual(roundtrip(b), b);
+});
+
+test('unpark clears the verdict of the work that was set aside; a parked ticket with an open PR whose head moved is not a divergence', () => {
+  let s = applyTicketPatch(world(), 'D', { status: 'gated', head: SHA_A, verdict: 'pass', pr: 5 }, T);
+  s = parkTicket(s, 'D', { cause: 'ci', reason: 'red' }, T);
+  const moved: Reality = { D: { branchHead: SHA_A, mergedIntoTarget: false, pr: { state: 'OPEN', headRefOid: 'f'.repeat(40), baseRefName: 'master' } } };
+  assert.deepEqual(reconcile(s, moved).divergences, []);
+  assert.equal(reconcile(applyTicketPatch(s, 'D', { unpark: true }, T), moved).divergences.some((d) => d.kind === 'pr-head-moved'), true, 'control: once unparked the same reality IS a divergence');
+  const back = unparkTicket(s, 'D', T2);
+  assert.equal(back.tickets.D.status, 'started');
+  assert.equal(back.tickets.D.verdict, 'none');
+});
+
 test('unpark goes back to todo when the ticket never had work; MUST-FAIL: not parked / parked only upstream / a status move on a parked ticket', () => {
   let s = newState('r', { now: T });
   s = applyTicketPatch(s, 'X', { dependsOn: [], status: 'todo' }, T);

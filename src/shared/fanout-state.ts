@@ -1549,7 +1549,7 @@ function dependentsOf(state: FanoutState, id: string): string[] {
 const restoredStatus = (t: TicketState): TicketStatus => (t.branch || t.head || t.implementer || t.start ? 'started' : 'todo');
 function withoutPark(t: TicketState, now: string): TicketState {
   const { parked: _p, ...rest } = t;
-  return { ...rest, status: restoredStatus(t), updatedAt: now };
+  return { ...rest, status: restoredStatus(t), verdict: 'none', updatedAt: now }; // a verdict spoke about work that was set aside: it is read again from the next round
 }
 
 /** `parkTicket` — set `id` aside with a `cause` (question | situation | ci) and a written `reason`; EVERY ticket that depends on it, directly or not, is parked `upstream` with `blocked by <id>`.
@@ -1592,7 +1592,11 @@ export function unparkTicket(state: FanoutState, id: string, now: string): Fanou
   if (!t) throw new FanoutStateError(`${id}: no such ticket in run ${state.run}`);
   if (t.status !== 'parked' || !t.parked) throw new FanoutStateError(`${id} is not parked (status ${t.status})`);
   if (t.parked.cause === 'upstream') throw new FanoutStateError(`${id} is parked because ${t.parked.blockedBy} is — unpark ${t.parked.blockedBy} (its dependents follow)`);
-  return releaseUpstreamParks({ ...state, tickets: { ...state.tickets, [id]: withoutPark(t, now) }, updatedAt: now }, now);
+  const freed = releaseUpstreamParks({ ...state, tickets: { ...state.tickets, [id]: withoutPark(t, now) }, updatedAt: now }, now);
+  const held = [...upstreamClosure(freed, id)].filter((u) => freed.tickets[u]?.status === 'parked' && freed.tickets[u].parked?.cause !== 'upstream').sort();
+  if (held.length === 0) return freed;
+  const me = freed.tickets[id]; // its own cause is gone but a ticket it depends on is still parked: it goes back to being held by that one, never live under a parked upstream
+  return { ...freed, tickets: { ...freed.tickets, [id]: { ...me, status: 'parked', parked: { cause: 'upstream', reason: `blocked by ${held[0]}`, at: now, blockedBy: held[0] } } }, updatedAt: now };
 }
 /** `state set <ticket> --park … / --unpark / --status parked`: the patch forms of the two transitions (alone: no other key but `status: parked` with a park). */
 function applyParkPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string): FanoutState {
@@ -1828,7 +1832,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       } else {
         writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null }, why: 'head moved' });
       }
-    } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && r.pr.state === 'OPEN') {
+    } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && t.status !== 'parked' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
     }
     if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped' && !accepted) {
