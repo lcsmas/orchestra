@@ -17,6 +17,7 @@ if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw n
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules')); // the bus test opens a real SQLite file
+if (fs.existsSync(path.join(ROOT, 'build', 'bus-abi'))) fs.symlinkSync(path.join(ROOT, 'build'), path.join(scratch, 'build')); // CI leaves node_modules on the ELECTRON build: under node the per-ABI binding of build/bus-abi (src/main/bus-binding.ts, probed from cwd) is the only one that opens (the 39/41 of PR #596)
 const TESTS = ['src/cli/fanout-record.test.ts'].map((f) => path.join(scratch, f));
 
 function run() {
