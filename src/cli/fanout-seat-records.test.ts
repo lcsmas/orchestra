@@ -172,6 +172,8 @@ test('on: --interface reads stdin (-) and a file; --interface-reason without --i
   const d2 = { ...d, readStdin: () => 'from stdin' };
   assert.equal(set(d2, 'B', '--interface', '-').code, 0);
   assert.equal(load(d).tickets.B.iface!.text, 'from stdin');
+  assert.equal(set(d, 'C', '--interface', 'a\r\nb').code, 0);
+  assert.equal(load(d).tickets.C.iface!.text, 'a\nb', 'stored with LF endings (a CRLF text is the same text)');
   const r = set(d, 'A', '--interface-reason', 'why');
   assert.equal(r.code, 1);
   assert.match(r.stderr, /--interface-reason needs --interface/);
@@ -223,6 +225,7 @@ test('on: gated on an old version is refused too; a change AFTER the nomination 
   assert.equal(r0.code, 0, r0.stderr);
   assert.equal(load(d).tickets.B.status, 'nominated');
   set(d, 'A', '--interface', 'table t(id, name, age)', '--interface-reason', 'age');
+  refused(set(d, 'B', '--head', 'd'.repeat(40)), 'interface-stale'); // a new head on a nominated candidate that follows an old version is not a way round
   refused(set(d, 'B', '--status', 'gated'), 'interface-stale');
   assert.equal(set(d, 'B', '--follows', 'A=2', '--status', 'gated').code, 0);
 });
@@ -230,9 +233,17 @@ test('on: gated on an old version is refused too; a change AFTER the nomination 
 test('on: --follows is checked — an upstream not in dependsOn, with no interface, or a version that does not exist is refused; dropping a dependency drops its follow', (t) => {
   const d = onRun(t);
   refused(set(d, 'B', '--follows', 'Z=1'), 'follows-invalid');
+  set(d, 'Q', '--depends-on', 'none', '--interface', 'q');
+  refused(set(d, 'B', '--follows', 'Q=1'), 'follows-invalid'); // Q holds an interface but B does not depend on it
+  assert.match(sh(d, 'set', '--run', 'r1', 'B', '--follows', 'Q=1').stderr, /not in dependsOn/);
   refused(set(d, 'B', '--follows', 'A=9'), 'follows-invalid');
   assert.equal(set(d, 'B', '--follows', 'A=1').code, 0);
   assert.deepEqual(load(d).tickets.B.follows, { A: 1 });
+  set(d, 'B', '--depends-on', 'A,Q');
+  assert.equal(set(d, 'B', '--follows', 'Q=1').code, 0);
+  assert.deepEqual(load(d).tickets.B.follows, { A: 1, Q: 1 }, 'a second --follows adds to the first');
+  set(d, 'B', '--depends-on', 'A');
+  assert.deepEqual(load(d).tickets.B.follows, { A: 1 }, 'a follow on a dependency that is gone goes with it');
   assert.equal(set(d, 'B', '--depends-on', 'none').code, 0);
   assert.equal(load(d).tickets.B.follows, undefined, 'a follow on a dropped dependency goes with it');
   set(d, 'C', '--depends-on', 'B');
@@ -250,7 +261,9 @@ test('on: a follow-up added after the first spawn is listed as missing until dec
   set(d, 'B', '--depends-on', 'none');
   assert.equal(set(d, '--plan', 'A,B,F').code, 2, '--plan after the first spawn is refused');
   refused(set(d, '--plan', 'A,B,F'), 'plan-frozen');
+  assert.equal(set(d, '--plan', '').code, 1, 'an empty plan is refused');
   assert.equal(set(d, '--plan-add', 'F').code, 0, '--plan-add works after the first spawn');
+  for (const st of ['started', 'nominated', 'gated']) refused(set(d, 'B', '--status', st, '--head', H1), 'plan-incomplete'); // the run has spawned: each of the three still asks
   assert.deepEqual(load(d).plan!.tickets, ['A', 'B', 'F']);
   let r = set(d, 'B', '--status', 'started');
   refused(r, 'plan-incomplete');
@@ -283,6 +296,15 @@ test('on: a dependent starts against the held interface (no --frozen-interface n
   const r = set(d, 'B', '--status', 'started');
   assert.equal(r.code, 0, `A is unmerged but holds an interface: ${r.stderr}`);
   assert.match(show(d), /ready \(todo, not started\): A\n/);
+});
+
+test('on: a declared todo ticket is not ready while the plan is incomplete', (t) => {
+  const d = onRun(t, { declared: false });
+  set(d, '--plan', 'A,B,C'); set(d, 'A', '--depends-on', 'none'); set(d, 'B', '--depends-on', 'none');
+  assert.deepEqual(readyTickets(load(d)), [], 'C is in the plan and not in the state');
+  assert.match(show(d), /ready \(todo, not started\): none — the plan is incomplete/);
+  set(d, 'C', '--depends-on', 'none');
+  assert.deepEqual(readyTickets(load(d)), ['A', 'B', 'C']);
 });
 
 test('on: `state show` says what is missing and that nothing is ready while the plan is incomplete', (t) => {

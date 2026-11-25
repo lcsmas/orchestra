@@ -67,6 +67,8 @@
     "test:fanout-tree-verdict-mutants": "node scripts/e2e-fanout-tree-verdict.mjs --mutants",
     "test:fanout-switches": "node scripts/e2e-fanout-switches.mjs",
     "test:fanout-switches-mutants": "node scripts/e2e-fanout-switches.mjs --mutants",
+    "test:fanout-seat-records": "node scripts/e2e-fanout-seat-records.mjs",
+    "test:fanout-seat-records-mutants": "node scripts/e2e-fanout-seat-records.mjs --mutants",
     "test:fanout-checks": "node scripts/e2e-fanout-checks.mjs",
     "test:fanout-checks-mutants": "node scripts/e2e-fanout-checks.mjs --mutants",
     "test:acceptance-forced": "node scripts/e2e-fanout-acceptance-forced.mjs",

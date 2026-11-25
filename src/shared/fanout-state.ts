@@ -344,10 +344,10 @@ export function planMissing(state: FanoutState): string[] {
 }
 /** #587 (I2) — the current interface of ticket `id` (null = none, or no such ticket). */
 export const interfaceOf = (state: FanoutState, id: string): TicketState['iface'] => state.tickets[id]?.iface ?? null;
-/** #587 — the tickets that can be started now: todo, dependencies declared, every dependency merged or holding an interface, and the plan complete. */
+/** #587 — the tickets that can be started now: todo, with the plan complete (which means their dependencies are declared and each dependency holds an interface — a held interface is what a dependent starts against). */
 export function readyTickets(state: FanoutState): string[] {
   if (planMissing(state).length) return [];
-  return Object.entries(state.tickets).filter(([, t]) => t.status === 'todo' && t.depsDeclared === true && t.dependsOn.every((d) => state.tickets[d]?.status === 'merged' || state.tickets[d]?.iface)).map(([id]) => id);
+  return Object.entries(state.tickets).filter(([, t]) => t.status === 'todo').map(([id]) => id);
 }
 /** The reasons of the changes a dependent that follows `v` of an interface has not seen: `v1→v2: <reason>; v2→v3: …`. */
 function ifaceChanges(f: Iface, v: number): string {
