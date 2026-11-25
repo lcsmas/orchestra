@@ -7,7 +7,7 @@ import { createLiveForge, type MergeAnswer } from '../shared/fanout-loop-live-fo
 import { createLiveGit, type Exec, type ExecResult } from '../shared/fanout-loop-live-git.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from '../shared/fanout-loop.ts';
 import { tokensOfFiles, transcriptFilesIn, workspacesOfTicket } from '../shared/fanout-report.ts';
-import { readState, stateFile } from '../shared/fanout-state.ts';
+import { SeatRefusal, readState, stateFile } from '../shared/fanout-state.ts';
 import { deliver, realDeps, recordedStateFor, upstreamsFromState, verifierSwitchFromState, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState } from './fanout-acceptance.ts';
 import { followUpFromState } from './fanout-followup.ts';
@@ -50,6 +50,7 @@ export function mergeThroughDeliver(i: { home: string; run: string; log: (l: str
     const [ticket, t] = entry;
     const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, { ...deliverDepsFor(i.home), ...i.deps, log: i.log });
     const r = out.result;
+    if (r.pr !== undefined && r.pr !== n) return { ok: false, reason: 'pr-mismatch', detail: `deliver acted on pull request #${r.pr} for branch ${t.branch}, the loop tracks #${n}` }; // deliver finds its PR by branch: never report another PR's merge as this one's
     if (out.exit === 0 && (r.verdict === 'merged' || r.verdict === 'already-merged')) return { ok: true };
     return { ok: false, reason: String(r.reason ?? r.verdict), ...(r.detail ? { detail: r.detail } : {}) };
   };
@@ -61,9 +62,13 @@ export async function runLive(i: LiveRunInput): Promise<LoopResult> {
   const cli: Cli = (args) => exec(process.execPath, [cliJs, ...args], { cwd: i.cwd });
   const git = createLiveGit({ git: (args) => exec('git', args, { cwd: i.cwd }) });
   const existing = readState(stateFile(i.home, i.run));
-  const target = existing?.target ?? i.options.target ?? (await (async () => { const r = await exec('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: i.cwd }); return r.code === 0 ? r.stdout.trim().replace(/^origin\//, '') : 'main'; })());
+  const target = existing?.target ?? i.options.target ?? (await (async () => {
+    const r = await exec('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: i.cwd });
+    if (r.code !== 0 || !r.stdout.trim()) throw new SeatRefusal('run-target', 'cannot tell the default branch of this repository (no refs/remotes/origin/HEAD): `git remote set-head origin -a` first — the loop never guesses the branch it merges into');
+    return r.stdout.trim().replace(/^origin\//, '');
+  })());
   const readNow = () => readState(stateFile(i.home, i.run));
-  const forge = createLiveForge({ gh: (args) => exec('gh', args, { cwd: i.cwd }), ...(existing?.repo ? { repo: existing.repo } : {}), deliver: mergeThroughDeliver({ home: i.home, run: i.run, log: i.log }) });
+  const forge = createLiveForge({ gh: (args) => exec('gh', args, { cwd: i.cwd }), branchHead: (b) => git.head(b), ...(existing?.repo ? { repo: existing.repo } : {}), deliver: mergeThroughDeliver({ home: i.home, run: i.run, log: i.log }) });
   const key = i.env.ORCHESTRA_SESSION_KEY?.trim() || undefined;
   const fleet = await createLiveFleet({
     run: i.run, caller: i.caller, cli, host: i.host, readState: readNow, key,
@@ -84,6 +89,7 @@ export async function runLive(i: LiveRunInput): Promise<LoopResult> {
     log: i.log,
     options: { ...DEFAULT_OPTIONS, ...i.options, target },
   });
-  await fleet.close(); // only after a COMPLETE pass: a loop that crashed mid-pass leaves its lot unacked, and the next start reads it again
+  // only after a COMPLETE pass: a loop that crashed — or ended on a refusal (exit 2) — mid-pass leaves its lot unacked, and the next start reads it again
+  if (result.exit !== 2) await fleet.close().catch((e: unknown) => i.log(`could not ack the last lot (it will be read again): ${e instanceof Error ? e.message : String(e)}`));
   return result;
 }

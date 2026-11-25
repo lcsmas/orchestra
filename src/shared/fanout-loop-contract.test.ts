@@ -2,6 +2,8 @@
 // (real git in a temp repo + a bare remote; a fake `gh` speaking the real binary's shapes; the dummy fleet behind a fake `orchestra` CLI + host). The arms are written ONCE against a small harness; each harness runs the same list.
 // Every arm that matters also has its MUST-FAIL twin: the same arm run on a deliberately broken port must throw (an arm that cannot fail proves nothing). Differences that are real (the dummy drains its mailbox, the live bus replays an
 // unacked lot; only the live forge refuses through `deliver`) are asserted in the live-only block at the end, named as such.
+// LIMIT, stated: the live FleetPort arms run behind a FAKE `orchestra` CLI that delegates `fanout start` / `fanout review` to the dummy's real `startRun` / reviewer host path — they prove the port's parsing, argv and ack protocol, not that the shipped
+// verbs hold "never two implementers" (the dummy and the verbs share `startRun`; the mail protocol is run on the REAL bus in src/cli/fanout-loop-live-bus.test.ts).
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -87,22 +89,22 @@ const gitArms: Array<[string, (h: GitH) => Promise<void>]> = [
   }],
   ['emptyBranch: a branch holding nothing over its base, idempotent; deleteBranch removes it and a missing one is fine', async (h) => {
     const mainHead = (await h.port.head('main'))!;
-    const e = await h.port.emptyBranch('probe-1', 'main');
+    const e = await h.port.emptyBranch('orchestra-start-check-1', 'main');
     assert.equal(await h.port.tree(e.head), await h.port.tree(mainHead), 'no content of its own');
-    assert.equal(await h.port.head('probe-1'), e.head);
-    assert.equal((await h.port.emptyBranch('probe-1', 'main')).head, e.head, 'a second call adopts the branch');
-    await h.port.deleteBranch('probe-1');
-    assert.equal(await h.port.head('probe-1'), null);
-    await h.port.deleteBranch('probe-1');
+    assert.equal(await h.port.head('orchestra-start-check-1'), e.head);
+    assert.equal((await h.port.emptyBranch('orchestra-start-check-1', 'main')).head, e.head, 'a second call adopts the branch');
+    await h.port.deleteBranch('orchestra-start-check-1');
+    assert.equal(await h.port.head('orchestra-start-check-1'), null);
+    await h.port.deleteBranch('orchestra-start-check-1');
   }],
 ];
-const brokenGit = (p: GitPort): GitPort => ({ ...p, head: async (b) => (await p.head(b)) ?? (await p.head('main')), isMerged: async () => true, tree: async (s) => s });
+const brokenGit = (p: GitPort): GitPort => ({ ...p, head: async (b) => (await p.head(b)) ?? (await p.head('main')), isMerged: async () => true, tree: async (s) => s, emptyBranch: async (_b, base) => ({ head: (await p.head(base))! }) });
 
 for (const [label, mk] of [['dummy', dummyGit], ['live', liveGit]] as const) {
   for (const [name, arm] of gitArms) test(`GitPort [${label}] ${name}`, async () => { await arm(mk()); });
 }
 test('GitPort MUST-FAIL: the arms fail on a port that answers main for an unknown branch / says everything is merged / echoes the sha as its tree', async () => {
-  for (const mk of [dummyGit, liveGit]) for (const [name, arm] of gitArms.slice(0, 3)) { const h = mk(); await mustFail(name, { ...h, port: brokenGit(h.port) }, arm); }
+  for (const mk of [dummyGit, liveGit]) for (const [name, arm] of gitArms) { const h = mk(); await mustFail(name, { ...h, port: brokenGit(h.port) }, arm); }
 });
 
 // ════════════════════════════════════════ ForgePort ════════════════════════════════════════
@@ -129,7 +131,7 @@ function dummyForge(): ForgeH {
 function liveForge(deliver?: Parameters<typeof createLiveForge>[0]['deliver']): ForgeH & { fake: FakeForge } {
   const fake = new FakeForge();
   return {
-    name: 'live', fake, port: createLiveForge({ gh: fake.gh, deliver }),
+    name: 'live', fake, port: createLiveForge({ gh: fake.gh, deliver, bareMerge: deliver ? undefined : true, sleep: async (ms) => { fake.advance(ms); }, branchHead: async (b) => fake.heads.get(b) ?? null }),
     branch: (b) => fake.push(b, sha40()),
     commit: (b) => fake.push(b, sha40()),
     ci: (b, r) => { fake.script.set(b, r); },
@@ -427,4 +429,76 @@ test('the fake gh knows exactly the verbs the port uses (an unknown call fails l
   const f = new FakeForge();
   assert.equal((await f.gh(['api', 'x'])).code, 1);
   assert.deepEqual(CHECKS, ['build', 'test', 'lint']);
+});
+
+// ── live git: the local-vs-origin rule, the probe's safety ──
+function pushedRepo(): { port: GitPort; commitLocal(b: string): string; commitRemoteOnly(b: string): string; push(b: string): void; sh: (...a: string[]) => string; broken: GitPort } {
+  const root = tmp(); const bare = path.join(root, 'r.git'); const work = path.join(root, 'w'); const other = path.join(root, 'o');
+  const sh = (cwd: string) => (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], { cwd, encoding: 'utf8' }).trim();
+  fs.mkdirSync(bare); sh(bare)('init', '--bare', '--quiet'); fs.mkdirSync(work); const w = sh(work); w('init', '--quiet'); w('remote', 'add', 'origin', bare);
+  fs.writeFileSync(path.join(work, 'f'), '0\n'); w('add', '.'); w('commit', '--quiet', '-m', 'root'); w('push', '--quiet', 'origin', 'main');
+  w('remote', 'set-head', 'origin', 'main');
+  let n = 0;
+  const git = (hideLocal: boolean) => (args: string[]): Promise<ExecResult> => { const r = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...(hideLocal ? args.map((a) => a.replace(/^refs\/heads\//, 'refs/hidden/')) : args)], { cwd: work, encoding: 'utf8' }); return Promise.resolve({ code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr }); };
+  const commit = (cwd: string, b: string): string => { const x = sh(cwd); const has = x('branch', '--list', b); x('switch', '--quiet', ...(has ? [b] : ['-c', b, 'main'])); fs.writeFileSync(path.join(cwd, `g${++n}`), `${n}\n`); x('add', '.'); x('commit', '--quiet', '-m', `c${n}`); return x('rev-parse', 'HEAD'); };
+  return {
+    port: createLiveGit({ git: git(false) }), broken: createLiveGit({ git: git(true) }), sh: w,
+    commitLocal: (b) => commit(work, b),
+    push: (b) => { w('push', '--quiet', 'origin', `${b}:${b}`); },
+    commitRemoteOnly: (b) => { sh(root)('clone', '--quiet', bare, 'o'); const x = sh(other); x('switch', '--quiet', b); fs.writeFileSync(path.join(other, `h${++n}`), 'r\n'); x('add', '.'); x('commit', '--quiet', '-m', 'remote'); x('push', '--quiet', 'origin', b); return x('rev-parse', 'HEAD'); },
+  };
+}
+const localOriginArm = async (r: ReturnType<typeof pushedRepo>): Promise<void> => {
+  const c1 = r.commitLocal('b1'); r.push('b1');
+  assert.equal(await r.port.head('b1'), c1, 'pushed, same on both sides');
+  const c2 = r.commitLocal('b1');
+  assert.equal(await r.port.head('b1'), c2, 'a local commit not pushed yet: LOCAL wins (nothing is pushed)');
+  r.push('b1');
+  const c3 = r.commitRemoteOnly('b1');
+  assert.equal(await r.port.head('b1'), c3, 'the remote is ahead of the local branch: ORIGIN wins');
+};
+test('live git: local refs win while nothing is pushed, origin once it is ahead', async () => { await localOriginArm(pushedRepo()); });
+test('live git MUST-FAIL: a port that cannot see local branches fails the arm (the rule is exercised, not assumed)', async () => { const r = pushedRepo(); await mustFail('local/origin', { ...r, port: r.broken }, localOriginArm); });
+test('live git: a stale probe (the base moved since a killed start check) is REPLACED, a still-empty one adopted; only probe names are created / deleted', async () => {
+  const r = pushedRepo();
+  const probe = 'orchestra-start-check-abc';
+  const e1 = await r.port.emptyBranch(probe, 'main');
+  assert.equal((await r.port.emptyBranch(probe, 'main')).head, e1.head, 'still empty over the base: adopted');
+  r.commitLocal('main'); r.sh('push', '--quiet', 'origin', 'main'); // main moves on the remote
+  const e2 = await r.port.emptyBranch(probe, 'main');
+  assert.notEqual(e2.head, e1.head, 'stale probe replaced');
+  assert.equal(await r.port.tree(e2.head), await r.port.tree((await r.port.head('main'))!), 'empty over the CURRENT main');
+  await assert.rejects(r.port.emptyBranch('feature-x', 'main'), /refusing a probe branch/);
+  await assert.rejects(r.port.deleteBranch('main'), /only the start check's probe/);
+  r.commitLocal('main'); // an UNPUSHED local commit must not travel with the probe
+  const e3 = await r.port.emptyBranch('orchestra-start-check-def', 'main');
+  assert.equal(await r.port.tree(e3.head), await r.port.tree(r.sh('rev-parse', 'origin/main')), 'cut from origin/main, not from local main');
+});
+
+// ── live forge: the reused branch name, a re-run into a running run, the missing deliver ──
+test('live forge: an old MERGED pull request of a reused branch name is not adopted for the new head; the same head is', async () => {
+  const h = liveForge();
+  const old = h.branch('T1');
+  const first = await open(h, 'T1');
+  await h.settle();
+  await h.port.merge(first.n, old);
+  assert.equal((await open(h, 'T1')).n, first.n, 'the branch still sits on the merged head: the merged PR is the answer');
+  h.commit('T1'); // the branch is reused: new commits
+  const second = await open(h, 'T1');
+  assert.notEqual(second.n, first.n, 'a new PR for the new head');
+});
+test('live forge: a re-run waits for the OTHER jobs of the run to finish (gh refuses a re-run of a running run) instead of ending the loop', async () => {
+  const h = liveForge();
+  h.ci('T1', ['red:test', 'green']);
+  const head = h.branch('T1');
+  const { n } = await open(h, 'T1');
+  h.fake.advance(240_000 + 1); // done
+  const red = (await h.port.checks(n, head)).find((c) => c.status === 'red')!;
+  h.fake.runs[0].doneAt = h.fake.clock + 30_000; // a sibling job is still running: the run is not completed
+  await h.port.rerun(n, [red.name]); // waits (its injected sleep advances the fake clock) then re-runs
+  assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'rerun').length, 1);
+});
+test('live forge: with neither `deliver` nor the rigs\' bareMerge, merge REFUSES to run (no default path around deliver)', async () => {
+  const p = createLiveForge({ gh: new FakeForge().gh });
+  await assert.rejects(p.merge(1, sha40()), /no `deliver` wired/);
 });

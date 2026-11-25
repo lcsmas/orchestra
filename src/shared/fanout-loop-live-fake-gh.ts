@@ -126,6 +126,7 @@ export class FakeForge {
     if (a === 'run' && b === 'rerun') {
       const run = this.runs.find((r) => String(r.id) === args[2]);
       if (!run || !args.includes('--failed')) return this.no('run rerun: unsupported here (only `--failed` of a known run)');
+      if (this.clock < run.doneAt) return this.no(`run ${run.id} is still in progress; it cannot be re-run until it has completed`);
       const pr = this.prs.get(run.n)!;
       const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
       const result = this.nextResult(pr.branch);

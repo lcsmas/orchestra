@@ -79,6 +79,17 @@ test('MUST-FAIL: the head moved after the approval → refused, nothing merged',
 test('MUST-FAIL control: the bare fallback (no deliver wired) merges a ticket with NO verdict — which is why production never takes it', async () => {
   const r = await rig({ approve: false });
   r.fake.advance(300_000);
-  const bare = createLiveForge({ gh: r.fake.gh });
+  const bare = createLiveForge({ gh: r.fake.gh, bareMerge: true });
   assert.deepEqual(await bare.merge(r.n, r.head), { ok: true });
+});
+test('MUST-FAIL: deliver acted on another pull request of the branch (the tracked one is closed) → "pr-mismatch", never reported as this PR\'s merge', async () => {
+  const r = await rig({ approve: true });
+  r.fake.advance(300_000);
+  await r.forge.close(r.n); // the tracked PR #1 is closed …
+  const again = (await r.fake.gh(['pr', 'create', '--head', 'T1', '--base', 'main', '--title', 'T1: again'])).stdout; // … and a second one is open on the same branch
+  assert.match(again, /\/pull\/2/);
+  r.fake.advance(300_000);
+  const a = await r.forge.merge(r.n, r.head);
+  assert.deepEqual([a.ok, a.reason], [false, 'pr-mismatch'], JSON.stringify(a));
+  assert.equal((await r.fake.gh(['pr', 'view', '2', '--json', 'state'])).stdout.includes('MERGED'), false, 'nothing merged under the loop\'s feet');
 });

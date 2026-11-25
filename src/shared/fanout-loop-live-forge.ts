@@ -3,6 +3,7 @@
 // only the fallback of a rig that has no run state; the CLI (src/cli/fanout-run-live.ts) never uses it.
 import type { ForgeCheck, ForgePort } from './fanout-loop-ports.ts';
 import type { ExecResult } from './fanout-loop-live-git.ts';
+import { FanoutStateError } from './fanout-state.ts';
 import { classifyMergeFailure, normaliseRollupItem, parseActionsJobUrl, type RollupItem } from './fanout-deliver.ts';
 
 export type Gh = (args: string[]) => Promise<ExecResult>;
@@ -12,8 +13,16 @@ export interface LiveForgeDeps {
   gh: Gh;
   /** `owner/name`; absent = the repository of the working directory. */
   repo?: string;
-  /** The merge, through the shipped `deliver` (production). `reason` = deliver's refusal reason (`head-moved`, `ci-red`, `no-verdict`, …). */
+  /** The merge, through the shipped `deliver` (production). `reason` = deliver's refusal reason (`head-moved`, `ci-red`, `record-missing`, …). */
   deliver?: (i: { n: number; head: string }) => Promise<MergeAnswer>;
+  /** Rigs only: merge with a bare `gh pr merge --merge --match-head-commit` (NO review / CI / upstream gate). Without `deliver` AND without this, `merge` refuses to run. */
+  bareMerge?: true;
+  /** The branch's current head (the git port's `head`): a MERGED pull request is adopted by `openPr` only when it is THIS head's (a reused branch name with an old merged PR gets a new one). */
+  branchHead?: (branch: string) => Promise<string | null>;
+  /** Pauses (re-run waits for the run to finish). Default: real timers. */
+  sleep?: (ms: number) => Promise<void>;
+  /** A re-run needs its Actions run COMPLETED: wait this long for the run's other jobs (default 20 min, polled every 15 s). */
+  rerunWaitMs?: number;
   /** Longest log extract kept for a red check (chars). */
   extractChars?: number;
 }
@@ -21,7 +30,7 @@ export interface LiveForgeDeps {
 type Row = RollupItem & { completedAt?: string; startedAt?: string };
 const PR_STATES: Record<string, 'open' | 'merged' | 'closed'> = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
 
-export class GhError extends Error {}
+export class GhError extends FanoutStateError {}
 
 export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-check runs a re-run would touch (rig/diagnostics) */ failedRuns(n: number, names: string[]): Promise<string[]> } {
   const repoArgs = deps.repo ? ['--repo', deps.repo] : [];
@@ -69,8 +78,10 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
   return {
     failedRuns,
     async openPr({ branch, base, title }) {
-      const list = async (): Promise<Array<{ number: number; state: string }>> => json(['pr', 'list', '--head', branch, '--base', base, '--state', 'all', '--json', 'number,state', '--limit', '20', ...repoArgs]);
-      const pick = (rows: Array<{ number: number; state: string }>): number | null => (rows.find((r) => r.state === 'OPEN') ?? rows.find((r) => r.state === 'MERGED'))?.number ?? null;
+      type Row = { number: number; state: string; headRefOid?: string };
+      const list = async (): Promise<Row[]> => json(['pr', 'list', '--head', branch, '--base', base, '--state', 'all', '--json', 'number,state,headRefOid', '--limit', '20', ...repoArgs]);
+      const tip = deps.branchHead ? await deps.branchHead(branch) : null;
+      const pick = (rows: Row[]): number | null => (rows.find((r) => r.state === 'OPEN') ?? rows.find((r) => r.state === 'MERGED' && (!deps.branchHead || (tip !== null && r.headRefOid === tip))))?.number ?? null;
       const have = pick(await list());
       if (have !== null) return { n: have };
       const r = await deps.gh(['pr', 'create', '--head', branch, '--base', base, '--title', title, '--body', `Opened by \`orchestra fanout run\` for branch \`${branch}\`.`, ...repoArgs]);
@@ -105,11 +116,20 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     async rerun(n, names) {
       const runs = await failedRuns(n, names);
       if (!runs.length) throw new GhError(`no re-runnable Actions job behind ${names.join(', ') || '(no check)'} on #${n} (an external status has no run to re-run)`);
+      // GitHub re-runs a run only once it is COMPLETED: the red job's siblings may still be going — wait for them (bounded), never re-run into a refusal that would end the loop
+      const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+      for (let waited = 0; ; waited += 15_000) {
+        const v = await view(n);
+        if (!(v.statusCheckRollup ?? []).some((r) => statusOf(r) === 'pending')) break;
+        if (waited >= (deps.rerunWaitMs ?? 20 * 60_000)) throw new GhError(`#${n}: the Actions run is still in progress after ${Math.round(waited / 60_000)} min — it cannot be re-run yet`);
+        await sleep(15_000);
+      }
       for (const run of runs) await gh(['run', 'rerun', run, '--failed', ...repoArgs]); // the red jobs only
     },
 
     async merge(n, matchHead) {
       if (deps.deliver) return deps.deliver({ n, head: matchHead });
+      if (!deps.bareMerge) throw new GhError('the live forge has no `deliver` wired: a merge is never done around it (rigs pass bareMerge: true)');
       const r = await deps.gh(['pr', 'merge', String(n), '--merge', '--match-head-commit', matchHead, ...repoArgs]);
       if (r.code === 0) return { ok: true };
       return { ok: false, reason: classifyMergeFailure(r.stderr) === 'head-moved' ? 'head-moved' : 'gh-failed', detail: r.stderr.trim().slice(0, 300) };
