@@ -129,7 +129,7 @@ export function assignGroups(file: RigFile): string[][] {
 
 export const stripAnsi = (s: string): string => s.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '');
 
-export interface Counts { run: number; pass: number; fail: number; skipped: number; source: string }
+export interface Counts { run: number; pass: number; fail: number; skipped: number; source: string; /** TAP `# todo` count: a todo test is not a passing one (the ticket: 0 skipped). */ todo?: number }
 
 /** `node --test` TAP summary (`# tests 12`, `# pass 10` …). Null when the log has no summary (a truncated run is NOT a green one). */
 export function parseTapSummary(log: string): Counts | null {
@@ -141,7 +141,7 @@ export function parseTapSummary(log: string): Counts | null {
   const run = num('tests'); const pass = num('pass'); const fail = num('fail'); const skipped = num('skipped');
   if (run === null || pass === null || fail === null) return null;
   const cancelled = num('cancelled') ?? 0;
-  return { run, pass, fail: fail + cancelled, skipped: skipped ?? 0, source: 'TAP summary' };
+  return { run, pass, fail: fail + cancelled, skipped: skipped ?? 0, todo: num('todo') ?? 0, source: 'TAP summary' };
 }
 
 /** Names (with the text after `# SKIP`) of skipped tests in a TAP log. */
@@ -179,6 +179,23 @@ export function judge(exitCode: number, counts: Counts, opts: { skippedAllowed?:
   if (counts.run === 0) return { ok: false, why: 'ran 0 tests/arms (a job that runs nothing is red)' };
   if (counts.pass === 0) return { ok: false, why: 'no passing test/arm counted' };
   if (counts.fail > 0 && counts.source === 'TAP summary') return { ok: false, why: `${counts.fail} failed` };
+  if ((counts.todo ?? 0) > 0) return { ok: false, why: `${counts.todo} todo test(s) (a todo is neither a pass nor a listed skip)` };
   if (counts.skipped - (opts.skippedAllowed ?? 0) > 0) return { ok: false, why: `${counts.skipped - (opts.skippedAllowed ?? 0)} skipped (not allow-listed)` };
+  return { ok: true, why: 'ok' };
+}
+
+/** One arm of a one-arm-per-process rig (scripts/ci/each-arm.mjs). An arm's verdict is its exit code AND the last JSON line carrying an `ok` key: several rigs end `process.exit(0)`
+ *  unconditionally and print `{"arm":…,"ok":false}`; a VOID / BROKEN / not-exercised line is a measurement that did not happen. Red unless all three agree. */
+export function judgeArm(status: number | null, output: string, expectAbort?: string): { ok: boolean; why: string } {
+  const text = stripAnsi(output);
+  if (expectAbort !== undefined) return status !== 0 && text.includes(expectAbort) ? { ok: true, why: 'aborted as expected' } : { ok: false, why: `expected an abort naming "${expectAbort}"` };
+  if (status !== 0) return { ok: false, why: `exit ${status}` };
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (!l.startsWith('{') || !/"ok"\s*:/.test(l)) continue;
+    try { const o = JSON.parse(l) as { ok?: unknown }; if (o.ok === false) return { ok: false, why: 'exit 0 but the arm printed "ok":false' }; if (o.ok === true) break; } catch { /* not a verdict line */ }
+  }
+  if (lines.some((l) => VOID_RE.test(l) && !/AS EXPECTED|expect VOID/.test(l))) return { ok: false, why: 'the arm printed VOID / BROKEN / not-exercised (nothing was measured)' };
   return { ok: true, why: 'ok' };
 }

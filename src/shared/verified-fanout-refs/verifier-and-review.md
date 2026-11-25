@@ -18,12 +18,17 @@ One more agent whose only job is verification. Its brief:
   pass a broken UI. **When `orchestra fanout gate --branch <b> --into <target>
   --head <sha>` says `fullSuite: ci` and you have `ciGreenOnHead`, the PR CI
   already ran typecheck, the suite and every CI-run rig on exactly that head:
-  rerun NONE of them.** Read the CI run's summary — its LOCAL-ONLY rig list
-  is what CI cannot run — and run only the listed rigs
-  the diff touches, plus your own probes and the user-facing drive. On this
-  repo the suite job cannot be derived (its step is continue-on-error behind a verdict step): pass
-  `--require-check suite` to `fanout gate`/`deliver`. `deliver` already requires the green CI (no change: a red or pending
-  check waits or refuses, 0 checks refuses `no-checks`).
+  rerun NONE of them.** Read the CI run's summary: its LOCAL-ONLY rig list is
+  what CI cannot run, and any test it prints as *tolerated* (red on the CI
+  runner for a runner reason, listed in the repo) is NOT covered by CI — run the
+  LOCAL-ONLY rigs and those tests the diff touches, plus your own probes and the
+  user-facing drive. When the gate cannot derive the suite check (`suiteSource:
+  none`, e.g. a suite step that is `continue-on-error` behind a verdict step),
+  pin the suite job's exact name with `--require-check <name>`. A PR that edits
+  `.github/` (a new rig adds its CI-list entry) is gated with `fullSuite:
+  verifier`: the CI that ran is the candidate's own, so the suite stays yours.
+  `deliver` already requires the green CI (no change: a red or pending check
+  waits or refuses, 0 checks refuses `no-checks`).
 - Run the FULL gate checklist from the ledger per candidate — one report per
   candidate, AS A LEDGER COMMENT in the §0b format, PASS/FAIL **with the exact
   failing output or observed behaviour**, plus an explicit NOT VERIFIED list;
