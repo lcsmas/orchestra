@@ -367,3 +367,13 @@ test('#590 installer: a repo\'s OWN verified-fanout skill is never given role fi
     await assert.rejects(stat(path.join(dir, 'verified-fanout', 'roles/reviewer.md')), /ENOENT/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('#590 installer wiring: the role templates are in the HOOKS_VERSION hash (an edit reinstalls) — and the check fails on a hash without them', () => {
+  const w = readFileSync(new URL('../main/workspaces.ts', import.meta.url), 'utf8');
+  const hash = w.slice(w.indexOf('const HOOKS_VERSION'), w.indexOf('.digest('));
+  assert.ok(hash.length > 500, 'the hash source was found');
+  for (const name of ['FANOUT_REVIEWER_SKILL_TEMPLATE', 'FANOUT_IMPLEMENTER_SKILL_TEMPLATE']) {
+    assert.ok(hash.includes(name), `${name} is hashed`);
+    assert.ok(!hash.replaceAll(name, 'X').includes(name), 'the mutated hash source (name removed) fails the same check');
+  }
+});

@@ -58,6 +58,8 @@ import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanou
 import { handSpawnRefusalFor } from '../shared/fanout-start.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
+import { FANOUT_REVIEWER_SKILL_TEMPLATE } from '../shared/fanout-reviewer-skill.ts';
+import { FANOUT_IMPLEMENTER_SKILL_TEMPLATE } from '../shared/fanout-implementer-skill.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
@@ -4502,6 +4504,8 @@ const HOOKS_VERSION = createHash('sha256')
       BROWSER_SKILL,
       VERIFIED_FANOUT_SKILL,
       VERIFIED_FANOUT_SKILL_TEMPLATE, // #554: the per-switch variants (an edit to an off-only block must force the reinstall too)
+      FANOUT_REVIEWER_SKILL_TEMPLATE, // #590: the role files (seatRecords=on) — an edit must force the reinstall too
+      FANOUT_IMPLEMENTER_SKILL_TEMPLATE,
       JSON.stringify(VERIFIED_FANOUT_FILES),
       JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),
       HOOK_ACTIVITY_SUBMIT_CMD,
