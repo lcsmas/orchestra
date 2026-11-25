@@ -17,6 +17,8 @@ export interface LoopSide {
   pause: PauseInfo | null;
   /** #605-only (not in the freeze): upstream → the head the author was asked to connect to, per dependent. Asked once per (dependent, upstream, head). */
   asked: Record<string, Record<string, string>>;
+  /** #605-only: dependent → upstream → the IMPLEMENTER workspace id the ask went to (a replaced author is asked again). */
+  askedTo: Record<string, Record<string, string>>;
   /** #605-only: tickets whose implementer said it nominated, read from the mail but not yet turned into a head in the state (mail is consumed on read: this makes the hand-off from `mail` to `nominations` survive a kill). */
   signalled: Record<string, true>;
   /** #605-only: mail seq → `listed` (a question's choice is written, its answer not yet sent) | `done`. Pruned past each ack. */
@@ -29,7 +31,7 @@ export interface LoopSide {
 /** `FanoutState` + the sidecar. The frozen helpers below take and return this. */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, signalled: {}, handled: {}, checksSeen: {}, held: {} });
+const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {} });
 const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function readSide(file: string): LoopSide {
@@ -94,7 +96,7 @@ export function pauseRun(s: LoopState, p: { reason: string; check: string | null
 }
 export const resumeRun = (s: LoopState, now: string): LoopState => ({ ...s, loop: { ...s.loop, pause: null }, updatedAt: now });
 export function recordChoice(s: LoopState, e: Omit<Choice, 'n' | 'at'> & Partial<Pick<Choice, 'n' | 'at'>>, now: string): LoopState {
-  if (!e.ticket || !e.question.trim() || !e.answer.trim() || (e.rule !== 'reversible-default' && e.rule !== 'no-safe-option')) throw new SeatRefusal('choice-bad', 'a choice needs a ticket, a question, an answer and a rule');
+  if (!e.ticket || !e.question.trim() || e.question.length > 2000 || !e.answer.trim() || (e.rule !== 'reversible-default' && e.rule !== 'no-safe-option')) throw new SeatRefusal('choice-bad', 'a choice needs a ticket, a question (≤ 2000 chars), an answer and a rule');
   return { ...s, loop: { ...s.loop, choices: [...s.loop.choices, { n: s.loop.choices.length + 1, ticket: e.ticket, question: e.question, rule: e.rule, answer: e.answer, at: now }] }, updatedAt: now };
 }
 export const situationFingerprint = (i: { openFindings: string[]; tree: string }): string => sha256Hex(`findings:${[...i.openFindings].sort().join(',')}\ntree:${i.tree}`);

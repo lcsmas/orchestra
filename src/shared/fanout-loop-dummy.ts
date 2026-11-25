@@ -76,7 +76,7 @@ const sha = (label: string): string => crypto.createHash('sha1').update(label).d
 const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 interface Commit { parents: string[]; tree: string; at: number }
-interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
+interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
 interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; fired: Set<string>; heldTicks: number }
 interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
 
@@ -188,7 +188,7 @@ export class DummyWorld {
     if (evt) {
       a.fired.add(`${evt.at}:${evt.kind}`);
       if (evt.kind === 'no-safe-option') { this.post('ask', a.ws, a.ticket, evt.body ?? `${'NO SAFE OPTION: '}the spec of ${a.ticket} contradicts itself`); this.ev('ask', a.ticket, { kind: 'no-safe-option', ws: a.ws }); a.mode = 'stuck'; return; }
-      this.post('ask', a.ws, a.ticket, `Which of the two names should ${a.ticket} use?`); this.ev('ask', a.ticket, { kind: 'question', ws: a.ws }); a.mode = 'asking'; return;
+      this.post('ask', a.ws, a.ticket, evt.body ?? `Which of the two names should ${a.ticket} use?`); this.ev('ask', a.ticket, { kind: 'question', ws: a.ws }); a.mode = 'asking'; return;
     }
     switch (step.do) {
       case 'wait': {
@@ -314,12 +314,13 @@ export class DummyWorld {
     const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
     return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
   }
+  closePr(n: number): void { const p = this.prs.get(n); if (p && p.state === 'open') { p.state = 'closed'; this.ev('pr-close', p.ticket, { n }); } }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
   merge(n: number, matchHead: string, method: string): { ok: boolean; reason?: string } {
     const p = this.prs.get(n)!;
     if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
-    if (p.state === 'merged') return { ok: false, reason: 'already merged' };
+    if (p.state !== 'open') return { ok: false, reason: `the PR is ${p.state}` };
     if (!sameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
     const run = [...p.runs].reverse().find((r) => r.head === head);
     const ci = !run ? 'none' : this.t < run.doneAt ? 'pending' : run.result;
@@ -372,7 +373,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async checks(n, head) { return w.checks(n, head); },
     async rerun(n) { w.rerun(n); },
     async merge(n, matchHead, method) { return w.merge(n, matchHead, method); },
-    async close(n) { const p = w.prs.get(n); if (p) w.ev('pr-close', p.ticket, { n }); },
+    async close(n) { w.closePr(n); },
   };
   const git: GitPort = {
     async head(branch) { return w.branches.get(branch) ?? null; },

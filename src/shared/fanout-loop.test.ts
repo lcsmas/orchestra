@@ -6,10 +6,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
-import { FIXED_ANSWER, LOOP_STEPS, LoopKilled, NO_SAFE_OPTION, parseNoSafeOption, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
+import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, NO_SAFE_OPTION, parseNoSafeOption, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
-import { applyPlan, parkTicket, pauseRun, readLoopState, recordRound, resumeRun, situationFingerprint, updateLoopState, withLoop, parkedTickets } from './fanout-loop-compat.ts';
-import { newState, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
+import { applyPlan, recordChoice, parkTicket, pauseRun, readLoopState, recordRound, resumeRun, situationFingerprint, updateLoopState, withLoop, parkedTickets } from './fanout-loop-compat.ts';
+import { applyTicketPatch, newState, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
 import { LOOP_BRIEF, renderImplementerBrief } from './fanout-implementer-brief.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
@@ -412,4 +412,46 @@ test('MINOR-5: a port error on ONE ticket (prState, wake, openPr) is logged and 
   assert.equal(r.exit, 0);
   assert.equal(r.report.merged.length, 7);
   assert.deepEqual([...hit].sort(), ['openPr', 'prState', 'review', 'wake']);
+});
+
+// ── OPS round 2 ─────────────────────────────────────────────────────────────────────────────────────────────────────
+test('an agent\'s ask is cut to ASK_MAX before it is listed (recordChoice refuses longer, [choice-bad]); the run is not ended by a long question', async () => {
+  const s = sc('question', { events: { T2: [{ at: 'code', kind: 'question', body: `Which name? ${'x'.repeat(6000)}` } as never] } });
+  const r = await runDummyLoop({ home: tmp(), scenario: s, options: { stallMs: 30 * 60_000 } });
+  assert.equal(r.result.exit, 0);
+  assert.equal(r.result.report.choices.length, 1);
+  assert.equal(r.result.report.choices[0].question.length, ASK_MAX);
+  assert.throws(() => recordChoice(withLoop(newState('r', { now: 'n', switches: { seatRecords: 'on' } })), { ticket: 'T', question: 'q'.repeat(2001), rule: 'reversible-default', answer: 'a' }, 'n'), /\[choice-bad\]/);
+});
+test('the dummy forge CONTRACT: close(n) really closes — prState says closed, a merge is refused, nothing is merged', async () => {
+  const d = buildDummy({ home: tmp(), run: 'x', scenario: load('held') });
+  const w = d.world;
+  w.commits.set('a'.repeat(40), { parents: [], tree: 't', at: w.t });
+  w.branches.set('b', 'a'.repeat(40));
+  const n = w.openPr('b', 'T1');
+  assert.equal((await d.forge.prState(n)).state, 'open');
+  await d.forge.close(n);
+  assert.equal((await d.forge.prState(n)).state, 'closed');
+  const m = await d.forge.merge(n, 'a'.repeat(40), 'merge');
+  assert.equal(m.ok, false);
+  assert.match(String(m.reason), /closed/);
+  assert.ok(!w.events.some((e) => e.ev === 'merge'));
+  await d.forge.close(n);
+  assert.equal(w.events.filter((e) => e.ev === 'pr-close').length, 1, 'closing twice is one close');
+});
+test('a respawned author is asked to connect AGAIN (the ask is keyed by implementer id + head, not by head alone)', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
+  const wakes: Array<[string, string]> = [];
+  let swapped = false;
+  const fleet = { ...d.fleet,
+    live: (ws: string) => ws === 'ws-impl-T3-r2' || d.fleet.live(ws),
+    async wake(ws: string, text: string) {
+      wakes.push([ws, text.split('\n')[0]]);
+      if (!swapped && ws === 'ws-impl-T3') { swapped = true; updateLoopState(home, 'rts7', (cur) => withLoop(applyTicketPatch(cur!, 'T3', { implementer: 'ws-impl-T3-r2' }, d.now()), cur!.loop)); } // the author died and startRun respawned it
+      return d.fleet.wake(ws, text);
+    } };
+  await runLoop(depsOf(home, d, { fleet }, { maxPasses: 40 }));
+  const t3 = wakes.filter(([, l]) => l.startsWith('CONNECT T1 '));
+  assert.deepEqual(t3.map(([ws]) => ws).filter((w) => w.startsWith('ws-impl-T3')), ['ws-impl-T3', 'ws-impl-T3-r2']);
 });

@@ -15,6 +15,8 @@ export type LoopStep = (typeof LOOP_STEPS)[number];
 export const FIXED_ANSWER = 'Take the reversible option, record it under `## Choices` in your PR body, continue. Do not wait for anyone.';
 /** Decision 5: an `ask` whose FIRST line starts with this declares "no safe option" (contradictory spec, irreversible act): the ticket is parked. */
 export const NO_SAFE_OPTION = 'NO SAFE OPTION: ';
+/** An agent's ask is cut to this many chars before it is listed under `choices` (the state refuses longer). */
+export const ASK_MAX = 2000;
 
 export interface LoopOptions {
   /** The plan to apply when the state holds none (#604's file, or the dummy scenario's). null = the state must already hold a complete plan. */
@@ -166,7 +168,7 @@ export async function stepMail(ctx: LoopCtx): Promise<void> {
           } else markDone(m.seq);
           return;
         }
-        const first = m.body.split('\n')[0];
+        const first = m.body.split('\n')[0].slice(0, ASK_MAX); // `recordChoice` refuses longer text ([choice-bad]); the full text stays in the agent's PR body
         if (!h) ctx.update((x) => { const y = recordChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now()); return { ...y, loop: { ...y.loop, handled: { ...y.loop.handled, [m.seq]: 'listed' as const } } }; });
         await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');
         markDone(m.seq);
@@ -286,10 +288,10 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
       const a = ctx.approved.get(up);
       if (!u || isMerged(s, up) || !a) continue;
       const asked = s.loop.asked[id]?.[up];
-      if (asked && sameSha(asked, a.head)) continue;
+      if (asked && sameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue; // once per (dependent, upstream, head, AUTHOR): a respawned author is asked again
       if (t.builtOn[up] && sameSha(t.builtOn[up], a.head)) continue;
       await deps.fleet.wake(t.implementer, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head }));
-      ctx.update((x) => ({ ...x, loop: { ...x.loop, asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } } } }));
+      ctx.update((x) => ({ ...x, loop: { ...x.loop, asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } }, askedTo: { ...x.loop.askedTo, [id]: { ...(x.loop.askedTo[id] ?? {}), [up]: t.implementer! } } } }));
       ctx.did(`asked ${id} to connect to ${up} at ${a.head.slice(0, 12)}`);
     }
   });
