@@ -15,7 +15,7 @@ export interface StartDeps {
   /** The coordinator's checkout (the repo the implementers work in). undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; repo: string | null }) => string | undefined;
   /** #599 — the repository the worktrees are made in (`repoPath` as `repoPath` answered it): its origin remote (URL or `owner/name`; null = unknown) and its default branch (null = unknown). Absent = every run is read as same-repo (the pre-#599 rule). */
-  worktreeRepo?: (i: { run: string; repoPath: string | undefined }) => { remote: string | null; defaultBranch: string | null };
+  worktreeRepo?: (i: { run: string; repoPath: string | undefined }) => { remote: string | null; defaultBranch: string | null } | Promise<{ remote: string | null; defaultBranch: string | null }>;
   /** #599 — does `ref` resolve to a commit in the worktree repository (what `git branch <b> <ref>` needs)? Absent = no check. */
   refExists?: (i: { run: string; repoPath: string | undefined; ref: string }) => Promise<boolean>;
   /** The agent spawn: `held` = accepted but held by Admission (the workspace exists, its start is released later). `baseBranch` = the base of the worktree AND its diff / merge base: the run target when it lives in the worktree repository, ABSENT (= the repo's default branch) when the run's target is in another repository (#599). `reuseBranch` = a respawn: `name` IS the ticket's existing branch and the new worktree is put ON it (never a suffixed copy). */
@@ -101,7 +101,7 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
     const resolveBase = async (ticket: string, repo: string | null, target: string): Promise<StartBase> => {
       if (baseOf) return baseOf;
       const repoPath = deps.repoPath({ run, ticket, repo });
-      const wr = deps.worktreeRepo?.({ run, repoPath });
+      const wr = await deps.worktreeRepo?.({ run, repoPath });
       const b = startBase({ stateRepo: repo, target, worktreeRemote: wr?.remote ?? null, defaultBranch: wr?.defaultBranch ?? null });
       if (b.kind === 'same' && deps.refExists && !(await deps.refExists({ run, repoPath, ref: b.base }))) throw new SeatRefusal('start-base-missing', `the run's target branch ${b.base} does not exist in the repository the implementers work in${repoPath ? ` (${repoPath})` : ''} — create it there or fix the run's target (state init --target); nothing was started`);
       return (baseOf = b);

@@ -485,3 +485,12 @@ test('#599 host op `start` carries the worktree-repo wiring to startRun: a cross
   assert.ok(!no.ok && no.error.startsWith('[start-base-missing] ') && /feat\/none/.test(no.error), JSON.stringify(no));
   assert.equal(b.f.calls.length, 0);
 });
+
+test('#599 worktreeRepo may answer asynchronously (the wiring asks git for a remote the store has not backfilled): a cross-repo run still starts with no base', async (t) => {
+  const d = planned(t, 'seatRecords=on', CROSS);
+  const f = fake(d);
+  f.deps.worktreeRepo = async () => { await new Promise((r) => setTimeout(r, 5)); return { remote: 'git@github.com:mobile-club/metarepo.git', defaultBranch: 'main' }; };
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.equal(r.started.length, 3);
+  assert.ok(f.calls.every((c) => c.baseBranch === undefined && /cut from main of THIS repository/.test(c.task)));
+});

@@ -52,7 +52,8 @@ const mutants = [
   ['#599 brief: the cross-repo run target line is missing', IB, "...(input.crossRepo ? [`Run target: branch", "...(false as boolean ? [`Run target: branch"],
   ['#599 brief: the cross-repo base line still says origin/<target>', IB, ": input.crossRepo ? [`Branch base: your worktree is cut from", ": false as boolean ? [`Branch base: your worktree is cut from"],
   ['#599 host: the worktree-repo wiring is not handed to startRun', H, "worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home", "home"],
-  ['#599 main: the worktree repo is unknown to the wiring', FW, "remote: r?.remoteUrl ?? null,", "remote: null,"],
+  ['#599 main: the worktree repo is unknown to the wiring', FW, "remote: r?.remoteUrl ?? (p ? (await detectRemoteUrl(p)) ?? null : null),", "remote: null,"],
+  ['#599 main: a repo with no stored remoteUrl is never asked to git (read as same-repo)', FW, "r?.remoteUrl ?? (p ? (await detectRemoteUrl(p)) ?? null : null)", "r?.remoteUrl ?? null"],
   ['#599 main: the ref check always answers yes', FW, "return p ? refResolves(p, ref) : Promise.resolve(true); }", "return Promise.resolve(true); }"],
   ['#599 git: a missing ref resolves', G, "`${ref}^{commit}`])).trim().length > 0; }", "`${ref}^{commit}`])).trim().length >= 0; }"],
   // refusals
