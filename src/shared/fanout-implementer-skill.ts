@@ -22,6 +22,14 @@ Two rules ride in your brief, verbatim:
 - *Relay branch REFS and re-resolve with ¤ls-remote¤ at action time.* A pinned
   sha dies whenever a ruling moves the tip. After a history rewrite, verify by ref or ancestry.
 
+## Your brief's rules (¤fanout start¤)
+
+1. Work only in your own worktree, on your own branch. Never merge, never push the integration branch, never spawn agents.
+2. Build EXACTLY the names of the frozen interfaces in your brief (columns, queries, mutations, events). If one must change, STOP and ask your coordinator (¤orchestra send --type question¤): you never change an interface yourself.
+3. Commit and push your branch. Your final report names the branch, the head sha, and the VERSION of each interface you built on (e.g. ¤follows A=2¤): a nomination on an older version is refused.
+
+The self-gate before you report and the final ¤worker_done¤ are the rules below.
+
 ## 0b. Budget: messages and gates
 
 - **Every report, verdict and blocking question lands as a LEDGER COMMENT**; the message channel

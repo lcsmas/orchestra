@@ -75,8 +75,8 @@ const mutants = [
   ['brief: the rules are missing', IB, "    IMPLEMENTER_RULES,\n", ""],
   ['brief: the branch base is missing', IB, "`Branch base: origin/${state.target}${state.repo ? ` of ${state.repo}` : ''}.`", "''"],
   ['brief: the spec is missing', IB, "t.spec ? `Spec: ${t.spec}` : 'Spec: none registered.',", "''"],
-  ['brief: the rules let the agent change an interface', IB, "you never change an interface yourself", "you may change an interface yourself"],
-  ['brief: the rules drop the followed version', IB, "and the VERSION of each interface you built on (e.g. `follows A=2`)", "and nothing else"],
+  ['brief: the rules (now the implementer role file, #590) let the agent change an interface', 'src/shared/fanout-implementer-skill.ts', "you never change an interface yourself", "you may change an interface yourself"],
+  ['brief: the rules (role file) drop the followed version', 'src/shared/fanout-implementer-skill.ts', "and the VERSION of each interface you built on (e.g. ¤follows A=2¤)", "and nothing else"],
   // the host + the main process
   ['host: op start is unknown', H, "    if (input.op === 'start') {", "    if (input.op === 'start-off') {"],
   ['host: start works with no wiring', H, "if (!deps.implementerLive || !deps.spawnImplementer) return", "if (false) return"],

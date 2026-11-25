@@ -17,6 +17,7 @@ import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
 import { installFanoutRoleFiles, installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
 import { REVIEWER_RULES, renderReviewerBrief } from './fanout-review-brief.ts';
+import { IMPLEMENTER_RULES } from './fanout-implementer-brief.ts';
 import { COMMANDS } from '../cli/help.ts';
 import { SEAT_USAGE } from '../cli/fanout-state.ts';
 import { REVIEW_USAGE } from '../cli/fanout-review.ts';
@@ -93,6 +94,9 @@ const RULES: ReadonlyArray<readonly [string, string, string?]> = [
   ["Edit a ledger table row with scripts/ledger-", 'C'],
   ["The ledger carries the ledger label (open le", 'C'],
   ["## 0b. Budget: messages and gates", 'CRI'],
+  ["## Your brief's rules (fanout start)", 'I', 'n'],
+  ["1. Work only in your own worktree, on your own", 'I', 'n'],
+  ["The self-gate before you report and the final", 'I', 'n'],
   ["Churn burns a fleet's tokens and wall-clock.", 'C', 'r'],
   ["Every report, verdict and blocking question ", 'RI'],
   ["Fixed report format, ≤15 lines: STATE: <tip ", 'RI'],
@@ -181,7 +185,7 @@ const RULES: ReadonlyArray<readonly [string, string, string?]> = [
   ["A personal-level copy shadows it (measured o", 'C'],
   ["VPS install: an AppImage release carries thi", 'C'],
   ["Declare the plan before the first spawn (§0 ", 'C', 'n'],
-  ["Every implementer's brief names its rules fi", 'C', 'n'],
+  ["Launch implementers with orchestra fanout star", 'C', 'n'],
   ["The count, the head and the CI are code, and", 'C', 'n'],
   ["At most ONE follow-up branch per candidate, ", 'C', 'n'],
   ["<!-- orchestra-generated: fan-out role text ", 'RI', 'n'],
@@ -316,7 +320,7 @@ arm('a moved rule missing from the implementer text', (t) => { t.implementer = t
 arm('a stale list entry (its rule no longer exists anywhere)', (t) => { t.reviewer = t.reviewer.map((x) => x.replace(REVIEWER_RULE, '')); t.masterOff = t.masterOff.map((x) => x.replaceAll(REVIEWER_RULE, '')); t.refsOff = t.refsOff.replaceAll(REVIEWER_RULE, ''); }, /missing from its role text|stale entry/);
 
 // ---------------------------------------------------------------- (3) the verbs ----------------------------------------------------------------------------------------------
-const NEW_VERBS = ['--plan', '--plan-add', '--depends-on', '--interface', '--interface-reason', '--follows', '--run-decision', 'orchestra fanout review', 'orchestra fanout record'];
+const NEW_VERBS = ['--plan', '--plan-add', '--depends-on', '--interface', '--interface-reason', '--follows', '--run-decision', 'orchestra fanout review', 'orchestra fanout record', 'orchestra fanout start'];
 const REFUSED = [/--review-verdict/, /--no-review-gate/, /--finding-json/, /--settle/, /--finding(?![-\w])/];
 
 test('#590 on: the coordinator text names the new verbs (plan / interface / follows / review / record / run-decision) and none of the refused ones — SKILL.md and every reference', () => {
@@ -416,7 +420,7 @@ test('#590 installer wiring: the role templates are in the HOOKS_VERSION hash (a
 // every `orchestra fanout …` span of the ON text names a verb and flags the CLI knows: the main usage + the seatRecords usage (#587) + the review usage (#588) + `fanout record` once #589 lands
 test('#590 on: every `orchestra fanout state set …` / `fanout review` flag of the ON coordinator text is a flag of the CLI (main usage ∪ seat usage ∪ review usage); a made-up flag is caught', () => {
   const known = new Set([...[helpOf('fanout'), SEAT_USAGE, REVIEW_USAGE, RECORD_USAGE].join('\n').matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
-  const spans = (text: string): string[] => [...text.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter((x) => /^orchestra fanout (state set|review|record|deliver)\b/.test(x));
+  const spans = (text: string): string[] => [...text.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter((x) => /^orchestra fanout (state set|review|record|deliver|start)\b/.test(x));
   const lint = (text: string): string[] => spans(text).flatMap((sp) => sp.split(' ').flatMap((tk) => { const f = /^(--[a-z][a-z-]*)/.exec(tk)?.[1]; return f && !known.has(f) ? [`${f} in: ${sp}`] : []; }));
   for (const c of COMBOS) assert.deepEqual(lint(renderVerifiedFanoutSkill(asSw(c, 'on'))), [], `ON text at ${comboKey(c)}`);
   assert.ok(spans(renderVerifiedFanoutSkill(asSw({}, 'on'))).length >= 4, 'the extractor found the spans');
@@ -442,4 +446,11 @@ test('#590 on (review F1): no implementer-only or reviewer-only rule stays in th
   assert.deepEqual(refViolations(allRefs((c) => asSw(c, 'on'))), []);
   const off = new Set(COMBOS.flatMap((c) => refViolations(allRefs((x) => asSw(x, 'off'))).filter((v) => v.includes(comboKey(c)))).map((v) => v.split(': ').slice(1).join(': ')));
   for (const [m] of REF_ROLE_MARKERS) assert.ok(off.has(m), `the marker ${JSON.stringify(m)} is present in some OFF render (a stale marker would pass vacuously)`);
+});
+
+test('#590 the implementer\'s code brief (fanout start) carries the role file path and the pointer, not a second copy of the rules; the file holds the brief rules', () => {
+  assert.ok(IMPLEMENTER_RULES.includes(`Your role file: ${FANOUT_IMPLEMENTER_SKILL_PATH}`));
+  assert.ok(!/never change an interface yourself/.test(IMPLEMENTER_RULES), 'the rules are not duplicated in the brief');
+  assert.ok(FANOUT_ROLE_FILES.some((r) => r.worktreePath === FANOUT_IMPLEMENTER_SKILL_PATH), 'the named path is a written file');
+  for (const c of COMBOS) assert.match(renderFanoutImplementerSkill(asSw(c, 'on')), /never change an interface yourself[\s\S]*VERSION of each interface you built on/);
 });

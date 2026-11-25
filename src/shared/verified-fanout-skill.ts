@@ -277,7 +277,7 @@ One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per su
 skill); record each printed workspace id + branch in the ledger.
 <!--sw seatRecords=on-->
 
-**Every implementer's brief names its rules file** — ¤${FANOUT_IMPLEMENTER_SKILL_PATH}¤ (the self-gate, the pre-review, the nomination, the reports) — and tells it NOT to load ¤verified-fanout¤: that skill is yours.
+**Launch implementers with ¤orchestra fanout start¤** (one per plan ticket with no live implementer; a dead one is respawned on its branch): the brief is rendered by code — the ticket, its interfaces with versions, the base, the run's decisions, and its rules file ¤${FANOUT_IMPLEMENTER_SKILL_PATH}¤ (the self-gate, the pre-review, the nomination, the reports; it tells the implementer NOT to load ¤verified-fanout¤: that skill is yours). No flag takes free text — your words go in ¤state set --run-decision¤. An implementer you hand-spawn gets that file named in its brief.
 <!--/sw-->
 
 <!--sw verifier=on-->

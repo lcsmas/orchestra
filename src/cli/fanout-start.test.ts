@@ -10,6 +10,7 @@ import { runStart } from './fanout-start.ts';
 import { SeatRefusal, readState, stateFile, parseState, type FanoutState } from '../shared/fanout-state.ts';
 import { briefHash } from '../shared/fanout-brief-common.ts';
 import { IMPLEMENTER_RULES, renderImplementerBrief } from '../shared/fanout-implementer-brief.ts';
+import { FANOUT_IMPLEMENTER_SKILL_PATH, renderFanoutImplementerSkill } from '../shared/fanout-implementer-skill.ts';
 import { handSpawnRefusal, handSpawnRefusalFor, implementerName, startRun, type StartDeps } from '../shared/fanout-start.ts';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from '../shared/fanout-acceptance-host.ts';
 
@@ -64,8 +65,9 @@ test('brief: ticket, spec, own interface, the interfaces it builds on WITH versi
   assert.match(b, /Decisions of the run \(binding, verbatim — recorded by the coordinator\):\n1\. Money is integer cents\./);
   assert.match(b, /Switches of this run: .*seatRecords=on/);
   assert.ok(b.endsWith(IMPLEMENTER_RULES));
-  assert.match(IMPLEMENTER_RULES, /never change an interface yourself/);
-  assert.match(IMPLEMENTER_RULES, /VERSION of each interface you built on \(e\.g\. `follows A=2`\)/);
+  assert.match(renderFanoutImplementerSkill(), /never change an interface yourself/); // #590: the rules moved to the implementer role file; the brief carries the pointer + its path
+  assert.match(renderFanoutImplementerSkill(), /VERSION of each interface you built on \(e\.g\. `follows A=2`\)/);
+  assert.ok(IMPLEMENTER_RULES.includes(FANOUT_IMPLEMENTER_SKILL_PATH));
   const a = renderImplementerBrief({ state: load(d), ticket: 'A' });
   assert.match(a, /Interface you PROVIDE \(frozen, v2\):\ntable t\(id, name, age\)/);
   assert.match(a, /Spec: ledger #1 §A/);

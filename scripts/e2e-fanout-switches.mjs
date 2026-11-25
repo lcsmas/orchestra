@@ -256,7 +256,7 @@ const mutants = [
   ["590 skill: the reviewer's lines stay in the ON coordinator text", K, "<!--sw seatRecords=off-->\nIt reads the diff, the ledger spec and", "<!--sw seatRecords=on|off-->\nIt reads the diff, the ledger spec and"],
   ["590 skill: the typed-verdict deliver paragraph stays in the ON text (--review-verdict)", K, "<!--sw seatRecords=off-->\nThe count, the head and the CI are code: write", "<!--sw seatRecords=on|off-->\nThe count, the head and the CI are code: write"],
   ["590 skill: the ON deliver paragraph is dropped (the record verbs are not named)", K, "<!--sw seatRecords=on-->\nThe count, the head and the CI are code, and", "<!--sw seatRecords=off-->\nThe count, the head and the CI are code, and"],
-  ["590 skill: the implementer file is not named in the spawn rule", K, "<!--sw seatRecords=on-->\n\n**Every implementer's brief names its rules file**", "<!--sw seatRecords=off-->\n\n**Every implementer's brief names its rules file**"],
+  ["590 skill: the implementer file is not named in the spawn rule", K, "<!--sw seatRecords=on-->\n\n**Launch implementers with", "<!--sw seatRecords=off-->\n\n**Launch implementers with"],
   ["590 skill: a moved rule is dropped from the OFF text (the master oracle)", K, "<!--sw seatRecords=off-->\n- **A review that exposes a coverage gap**", "<!--sw seatRecords=on-->\n- **A review that exposes a coverage gap**"],
   ["590 skill: the plan paragraph is dropped from the ON text", K, "<!--sw seatRecords=on-->\n**Declare the plan before the first spawn**", "<!--sw seatRecords=off-->\n**Declare the plan before the first spawn**"],
   ["590 role: the implementer file loses a moved rule", 'src/shared/fanout-implementer-skill.ts', "- **Mutation runs: FULL set at the first nomination", "- **Mutation runs (dropped) at the first nomination"],
@@ -271,6 +271,7 @@ const mutants = [
   ["590 brief: the reviewer's role file path is not named by default", 'src/shared/fanout-review.ts', "o.reviewerSkillPath !== undefined ? o.reviewerSkillPath : FANOUT_REVIEWER_SKILL_PATH", "o.reviewerSkillPath !== undefined ? o.reviewerSkillPath : undefined"],
   ["590 reference: the report-cap bullets of budget-and-gates stay in the ON coordinator reference", F, "<!--sw seatRecords=off-->\\n- **Every report, verdict and blocking question", "<!--sw seatRecords=on|off-->\\n- **Every report, verdict and blocking question"],
   ["590 reference: the implementer's self-gate paragraph of budget-and-gates stays in the ON coordinator reference", F, "<!--sw seatRecords=off-->\\n- **Self-gate BEFORE nominating", "<!--sw seatRecords=on|off-->\\n- **Self-gate BEFORE nominating"],
+  ["590 brief: the implementer's code brief no longer names its role file", 'src/shared/fanout-implementer-brief.ts', "  `Your role file: ${FANOUT_IMPLEMENTER_SKILL_PATH}`,\n", ""],
   ["590 wiring: the reviewer template is out of the hooks hash", W, "      FANOUT_REVIEWER_SKILL_TEMPLATE, // #590", "      // #590"],
 ];
 
