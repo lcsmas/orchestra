@@ -2,7 +2,7 @@
 // (same call path as `acceptance spawn`), and who it is gets recorded. NO flag takes free text for the brief: the coordinator's words are the run's decisions (`state set --run-decision`).
 // Exits as the other fanout verbs: 0 ok · 2 refused (`[review-…]` first) · 1 usage / could-not-check.
 import { resolveCaller } from '../shared/fanout-caller.ts';
-import { ReviewRefusal, assertReviewable, assertReviewCaller, assertReviewerRole, decideReview, renderBriefOf } from '../shared/fanout-review.ts';
+import { ReviewRefusal, assertReviewable, stackedBase, assertReviewCaller, assertReviewerRole, decideReview, renderBriefOf } from '../shared/fanout-review.ts';
 import { FanoutStateError, stateFile } from '../shared/fanout-state.ts';
 import { homeOf, loadOrFail, parseArgs, runOf, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
@@ -29,7 +29,7 @@ export function runReview(args: string[], deps: FanoutDeps): RunResult {
     if (!print) assertReviewCaller(state, caller); // [review-caller]: the coordinator, vouched by the host
     assertReviewerRole(state, t, t.review?.reviewer?.id ?? null); // [review-role]
     const head = t.head!;
-    const base = baseOf(deps, state.target, head);
+    const base = stackedBase(state, ticket) ?? baseOf(deps, state.target, head);
     if (print) {
       // what a call would send: assumes a recorded reviewer is still live (only the host knows); nothing is spawned, nothing is written
       const act = decideReview(t, head, deps.now(), () => true);

@@ -13,7 +13,7 @@ import { readState, stateFile, parseState, switchesOf, type FanoutState } from '
 import { resolveCaller } from '../shared/fanout-caller.ts';
 import { briefHash as commonHash, renderDecisions, renderInterfaces, renderSwitchesLine } from '../shared/fanout-brief-common.ts';
 import { assertReviewable, decideReview, renderBriefOf, reviewerName } from '../shared/fanout-review.ts';
-import { REVIEWER_RULES, SWITCH_SENTENCES, briefHash } from '../shared/fanout-review-brief.ts';
+import { MERGE_RULES, REVIEWER_RULES, SWITCH_SENTENCES, briefHash } from '../shared/fanout-review-brief.ts';
 import type { IdentityResolution } from '../shared/session-identity.ts';
 
 const NOW = '2026-11-25T10:00:00.000Z';
@@ -194,7 +194,6 @@ test('a switch that is OFF leaves no sentence of its own (must-fail arms: one pe
     ['minorPolicy=spec', 'minorPolicy=spec', 'minorPolicy=legacy'],
     ['minorPolicy=refuse', 'minorPolicy=refuse', 'minorPolicy=legacy'],
     ['preNominationChecks=on', 'preNominationChecks=on', 'preNominationChecks=off'],
-    ['verifier=off', 'verifier=off', 'verifier=on'],
   ];
   for (const [on, key, off] of arms) {
     const render = (sw: string): string => { const { d } = mkRun(t, `seatRecords=on,${sw}`); return review(d, 'T1', '--print').stdout; };
@@ -501,4 +500,66 @@ test('fanout-brief-common (PR A\'s ONE renderer both briefs share): decisions ve
   assert.equal(commonHash('abc'), crypto.createHash('sha256').update('abc').digest('hex'));
   assert.notEqual(commonHash('abc'), commonHash('abd'));
   assert.match(renderInterfaces(st0, ['T1']), /T1: no interface declared/);
+});
+
+test('the merge rule in the brief FOLLOWS minorPolicy (the skill\'s per-policy wording): exactly its own variant, never another policy\'s; demonstrated says a demonstrated finding blocks, legacy / refuse have no spec-sentence concept (review r1 MAJOR-1)', (t) => {
+  const policies = ['legacy', 'refuse', 'spec', 'demonstrated'] as const;
+  for (const p of policies) {
+    const { d } = mkRun(t, `seatRecords=on,minorPolicy=${p}`);
+    const out = review(d, 'T1', '--print').stdout;
+    assert.ok(out.includes(MERGE_RULES[p]), `${p}: its own merge rule`);
+    for (const q of policies) if (q !== p) assert.ok(!out.includes(MERGE_RULES[q]), `${p}: not ${q}'s merge rule`);
+    assert.equal(/spec-sentence/.test(out.slice(out.indexOf('## Rules'))), p === 'spec', `${p}: the spec-sentence concept appears in the rules only under minorPolicy=spec`);
+    assert.equal(out.includes('no unsettled demonstrated finding'), p === 'demonstrated', p);
+  }
+  // wording pinned to the skill's: each variant's key phrase is in the skill text for the same policy
+  const skill = fs.readFileSync(path.join(import.meta.dirname, '..', 'shared', 'verified-fanout-skill.ts'), 'utf8').replace(/\s+/g, ' ');
+  for (const [p, phrase] of [['spec', 'no unsettled spec-sentence MINOR merges on its current gate'], ['refuse', '0 MAJOR merges on its current gate; every MINOR is'], ['legacy', 'goes to the candidate\'s ONE follow-up branch'], ['demonstrated', 'no unsettled demonstrated finding merges on its current gate']] as const) {
+    assert.ok(skill.includes(phrase), `the skill carries the ${p} variant`);
+    assert.ok(MERGE_RULES[p].replace(/`/g, '¤').includes(phrase.replace(/`/g, '¤')) || MERGE_RULES[p].includes(phrase), `the brief carries the same ${p} wording`);
+  }
+});
+
+test('verifier=off leaves NO sentence in the brief (AC1, OPS decision D6): the brief differs from verifier=on only by the switches line', (t) => {
+  const on = review(mkRun(t, 'seatRecords=on,verifier=on').d, 'T1', '--print').stdout;
+  const off = review(mkRun(t, 'seatRecords=on,verifier=off').d, 'T1', '--print').stdout;
+  const norm = (x: string, v: string): string => x.replace(`verifier=${v}`, 'verifier=?').replace(/hash: [0-9a-f]{64}/, 'hash: H');
+  assert.equal(norm(on, 'on'), norm(off, 'off'));
+  assert.ok(!off.includes('no verifier seat'));
+});
+
+test('a STACKED ticket\'s base is the upstream head it was built on (not merge-base with the target), listed as "built on"; a merged upstream is not an exclusion (review r1 MINOR-1)', (t) => {
+  const { home, d } = mkRun(t);
+  assert.equal(set(d, '--plan-add', 'T2').code, 0);
+  assert.equal(set(d, 'T1', '--interface', 'frob()').code, 0);
+  const UP = 'd'.repeat(40);
+  const r = set(d, 'T2', '--depends-on', 'T1', '--follows', 'T1=1', '--built-on', `T1=${UP}`, '--status', 'started', '--head', H2, '--branch', 'impl-t2');
+  assert.equal(r.code, 0, r.stderr);
+  const call = review(d, 'T2');
+  assert.equal((call.hostCalls![0].body as { base: string }).base, UP, 'the host call carries the built-on head as the base');
+  const out = review(d, 'T2', '--print').stdout;
+  assert.ok(out.includes(`base: ${UP} (the head this ticket was built on)`) && out.includes(`built on: T1@${UP}`), out);
+  assert.ok(review(d, 'T1', '--print').stdout.includes(`base: ${BASE}`), 'an unstacked ticket keeps merge-base');
+  const raw = JSON.parse(fs.readFileSync(stateFile(home, 'r1'), 'utf8'));
+  raw.tickets.T1.status = 'merged'; raw.tickets.T1.mergedHead = H1;
+  fs.writeFileSync(stateFile(home, 'r1'), JSON.stringify(raw));
+  const merged = review(d, 'T2', '--print').stdout;
+  assert.ok(merged.includes(`base: ${BASE}`) && !merged.includes('built on:'), 'a merged upstream is in the target already: merge-base again');
+});
+
+test('[review-role] at the WRITE: the recorded reviewer cannot be recorded as its ticket\'s implementer or verifier (review r1 MINOR-2)', async (t) => {
+  const { home, d } = mkRun(t);
+  await runVerb(d, mkHost(home), 'T1');
+  for (const flag of ['--implementer', '--verifier']) {
+    const r = set(d, 'T1', flag, 'rev-1');
+    assert.equal(r.code, 2, flag);
+    assert.match(r.stderr, /^\[review-role\] T1: rev-1 is this ticket's recorded reviewer/, flag);
+  }
+  assert.equal(load(home).tickets.T1.implementer, 'impl-1', 'nothing written');
+  assert.equal(set(d, 'T1', '--implementer', 'impl-2').code, 0, 'another workspace is fine');
+});
+
+test('wiring isLive (source pin): an archived reviewer is NOT live (replaced, not woken)', () => {
+  const w = fs.readFileSync(path.join(import.meta.dirname, '..', 'main', 'fanout-acceptance-wiring.ts'), 'utf8');
+  assert.ok(w.includes('isLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; }'));
 });

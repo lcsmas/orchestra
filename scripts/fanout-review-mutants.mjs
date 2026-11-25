@@ -33,7 +33,7 @@ const MUTANTS = [
   { id: 'R12', name: 'the open findings are not in the wake / replacement brief', edits: [[REV, "openFindings: o.kind === 'spawn' ? [] : openFindingsOf(t),", 'openFindings: [],']] },
   { id: 'R13', name: 'a spawn in flight does not block a second spawn (two reviewers)', edits: [[REV, 'return claimIsStale(rv, nowIso) ? again', 'return true ? again']] },
   { id: 'R14', name: 'the run decisions are not in the brief', edits: [[REV, 'decisionsText: renderDecisions(state),', "decisionsText: '',"]] },
-  { id: 'R16', name: 'the base is not in the brief', edits: [[BRIEF, "`base: ${i.base ?? 'unknown (merge-base not computed)'}`", "'base: unknown'"]] },
+  { id: 'R16', name: 'the base is not in the brief', edits: [[BRIEF, "`base: ${i.base ?? 'unknown (merge-base not computed)'}", '`base: unknown']] },
   { id: 'R17', name: 'the head in the brief is abbreviated (not the exact head)', edits: [[BRIEF, '`head: ${i.head}`,', '`head: ${i.head.slice(0, 7)}`,']] },
   { id: 'R18', name: 'a switch that is OFF still leaves its sentence', edits: [[BRIEF, 'SWITCH_NAMES.map((n) => SWITCH_SENTENCES[`${n}=${sw[n]}`]).filter((x): x is string => !!x)', 'Object.values(SWITCH_SENTENCES)']] },
   { id: 'R20', name: 'the stored brief is not what the reviewer was given', edits: [[HOSTF, 'head: t.head!, base, text: b.text, now });', "head: t.head!, base, text: b.text + ' ', now });"]] },
@@ -56,6 +56,13 @@ const MUTANTS = [
   { id: 'R46', name: 'the switches line is not in the brief', edits: [[REV, 'switchesLine: renderSwitchesLine(state),', "switchesLine: '',"]] },
   { id: 'R47', name: 'a stale followed interface is not flagged STALE', edits: [[BRIEF, 'f.followed === f.current ?', 'true ?']] },
   { id: 'R48', name: 'the frozen interfaces are not in the brief', edits: [[REV, 'interfacesText: renderInterfaces(state, [...(own ? [ticket] : []), ...t.dependsOn]),', "interfacesText: '',"]] },
+  { id: 'R49', name: 'the merge rule is a constant (ignores minorPolicy)', edits: [[BRIEF, 'MERGE_RULES[i.switches.minorPolicy]', 'MERGE_RULES.spec']] },
+  { id: 'R50', name: 'the demonstrated merge rule is the spec one', edits: [[BRIEF, "demonstrated: 'Merge rule you work under: a review round with 0 BLOCKING, 0 MAJOR and no unsettled demonstrated finding", "demonstrated: 'Merge rule you work under: a review round with 0 BLOCKING, 0 MAJOR and no unsettled spec-sentence MINOR merges; a demonstrated finding"]] },
+  { id: 'R51', name: 'verifier=off adds a sentence again', edits: [[BRIEF, "  'preNominationChecks=on':", "  'verifier=off': 'verifier=off: no verifier seat.',\n  'preNominationChecks=on':"]] },
+  { id: 'R52', name: 'a stacked ticket\'s base is merge-base, not the head it was built on', edits: [[CLI, 'stackedBase(state, ticket) ?? baseOf(', 'baseOf(']] },
+  { id: 'R53', name: 'a merged upstream still counts as built-on (an exclusion that is already in the target)', edits: [[REV, "state.tickets[up]?.status !== 'merged').map(", "true).map("]] },
+  { id: 'R54', name: 'the recorded reviewer can be recorded as implementer / verifier', edits: [[STATE0, "if (rid && (('implementer' in patch", "if (false as boolean && rid && (('implementer' in patch"]] },
+  { id: 'R55', name: 'wiring: an archived reviewer counts as live', edits: [[WIRING, 'return !!w && !w.archived;', 'return !!w;']] },
 ].map((m) => ({ ...m, tests: T }));
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
