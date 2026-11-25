@@ -23,7 +23,7 @@ Two rules ride in your brief, verbatim:
 - *Relay branch REFS and re-resolve with ¤ls-remote¤ at action time.* A pinned
   sha dies whenever a ruling moves the tip. After a history rewrite, verify by ref or ancestry.
 
-## 3b. Adversarial review
+## Adversarial review: what you do
 
 Gates verify BEHAVIOUR; review attacks the CODE, with a fresh party.
 
