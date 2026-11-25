@@ -366,7 +366,7 @@ const BUNDLE_MUTANTS = [
   { name: 'spawn: --replace is ignored (a recorded writer can never be replaced)', find: 'const replace = p.bools.has("--replace");', put: () => 'const replace = false;' },
   { name: 'waive: a decision from any repo accepted', find: 'if (st0.repo !== null && st0.repo.toLowerCase() !== decisionRepo.toLowerCase()) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
   { name: 'waive: the decision need not name the ticket', find: 'if (!body.toLowerCase().includes(ticket.toLowerCase())) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
-  { name: 'state set: --json may write the code-owned accept field', find: 'refuseUnknown(patch, new Set(SETTABLE_KEYS), "patch");', put: () => 'refuseUnknown(patch, new Set([...SETTABLE_KEYS, "accept"]), "patch");', extra: [{ find: 'if ("spec" in patch) next.spec', put: (m) => `if ("accept" in patch) next.accept = patch.accept;\n  ${m}` }] },
+  { name: 'state set: --json may write the code-owned accept field', find: 'refuseUnknown(patch, /* @__PURE__ */ new Set([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), "patch");', put: () => 'refuseUnknown(patch, new Set([...SETTABLE_KEYS, "accept"]), "patch");', extra: [{ find: 'if ("spec" in patch) next.spec', put: (m) => `if ("accept" in patch) next.accept = patch.accept;\n  ${m}` }] },
 ];
 const HOST_MUTANTS = [
   { file: 'fanout-acceptance-host.ts', name: 'host: the retroactive status goes to every recorded recipient again (m7)', find: '.filter((id) => !retro || retro.includes(id))', put: () => '' },

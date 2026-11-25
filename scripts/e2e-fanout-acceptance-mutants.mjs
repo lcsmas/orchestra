@@ -334,7 +334,7 @@ const mutants = [
   { name: 'amend: the decision body is not checked for the sentence', find: 'if (!ok.ok) throw new Refusal(ok.why);', put: () => '' },
   { name: 'freeze: a second freeze is not refused as a policy refusal (the verb check)', find: 'if (had?.acceptance) throw new Refusal(', put: () => 'if (false) throw new Refusal(' },
   { name: 'freeze: ../ paths accepted', find: 'p.split("/").some((seg) => seg === ".." ||', put: () => 'p.split("/").some((seg) => false ||' },
-  { name: 'state set: --json may write acceptance', find: 'refuseUnknown(patch, new Set(SETTABLE_KEYS), "patch");', put: () => 'refuseUnknown(patch, new Set([...SETTABLE_KEYS, "acceptance"]), "patch");', extra: [{ find: 'if ("mergedAccepted" in patch) next.mergedAccepted', put: (m) => `if ("acceptance" in patch) next.acceptance = patch.acceptance;\n  ${m}` }] },
+  { name: 'state set: --json may write acceptance', find: 'refuseUnknown(patch, /* @__PURE__ */ new Set([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), "patch");', put: () => 'refuseUnknown(patch, new Set([...SETTABLE_KEYS, "acceptance"]), "patch");', extra: [{ find: 'if ("mergedAccepted" in patch) next.mergedAccepted', put: (m) => `if ("acceptance" in patch) next.acceptance = patch.acceptance;\n  ${m}` }] },
 ];
 
 if (!fs.existsSync(CLI)) { console.error(`${CLI} missing — run \`pnpm run build:cli\` first (a rig on a stale or absent bundle proves nothing)`); process.exit(1); }
