@@ -29,6 +29,8 @@ export class FakeForge {
   readonly prs = new Map<number, Pr>();
   readonly runs: Run[] = [];
   readonly calls: string[][] = [];
+  /** A required EXTERNAL status (no Actions run behind it) stuck pending on every PR — a sibling of nothing. */
+  externalPending: string | null = null;
   private ids = 1000;
   private served = new Map<string, number>(); // branch → CI runs created so far
   readonly gh = async (args: string[]): Promise<ExecResult> => this.run(args);
@@ -72,15 +74,16 @@ export class FakeForge {
   private rollup(pr: Pr): unknown[] {
     const r = this.runOf(pr);
     if (!r) return [];
+    const ext = this.externalPending ? [{ __typename: 'StatusContext', context: this.externalPending, state: 'PENDING', targetUrl: 'https://ci.example/ext' }] : [];
     const done = this.clock >= r.doneAt;
     const red = r.result.startsWith('red:') ? r.result.slice(4) : null;
-    return CHECKS.map((name) => {
+    return [...ext, ...CHECKS.map((name) => {
       const finished = done && !(r.sibling && r.sibling.name === name && this.clock < r.sibling.until);
       return {
         __typename: 'CheckRun', name, workflowName: 'ci', status: finished ? 'COMPLETED' : 'IN_PROGRESS', conclusion: finished ? (name === red ? 'FAILURE' : 'SUCCESS') : '',
         detailsUrl: `https://github.com/o/r/actions/runs/${r.id}/job/${r.jobs[name]}`, startedAt: this.iso(r.startedAt), completedAt: finished ? this.iso(r.doneAt) : '0001-01-01T00:00:00Z',
       };
-    });
+    })];
   }
 
   private async run(args: string[]): Promise<ExecResult> {

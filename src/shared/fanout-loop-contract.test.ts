@@ -384,6 +384,8 @@ test('live forge: a merge goes THROUGH the injected deliver — its refusal is t
   await h.settle();
   assert.deepEqual(await h.port.merge(n, head, 'merge'), { ok: false, reason: 'ci-red', detail: 'check "test" is red' });
   assert.deepEqual(seen, [{ n, head, method: 'merge' }]);
+  await h.port.merge(n, head, 'squash');
+  assert.equal(seen[1].method, 'squash', 'the method the loop asked for is the one deliver is handed');
   assert.equal(h.fake.calls.filter((c) => c[0] === 'pr' && c[1] === 'merge').length, 0, 'gh never merged around deliver');
   assert.equal((await h.port.prState(n)).state, 'open');
 });
@@ -474,6 +476,19 @@ test('live forge: a re-run waits for the OTHER jobs of the run to finish (gh ref
   h.fake.runs[0].sibling = { name: 'lint', until: h.fake.clock + 30_000 }; // `test` is red but a sibling job is still running: the run is not completed
   await h.port.rerun(n, [red.name]); // waits (its injected sleep advances the fake clock) then re-runs
   assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'rerun').length, 1);
+});
+test('live forge (review 614 MINOR-2): a re-run waits only for the red RUN\'s own jobs — a required external status stuck pending is not a sibling', async () => {
+  const h = liveForge();
+  h.fake.externalPending = 'required/external';
+  h.ci('T1', ['red:test', 'green']);
+  const head = h.branch('T1');
+  const { n } = await open(h, 'T1');
+  h.fake.advance(240_000 + 1);
+  const red = (await h.port.checks(n, head)).find((c) => c.status === 'red')!;
+  const t0 = h.fake.clock;
+  await h.port.rerun(n, [red.name]);
+  assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'rerun').length, 1, 're-ran');
+  assert.equal(h.fake.clock, t0, 'without waiting for the external status');
 });
 test('live forge: with neither `deliver` nor the rigs\' bareMerge, merge REFUSES to run (no default path around deliver)', async () => {
   const p = createLiveForge({ gh: new FakeForge().gh });
