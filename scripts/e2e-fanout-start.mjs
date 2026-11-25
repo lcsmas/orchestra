@@ -126,7 +126,7 @@ const mutants = [
   ['main: dispatchAgentSpawnRequest does not ask', W, "  if (handSpawn) return { ok: false, error: handSpawn };\n", ""],
   ['main: the bypass is always on', W, "opts.viaFanoutStart === true); // #587 PR B", "true); // #587 PR B"],
   ['main: the implementer spawn does not pass the bypass', FW, "}, { viaFanoutStart: true });", "});"],
-  ['main: an archived implementer counts as live', FW, "return !!w && !w.archived; },", "return !!w; },"],
+  ['main: an archived implementer counts as live', FW, "implementerLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; },", "implementerLive: (id) => { const w = store.getWorkspace(id); return !!w; },"],
   ['main: the respawn does not pass the base branch', FW, "...(i.baseBranch ? { baseBranch: i.baseBranch } : {}), ", ""],
   ['cli: start is not routed', X, "if (args[0] === 'start') { // #587 PR B", "if (args[0] === 'start-off') { // #587 PR B"],
   // the state

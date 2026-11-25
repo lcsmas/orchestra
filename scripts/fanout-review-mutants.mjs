@@ -46,7 +46,7 @@ const MUTANTS = [
   { id: 'R30', name: 'the reviewer is not named with the `review-` role prefix', edits: [[REV, 'return `review-${slug', 'return `rev-${slug']] },
   { id: 'R31', name: 'the base is never computed (merge-base ignored)', edits: [[CLI, "const sha = r.code === 0 ? r.stdout.trim().split('\\n')[0] : '';", "const sha = '';"]] },
   { id: 'R32', name: 'the host does not re-check the head the CLI named', edits: [[HOSTF, 'if (!t0.head || !(t0.head.startsWith(head) || head.startsWith(t0.head))) return', 'if (false as boolean) return']] },
-  { id: 'R33', name: 'index.ts does not hand the host\'s identity answer to the verb', edits: [[INDEX, 'fanoutDeps.identity = hostIdentity;', '']] },
+  { id: 'R33', name: 'index.ts does not hand the host\'s identity answer to the verb', edits: [[INDEX, "if (args[0] === 'review') { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; }", "if (args[0] === 'review') { await settleHostIdentity(); }"]] },
   { id: 'R34', name: 'index.ts does not ask the host who the caller is', edits: [[INDEX, "if (args[0] === 'review') { await settleHostIdentity();", "if (args[0] === 'review') {"]] },
   { id: 'R35', name: 'a failed replacement retried is a NEW-reviewer brief (the open findings are lost)', edits: [[REV, "const again: ReviewAction = hadReviewer(t) ?", "const again: ReviewAction = false ?"]] },
   { id: 'R36', name: 'the host does not re-prove the caller of op review', edits: [[HOSTF, 'if (deps.verifyCaller) {', 'if (false as boolean) {']] },
@@ -61,7 +61,7 @@ const MUTANTS = [
   { id: 'R52', name: 'a stacked ticket\'s base is merge-base, not the head it was built on', edits: [[CLI, 'stackedBase(state, ticket) ?? baseOf(', 'baseOf(']] },
   { id: 'R53', name: 'a merged upstream still counts as built-on (an exclusion that is already in the target)', edits: [[REV, "state.tickets[up]?.status !== 'merged').map(", "true).map("]] },
   { id: 'R54', name: 'the recorded reviewer can be recorded as implementer / verifier', edits: [[STATE0, "if (rid && (('implementer' in patch", "if (false as boolean && rid && (('implementer' in patch"]] },
-  { id: 'R55', name: 'wiring: an archived reviewer counts as live', edits: [[WIRING, 'return !!w && !w.archived;', 'return !!w;']] },
+  { id: 'R55', name: 'wiring: an archived reviewer counts as live', edits: [[WIRING, 'isLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; }', 'isLive: (id) => { const w = store.getWorkspace(id); return !!w; }']] },
 ].map((m) => ({ ...m, tests: T }));
 
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(path.join(REPO, f))).digest('hex');
