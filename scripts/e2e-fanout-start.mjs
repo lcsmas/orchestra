@@ -17,7 +17,7 @@ if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw n
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' })); // quiet the module-type reparse warning
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir'); // git.ts imports simple-git (git-reuse-branch.test.ts)
-const TESTS = ['src/cli/fanout-start.test.ts', 'src/main/fanout-start-wiring.test.ts', 'src/main/git-reuse-branch.test.ts'].map((f) => path.join(scratch, f));
+const TESTS = ['src/cli/fanout-start.test.ts', 'src/main/fanout-start-wiring.test.ts', 'src/main/git-reuse-branch.test.ts', 'src/main/fanout-start-base.test.ts'].map((f) => path.join(scratch, f));
 
 function run() {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
@@ -37,6 +37,24 @@ const X = 'src/cli/index.ts';
 const S = 'src/shared/fanout-state.ts';
 const G = 'src/main/git.ts';
 const mutants = [
+  // #599: the run target in another repository than the worktrees
+  ['#599 cross-repo is never detected (the unfixed arm: every ticket is cut from the foreign target and fails)', SS, "if (want && have && want !== have) return { kind: 'cross'", "if (false as boolean && want && have && want !== have) return { kind: 'cross'"],
+  ['#599 cross-repo spawn still passes the run target as base', SS, "baseBranch: base.base, ...(onBranch", "baseBranch: cur.target, ...(onBranch"],
+  ['#599 every run is read as cross-repo (a same-repo run loses its base)', SS, "if (want && have && want !== have) return { kind: 'cross'", "if (want && have) return { kind: 'cross'"],
+  ['#599 an unknown worktree repo is read as cross-repo', SS, "const want = repoSlugOf(i.stateRepo), have = repoSlugOf(i.worktreeRemote);", "const want = repoSlugOf(i.stateRepo) ?? '?', have = repoSlugOf(i.worktreeRemote) ?? '!';"],
+  ['#599 the slug compare is case-sensitive', SS, "return m ? m[1].toLowerCase() : null;", "return m ? m[1] : null;"],
+  ['#599 the missing-target check is skipped', SS, "if (b.kind === 'same' && deps.refExists && !(await", "if (false as boolean && b.kind === 'same' && deps.refExists && !(await"],
+  ['#599 the foreign target is looked up in the worktree repo too (a cross-repo run is refused)', SS, "if (b.kind === 'same' && deps.refExists && !(await deps.refExists({ run, repoPath, ref: b.base })))", "if (deps.refExists && !(await deps.refExists({ run, repoPath, ref: b.kind === 'same' ? b.base : 'bench-target' })))"],
+  ['#599 the decision is taken per ticket (the target is looked up once per ticket)', SS, "      if (baseOf) return baseOf;\n", ""],
+  ['#599 the refusal does not name the branch', SS, "the run's target branch ${b.base} does not exist", "the run's target branch does not exist"],
+  ['#599 the refusal is not [start-base-missing]', SS, "new SeatRefusal('start-base-missing'", "new SeatRefusal('start-off'"],
+  ['#599 the respawn brief forgets the foreign target', SS, "...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });", "});"],
+  ['#599 brief: the cross-repo run target line is missing', IB, "...(input.crossRepo ? [`Run target: branch", "...(false as boolean ? [`Run target: branch"],
+  ['#599 brief: the cross-repo base line still says origin/<target>', IB, ": input.crossRepo ? [`Branch base: your worktree is cut from", ": false as boolean ? [`Branch base: your worktree is cut from"],
+  ['#599 host: the worktree-repo wiring is not handed to startRun', H, "worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home", "home"],
+  ['#599 main: the worktree repo is unknown to the wiring', FW, "remote: r?.remoteUrl ?? null,", "remote: null,"],
+  ['#599 main: the ref check always answers yes', FW, "return p ? refResolves(p, ref) : Promise.resolve(true); }", "return Promise.resolve(true); }"],
+  ['#599 git: a missing ref resolves', G, "`${ref}^{commit}`])).trim().length > 0; }", "`${ref}^{commit}`])).trim().length >= 0; }"],
   // refusals
   ['start under off is allowed', SS, "if (!seatRecordsOn(state)) return new SeatRefusal('start-off',", "if (false) return new SeatRefusal('start-off',"],
   ['start by a non-coordinator is allowed', SS, "if (!caller || caller !== run) return new SeatRefusal('start-caller',", "if (false) return new SeatRefusal('start-caller',"],
@@ -97,11 +115,11 @@ const mutants = [
   ['main: the hand-spawn rule reads the caller id, not its run', W, "fromWs ? resolveWaveRunId(fromWs) : input.from,", "input.from,"],
   ['main: the host cannot vouch', FW, "vouches: (id, key) => !!key && sessionKeys().verify(id, key) === 'ok',", "vouches: () => true,"],
   ['main: orphans are never looked for', FW, "const w = store.workspaces.find((x) => x.parentId === run &&", "const w = store.workspaces.find((x) => false && x.parentId === run &&"],
-  ['the spawn is cut from the repo default, not the run target', SS, "baseBranch: cur.target, ...(onBranch", "baseBranch: undefined, ...(onBranch"],
-  ['a respawn is cut from the dead branch (diff base = the dead branch)', SS, "baseBranch: cur.target, ...(onBranch", "baseBranch: onBranch ? t.branch! : cur.target, ...(onBranch"],
+  ['the spawn is cut from the repo default, not the run target', SS, "baseBranch: base.base, ...(onBranch", "baseBranch: undefined, ...(onBranch"],
+  ['a respawn is cut from the dead branch (diff base = the dead branch)', SS, "baseBranch: base.base, ...(onBranch", "baseBranch: onBranch ? t.branch! : base.base, ...(onBranch"],
   ['a respawn asks for a fresh name (a suffixed copy of the branch)', SS, "name: onBranch ? t.branch! : implementerName(ticket),", "name: implementerName(ticket),"],
   ['a respawn does not ask to reuse the branch', SS, "...(onBranch ? { reuseBranch: true } : {}) });", "});"],
-  ['a respawn brief does not say it is on the branch', SS, "...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}) });", "});"],
+  ['a respawn brief does not say it is on the branch', SS, "...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind", "...(base.kind"],
   ['brief: the respawn text says the branch starts from the old one', IB, "you are ON its branch ${input.continueFrom.branch}", "your branch starts from ${input.continueFrom.branch}"],
   ['start-no-spec: a spec-less ticket is launched', SS, "  if (bare.length) return new SeatRefusal('start-no-spec',", "  if (false) return new SeatRefusal('start-no-spec',"],
   ['start-no-spec: a ticket with a spec is listed too', SS, "&& !t.spec && !t.specText; });", "&& !t.specText; });"],
@@ -138,7 +156,7 @@ const mutants = [
 
 const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
 const base = run();
-const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 14 && base.pass === base.tests;
+const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 37 && base.pass === base.tests;
 console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
 if (!baseOk) { console.log(base.out.split('\n').filter((l) => /^not ok|error:/.test(l)).slice(0, 12).join('\n')); process.exit(1); }
 if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }

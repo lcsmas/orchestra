@@ -15,6 +15,8 @@ export interface ImplementerBriefInput {
   ticket: string;
   /** Respawn only: the dead implementer's branch and the head its work reached (the new agent continues from it). */
   continueFrom?: { branch: string; head: string | null };
+  /** #599 — the run's target lives in ANOTHER repository than this worktree's: the brief says so (the worktree is cut from this repository's default branch; no branch of the target's name exists here). */
+  crossRepo?: { targetRepo: string; defaultBranch: string | null };
 }
 
 /** The brief: the ticket, the interface it provides, the interfaces it builds on, the branch base, the run's decisions, the switches, the rules. Deterministic. */
@@ -32,9 +34,10 @@ export function renderImplementerBrief(input: ImplementerBriefInput): string {
     t.dependsOn.length ? `Depends on: ${t.dependsOn.join(', ')}.` : 'Depends on: nothing.',
     '',
     '## Branch',
-    input.continueFrom
-      ? `Continue the work of the agent that died: you are ON its branch ${input.continueFrom.branch}${input.continueFrom.head ? ` (last recorded head ${input.continueFrom.head.slice(0, 12)})` : ''}, same name, same PR. Read \`git log\` first; if the branch holds none of that work (it was deleted and recreated), say so to your coordinator before redoing it.`
-      : `Branch base: origin/${state.target}${state.repo ? ` of ${state.repo}` : ''}.`,
+    ...(input.continueFrom
+      ? [`Continue the work of the agent that died: you are ON its branch ${input.continueFrom.branch}${input.continueFrom.head ? ` (last recorded head ${input.continueFrom.head.slice(0, 12)})` : ''}, same name, same PR. Read \`git log\` first; if the branch holds none of that work (it was deleted and recreated), say so to your coordinator before redoing it.`]
+      : input.crossRepo ? [`Branch base: your worktree is cut from ${input.crossRepo.defaultBranch ?? 'the default branch'} of THIS repository, not from the run's target.`] : [`Branch base: origin/${state.target}${state.repo ? ` of ${state.repo}` : ''}.`]),
+    ...(input.crossRepo ? [`Run target: branch ${state.target} of ${input.crossRepo.targetRepo} — another repository than your worktree's; no branch of that name exists here, and your work lands there through your coordinator.`] : []),
     '',
     '## Interfaces',
     own ? `Interface you PROVIDE (frozen, v${own.version}):\n${own.text}` : 'Interface you provide: none (no other ticket depends on yours).',

@@ -58,3 +58,11 @@ test('reuseBranch rides createWorkspace\'s naming (no suffix pick, git reuse) an
   assert.match(w, /\.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}, input\.profile/);
   for (const f of ['hooks-server.ts', 'transport/sandbox-manager.ts', 'acces-mobile.ts']) { try { assert.doesNotMatch(read(f), /reuseBranch/, f); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; } }
 });
+
+test('#599 the production wiring answers the worktree repo (the coordinator\'s repo: remote + default branch) and the ref check; a spawn without a base is cut from the repo default', () => {
+  const src = read('fanout-acceptance-wiring.ts');
+  assert.match(src, /worktreeRepo: \(\{ run, repoPath \}\) => \{\n\s+const r = store\.repos\.find\(\(x\) => x\.path === \(repoPath \?\? store\.getWorkspace\(run\)\?\.repoPath\)\);\n\s+return \{ remote: r\?\.remoteUrl \?\? null, defaultBranch: r\?\.defaultBranch \?\? null \};/);
+  assert.match(src, /refExists: \(\{ run, repoPath, ref \}\) => \{ const p = repoPath \?\? store\.getWorkspace\(run\)\?\.repoPath; return p \? refResolves\(p, ref\) : Promise\.resolve\(true\); \}/);
+  assert.match(read('workspaces.ts'), /const baseBranch = input\.baseBranch \|\| repo\?\.defaultBranch \|\| 'main';/, 'createWorkspace: no base = the repo default (what a cross-repo start relies on)');
+  assert.match(read('git.ts'), /export async function refResolves\(repoPath: string, ref: string\)/);
+});

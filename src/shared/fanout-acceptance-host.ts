@@ -36,6 +36,9 @@ export interface AcceptanceHostDeps {
   vouches?: (id: string, key: string | undefined) => boolean;
   /** #587 PR B — see StartDeps.orphanImplementer. */
   orphanImplementer?: StartDeps['orphanImplementer'];
+  /** #599 — see StartDeps.worktreeRepo / refExists: which repository the implementers' worktrees are in, and whether the run target resolves there. */
+  worktreeRepo?: StartDeps['worktreeRepo'];
+  refExists?: StartDeps['refExists'];
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -77,7 +80,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const spawnImplementer = deps.spawnImplementer;
       const caller = str(input.from);
       const vouched = !!caller && !!deps.vouches && deps.vouches(caller, str(input.key)); // the caller is the coordinator only on the HOST's word, not on an env id
-      const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
+      const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
       return { ok: true, op: 'start', result };
     }
     const ticket = str(input.ticket);

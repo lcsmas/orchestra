@@ -11,7 +11,7 @@ import { SeatRefusal, readState, stateFile, parseState, type FanoutState } from 
 import { briefHash } from '../shared/fanout-brief-common.ts';
 import { IMPLEMENTER_RULES, renderImplementerBrief } from '../shared/fanout-implementer-brief.ts';
 import { FANOUT_IMPLEMENTER_SKILL_PATH, renderFanoutImplementerSkill } from '../shared/fanout-implementer-skill.ts';
-import { handSpawnRefusal, handSpawnRefusalFor, implementerName, startRun, type StartDeps } from '../shared/fanout-start.ts';
+import { handSpawnRefusal, handSpawnRefusalFor, implementerName, repoSlugOf, startBase, startRun, type StartDeps } from '../shared/fanout-start.ts';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from '../shared/fanout-acceptance-host.ts';
 
 const NOW = '2026-11-25T10:00:00.000Z';
@@ -27,9 +27,9 @@ const set = (d: FanoutDeps, ...a: string[]) => sh(d, 'set', '--run', 'r1', ...a)
 const load = (d: FanoutDeps): FanoutState => readState(stateFile(d.env.ORCHESTRA_HOME!, 'r1'))!;
 
 /** A run (switch on) with plan A,B,C: B depends on A (A holds an interface), C is independent; one decision; nothing spawned. */
-function planned(t: { after: (fn: () => void) => void }, sw = 'seatRecords=on'): FanoutDeps {
+function planned(t: { after: (fn: () => void) => void }, sw = 'seatRecords=on', init: string[] = []): FanoutDeps {
   const d = mkDeps(mkHome(t));
-  assert.equal(sh(d, 'init', '--run', 'r1', '--switch', sw).code, 0);
+  assert.equal(sh(d, 'init', '--run', 'r1', '--switch', sw, ...init).code, 0);
   if (sw.includes('seatRecords=on')) {
     set(d, '--plan', 'A,B,C');
     set(d, 'A', '--depends-on', 'none'); set(d, 'B', '--depends-on', 'A'); set(d, 'C', '--depends-on', 'none');
@@ -372,4 +372,116 @@ test('start --help prints the usage (rc 0) and names the empty-task refusal, the
   assert.match(r.stdout, /no spec and no text is refused \(\[start-no-spec\], listing them\)/);
   assert.match(r.stdout, /A respawn keeps the ticket's branch/);
   assert.match(r.stdout, /Limit: it is the coordinator's door, not a lock — a human at a terminal .* can still hand-spawn/);
+});
+
+// ── #599: the run's target in ANOTHER repository than the worktrees ──────────────────────────────────────────
+
+const CROSS = ['--target', 'bench/run-7', '--repo', 'mobile-club/workspace'];
+/** deps whose worktree repo is `slug` (default branch `master`) and whose `refExists` answers from `refs`, counting its calls. */
+function withRepo(f: Fake, slug: string | null, refs: string[] = ['master']): { asked: string[] } {
+  const asked: string[] = [];
+  f.deps.worktreeRepo = () => ({ remote: slug, defaultBranch: 'master' });
+  f.deps.refExists = async ({ ref }) => { asked.push(ref); return refs.includes(ref); };
+  return { asked };
+}
+
+test('#599 repoSlugOf: https, scp and ssh remotes and a bare owner/name read the same slug; junk reads null', () => {
+  for (const u of ['https://github.com/Mobile-Club/Metarepo', 'https://github.com/mobile-club/metarepo.git', 'git@github.com:mobile-club/metarepo.git', 'ssh://git@github.com/mobile-club/metarepo.git', 'mobile-club/metarepo']) assert.equal(repoSlugOf(u), 'mobile-club/metarepo', u);
+  for (const u of [undefined, null, '', 'metarepo', '/home/x/repo']) assert.equal(repoSlugOf(u as string), null, String(u));
+});
+
+test('#599 startBase: another repo → cross (no base); same slug (any case/form) → the target; an unknown side → the target (unchanged)', () => {
+  const i = { target: 'bench/x', defaultBranch: 'main' };
+  assert.deepEqual(startBase({ ...i, stateRepo: 'mobile-club/workspace', worktreeRemote: 'mobile-club/metarepo' }), { kind: 'cross', base: undefined, targetRepo: 'mobile-club/workspace', defaultBranch: 'main' });
+  assert.deepEqual(startBase({ ...i, stateRepo: 'Mobile-Club/Metarepo', worktreeRemote: 'mobile-club/metarepo' }), { kind: 'same', base: 'bench/x' });
+  assert.deepEqual(startBase({ ...i, stateRepo: null, worktreeRemote: 'mobile-club/metarepo' }), { kind: 'same', base: 'bench/x' });
+  assert.deepEqual(startBase({ ...i, stateRepo: 'mobile-club/workspace', worktreeRemote: null }), { kind: 'same', base: 'bench/x' });
+});
+
+test('#599 cross-repo: ONE call starts every ticket, the worktree base is the repo default (no baseBranch), the brief names the target repo + branch, no ref check on the foreign target', async (t) => {
+  const d = planned(t, 'seatRecords=on', CROSS);
+  const f = fake(d);
+  const { asked } = withRepo(f, 'mobile-club/metarepo', ['master']); // `bench/run-7` is NOT a ref of this repo
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.deepEqual(r.started.map((s) => s.ticket), ['A', 'B', 'C']);
+  assert.deepEqual(r.failed, []);
+  assert.ok(f.calls.every((c) => c.baseBranch === undefined), 'the spawn gets no base: createWorkspace cuts it from the worktree repo default branch');
+  for (const c of f.calls) {
+    assert.match(c.task, /Branch base: your worktree is cut from master of THIS repository, not from the run's target\./);
+    assert.match(c.task, /Run target: branch bench\/run-7 of mobile-club\/workspace — another repository/);
+    assert.doesNotMatch(c.task, /origin\/bench\/run-7/);
+  }
+  assert.deepEqual(asked, [], 'a cross-repo target is never looked up in the worktree repo');
+});
+
+test('#599 same-repo: unchanged — base = the run target, brief "Branch base: origin/<target>", the target is checked once', async (t) => {
+  for (const init of [[], ['--target', 'feat/x', '--repo', 'mobile-club/metarepo']]) {
+    const d = planned(t, 'seatRecords=on', init);
+    const f = fake(d);
+    const { asked } = withRepo(f, 'Mobile-Club/Metarepo', ['master', 'feat/x']);
+    const r = await startRun('r1', 'r1', f.deps);
+    const target = init.length ? 'feat/x' : 'master';
+    assert.deepEqual(r.started.map((s) => s.ticket), ['A', 'B', 'C']);
+    assert.ok(f.calls.every((c) => c.baseBranch === target), target);
+    assert.ok(f.calls.every((c) => c.task.includes(`Branch base: origin/${target}`) && !/Run target:/.test(c.task)));
+    assert.deepEqual(asked, [target], 'one lookup for the whole call');
+  }
+});
+
+test('#599 must-FAIL: a missing same-repo target is refused ONCE, before any spawn, naming the branch — not one failure per ticket; nothing recorded', async (t) => {
+  const d = planned(t, 'seatRecords=on', ['--target', 'feat/gone']);
+  const f = fake(d);
+  const { asked } = withRepo(f, null, ['master']);
+  await assert.rejects(() => startRun('r1', 'r1', f.deps), (e: Error) => e instanceof SeatRefusal && e.refusal === 'start-base-missing' && /feat\/gone/.test(e.message) && /nothing was started/.test(e.message));
+  assert.equal(f.calls.length, 0, 'no spawn');
+  assert.deepEqual(asked, ['feat/gone'], 'asked once for the three tickets');
+  assert.ok(['A', 'B', 'C'].every((id) => load(d).tickets[id].status === 'todo' && !load(d).tickets[id].implementer), 'state untouched');
+  withRepo(f, null, ['master', 'feat/gone']); // the branch is created: the same call now goes through (a refusal is retryable)
+  assert.equal((await startRun('r1', 'r1', f.deps)).started.length, 3);
+});
+
+test('#599 respawn follows the same rule: cross-repo → no base + the brief names the target; same-repo with the target gone → refused once, nothing spawned', async (t) => {
+  const d = planned(t, 'seatRecords=on', CROSS);
+  const f = fake(d);
+  withRepo(f, 'mobile-club/metarepo');
+  await startRun('r1', 'r1', f.deps);
+  set(d, 'B', '--pr', '12', '--head', 'a'.repeat(40));
+  const dead = load(d).tickets.B;
+  f.live.delete(dead.implementer!);
+  const n = f.calls.length;
+  const r = await startRun('r1', 'r1', f.deps);
+  assert.deepEqual(r.respawned.map((x) => x.ticket), ['B']);
+  const last = f.calls.at(-1)!;
+  assert.equal(f.calls.length, n + 1);
+  assert.equal(last.baseBranch, undefined); assert.equal(last.reuseBranch, true); assert.equal(last.name, dead.branch);
+  assert.match(last.task, /you are ON its branch .*, same name, same PR/);
+  assert.match(last.task, /Run target: branch bench\/run-7 of mobile-club\/workspace — another repository/);
+
+  const d2 = planned(t, 'seatRecords=on', ['--target', 'feat/y']);
+  const f2 = fake(d2);
+  const w2 = withRepo(f2, null, ['master', 'feat/y']);
+  await startRun('r1', 'r1', f2.deps);
+  f2.live.delete(load(d2).tickets.B.implementer!);
+  const m = f2.calls.length;
+  withRepo(f2, null, ['master']); // feat/y deleted meanwhile
+  await assert.rejects(() => startRun('r1', 'r1', f2.deps), /\[start-base-missing\].*feat\/y/);
+  assert.equal(f2.calls.length, m, 'no respawn');
+  assert.deepEqual(w2.asked, ['feat/y']);
+});
+
+test('#599 host op `start` carries the worktree-repo wiring to startRun: a cross-repo run starts with no base, a missing same-repo target is the one refusal [start-base-missing]', async (t) => {
+  const mk = (init: string[], refs: string[]) => {
+    const d = planned(t, 'seatRecords=on', init);
+    const f = fake(d);
+    const host = { home: f.deps.home, now: f.deps.now, isWorkspace: () => true, repoPath: () => '/repo', spawn: async () => ({ ok: false }), post: () => {}, vouches: (id: string, key: string | undefined) => id === 'r1' && key === 'k-r1', implementerLive: f.deps.implementerLive, spawnImplementer: f.deps.spawn, worktreeRepo: () => ({ remote: 'https://github.com/mobile-club/metarepo', defaultBranch: 'master' }), refExists: async ({ ref }: { ref: string }) => refs.includes(ref) } as unknown as AcceptanceHostDeps;
+    return { f, host };
+  };
+  const a = mk(CROSS, ['master']);
+  const ok = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1', key: 'k-r1' }, a.host);
+  assert.ok(ok.ok && ok.op === 'start' && ok.result.started.length === 3 && ok.result.failed.length === 0);
+  assert.ok(a.f.calls.every((c) => c.baseBranch === undefined));
+  const b = mk(['--target', 'feat/none', '--repo', 'mobile-club/metarepo'], ['master']);
+  const no = await dispatchFanoutAcceptance({ op: 'start', run: 'r1', from: 'r1', key: 'k-r1' }, b.host);
+  assert.ok(!no.ok && no.error.startsWith('[start-base-missing] ') && /feat\/none/.test(no.error), JSON.stringify(no));
+  assert.equal(b.f.calls.length, 0);
 });
