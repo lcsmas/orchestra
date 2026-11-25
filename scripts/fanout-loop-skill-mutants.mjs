@@ -40,7 +40,7 @@ const mutants = [
   ['609 text: the run-decision refusal is dropped', K, '; a ¤--run-decision¤ after the plan is refused (¤decision-after-plan¤)', ''],
   ['609 text: the brief is said to wait (an order to wait comes back)', K, 'Write NO order about sequencing: the brief is rendered by code and says every implementer starts at once on frozen names', 'Wait for each upstream merge before you launch the dependent: write code only after every upstream is merged'],
   ['609 text: a flag the help does not have', K, '¤--start-check¤', '¤--start-chek¤'],
-  ['609 text: the no-agent workspace spelling drifts from the ledger', K, '¤orchestra spawn --no-agent --name ops-<object> --run-command "<cmd>"¤', '¤orchestra spawn --noagent --name ops-<object> --run-command "<cmd>"¤'],
+  ['609 text: the no-agent workspace spelling drifts from the ledger', K, '¤orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"¤', '¤orchestra spawn --noagent --name ops-<object> --run-command "orchestra fanout run …"¤'],
   ['609 text: the unpark verb is dropped', K, '¤orchestra fanout state set <ticket> --unpark¤', 'edit the state file'],
   ['609 text: the section is padded past the word budget', K, 'No model leads a run: you **prepare**', `${'padding '.repeat(120)}No model leads a run: you **prepare**`],
   ['609 help: exit 3 is said to be exit 2', H, 'Exit 0 every ticket merged · 3 the run ended', 'Exit 0 every ticket merged · 2 the run ended'],

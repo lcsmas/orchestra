@@ -52,7 +52,7 @@ test('#609 on: every switch combination renders the section, with the three step
   for (const c of COMBOS) {
     const s = ON(c);
     assert.ok(s.length > 800, `section present at ${key(c)}`);
-    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command', 'orchestra fanout state set <ticket> --unpark', 'NO SAFE OPTION: <reason>', '## Choices']) {
+    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"', 'orchestra fanout state set <ticket> --unpark', 'NO SAFE OPTION: <reason>', '## Choices']) {
       assert.ok(s.includes(frozen), `${frozen} missing at ${key(c)}`);
     }
     for (const cause of PARK_CAUSES) assert.ok(s.includes(`\`${cause}\``), `park cause ${cause} named`);
@@ -76,7 +76,7 @@ const spans = (text: string): string[] => [...text.matchAll(/`((?:orchestra|--)[
 const HELP = [LOOP_USAGE, SEAT_USAGE, ...COMMANDS.filter((c) => c.name === 'fanout').map((c) => `${c.summary}\n${c.detail}`)].join('\n');
 const KNOWN_FLAGS = new Set([...HELP.matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
 /** #612's verb (not in this branch's CLI yet): its frozen spelling, kept here so the skill cannot drift from the ledger while the help is elsewhere. */
-const FROZEN_612 = 'orchestra spawn --no-agent --name ops-<object> --run-command "<cmd>"';
+const FROZEN_612 = 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"';
 const lint = (text: string): string[] => spans(text).flatMap((sp) => {
   if (sp === FROZEN_612) return [];
   const p: string[] = [];
@@ -114,8 +114,6 @@ test('#609 on: the section carries no order to wait, and names a decision only t
   assert.doesNotMatch(s, /write code only after/i);
   assert.match(s, /`--run-decision` after the plan is refused/);
   assert.match(s, /every implementer starts at once on frozen names/);
-  // must-fail: the order the vague #601 measured would be caught
-  assert.match('write code only after every upstream is merged', /write code only after/i);
 });
 
 test('#609 on: the loop-profile render (seatRecords=on verifier=off minorPolicy=demonstrated) stays under the 4,000-word always-read budget', () => {
