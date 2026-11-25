@@ -160,7 +160,7 @@ Churn burns a fleet's tokens and wall-clock. Caps, carried in every brief:
 - **One ping per event** — checkpoint, gate verdict, blocking question.
 <!--/sw-->
 <!--sw seatRecords=on-->
-Churn burns a fleet's tokens and wall-clock. The caps — reports as LEDGER COMMENTS with ONE ping, the fixed report format, the final ¤worker_done --cap¤ — are in the ledger's Briefing and in the role files (§2, §3b).
+Churn burns a fleet's tokens and wall-clock. The caps — reports as LEDGER COMMENTS with ONE ping, the final ¤worker_done --cap¤ — are in the ledger's Briefing and in the role files (§2, §3b). The §0b report format (≤15 lines): ¤STATE: <tip via ls-remote>¤ · each gate as ¤command → exact counts/RC¤ · findings · NOT VERIFIED.
 <!--/sw-->
 
 Gate rhythm:
@@ -422,7 +422,7 @@ refusal: inspect and retry. Never merge around either with ¤gh¤. Only an accep
 <!--/sw-->
 
 <!--sw seatRecords=on-->
-The count, the head and the CI are code, and the review input is the reviewer's RECORD (¤orchestra fanout record¤, §3b): ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --require-check suite --verified-head <sha> --run <id>¤ reads the verdict recorded on the delivered head, the CI and the PR, then merges with ¤gh pr merge --match-head-commit¤. A refusal (exit 2, JSON ¤reason¤) is the answer: ¤record-missing¤ (no verdict recorded on that head: wake or replace the reviewer with ¤orchestra fanout review <ticket>¤), ¤review-blocking¤ / ¤finding-unsettled¤ (a recorded BLOCKING/MAJOR or accepted demonstration: to the implementer; a finding you will not fix takes ¤state set <ticket> --decide <id>=<reason>¤ — a blank reason is refused), ¤head-moved¤ (the reviewer records the new head), ¤merge-conflict¤ (to the implementer), ¤ci-red¤ / ¤no-checks¤ / ¤zero-steps¤ (to whoever owns the CI), ¤wrong-base¤ / ¤pr-closed¤ (to the ledger). Exit 1 (¤timeout¤, ¤gh-failed¤, ¤merge-failed¤, ¤no-verified-head¤) is "could not check", not a refusal: inspect and retry. Never merge around either with ¤gh¤; you never type a verdict, a severity or a settlement — a finding exists only if the reviewer recorded it.
+The count, the head and the CI are code, and the review input is the reviewer's RECORD (¤orchestra fanout record¤, §3b): ¤orchestra fanout deliver --branch <b> --into <target> --ticket <id> --verified-head <sha> --run <id>¤ (¤--require-check <job>¤ pins the CI suite job when it cannot be derived) reads the verdict recorded on the delivered head, the CI and the PR, then merges with ¤gh pr merge --match-head-commit¤. A refusal (exit 2, JSON ¤reason¤) is the answer: ¤record-missing¤ (no verdict recorded on that head: wake or replace the reviewer with ¤orchestra fanout review <ticket>¤), ¤review-blocking¤ / ¤finding-unsettled¤ (a recorded BLOCKING/MAJOR or accepted demonstration: to the implementer; a finding you will not fix takes ¤state set <ticket> --decide <id>=<reason>¤ — a blank reason is refused), ¤head-moved¤ (the reviewer records the new head), ¤merge-conflict¤ (to the implementer), ¤ci-red¤ / ¤no-checks¤ / ¤zero-steps¤ (to whoever owns the CI), ¤wrong-base¤ / ¤pr-closed¤ (to the ledger). Exit 1 (¤timeout¤, ¤gh-failed¤, ¤merge-failed¤, ¤no-verified-head¤) is "could not check", not a refusal: inspect and retry. Never merge around either with ¤gh¤; you never type a verdict, a severity or a settlement — a finding exists only if the reviewer recorded it.
 
 <!--/sw-->
 <!--sw verifier=on-->
@@ -444,8 +444,17 @@ The count, the head and the CI are code, and the review input is the reviewer's 
 <!--sw minorPolicy=demonstrated seatRecords=off-->
 - **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR or demonstrated finding in its own diff reopens it.
 <!--/sw-->
-<!--sw seatRecords=on-->
-- **At most ONE follow-up branch per candidate**, only for a finding the reviewer RECORDED as BLOCKING/MAJOR (or an accepted demonstration / spec sentence): ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other.
+<!--sw minorPolicy=spec seatRecords=on-->
+- **At most ONE follow-up branch per candidate**, only for a finding the reviewer RECORDED as BLOCKING/MAJOR (or a MINOR with an accepted spec sentence): ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse any other MINOR-only or finding-less one.
+<!--/sw-->
+<!--sw minorPolicy=refuse seatRecords=on-->
+- **At most ONE follow-up branch per candidate**, only for a finding the reviewer RECORDED as BLOCKING/MAJOR: ¤state set <new> --follow-up-of <merged> --fixes <id>¤; ¤state¤/¤gate¤/¤deliver¤ refuse a MINOR-only or finding-less one.
+<!--/sw-->
+<!--sw minorPolicy=legacy seatRecords=on-->
+- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR the reviewer RECORDED in its own diff reopens it (¤--follow-up-of <merged> --fixes <id>¤).
+<!--/sw-->
+<!--sw minorPolicy=demonstrated seatRecords=on-->
+- **At most ONE follow-up branch per candidate**; only a BLOCKING/MAJOR or accepted demonstration the reviewer RECORDED in its own diff reopens it (¤--follow-up-of <merged> --fixes <id>¤).
 <!--/sw-->
 
 <!--sw minorPolicy=refuse|spec-->
