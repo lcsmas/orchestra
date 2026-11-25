@@ -70,6 +70,7 @@ import {
 import { setActiveWorkspace } from './hibernation.ts';
 import { sampleResources } from './resources';
 import { getHookSocketPath } from './hooks-server';
+import { dispatchNoAgentStart, noAgentRunner } from './noagent.ts';
 import {
   readInbox,
   releaseInboxBlock,
@@ -1259,6 +1260,12 @@ export const apiHandlers: ApiHandlerTable = {
   runScriptStart: async (id, cols, rows) => {
     const ws0 = store.getWorkspace(id);
     if (!ws0) throw new Error('workspace not found');
+    // #612: the Run button of a no-agent workspace starts ITS command, detached and vouched — never a second, non-detached copy in a PTY with no identity.
+    if (ws0.noAgent === true) {
+      const r = await dispatchNoAgentStart({ id });
+      if (!r.ok) throw new Error(r.error);
+      return;
+    }
     const script = store.getRepoScripts(ws0.repoPath).run;
     if (!script) throw new Error('no run script configured for this repo');
     // Lazy port allocation for legacy workspaces created before scripts.
@@ -1285,12 +1292,16 @@ export const apiHandlers: ApiHandlerTable = {
   },
 
   runScriptStop: async (id) => {
+    if (store.getWorkspace(id)?.noAgent === true) {
+      await noAgentRunner().stop(id);
+      return;
+    }
     stopPty(`${id}:run`);
   },
 
   runScriptScrollback: async (id) => readScrollback(`${id}:run`),
 
-  runScriptStatus: async (id) => isRunning(`${id}:run`),
+  runScriptStatus: async (id) => (store.getWorkspace(id)?.noAgent === true ? noAgentRunner().running(id) : isRunning(`${id}:run`)),
 
   // ---------- Insights & Improvements (monthly self-tune) ----------
 

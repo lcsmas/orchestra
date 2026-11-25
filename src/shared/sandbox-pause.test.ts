@@ -28,3 +28,17 @@ test('control: local, explicit-local, unhosted and unknown workspaces are NOT re
   assert.equal(sandboxPausedMessage(null), null);
   assert.equal(sandboxPausedMessage(undefined), null);
 });
+
+// #612 — a no-agent workspace is refused by the SAME decision every start funnel / the wake roster already read.
+import { NO_AGENT_MESSAGE } from './sandbox-pause.ts';
+
+test('#612: a noAgent workspace is refused with its own message, whatever its host', () => {
+  assert.equal(sandboxPausedMessage({ noAgent: true }), NO_AGENT_MESSAGE);
+  assert.equal(sandboxPausedMessage({ noAgent: true, host: { kind: 'local' } }), NO_AGENT_MESSAGE);
+  assert.match(NO_AGENT_MESSAGE, /no agent session by design/);
+});
+
+test('#612 control: noAgent false / absent keeps the old answers', () => {
+  assert.equal(sandboxPausedMessage({ noAgent: false }), null);
+  assert.equal(sandboxPausedMessage({ noAgent: false, host: { kind: 'sandbox' } }), SANDBOX_PAUSED_MESSAGE);
+});

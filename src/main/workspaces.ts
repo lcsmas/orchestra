@@ -83,6 +83,8 @@ import {
 } from './bus-runs.ts';
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
+import { dispatchNoAgentStart, stopNoAgentCommand } from './noagent.ts';
+import { noDisplayRefusal, runCommandRefusal } from '../shared/noagent.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { activePauseFor } from './bus-pause.ts';
 import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
@@ -346,7 +348,7 @@ export async function createWorkspace(
   defaultKind: ModelDefaultKind = 'workspace',
   /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record.
    *  `exactName` = the agent route: when the requested name and all its suffixes are taken, REFUSE instead of falling back to a random branch. */
-  naming?: { namedBy?: string; exactName?: boolean; /** #587 PR B: a respawn on the ticket's branch — the requested name IS the existing branch (no suffix pick). Set only by `fanout start`. */ reuseBranch?: boolean },
+  naming?: { namedBy?: string; exactName?: boolean; /** #587 PR B: a respawn on the ticket's branch — the requested name IS the existing branch (no suffix pick). Set only by `fanout start`. */ reuseBranch?: boolean; /** #612: a no-agent workspace — `orchestra spawn --no-agent --run-command`. Main-side only (never a renderer field). */ noAgent?: { runCommand: string } },
   /** #401: asks the agent spawn route which profil navigateur this workspace inherits. Called SYNCHRONOUSLY at the record build — after the worktree
    *  exists (the slow part), with no `await` before the first upsert — so a human detach / switch of the parent meanwhile is honoured. Deliberately not
    *  a {@link CreateWorkspaceInput} field: that type crosses the renderer IPC. */
@@ -464,6 +466,7 @@ export async function createWorkspace(
     model: modelForNewWorkspace(input.model, store.getModelDefaults(), defaultKind),
     // Same for the reasoning effort; "model default" leaves `sdkEffort` unset.
     ...(newEffort ? { sdkEffort: newEffort } : {}),
+    ...(naming?.noAgent ? { noAgent: true, runCommand: naming.noAgent.runCommand } : {}), // #612
     ...(inheritedProfile ? { browserProfileId: inheritedProfile } : {}),
   };
   await store.upsertWorkspace(ws);
@@ -733,6 +736,7 @@ export async function archiveWorkspace(id: string): Promise<void> {
     // dedicated Archived section where they can be restored or hard-deleted.
     stopPty(`${ws.id}:run`);
     stopPty(`${ws.id}:nvim`);
+    await stopNoAgentCommand(ws.id); // #612: its detached command is its only process — an archive stops it
     // Tear down the embedded browser panel as well. Its content is a native
     // WebContentsView composited ABOVE the renderer, so it is invisible to both
     // React and CSS: an archived workspace that still has one attached paints an
@@ -823,6 +827,7 @@ async function teardownWorkspace(ws: Workspace): Promise<void> {
   // runs BEFORE worktree removal so it can still see the files / cwd.
   stopPty(`${id}:run`);
   stopPty(`${id}:nvim`);
+  await stopNoAgentCommand(id); // #612: a no-agent workspace's detached command (no-op for any other)
   removeAgentTmpDir(id);
   destroyBrowserPanel(id); // #396: every delete path (socket `orchestra delete`, bulk, repo removal) — its tabs and popup windows must not outlive it
 
@@ -1511,10 +1516,15 @@ export async function dispatchSpawnRequest(
     account?: string;
     /** #587 PR B: respawn ON the existing branch `branch` (see createWorkspace). Set only by `fanout start` (in-process: hooks-server /spawn never passes it). */
     reuseBranch?: boolean;
+    /** #612: `orchestra spawn --no-agent --run-command <cmd>` — the child is a no-agent workspace: no task, no dispatch, no agent session; the host starts `runCommand` detached. Only the agent route (hooks `/spawn`) passes it. */
+    noAgent?: { runCommand: string };
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
-  if (!task) return { ok: false, error: 'empty task' };
+  if (input.noAgent) {
+    const bad = runCommandRefusal(input.noAgent.runCommand) ?? noDisplayRefusal(process.env);
+    if (bad) return { ok: false, error: bad };
+  } else if (!task) return { ok: false, error: 'empty task' };
   // #252 fleet PAUSE (ledger #261 row 20/21): a caller inside a paused run (or under a paused ancestor run) cannot spawn —
   // refused BEFORE the worktree is created. The caller's run is resolved NOW; a human click has no `from` and is never gated.
   const spawnPaused = pauseRefusal(input.from ? store.getWorkspace(input.from) : undefined, 'auto');
@@ -1590,7 +1600,7 @@ export async function dispatchSpawnRequest(
     const ws = await createWorkspace({
       repoPath,
       baseBranch: input.baseBranch,
-      task,
+      ...(input.noAgent ? {} : { task }), // #612: a no-agent workspace has no brief (lastTask stays unset)
       agent: input.agent,
       parentId: input.detached ? undefined : input.from,
       model,
@@ -1598,8 +1608,17 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
       ...(input.account ? { account: input.account } : {}),
       ...(input.from ? { accountFrom: input.from } : {}), // #480: also for --detached (it skips only the parent nesting)
-    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.reuseBranch ? { reuseBranch: true } : {}) }, input.profile !== undefined ? decideProfile : undefined);
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.reuseBranch ? { reuseBranch: true } : {}), ...(input.noAgent ? { noAgent: { runCommand: input.noAgent.runCommand.trim() } } : {}) }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
+    if (input.noAgent) {
+      // #612: no agent, so no dispatch and no start funnel — the HOST starts the command (detached, vouched). A start that fails removes the workspace again: a refusal creates nothing.
+      const run = await dispatchNoAgentStart({ id: ws.id });
+      if (!run.ok) {
+        await deleteWorkspace(ws.id).catch((e) => log.warn(`no-agent spawn: teardown of ${ws.id} failed`, e));
+        return { ok: false, error: run.error };
+      }
+      return { ok: true, id: ws.id, branch: ws.branch, note: `no agent session by design — its command is running detached (pid ${run.pid}, log ${run.log})` };
+    }
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({
       record: () => {

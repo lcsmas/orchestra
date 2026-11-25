@@ -1445,6 +1445,12 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-usage-resume-chain.mjs",
    "class": "LOCAL_ONLY",
    "reason": "exit 1: 'CHAIN FAIL (1) — 28 checks, 27 ok' (FAIL: a notice IS still produced (the user is warned)) — red on master, not env."
+  },
+  {
+   "id": "scripts/e2e-no-agent-workspace.sh",
+   "command": "pnpm run build:bundles && bash scripts/e2e-no-agent-workspace.sh \"$PWD\"",
+   "class": "LOCAL_ONLY",
+   "reason": "#612 measured on the local built app only (headless sway, real claude CLI on the fake API); never run on the hosted runner — promote once a runner run is green. The 2 h `--soak` mode is never a CI job. Mutants: node scripts/no-agent-workspace-mutants.mjs <app-dir> (7 × a full rig run)."
   }
  ],
  "groups": 12

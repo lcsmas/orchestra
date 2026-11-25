@@ -55,7 +55,7 @@ test('reuseBranch rides createWorkspace\'s naming (no suffix pick, git reuse) an
   const w = read('workspaces.ts');
   assert.match(w, /const free = requested && naming\?\.reuseBranch \? requested : requested \? await freeBranchName\(/);
   assert.match(w, /createWorktree\(input\.repoPath, branch, baseBranch, worktreePath, naming\?\.reuseBranch \? \{ reuse: true \} : undefined\)/);
-  assert.match(w, /\.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}, input\.profile/);
+  assert.match(w, /\.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\), \.\.\.\(input\.noAgent \? \{ noAgent: \{ runCommand: input\.noAgent\.runCommand\.trim\(\) \} \} : \{\}\) \}, input\.profile/); // #612: + the no-agent option
   for (const f of ['hooks-server.ts', 'transport/sandbox-manager.ts', 'acces-mobile.ts']) { try { assert.doesNotMatch(read(f), /reuseBranch/, f); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; } }
 });
 
