@@ -57,7 +57,7 @@ test('MUST-FAIL: no recorded verdict → deliver refuses, gh merges nothing (the
   const r = await rig({ approve: false });
   r.fake.advance(300_000);
   const a = await r.forge.merge(r.n, r.head);
-  assert.equal(a.ok, false, JSON.stringify(a));
+  assert.deepEqual([a.ok, a.reason], [false, 'record-missing'], JSON.stringify(a));
   assert.equal(r.merges(), 0, 'no `gh pr merge` was issued');
   assert.equal((await r.forge.prState(r.n)).state, 'open');
 });
@@ -65,7 +65,7 @@ test('MUST-FAIL: a red CI on the head → deliver refuses (a recorded approval d
   const r = await rig({ approve: true, ci: ['red:test'] });
   r.fake.advance(300_000);
   const a = await r.forge.merge(r.n, r.head);
-  assert.equal(a.ok, false, JSON.stringify(a));
+  assert.deepEqual([a.ok, a.reason], [false, 'ci-red'], JSON.stringify(a));
   assert.equal(r.merges(), 0);
 });
 test('MUST-FAIL: the head moved after the approval → refused, nothing merged', async () => {
@@ -73,7 +73,7 @@ test('MUST-FAIL: the head moved after the approval → refused, nothing merged',
   r.fake.advance(300_000);
   r.fake.push('T1', sha40());
   const a = await r.forge.merge(r.n, r.head);
-  assert.equal(a.ok, false, JSON.stringify(a));
+  assert.deepEqual([a.ok, a.reason], [false, 'head-moved'], JSON.stringify(a));
   assert.equal(r.merges(), 0);
 });
 test('MUST-FAIL control: the bare fallback (no deliver wired) merges a ticket with NO verdict — which is why production never takes it', async () => {
