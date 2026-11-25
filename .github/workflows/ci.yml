@@ -6,19 +6,27 @@
 name: CI
 
 # pull_request ONLY (#586): a `push` trigger ran a second copy per head on every PR branch and the two shared the concurrent-job limit; a push with no PR starts none.
+# workflow_dispatch (#595) = the FULL run: every rig, no path selection. scripts/release.sh refuses a tag whose tree has no green dispatch run (the release gate runs every rig once).
 on:
   pull_request:
     branches: [master]
+    # `labeled`: adding `ci-full` after the push re-runs the CI with every rig (the label is read from the event payload). Another label also starts a run — same selection, the old run is cancelled.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('dispatch-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # #595 path selection: a pull_request runs the rigs its changed files select (src/shared/ci-paths.ts); the label `ci-full` (read from the run's event payload — add it BEFORE the push, or
+  # close + reopen the PR) and every non-PR event run every rig. All jobs of a run derive the selection from the same inputs (scripts/ci/selection.mjs).
+  CI_PATH_SELECTION: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+  CI_FULL_REASON: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && 'the ci-full label forces every rig' || '' }}
 
 jobs:
   typecheck:
@@ -94,14 +102,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit
+          fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit; also the selection's `git diff HEAD^1 HEAD`
+      # #595: decide BEFORE the install + bundles whether this group has a selected rig — a group with none ends green here (summary says so).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: plan
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}" --plan
       - uses: ./.github/actions/setup
+        if: steps.plan.outputs.run == 'true'
         with:
           bundles: 'true'
           desktop: 'true'
-      - run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
+      - if: steps.plan.outputs.run == 'true'
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.plan.outputs.run == 'true'
         with:
           name: result-group-${{ matrix.group }}
           path: ${{ runner.temp }}/ci-result
@@ -118,6 +134,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # the merge commit AND its parents: the same `git diff HEAD^1 HEAD` the rig jobs selected from
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

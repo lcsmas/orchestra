@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readState, resolveFanoutRun, stackView, stateFile, updateState, type StackView } from '../shared/fanout-state.ts';
 import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/fanout-deliver.ts';
-import { readPrChecks, readTree, realDeps, type DeliverDeps } from './fanout-deliver.ts';
+import { readPrChecks, readTree, realDeps, targetWorkflows, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState, checkAcceptanceInCheckout, realCheckoutIo, type AcceptanceRead, type CheckoutIo } from './fanout-acceptance.ts';
 import { GATE_WAIT_DEFAULT_SEC, GATE_WAIT_MAX_SEC, openWait } from '../shared/fanout-acceptance.ts';
 import type { Acceptance, FanoutState, FollowUpReason } from '../shared/fanout-state.ts';
@@ -83,27 +83,6 @@ export function parseGateArgs(args: string[]): ParsedGate {
     acceptWaitSec = n;
   }
   return { ok: true, opts: { acceptWaitSec, branch: v['--branch'], into: v['--into'], head: v['--head'], repo: v['--repo'], requireChecks: required, ticket: v['--ticket'], run: v['--run'], cwd: v['--cwd'] } };
-}
-
-/** The TARGET branch's workflow files (contents read from GitHub, never this checkout). `[]` = the repo has none (404); `null` = could not read. */
-async function targetWorkflows(opts: GateOpts, deps: Pick<DeliverDeps, 'gh'>): Promise<string[] | null> {
-  const base = `repos/${opts.repo ?? '{owner}/{repo}'}/contents/.github/workflows`;
-  const ref = `?ref=${encodeURIComponent(opts.into)}`;
-  const list = await deps.gh(['api', `${base}${ref}`]);
-  if (list.code !== 0) return /404|Not Found/i.test(list.stderr) ? [] : null;
-  let names: string[];
-  try {
-    names = (JSON.parse(list.stdout) as { name?: string; type?: string }[]).filter((e) => e.type !== 'dir' && /\.ya?ml$/i.test(String(e.name))).map((e) => String(e.name));
-  } catch {
-    return null;
-  }
-  const out: string[] = [];
-  for (const n of names) {
-    const f = await deps.gh(['api', '-H', 'Accept: application/vnd.github.raw+json', `${base}/${encodeURIComponent(n)}${ref}`]);
-    if (f.code !== 0) return null; // an unreadable workflow could be the PR one: not "none"
-    out.push(f.stdout);
-  }
-  return out;
 }
 
 /** Production reader of `--ticket`'s stack from `<ORCHESTRA_HOME>/fanout/<run>/state.json`; null = no state / no such ticket. An unreadable state throws. */
