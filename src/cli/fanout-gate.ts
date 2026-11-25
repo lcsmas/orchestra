@@ -9,7 +9,8 @@ import { DELIVER_EXIT, SAFE_REF, decideGate, type GateAnswer } from '../shared/f
 import { readPrChecks, readTree, realDeps, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState, checkAcceptanceInCheckout, realCheckoutIo, type AcceptanceRead, type CheckoutIo } from './fanout-acceptance.ts';
 import { GATE_WAIT_DEFAULT_SEC, GATE_WAIT_MAX_SEC, openWait } from '../shared/fanout-acceptance.ts';
-import type { Acceptance, FollowUpReason } from '../shared/fanout-state.ts';
+import type { Acceptance, FanoutState, FollowUpReason } from '../shared/fanout-state.ts';
+import { recordedVerdictOf } from '../shared/fanout-record.ts';
 import { askFollowUp, followUpFromState, type FollowUpReader } from './fanout-followup.ts';
 import type { GateAcceptance } from '../shared/fanout-acceptance.ts';
 
@@ -36,7 +37,9 @@ export interface GateOpts {
 export interface GateResult extends Partial<GateAnswer> {
   /** `pending` (#515, exit 3): the ticket has a registered spec whose tests were not frozen within the wait — everything else the gate answers is in this line; no round is consumed. */
   verdict: 'gate' | 'unchecked' | 'refused' | 'pending';
-  reason?: 'gh-failed' | 'bad-args' | 'bad-state' | 'acceptance-pending' | FollowUpReason | GateAcceptance['reason'];
+  reason?: 'gh-failed' | 'bad-args' | 'bad-state' | 'acceptance-pending' | 'record-missing' | 'review-blocking' | FollowUpReason | GateAcceptance['reason'];
+  /** #589 (seatRecords=on, with --ticket) — the recorded reviewer's verdict on --head (counts DERIVED from its open findings). Absent when the switch is off. */
+  recorded?: { reviewer: string; round: number; verdict: string; blocking: number; major: number; minor: number };
   /** #510 — present when `--ticket` names a ticket with frozen acceptance tests. */
   acceptance?: GateAcceptance | { consulted: false } | { pending: true; spec: string | null; writer: string | null; wait: { since: string; deadline: string; boundSec: number } | null; /** set when the freeze landed during the wait but the candidate does not carry the files yet */ frozen?: { branch: string; files: string[]; run: string } } | { waived: { decision: string; reason: string } };
   detail?: string;
@@ -123,6 +126,8 @@ export type GateDeps = Pick<DeliverDeps, 'gh' | 'log' | 'sleep'> & {
   checkout?: CheckoutIo;
   /** #514 — the follow-up rule for `--ticket` (a candidate on a merged ticket must name a BLOCKING|MAJOR finding it fixes). Absent = not consulted. */
   followUp?: FollowUpReader;
+  /** #589 — the run's fanout state when `seatRecords` is ON (the gate then answers only for a head with the recorded reviewer's verdict); null = off / not consulted. Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
+  recorded?: (o: { ticket: string; run?: string }) => FanoutState | null;
 };
 
 export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: number; result: GateResult }> {
@@ -161,6 +166,20 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
       }
       if (fu.refusal) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: fu.refusal.reason, detail: fu.refusal.detail, ...base } };
     }
+    // #589 — seatRecords=on: no gate answer for a head without the recorded reviewer's verdict (the verdict is read from the state, never typed); after the follow-up rule, before any CI read.
+    let recorded: GateResult['recorded'];
+    if (opts.ticket !== undefined && deps.recorded) {
+      let rs: FanoutState | null;
+      try { rs = deps.recorded({ ticket: opts.ticket, run: opts.run }); } catch (e) {
+        return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s seatRecords switch: ${(e as Error).message}`, ...base } };
+      }
+      if (rs) {
+        const rd = recordedVerdictOf(rs, opts.ticket, opts.head, await readTree(deps.gh, opts.repo, opts.head));
+        if (!rd.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: rd.reason, detail: rd.detail, ...base } };
+        const r = rd.recorded;
+        recorded = { reviewer: r.reviewer, round: r.round, verdict: r.verdict, blocking: r.blocking, major: r.major, minor: r.minor };
+      }
+    }
     // #515 — a ticket whose spec is registered but whose tests are not frozen yet: NOT refused. The rest of the gate runs now; the wait for the freeze comes after it.
     const pendingRead = got && got.known && !got.acceptance && got.phase === 'pending' ? got : null;
     if (got?.known && !got.acceptance && got.phase === 'waived' && got.ticket?.accept?.waived) accept = { waived: { decision: got.ticket.accept.waived.decision, reason: got.ticket.accept.waived.reason } };
@@ -195,7 +214,7 @@ export async function gatePr(opts: GateOpts, deps: GateDeps): Promise<{ exit: nu
       workflows, pr: snap ? { headRefOid: snap.view.headRefOid } : null, head: opts.head, checks: snap?.checks ?? [], requiredChecks: opts.requireChecks, into: opts.into, stable, prFiles, headTree, prTree,
     });
     if (workflows === null) deps.log('gate: could not read the target\'s .github/workflows — fullSuite stays on the verifier');
-    const out: GateResult = { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}), ...(accept ? { acceptance: accept } : {}) };
+    const out: GateResult = { verdict: 'gate', ...answer, ...base, ...(pr ? { pr: pr.number } : {}), ...(stack !== undefined ? { stack } : {}), ...(accept ? { acceptance: accept } : {}), ...(recorded ? { recorded } : {}) };
     if (copyNeeded) return { exit: DELIVER_EXIT.pending, result: copyPendingAnswer(out, copyNeeded, opts) };
     if (!pendingRead) return { exit: DELIVER_EXIT.merged, result: out };
     // Wait for the freeze (bounded; the window is printed in the state), then run the acceptance clause exactly as for an already-frozen ticket.

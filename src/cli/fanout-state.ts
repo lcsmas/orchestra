@@ -43,6 +43,7 @@ import type { CheckExec } from '../shared/fanout-checks.ts';
 import type { IdentityResolution } from '../shared/session-identity.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
+import { countsThrough, unrecordedReviewers } from '../shared/fanout-record.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
 export interface HostCall { route: '/fanoutAcceptance'; body: Record<string, unknown> }
@@ -424,8 +425,12 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       patch.findings = { ...(typeof patch.findings === 'object' && patch.findings !== null ? patch.findings : {}), ...obj };
     }
     if (p.vals['--settle'] !== undefined) patch.settle = settleArg(p.vals['--settle']);
+    let blankDecide: string | null = null; // #589: a blank reason is `[decision-reason-blank]` under seatRecords=on, the old usage error otherwise (checked once the state is read)
     if (p.vals['--decide'] !== undefined) {
-      const d = decideArg(p.vals['--decide']);
+      const raw = p.vals['--decide'];
+      const bi = raw.indexOf('=');
+      if (bi >= 1 && !raw.slice(bi + 1).trim()) blankDecide = raw;
+      const d = blankDecide !== null ? { [raw.slice(0, bi).trim()]: { text: '' } } : decideArg(raw);
       patch.decide = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, { ...v, by: deps.env.ORCHESTRA_WS_ID?.trim() || 'coordinator' }]));
     }
     const specRead = p.vals['--spec-text'] !== undefined || typeof patch.spec === 'string' ? readSpecText(typeof patch.spec === 'string' ? patch.spec : undefined, p.vals['--spec-text'], deps) : null;
@@ -437,6 +442,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const notes: string[] = specRead?.note ? [specRead.note] : [];
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const before = readState(file);
+    if (blankDecide !== null && !seatRecordsOn(before)) decideArg(blankDecide); // seatRecords off: the old usage error, unchanged
     const repo = before?.repo ?? null;
     if (before && seatRecordsOn(before) && p.vals['--depends-on'] !== undefined) { // #587: only an explicit `none` declares an empty list — an empty value declares nothing
       if (p.vals['--depends-on'].trim().toLowerCase() === 'none') patch.dependsOn = [];
@@ -495,7 +501,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const acc = acceptanceOn(s) ? Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null) : [];
     const chk = switchesOf(s).preNominationChecks === 'on' ? Object.entries(s.tickets).filter(([, t]) => t.status !== 'merged' && t.status !== 'dropped').map(([id, t]) => checksLine(id, t)) : [];
     const dem = switchesOf(s).minorPolicy === 'demonstrated' ? demonstratedShow(s) : '';
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${seatRecordsOn(s) ? seatShow(s) : ''}${dem}${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${seatRecordsOn(s) ? seatShow(s) : ''}${dem}${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}${recordsShow(s)}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
 }
@@ -526,6 +532,18 @@ export function seatShow(s: FanoutState): string {
   const ready = readyTickets(s);
   const decisions = s.decisions?.length ? `decisions (#587): ${s.decisions.length}${s.decisions.map((d) => `\n  ${d.n}. ${d.text.replace(/\s+/g, ' ').slice(0, 120)}`).join('')}\n` : '';
   return `plan (#587): ${s.plan ? `${s.plan.tickets.join(', ')} (declared ${s.plan.declaredAt})` : 'not declared'} — ${missing.length ? `INCOMPLETE, ${missing.length} missing: ${missing.join('; ')}` : 'complete'}\n${ifs.length ? `interfaces (#587): ${ifs.join(' · ')}\n` : ''}ready (todo, not started): ${ready.length ? ready.join(', ') : missing.length ? 'none — the plan is incomplete' : 'none'}\n${decisions}`;
+}
+
+/** #589 — `state show` under seatRecords=on: per ticket the recorded reviews (reviewer, head, word, the OPEN counts derived from its findings). Empty = nothing (the switch off prints nothing: byte-identical). */
+export function recordsShow(s: FanoutState): string {
+  if (!seatRecordsOn(s)) return '';
+  const rows = Object.entries(s.tickets).filter(([, t]) => t.review?.reviewer || (t.reviews ?? []).length).map(([id, t]) => {
+    const last = (t.reviews ?? [])[(t.reviews ?? []).length - 1];
+    if (!last) return `${id}  reviewer ${t.review?.reviewer?.name ?? '?'} (${t.review?.reviewer?.id ?? 'not spawned'}): NO verdict recorded yet`;
+    const c = countsThrough(t, last.n);
+    return `${id}  round ${last.n} by ${last.reviewer} on ${last.head.slice(0, 8)}: ${last.verdict} — ${c.blocking} BLOCKING / ${c.major} MAJOR / ${c.minor} MINOR open${c.open.length ? ` (${c.open.join(', ')})` : ''}`;
+  });
+  return rows.length ? `recorded reviews (#589):\n${rows.map((l) => `  ${l}`).join('\n')}\n` : 'recorded reviews (#589): none yet\n';
 }
 
 /** #572 — `state show` under minorPolicy=demonstrated: per ticket the OPEN demonstrated findings (they block gate + deliver), then the demonstrations code refused (recorded with the reason). Empty text = nothing to say. */
@@ -644,6 +662,9 @@ function runResume(args: string[], deps: FanoutDeps): RunResult {
   // 4/5 next action
   out.push('4/5 next action');
   for (const [id, t] of Object.entries(plan.tickets)) out.push(`    ${id.padEnd(10)} ${t.class.padEnd(14)} ${t.next.action.padEnd(32)} ${t.next.detail}`);
+  // #589 — seatRecords=on: a recorded reviewer that has not recorded its head's verdict leaves the ticket refused; say who to wake / replace (alive or dead, one verb)
+  const unrec = unrecordedReviewers(state);
+  for (const u of unrec) out.push(`    ! ${u.ticket.padEnd(10)} reviewer-no-record              ${u.line}`);
   // 5/5 write back
   let wrote = 'skipped (--no-write)';
   if (!p.bools.has('--no-write')) {
@@ -653,6 +674,6 @@ function runResume(args: string[], deps: FanoutDeps): RunResult {
   }
   out.push(`5/5 write back  ${wrote}`);
   const code = plan.divergences.length ? 2 : 0;
-  if (p.bools.has('--json')) return { code, stdout: `${JSON.stringify({ run: state.run, divergences: plan.divergences, tickets: plan.tickets, writeBack: plan.writeBack }, null, 2)}\n`, stderr: r.note };
+  if (p.bools.has('--json')) return { code, stdout: `${JSON.stringify({ run: state.run, divergences: plan.divergences, tickets: plan.tickets, writeBack: plan.writeBack, ...(seatRecordsOn(state) ? { reviewersWithoutRecord: unrec } : {}) }, null, 2)}\n`, stderr: r.note };
   return { code, stdout: `${out.join('\n')}\n`, stderr: r.note };
 }

@@ -63,6 +63,11 @@ export interface FindingRecord {
   report?: FindingReport;
   decision?: FindingDecision;
   settled?: FindingSettled;
+  /** #589 (I4, seatRecords=on) — written ONLY by `orchestra fanout record`: the recording reviewer's workspace id, its finding text, the head it was raised on, and who read the fix on which later head. */
+  by?: string;
+  text?: string;
+  raisedOn?: string;
+  fixedBy?: { by: string; head: string; at: string };
 }
 /** #553 (T2) — the four parts a measured MINOR on product code carries: T1's `findingOf` validates each when `report` is present; this is the rule that it IS present. */
 export const REPORT_PARTS = ['input', 'happens', 'where', 'proof'] as const;
@@ -84,6 +89,9 @@ export interface AcceptFlow {
   /** Coordinator-only escape (`acceptance waive`): the ticket cannot have acceptance tests. */
   waived: { decision: string; reason: string; at: string } | null;
 }
+
+/** #589 (I4) — one recorded verdict: who, the exact head (+ its tree) it read, the finding ids it raised / closed as fixed. */
+export interface ReviewEntry { n: number; reviewer: string; head: string; tree: string | null; verdict: 'approve' | 'changes-requested'; findings: string[]; closed: string[]; at: string }
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -131,6 +139,8 @@ export interface TicketState {
   accept: AcceptFlow | null;
   /** #564 — pre-nomination check records by git TREE of the head they ran on (DERIVED: only `orchestra fanout check` writes it; absent = none, never written empty). */
   checks?: Record<string, CheckRecord>;
+  /** #589 (I4, seatRecords=on) — the verdicts the recorded reviewer recorded (`orchestra fanout record`), oldest first. Counts are DERIVED (`reviewCounts`), never stored. */
+  reviews?: ReviewEntry[];
   /** #587 (seatRecords) — true once `--depends-on` was given (`none` = declared empty). Optional: never written under seatRecords=off, a v1 file without it loads (= false). */
   depsDeclared?: boolean;
   /** #587 — the interface other tickets build against (null / absent = none). Optional like the rest: written only by `--interface`. */
@@ -228,6 +238,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
+TICKET_KEYS.add('reviews'); // #589 (I4)
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -573,6 +584,7 @@ function isoOf(v: unknown, where: string): string {
   return v;
 }
 const FINDING_KEYS = new Set(['severity', 'evidence', 'kind', 'specSentence', 'demonstration', 'report', 'decision', 'settled']);
+for (const k of ['by', 'text', 'raisedOn', 'fixedBy']) FINDING_KEYS.add(k); // #589 (I4)
 /** #572 — a stored / patched demonstration: SHAPE only (strings, printable, bounded). A blank / short / missing field is NOT an error here: it is recorded with its refusal reason (`classifyDemonstration`). */
 function demonstrationOf(v: unknown, where: string): Demonstration {
   if (!isObj(v)) throw new FanoutStateError(`${where}.demonstration must be {${DEMONSTRATION_FIELDS.join(', ')}}`);
@@ -613,7 +625,30 @@ export function findingOf(v: unknown, where: string): FindingRecord {
     refuseUnknown(v.settled, new Set(['how', 'at', 'ref']), `${where}.settled`);
     out.settled = { how: enumOf(v.settled.how, ['fixed', 'pr-body'] as const, `${where}.settled.how`), at: isoOf(v.settled.at, `${where}.settled.at`), ref: lineOf(v.settled.ref, `${where}.settled.ref`, 500) };
   }
+  // #589 (I4): the reviewer's own record (parsed always — a stored state holds them; the patch path refuses them off-switch, `assertPatchSource`)
+  if (v.by !== undefined) out.by = lineOf(v.by, `${where}.by`, 200);
+  if (v.text !== undefined) out.text = lineOf(v.text, `${where}.text`);
+  if (v.raisedOn !== undefined) { if (typeof v.raisedOn !== 'string' || !HEX_SHA.test(v.raisedOn)) throw new FanoutStateError(`${where}.raisedOn must be a 7-40 lowercase hex sha`); out.raisedOn = v.raisedOn; }
+  if (v.fixedBy !== undefined) {
+    if (!isObj(v.fixedBy)) throw new FanoutStateError(`${where}.fixedBy must be {by, head, at}`);
+    refuseUnknown(v.fixedBy, new Set(['by', 'head', 'at']), `${where}.fixedBy`);
+    if (typeof v.fixedBy.head !== 'string' || !HEX_SHA.test(v.fixedBy.head)) throw new FanoutStateError(`${where}.fixedBy.head must be a 7-40 lowercase hex sha`);
+    out.fixedBy = { by: lineOf(v.fixedBy.by, `${where}.fixedBy.by`, 200), head: v.fixedBy.head, at: isoOf(v.fixedBy.at, `${where}.fixedBy.at`) };
+  }
   return out;
+}
+/** #589 (I4) — the stored `reviews`: every field shape-checked, `n` strictly increasing from 1. */
+function reviewsOf(v: unknown, where: string): ReviewEntry[] {
+  if (!Array.isArray(v)) throw new FanoutStateError(`${where}: reviews must be an array`);
+  return v.map((e, i) => {
+    const at = `${where}: reviews[${i}]`;
+    if (!isObj(e)) throw new FanoutStateError(`${at} must be an object`);
+    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at']), at);
+    if (!Number.isInteger(e.n) || (e.n as number) !== i + 1) throw new FanoutStateError(`${at}.n must be ${i + 1} (reviews are numbered 1.. in order)`);
+    if (typeof e.head !== 'string' || !HEX_SHA.test(e.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
+    const ids = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of finding ids`); return x as string[]; };
+    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`) };
+  });
 }
 function findingsOf(v: unknown): Record<string, FindingRecord> {
   if (v === undefined || v === null) return {};
@@ -979,6 +1014,7 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.start !== undefined ? { start: startOf(t.start, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
+      ...(t.reviews !== undefined ? { reviews: reviewsOf(t.reviews, `ticket ${id}`) } : {}), // #589 (I4)
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -1188,7 +1224,24 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
  *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
  *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
-export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
+/** #589 (I4) — who may write what, BEFORE the transition. seatRecords=on: a finding / a settle is recorded by the reviewer's `fanout record` only (the coordinator's `--finding`, `--finding-json`, `--settle`, or their `--json` keys ⇒ `[finding-source]`),
+ *  and a decision needs a written reason (`[decision-reason-blank]`). off: the four record-only finding fields are unknown, as before #589. */
+function assertPatchSource(state: FanoutState, id: string, patch: Record<string, unknown>): void {
+  const findings = isObj(patch.findings) ? Object.entries(patch.findings) : [];
+  if (!seatRecordsOn(state)) {
+    for (const [k, f] of findings) if (isObj(f)) for (const bad of ['by', 'text', 'raisedOn', 'fixedBy']) if (bad in f) throw new FanoutStateError(`unknown field "${bad}" in findings[${k}]`);
+    return;
+  }
+  if (findings.length || ('findings' in patch && patch.findings !== undefined && !isObj(patch.findings))) throw new FanoutStateError(`[finding-source] ${id}: seatRecords=on — a finding is recorded by the ticket's reviewer (\`orchestra fanout record ${id} --head <sha> --verdict approve|changes-requested --json <file|->\`), never typed by the coordinator (--finding / --finding-json refused)`);
+  if (isObj(patch.settle) && Object.keys(patch.settle).length) throw new FanoutStateError(`[finding-source] ${id}: seatRecords=on — a finding is closed as fixed by the reviewer that read the fix (\`fanout record ${id} … --json\` {"fixed":[…]}); the coordinator's --settle is refused. Not fixing it: \`state set ${id} --decide <finding>=<reason>\``);
+  for (const [k, v] of Object.entries(isObj(patch.decide) ? patch.decide : {})) if (!isObj(v) || typeof v.text !== 'string' || !v.text.trim()) throw new FanoutStateError(`[decision-reason-blank] ${id}: --decide ${k} needs a written reason (the closeout lists each decision with it): \`state set ${id} --decide ${k}=<why it is not fixed>\``);
+}
+export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: Parameters<typeof applyTicketPatchCore>[4] = {}): FanoutState {
+  assertPatchSource(stampDefaults(state0), id, patch); // #589
+  return applyTicketPatchCore(state0, id, patch, now, derived);
+}
+/** The transition itself (#589: `fanout record` calls it directly, with the reviewer's findings the wrapper above refuses to the coordinator). */
+export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');
