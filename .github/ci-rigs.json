@@ -1763,6 +1763,12 @@
    "group": 2
   },
   {
+   "id": "test:fanout-loop-skill-mutants",
+   "command": "pnpm run test:fanout-loop-skill-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 15
+  },
+  {
    "id": "test:fanout-review-mutants",
    "command": "pnpm run test:fanout-review-mutants",
    "class": "RUNS_IN_CI",

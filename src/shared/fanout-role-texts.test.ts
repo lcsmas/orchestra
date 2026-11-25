@@ -22,6 +22,7 @@ import { COMMANDS } from '../cli/help.ts';
 import { SEAT_USAGE } from '../cli/fanout-state.ts';
 import { REVIEW_USAGE } from '../cli/fanout-review.ts';
 import { RECORD_USAGE } from '../cli/fanout-record.ts';
+import { LOOP_USAGE } from '../cli/fanout-loop-help.ts';
 import { briefInputOf } from './fanout-review.ts';
 import { switchesOf, type Switches } from './fanout-state.ts';
 
@@ -65,6 +66,9 @@ const RULES: ReadonlyArray<readonly [string, string, string?]> = [
   ["--- name: verified-fanout description: Mecha", 'C'],
   ["# Verified fan-out", 'C'],
   ["Decide before you spawn. This skill is the m", 'C'],
+  ["## The Boucle: orchestra fanout run leads t", 'C', 'n'], // #609: the loop section (seatRecords=on only; its own test: fanout-loop-skill.test.ts)
+  ["No model leads a run: you prepare, launch, r", 'C', 'n'],
+  ["1. Prepare — one ticket per spec, disjoint f", 'C', 'n'],
   ["Three roles. N implementers work in fresh wo", 'C'],
   ["## Roles are typed — the name is the role (v", 'C'],
   ["The role is the --name prefix the spawner ga", 'C'],
@@ -419,7 +423,7 @@ test('#590 installer wiring: the role templates are in the HOOKS_VERSION hash (a
 
 // every `orchestra fanout …` span of the ON text names a verb and flags the CLI knows: the main usage + the seatRecords usage (#587) + the review usage (#588) + `fanout record` once #589 lands
 test('#590 on: every `orchestra fanout state set …` / `fanout review` flag of the ON coordinator text is a flag of the CLI (main usage ∪ seat usage ∪ review usage); a made-up flag is caught', () => {
-  const known = new Set([...[helpOf('fanout'), SEAT_USAGE, REVIEW_USAGE, RECORD_USAGE].join('\n').matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
+  const known = new Set([...[helpOf('fanout'), SEAT_USAGE, REVIEW_USAGE, RECORD_USAGE, LOOP_USAGE].join('\n').matchAll(/(?<![\w-])(--[a-z][a-z-]*)(?![\w-])/g)].map((m) => m[1]));
   const spans = (text: string): string[] => [...text.replace(/```[\s\S]*?```/g, '').matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\s+/g, ' ').trim()).filter((x) => /^orchestra fanout (state set|review|record|deliver|start)\b/.test(x));
   const lint = (text: string): string[] => spans(text).flatMap((sp) => sp.split(' ').flatMap((tk) => { const f = /^(--[a-z][a-z-]*)/.exec(tk)?.[1]; return f && !known.has(f) ? [`${f} in: ${sp}`] : []; }));
   for (const c of COMBOS) assert.deepEqual(lint(renderVerifiedFanoutSkill(asSw(c, 'on'))), [], `ON text at ${comboKey(c)}`);
