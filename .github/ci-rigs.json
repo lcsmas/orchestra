@@ -204,7 +204,8 @@
    "id": "test:fanout-park-mutants",
    "command": "pnpm run test:fanout-park-mutants",
    "class": "RUNS_IN_CI",
-   "timeoutMin": 30
+   "timeoutMin": 30,
+   "group": 9
   },
   {
    "id": "test:fanout-switches-mutants",
@@ -254,19 +255,21 @@
    "command": "pnpm run test:fanout-seat-records-mutants",
    "class": "RUNS_IN_CI",
    "wallSec": 42,
-   "group": 13
+   "group": 3
   },
   {
    "id": "test:fanout-plan",
    "command": "pnpm run test:fanout-plan",
    "class": "RUNS_IN_CI",
-   "wallSec": 12
+   "wallSec": 12,
+   "group": 11
   },
   {
    "id": "test:fanout-plan-mutants",
    "command": "pnpm run test:fanout-plan-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 210
+   "wallSec": 210,
+   "group": 10
   },
   {
    "id": "test:fanout-start",
@@ -280,14 +283,14 @@
    "command": "pnpm run test:fanout-start-mutants",
    "class": "RUNS_IN_CI",
    "wallSec": 132,
-   "group": 10
+   "group": 15
   },
   {
    "id": "test:acceptance-forced",
    "command": "pnpm run test:acceptance-forced",
    "class": "RUNS_IN_CI",
    "wallSec": 57,
-   "group": 13
+   "group": 1
   },
   {
    "id": "test:acceptance-forced-mutants",
@@ -728,7 +731,7 @@
    "command": "pnpm run test:handoff-cache",
    "class": "RUNS_IN_CI",
    "wallSec": 165,
-   "group": 9
+   "group": 13
   },
   {
    "id": "test:handoff-role",
@@ -1153,7 +1156,7 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tab-memory.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 76,
-   "group": 9
+   "group": 16
   },
   {
    "id": "scripts/e2e-browser-tabs-registry.sh",
@@ -1167,7 +1170,7 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tabs.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 78,
-   "group": 15
+   "group": 2
   },
   {
    "id": "scripts/e2e-browser-whole-flow.sh",
