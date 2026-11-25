@@ -58,6 +58,7 @@
 # --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
 # #484: the gate is SKIPPED when scripts/release-gate.sh already PASSED on this exact tree (a receipt keyed by the git tree id, package.json's
 # version line masked; any other change, another gate version or an unclean tree runs it). The vague's final gate runs `bash scripts/release-gate.sh`.
+# #595 FULL RIG RUN: after the gate, the tree must also have a green `workflow_dispatch` run of ci.yml (every rig; pull-request runs are path-selected): `gh workflow run ci.yml --ref master`.
 #
 # Requirements: a clean working tree on a non-detached branch, up to date with
 # its own remote, and an authenticated gh CLI.
@@ -409,6 +410,17 @@ else
     echo "  receipt: $_rg_why — running the gate"
     rg_run_gate || exit 1
   fi
+fi
+# #595: a pull request runs only the rigs its files select; the TAG's tree needs one green run of every rig (a workflow_dispatch run of ci.yml on a commit with the same tree).
+say "Full rig run (#595): a green workflow_dispatch run of ci.yml on this tree"
+if [ "$DRY_RUN" = 1 ]; then
+  printf '  [dry-run] full rig run: gh run list --workflow ci.yml --event workflow_dispatch --status success -> a commit with this tree (package.json version line masked)%s\n' \
+    "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
+elif [ "$SKIP_GATE" = 1 ]; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — the full rig run (ci.yml workflow_dispatch) was NOT required. Reason: %s\n' "$SKIP_GATE_REASON" >&2
+else
+  _rg_ci="$(rg_full_ci_check)" || exit 1
+  echo "  $_rg_ci"
 fi
 if [ "$CI_ONLY" = 0 ]; then
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] pnpm run build:bus-abi\n'; else rg_prepare_native || exit 1; fi

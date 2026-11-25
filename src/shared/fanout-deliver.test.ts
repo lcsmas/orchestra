@@ -10,6 +10,7 @@ import {
   normaliseRollupItem,
   parseActionsJobUrl,
   parseReviewVerdict,
+  rigSelectionOf,
   type DecideInput,
   type DeliverCheck,
 } from './fanout-deliver.ts';
@@ -197,6 +198,22 @@ test('decideGate must-PASS: PR CI + green on the verified head ⇒ the full suit
   assert.ok(g.checklist.skip.some((s) => /full test suite/.test(s)));
   assert.equal(g.checklist.run.length, 0);
   assert.ok(g.checklist.keep.some((k) => /mutants/.test(k)) && g.checklist.keep.some((k) => /entry-point/.test(k)));
+});
+
+test('#595 rigSelectionOf / decideGate: a target workflow that selects rigs by path is NAMED — gate detail + checklist say rigs were skipped by path; a plain PR CI says nothing of the sort', () => {
+  const BYPATH = `${PR_WF}env:\n  CI_PATH_SELECTION: \${{ github.event_name == 'pull_request' && '1' || '0' }}\n`;
+  assert.equal(rigSelectionOf([BYPATH]), 'by-path');
+  assert.equal(rigSelectionOf([PR_WF]), 'all');
+  assert.equal(rigSelectionOf(['# CI_PATH_SELECTION: only a comment\non:\n  pull_request:\n']), 'all', 'a comment names nothing');
+  assert.equal(rigSelectionOf([PUSH_WF + 'env:\n  CI_PATH_SELECTION: 1\n']), 'all', 'a workflow that does not run on PRs is not the PR CI');
+  assert.equal(rigSelectionOf(null), 'unknown');
+  const by = decideGate({ workflows: [BYPATH], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] });
+  assert.equal(by.rigSelection, 'by-path');
+  assert.match(by.detail, /SKIPPED BY PATH/);
+  assert.ok(by.checklist.skip.some((x) => /rigs the changed files select.*skipped by path/.test(x)));
+  const plain = decideGate({ workflows: [PR_WF], pr: { headRefOid: HEAD }, head: HEAD, checks: [GH], stable: true, prFiles: ['src/a.ts'] });
+  assert.equal(plain.rigSelection, 'all'); assert.doesNotMatch(plain.detail, /SKIPPED BY PATH/);
+  assert.equal(decideGate({ workflows: [PUSH_WF], pr: null, head: HEAD, checks: [], stable: true, prFiles: ['src/a.ts'] }).rigSelection, 'unknown');
 });
 
 test('decideGate must-FAIL: no PR CI ⇒ the full suite STAYS on the verifier', () => {

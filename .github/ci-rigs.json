@@ -1,5 +1,34 @@
 {
  "_doc": "Every rig is RUNS_IN_CI or LOCAL_ONLY + reason (#568). Guard: src/shared/ci-rigs.test.ts. Read by the matrix + summary of .github/workflows/ci.yml.",
+ "groups": 16,
+ "suiteShards": 2,
+ "sharedPaths": [
+  "package.json",
+  "pnpm-lock.yaml",
+  "tsconfig.json",
+  "vite*.config.ts",
+  ".github/ci-rigs.json",
+  ".github/workflows/**",
+  ".github/actions/**",
+  "scripts/ci/**",
+  "src/shared/ci-closure.ts",
+  "src/shared/ci-paths.ts",
+  "src/shared/ci-rigs.ts"
+ ],
+ "noRigPaths": [
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.test.mjs",
+  "docs/**",
+  "*.md",
+  ".github/ci-skips.json",
+  ".claude/**",
+  "LICENSE",
+  ".gitignore",
+  "src/shared/fanout-freeze-captures/**",
+  "src/shared/fixtures/**",
+  "src/shared/verified-fanout-refs/**"
+ ],
  "rigs": [
   {
    "id": "test:resource-service",
@@ -1452,7 +1481,5 @@
    "class": "LOCAL_ONLY",
    "reason": "exit 1: 'CHAIN FAIL (1) — 28 checks, 27 ok' (FAIL: a notice IS still produced (the user is warned)) — red on master, not env."
   }
- ],
- "groups": 16,
- "suiteShards": 2
+ ]
 }
