@@ -60,6 +60,20 @@ test('real bus (review 614 MAJOR-1): a message whose handling FAILED is read aga
   assert.deepEqual((await f.mail()).map((x) => x.body), ['which name?'], 'still there on the next pass');
 });
 
+test('real bus (review 614 MAJOR): after a PARTIAL ack the covered messages are never handed out again while the rest of the lot replays', async (t) => {
+  const b = setup(t);
+  const f = await fleetOn(b.cli);
+  b.post('question', 'ws-a', 'first');
+  b.post('question', 'ws-a', 'second');
+  const m = await f.mail();
+  assert.equal(m.length, 2);
+  await f.ack(m[0].seq); // the first was answered, the second FAILED
+  assert.deepEqual((await f.mail()).map((x) => x.body), ['second'], 'only the failed one comes back');
+  assert.deepEqual((await f.mail()).map((x) => x.body), ['second'], 'and keeps coming back until handled');
+  await f.ack(m[1].seq);
+  assert.deepEqual(await f.mail(), []);
+});
+
 test('real bus: a loop killed after reading the lot reads it AGAIN (never lost); an acked one is not replayed', async (t) => {
   const b = setup(t);
   b.post('question', 'ws-a', 'which name?');

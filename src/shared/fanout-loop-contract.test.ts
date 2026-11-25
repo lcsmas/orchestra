@@ -294,7 +294,7 @@ const fleetArms: Array<[string, (h: FleetH) => Promise<void>]> = [
     assert.deepEqual((await h.fleet.mail()).map((x) => x.seq), [1, 2, 3], '[mail.unacked] mail() alone never consumes: a loop that failed on a message reads it again');
     await h.fleet.ack(1);
     const rest = (await h.fleet.mail()).map((x) => x.seq);
-    assert.ok(rest.includes(2) && rest.includes(3), `[mail.ack.partial] an ack of seq 1 must not lose seq 2 and 3 (read ${JSON.stringify(rest)})`);
+    assert.deepEqual(rest, [2, 3], `[mail.ack.partial] an ack of seq 1 loses neither 2 nor 3 and never hands 1 out again (read ${JSON.stringify(rest)})`);
     await h.fleet.ack(3);
     assert.deepEqual(await h.fleet.mail(), [], '[mail.acked] acked: gone');
     h.world.post('status', w1, 'T1', 'later');
@@ -489,6 +489,39 @@ test('live forge (review 614 MINOR-2): a re-run waits only for the red RUN\'s ow
   await h.port.rerun(n, [red.name]);
   assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'rerun').length, 1, 're-ran');
   assert.equal(h.fake.clock, t0, 'without waiting for the external status');
+});
+test('live forge (review 614 MAJOR): a SKIPPED job is neither green nor red — left out, as `deliver` ignores it (a 0-step green would be refused `zero-steps` forever)', async () => {
+  const h = liveForge();
+  h.fake.skipped = 'lint';
+  const head = h.branch('T1');
+  const { n } = await open(h, 'T1');
+  await h.settle();
+  const cs = await h.port.checks(n, head);
+  assert.deepEqual(cs.map((c) => c.name).sort(), ['build', 'test']);
+  assert.ok(cs.every((c) => c.status === 'green' && (c.steps ?? 0) >= 1));
+});
+test('live forge: a check linked to a whole run (no job id) has no step count — refused, never the sum of the run\'s jobs; N jobs of a run cost ONE `gh run view`', async () => {
+  const noJob = createLiveForge({ gh: async (a) => a[0] === 'pr' ? { code: 0, stdout: JSON.stringify({ state: 'OPEN', headRefOid: 'abc1234', statusCheckRollup: [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'https://github.com/o/r/actions/runs/77', completedAt: '2026-01-01T00:00:00Z' }] }), stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' } });
+  assert.equal((await noJob.checks(1, 'abc1234'))[0].steps, undefined);
+  const h = liveForge();
+  const head = h.branch('T1');
+  const { n } = await open(h, 'T1');
+  await h.settle();
+  await h.port.checks(n, head);
+  assert.equal(h.fake.calls.filter((c) => c[0] === 'run' && c[1] === 'view' && c.includes('jobs')).length, 1, 'one gh run view for the three jobs of the run');
+});
+test('live fleet: a transient CLI failure (exit 1) is retried, a refusal (exit 2) is not', async () => {
+  const h = await fleetHarness('live');
+  let fails = 1;
+  const flaky: Cli = async (a) => (a[0] === 'check' && fails-- > 0 ? { code: 1, stdout: '', stderr: 'busy' } : h.bus.cli(a));
+  const waits: number[] = [];
+  const f = await createLiveFleet({ run: 'fl', caller: 'fl', cli: flaky, host: h.bus.host, readState: () => readState(stateFile(h.home, h.run)), sleep: async (ms) => { waits.push(ms); } });
+  assert.deepEqual(await f.mail(), []);
+  assert.deepEqual(waits, [1000], 'retried once');
+  h.bus.fail.start = { code: 2, stdout: '', stderr: '[start-caller] no' };
+  waits.length = 0;
+  await assert.rejects(f.start(), SeatRefusal);
+  assert.deepEqual(waits, [], 'a refusal is final');
 });
 test('live forge: with neither `deliver` nor the rigs\' bareMerge, merge REFUSES to run (no default path around deliver)', async () => {
   const p = createLiveForge({ gh: new FakeForge().gh });

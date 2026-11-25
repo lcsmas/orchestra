@@ -25,6 +25,8 @@ export interface LiveFleetDeps {
   costOf?: (ticket: string) => Promise<{ tokens: number } | null>;
   /** Largest lot read per `check`. */
   lotLimit?: number;
+  /** Pauses between retries of a transient CLI failure (default: real timers). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type LiveFleet = FleetPort & {
@@ -57,6 +59,7 @@ const loopKind = (kind: string): string => (kind === 'question' ? 'ask' : kind);
 
 export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
   let liveSet = new Set<string>();
+  let skip = 0; // seqs ≤ skip were acked PARTIALLY (the loop is past them, a later message of the same lot is not): they are not handed out again
   let held: { lot: number; last: number } | null = null; // the lot `mail()` handed out: acked by `ack(upToSeq)` once the loop has handled every message of it (a kill, or a failed message, before that replays it — at-least-once, never lost)
 
   const refresh = async (): Promise<void> => {
@@ -66,6 +69,13 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
     if (!r.ok || !Array.isArray(r.live)) throw new FanoutStateError(`the host could not tell which workspaces are alive: ${String(r.error ?? 'no answer')}`);
     liveSet = new Set((r.live as unknown[]).filter((x): x is string => typeof x === 'string'));
   };
+  /** A transient failure of a shipped verb (exit 1: the host busy, the bus locked) is retried twice; a refusal (exit 2, `[name]`) never is. */
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const retried = async (args: string[]): Promise<ExecResult> => {
+    let r = await deps.cli(args);
+    for (const wait of [1_000, 3_000]) { if (r.code === 0 || r.code === 2) break; await sleep(wait); r = await deps.cli(args); }
+    return r;
+  };
   const say = async (to: string, text: string): Promise<void> => {
     const r = await deps.cli(['send', '--type', 'status', '--to', to, '--', text]);
     if (r.code !== 0) throw verbError('send', r);
@@ -73,7 +83,7 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
 
   const fleet: LiveFleet = {
     async start() {
-      const r = await deps.cli(['fanout', 'start', '--run', deps.run]);
+      const r = await retried(['fanout', 'start', '--run', deps.run]);
       let parsed: StartResult | null = null;
       try { parsed = JSON.parse(r.stdout) as StartResult; } catch { /* a refusal prints no JSON */ }
       if (!parsed || (r.code !== 0 && r.code !== 2)) throw verbError('fanout start', r);
@@ -85,18 +95,22 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
     send: (to, text, _kind) => say(to, text), // the bus has no `answer` kind: the fixed answer is an ordinary status the agent reads on its next turn
     async mail() { // never acks (FleetPort.ack does): until it is acked, the same lot comes back — `check` replays an outstanding lot
       await refresh();
-      const r = await deps.cli(['check', '--limit', String(deps.lotLimit ?? 200)]); // a plain check NEVER acks (#115)
+      const r = await retried(['check', '--limit', String(deps.lotLimit ?? 200)]); // a plain check NEVER acks (#115)
       if (r.code !== 0) throw verbError('check', r);
       let lot: LotOut;
       try { lot = JSON.parse(r.stdout) as LotOut; } catch { throw new FanoutStateError(`orchestra check: not JSON: ${r.stdout.slice(0, 120)}`); }
       held = lot.lot !== null && lot.messages.length ? { lot: lot.lot, last: Math.max(...lot.messages.map((m) => m.sequence)) } : null;
-      return lot.messages.map((m): LoopMail => ({ seq: m.sequence, kind: loopKind(m.kind), sender: m.sender, ticket: null, body: m.body }));
+      const fresh = lot.messages.filter((m) => m.sequence > skip);
+      if (held && !fresh.length) { await fleet.ack(held.last); return fleet.mail(); } // every message of the lot is already covered by a partial ack: close it and read the next
+      return fresh.map((m): LoopMail => ({ seq: m.sequence, kind: loopKind(m.kind), sender: m.sender, ticket: null, body: m.body }));
     },
-    async ack(upToSeq) { // the lot is the bus's unit: acked only when the loop is past its LAST message (a lower `upToSeq` — a message still failing — acks nothing, the whole lot replays)
-      if (!held || upToSeq < held.last) return;
+    async ack(upToSeq) { // the lot is the bus's unit: acked once the loop is past its LAST message; a lower `upToSeq` (a message still failing) is remembered, so what it covers is not handed out again while the lot replays
+      if (!held) return;
+      if (upToSeq < held.last) { skip = Math.max(skip, upToSeq); return; }
       const r = await deps.cli(['ack', String(held.lot)]);
       if (r.code !== 0 && !/not an outstanding lot/.test(r.stderr)) throw verbError('ack', r); // an already-acked lot is fine
       held = null;
+      skip = 0;
     },
     async spawnReviewer(ticket, head) {
       const s = deps.readState();

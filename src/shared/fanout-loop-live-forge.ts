@@ -58,22 +58,26 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     return j ? `${j.run}@${stamp ?? ''}` : stamp ? `${nameOf(r)}@${stamp}` : undefined;
   };
 
-  /** Review 614 BLOCKING-1: a green Actions job carries the count of USER steps that succeeded (`gh run view --json jobs`, cached per run/job — a re-run is a new job id): the loop's `decideDelivery` refuses a green that proves nothing ran. An external status has no steps to count (undefined: refused too). */
-  const stepCache = new Map<string, number>();
+  /** Review 614 BLOCKING-1: a green Actions job carries the count of USER steps that succeeded (`gh run view --json jobs`): the loop's `decideDelivery` refuses a green that proves nothing ran. An external status has no steps to count (undefined: refused too).
+   *  The jobs of a run are read ONCE (the promise is shared by the N jobs asked at once); a job the cached list does not hold (a re-run made new jobs of the same run) re-reads it. */
+  type JobRow = { databaseId?: number; steps?: Array<{ name?: string; conclusion?: string }> };
+  const runJobs = new Map<string, Promise<JobRow[]>>();
+  const jobsOf = (run: string, fresh = false): Promise<JobRow[]> => {
+    const have = runJobs.get(run);
+    if (have && !fresh) return have;
+    const p = json<{ jobs?: JobRow[] }>(['run', 'view', run, '--json', 'jobs', ...repoArgs]).then((x) => x.jobs ?? []);
+    runJobs.set(run, p);
+    p.catch(() => { if (runJobs.get(run) === p) runJobs.delete(run); }); // a failure is not cached
+    return p;
+  };
   async function stepsOf(r: Row): Promise<number | undefined> {
-    const state = normaliseRollupItem(r, () => null).state;
-    if (state === 'neutral') return 0; // skipped: ran nothing
-    if (state !== 'success') return undefined;
+    if (normaliseRollupItem(r, () => null).state !== 'success') return undefined;
     const j = parseActionsJobUrl(r.detailsUrl ?? r.targetUrl);
-    if (!j) return undefined;
-    const key = `${j.run}/${j.job ?? ''}`;
-    const have = stepCache.get(key);
-    if (have !== undefined) return have;
-    const jobs = (await json<{ jobs?: Array<{ databaseId?: number; steps?: Array<{ name?: string; conclusion?: string }> }> }>(['run', 'view', j.run, '--json', 'jobs', ...repoArgs])).jobs ?? [];
-    const mine = jobs.filter((x) => j.job === null || String(x.databaseId) === j.job);
-    if (!mine.length) throw new GhError(`gh run view ${j.run}: job ${j.job} not found`); // fail closed: never "no steps to worry about"
-    const n = mine.reduce((a, x) => a + (x.steps ?? []).filter((st) => (st.conclusion ?? '').toLowerCase() === 'success' && isUserStep(st.name)).length, 0);
-    stepCache.set(key, n);
+    if (!j || j.job === null) return undefined; // a check linked to a whole run (no job): its steps cannot be told — refused, never summed over the run's jobs
+    const count = (jobs: JobRow[]): number | null => { const mine = jobs.filter((x) => String(x.databaseId) === j.job); return mine.length ? mine.reduce((a2, x) => a2 + (x.steps ?? []).filter((st) => (st.conclusion ?? '').toLowerCase() === 'success' && isUserStep(st.name)).length, 0) : null; };
+    let n = count(await jobsOf(j.run));
+    if (!n) n = count(await jobsOf(j.run, true)); // unknown job (a re-run made it) or 0 steps (the cached list was read while it was still running): read again once
+    if (n === null) throw new GhError(`gh run view ${j.run}: job ${j.job} not found`); // fail closed: never "no steps to worry about"
     return n;
   }
 
@@ -122,7 +126,7 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     },
 
     async checks(n, head) {
-      const rows = await rowsOf(n, head);
+      const rows = (await rowsOf(n, head)).filter((r) => normaliseRollupItem(r, () => null).state !== 'neutral'); // a skipped / neutral job is neither green nor red: `deliver` ignores it, so does the loop
       return Promise.all(rows.map(async (r): Promise<ForgeCheck> => {
         const status = statusOf(r);
         const jobId = jobIdOf(r);

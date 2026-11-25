@@ -31,6 +31,8 @@ export class FakeForge {
   readonly calls: string[][] = [];
   /** A required EXTERNAL status (no Actions run behind it) stuck pending on every PR — a sibling of nothing. */
   externalPending: string | null = null;
+  /** The name of a job that is SKIPPED (an `if:` that evaluated false) on every run. */
+  skipped: string | null = null;
   private ids = 1000;
   private served = new Map<string, number>(); // branch → CI runs created so far
   readonly gh = async (args: string[]): Promise<ExecResult> => this.run(args);
@@ -80,7 +82,7 @@ export class FakeForge {
     return [...ext, ...CHECKS.map((name) => {
       const finished = done && !(r.sibling && r.sibling.name === name && this.clock < r.sibling.until);
       return {
-        __typename: 'CheckRun', name, workflowName: 'ci', status: finished ? 'COMPLETED' : 'IN_PROGRESS', conclusion: finished ? (name === red ? 'FAILURE' : 'SUCCESS') : '',
+        __typename: 'CheckRun', name, workflowName: 'ci', status: finished ? 'COMPLETED' : 'IN_PROGRESS', conclusion: finished ? (name === red ? 'FAILURE' : name === this.skipped ? 'SKIPPED' : 'SUCCESS') : '',
         detailsUrl: `https://github.com/o/r/actions/runs/${r.id}/job/${r.jobs[name]}`, startedAt: this.iso(r.startedAt), completedAt: finished ? this.iso(r.doneAt) : '0001-01-01T00:00:00Z',
       };
     })];
