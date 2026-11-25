@@ -39,7 +39,7 @@ const I = 'src/cli/index.ts';
 const F = 'false as boolean';
 const mutants = [
   // the record: who, which ticket, which head
-  ['record: the switch is not checked (off records)', R, "if (!seatRecordsOn(state)) return refuse('record-off'", `if (${F}) return refuse('record-off'`],
+  ['record: the switch is not checked (off records)', R, "if (!seatRecordsOn(state)) return recordRefuse('record-off'", `if (${F}) return recordRefuse('record-off'`],
   ['record: a ticket with no recorded reviewer is not refused', R, "if (!t || !reviewer) {", `if (${F}) {`],
   ['record: an id the host did not vouch records (env-asserted identity accepted)', R, "|| a.callerVouched !== true) {\n    if (a.callerId === reviewer", "|| false as boolean) {\n    if (a.callerId === reviewer"],
   ['record-json: the finding id alphabet is not checked', R, "const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;", "const FINDING_ID = /^.*$/;"],
@@ -51,17 +51,17 @@ const mutants = [
   ['record: any caller records (the identity is not compared with the recorded reviewer)', R, "if (a.callerId === null || a.callerId !== reviewer || a.callerVouched !== true) {", `if (${F}) {`],
   ['record: the head is not compared with the briefed head', R, "if (!/^[0-9a-f]{7,40}$/.test(a.head) || !sameSha(expected, a.head)) {", `if (${F}) {`],
   ['record: the briefed head is the ticket\'s head, not the reviewer\'s latest brief', R, "return b.length ? b[b.length - 1].head : t.review?.head ?? t.head ?? null;", "return t.head ?? null;"],
-  ['record: any verdict word is accepted', R, "if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return refuse('record-verdict'", `if (${F}) return refuse('record-verdict'`],
-  ['record: a finding id already recorded is rewritten', R, "if (t.findings[id]) refuse('finding-exists'", `if (${F}) refuse('finding-exists'`],
+  ['record: any verdict word is accepted', R, "if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return recordRefuse('record-verdict'", `if (${F}) return recordRefuse('record-verdict'`],
+  ['record: a finding id already recorded is rewritten', R, "if (t.findings[id]) recordRefuse('finding-exists'", `if (${F}) recordRefuse('finding-exists'`],
   // fixed
-  ['fixed: an unknown finding id is accepted', R, "if (!f) refuse('fixed-not-open'", `if (${F}) refuse('fixed-not-open'`],
-  ['fixed: a finding already closed can be closed again', R, "if (findingClosed(f) || (t.reviews ?? []).some((r) => r.closed.includes(id))) refuse('fixed-not-open'", `if (${F}) refuse('fixed-not-open'`],
-  ['fixed: a finding no reviewer raised is closed by a reviewer', R, "if (!f.by || !reviewers.has(f.by)) refuse(", `if (${F}) refuse(`],
-  ['fixed: closed on the head it was raised on', R, "if (f.raisedOn && sameSha(f.raisedOn, head)) refuse(", `if (${F}) refuse(`],
+  ['fixed: an unknown finding id is accepted', R, "if (!f) recordRefuse('fixed-not-open'", `if (${F}) recordRefuse('fixed-not-open'`],
+  ['fixed: a finding already closed can be closed again', R, "if (findingClosed(f) || (t.reviews ?? []).some((r) => r.closed.includes(id))) recordRefuse('fixed-not-open'", `if (${F}) recordRefuse('fixed-not-open'`],
+  ['fixed: a finding no reviewer raised is closed by a reviewer', R, "if (!f.by || !reviewers.has(f.by)) recordRefuse(", `if (${F}) recordRefuse(`],
+  ['fixed: closed on the head it was raised on', R, "if (f.raisedOn && sameSha(f.raisedOn, head)) recordRefuse(", `if (${F}) recordRefuse(`],
   ['fixed: a replacement reviewer cannot close the dead reviewer\'s findings (reviewersOf forgets the earlier ones)', R, "  for (const b of t.review?.briefs ?? []) if (b.reviewer) out.add(b.reviewer);\n  for (const r of t.reviews ?? []) out.add(r.reviewer);\n", ""],
   // the verdict vs the open findings
-  ['approve accepted with an open BLOCKING / MAJOR', R, "if (a.verdict === 'approve' && heldIds.length) refuse(", `if (${F}) refuse(`],
-  ['changes-requested accepted with nothing open', R, "if (a.verdict === 'changes-requested' && heldIds.length === 0) refuse(", `if (${F}) refuse(`],
+  ['approve accepted with an open BLOCKING / MAJOR', R, "if (a.verdict === 'approve' && heldIds.length) recordRefuse(", `if (${F}) recordRefuse(`],
+  ['changes-requested accepted with nothing open', R, "if (a.verdict === 'changes-requested' && heldIds.length === 0) recordRefuse(", `if (${F}) recordRefuse(`],
   ['approve blocked by an open MINOR (the severity filter is gone)', R, "c.open.filter((id) => nt.findings[id].severity !== 'MINOR')", "c.open"],
   ['approve ignores a blocking MINOR of minorPolicy', R, ", ...blockingMinors(out, ticketId).filter((id) => c.open.includes(id))", ""],
   // derived counts
@@ -94,8 +94,8 @@ const mutants = [
   ['state file: a hand-typed verdict word is accepted in reviews', S, "enumOf(e.verdict, ['approve', 'changes-requested'] as const", "enumOf(e.verdict, ['approve', 'changes-requested', 'pass'] as const"],
   ['decide: any caller may record "not fixed" (the caller is not checked)', C, "      assertDecideCaller(before, caller);\n", ""],
   ['decide: `by` is taken from the --json patch, not the vouched id', C, "[k, { ...v, by: caller.id }]", "[k, { by: caller.id, ...v }]"],
-  ['decide: an id the host did not vouch may decide', R, "if (caller.proof !== 'host-vouched') refuse('decide-caller'", `if (${F}) refuse('decide-caller'`],
-  ['decide: a non-coordinator may decide', R, "if (caller.role !== 'coordinator') refuse('decide-caller'", `if (${F}) refuse('decide-caller'`],
+  ['decide: an id the host did not vouch may decide', R, "if (caller.proof !== 'host-vouched') recordRefuse('decide-caller'", `if (${F}) recordRefuse('decide-caller'`],
+  ['decide: a non-coordinator may decide', R, "if (caller.role !== 'coordinator') recordRefuse('decide-caller'", `if (${F}) recordRefuse('decide-caller'`],
   ['state set: the typed approve / changes-requested word is accepted from the coordinator', S, "if (patch.verdict === 'approve' || patch.verdict === 'changes-requested') throw", `if (${F}) throw`],
   ['deliver: a decoy run with the switch off skips the recorded-verdict rule', D, "if (ownState && seatRecordsOn(ownState)) throw", `if (${F}) throw`],
   ['wiring: a `state set --decide` never asks the host who the caller is', I, "if (stateSetNeedsHost(args, process.env)) {", `if (${F}) {`],

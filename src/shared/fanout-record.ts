@@ -6,7 +6,7 @@ import type { FileOnHead } from './fanout-demonstration.ts';
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
 const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
-const refuse = (name: string, msg: string): never => { throw new SeatRefusal(name, msg); };
+const recordRefuse = (name: string, msg: string): never => { throw new SeatRefusal(name, msg); };
 
 /** The command a reviewer ends with — printed by every refusal that sends it here. */
 export const recordCommand = (ticket: string, head: string): string => `orchestra fanout record ${ticket} --head ${head} --verdict approve|changes-requested --json <file|->`;
@@ -18,26 +18,26 @@ const INPUT_FINDING_KEYS = new Set(['severity', 'evidence', 'text', 'demonstrati
 /** `{"findings":{"<id>":{severity, evidence, text, demonstration?, report?, specSentence?, kind?}},"fixed":["<id>",…]}` — shape only; the finding rules (severity, report, specSentence, demonstration) are the state's own, applied by `recordReview`. */
 export function parseRecordJson(text: string): RecordInput {
   let raw: unknown;
-  try { raw = JSON.parse(text); } catch { return refuse('record-json', 'the --json is not valid JSON'); }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return refuse('record-json', 'the --json must be {"findings":{<id>:{…}},"fixed":[<id>,…]}');
+  try { raw = JSON.parse(text); } catch { return recordRefuse('record-json', 'the --json is not valid JSON'); }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return recordRefuse('record-json', 'the --json must be {"findings":{<id>:{…}},"fixed":[<id>,…]}');
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed') refuse('record-json', `unknown key "${k}" (only findings and fixed)`);
+  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed') recordRefuse('record-json', `unknown key "${k}" (only findings and fixed)`);
   const findings: RecordInput['findings'] = {};
   if (o.findings !== undefined) {
-    if (typeof o.findings !== 'object' || o.findings === null || Array.isArray(o.findings)) refuse('record-json', '"findings" must be an object {<id>: {severity, evidence, text, …}}');
+    if (typeof o.findings !== 'object' || o.findings === null || Array.isArray(o.findings)) recordRefuse('record-json', '"findings" must be an object {<id>: {severity, evidence, text, …}}');
     for (const [id, f] of Object.entries(o.findings as Record<string, unknown>)) {
-      if (!FINDING_ID.test(id)) refuse('record-json', `unsafe finding id ${JSON.stringify(id)}`);
-      if (typeof f !== 'object' || f === null || Array.isArray(f)) refuse('record-json', `finding ${id} must be an object {severity, evidence, text, …}`);
+      if (!FINDING_ID.test(id)) recordRefuse('record-json', `unsafe finding id ${JSON.stringify(id)}`);
+      if (typeof f !== 'object' || f === null || Array.isArray(f)) recordRefuse('record-json', `finding ${id} must be an object {severity, evidence, text, …}`);
       const rec = f as Record<string, unknown>;
-      for (const k of Object.keys(rec)) if (!INPUT_FINDING_KEYS.has(k)) refuse('record-json', `finding ${id}: unknown field "${k}" (${[...INPUT_FINDING_KEYS].join(', ')})`);
-      if (rec.evidence !== 'measured' && rec.evidence !== 'argued') refuse('record-json', `finding ${id}: evidence must be "measured" or "argued" — a finding says how it was established`);
-      if (typeof rec.text !== 'string' || !rec.text.trim() || rec.text.length > 2000 || CTRL.test(rec.text)) refuse('record-json', `finding ${id}: text must be the finding in printable words (non-empty, at most 2000 characters)`);
+      for (const k of Object.keys(rec)) if (!INPUT_FINDING_KEYS.has(k)) recordRefuse('record-json', `finding ${id}: unknown field "${k}" (${[...INPUT_FINDING_KEYS].join(', ')})`);
+      if (rec.evidence !== 'measured' && rec.evidence !== 'argued') recordRefuse('record-json', `finding ${id}: evidence must be "measured" or "argued" — a finding says how it was established`);
+      if (typeof rec.text !== 'string' || !rec.text.trim() || rec.text.length > 2000 || CTRL.test(rec.text)) recordRefuse('record-json', `finding ${id}: text must be the finding in printable words (non-empty, at most 2000 characters)`);
       findings[id] = rec;
     }
   }
   let fixed: string[] = [];
   if (o.fixed !== undefined) {
-    if (!Array.isArray(o.fixed) || o.fixed.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) refuse('record-json', '"fixed" must be an array of finding ids');
+    if (!Array.isArray(o.fixed) || o.fixed.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) recordRefuse('record-json', '"fixed" must be an array of finding ids');
     fixed = [...new Set(o.fixed as string[])];
   }
   return { findings, fixed };
@@ -94,34 +94,34 @@ export interface RecordArgs {
 
 /** `orchestra fanout record <ticket>`: the recorded reviewer's verdict + findings on the exact head it read. Pure: returns the new state or throws a named refusal. */
 export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs): FanoutState {
-  if (!seatRecordsOn(state)) return refuse('record-off', `seatRecords is off for run ${state.run} — nothing is recorded; the coordinator's verdict file (deliver --review-verdict) stays the way`);
+  if (!seatRecordsOn(state)) return recordRefuse('record-off', `seatRecords is off for run ${state.run} — nothing is recorded; the coordinator's verdict file (deliver --review-verdict) stays the way`);
   const t = state.tickets[ticketId];
   const reviewer = t?.review?.reviewer?.id ?? null;
   if (!t || !reviewer) {
-    return refuse('record-wrong-ticket', `${ticketId} ${t ? 'has no recorded reviewer' : 'is not in the state of run ' + state.run} (tickets with a reviewer: ${Object.entries(state.tickets).filter(([, x]) => x.review?.reviewer?.id).map(([k]) => k).join(', ') || 'none'}) — a verdict is recorded on the ticket its reviewer was spawned for (\`orchestra fanout review <ticket>\`)`);
+    return recordRefuse('record-wrong-ticket', `${ticketId} ${t ? 'has no recorded reviewer' : 'is not in the state of run ' + state.run} (tickets with a reviewer: ${Object.entries(state.tickets).filter(([, x]) => x.review?.reviewer?.id).map(([k]) => k).join(', ') || 'none'}) — a verdict is recorded on the ticket its reviewer was spawned for (\`orchestra fanout review <ticket>\`)`);
   }
   if (a.callerId === null || a.callerId !== reviewer || a.callerVouched !== true) {
-    if (a.callerId === reviewer && a.callerVouched !== true) return refuse('record-not-reviewer', `the host could not vouch that you are ${t.review!.reviewer!.name} (${reviewer}): an id read from the environment is forgeable, so it records nothing — run this from the reviewer's own session (is Orchestra running, and is this its live session?)`);
-    return refuse('record-not-reviewer', `only ${ticketId}'s recorded reviewer (${t.review!.reviewer!.name}, ${reviewer}) records its verdict — you are ${a.callerId ?? 'not identified'}${state.tickets[ticketId] && Object.entries(state.tickets).some(([k, x]) => k !== ticketId && x.review?.reviewer?.id === a.callerId) ? ', the recorded reviewer of another ticket' : ''}. A verdict typed by anyone else is not read by gate or deliver`);
+    if (a.callerId === reviewer && a.callerVouched !== true) return recordRefuse('record-not-reviewer', `the host could not vouch that you are ${t.review!.reviewer!.name} (${reviewer}): an id read from the environment is forgeable, so it records nothing — run this from the reviewer's own session (is Orchestra running, and is this its live session?)`);
+    return recordRefuse('record-not-reviewer', `only ${ticketId}'s recorded reviewer (${t.review!.reviewer!.name}, ${reviewer}) records its verdict — you are ${a.callerId ?? 'not identified'}${state.tickets[ticketId] && Object.entries(state.tickets).some(([k, x]) => k !== ticketId && x.review?.reviewer?.id === a.callerId) ? ', the recorded reviewer of another ticket' : ''}. A verdict typed by anyone else is not read by gate or deliver`);
   }
   const expected = reviewHeadOf(t);
-  if (!expected) return refuse('record-head-mismatch', `${ticketId} has no head the reviewer was briefed on — nothing to record against`);
+  if (!expected) return recordRefuse('record-head-mismatch', `${ticketId} has no head the reviewer was briefed on — nothing to record against`);
   if (!/^[0-9a-f]{7,40}$/.test(a.head) || !sameSha(expected, a.head)) {
-    return refuse('record-head-mismatch', `--head ${a.head.slice(0, 12)} is not the head you were briefed to read (${expected.slice(0, 12)}): a verdict speaks about the exact head it read — read ${expected.slice(0, 12)} (or ask the coordinator to wake you on the new head: \`orchestra fanout review ${ticketId}\`), then record`);
+    return recordRefuse('record-head-mismatch', `--head ${a.head.slice(0, 12)} is not the head you were briefed to read (${expected.slice(0, 12)}): a verdict speaks about the exact head it read — read ${expected.slice(0, 12)} (or ask the coordinator to wake you on the new head: \`orchestra fanout review ${ticketId}\`), then record`);
   }
   const head = expected.length >= a.head.length ? expected : a.head; // the longer of the two spellings of one sha
-  if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return refuse('record-verdict', `--verdict must be approve or changes-requested (got ${JSON.stringify(a.verdict)}) — the counts are derived from your findings, not typed`);
+  if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return recordRefuse('record-verdict', `--verdict must be approve or changes-requested (got ${JSON.stringify(a.verdict)}) — the counts are derived from your findings, not typed`);
 
   // findings: new ids only; `fixed` ids must be open findings that a reviewer of this ticket raised, on ANOTHER head than this one
   const ids = Object.keys(a.input.findings);
-  for (const id of ids) if (t.findings[id]) refuse('finding-exists', `finding ${id} is already recorded on ${ticketId} (${t.findings[id].severity}): a recorded finding is not rewritten — close it with "fixed" on a later head, or give the new problem a new id`);
+  for (const id of ids) if (t.findings[id]) recordRefuse('finding-exists', `finding ${id} is already recorded on ${ticketId} (${t.findings[id].severity}): a recorded finding is not rewritten — close it with "fixed" on a later head, or give the new problem a new id`);
   const reviewers = reviewersOf(t);
   for (const id of a.input.fixed) {
     const f = t.findings[id];
-    if (!f) refuse('fixed-not-open', `"fixed" names ${id}, which is not recorded on ${ticketId} (recorded: ${Object.keys(t.findings).join(', ') || 'none'})`);
-    if (findingClosed(f) || (t.reviews ?? []).some((r) => r.closed.includes(id))) refuse('fixed-not-open', `"fixed" names ${id}, which is already closed (${f.settled ? 'settled' : f.decision ? 'decided: ' + f.decision.text.slice(0, 80) : 'fixed'})`);
-    if (!f.by || !reviewers.has(f.by)) refuse('fixed-by-non-reviewer', `${id} was not raised by a reviewer of ${ticketId} (by: ${f.by ?? 'nobody — typed state'}): only a reviewer's own finding is closed by a reviewer's record; the coordinator's way is \`state set ${ticketId} --decide ${id}=<reason>\` (listed by \`fanout closeout\`)`);
-    if (f.raisedOn && sameSha(f.raisedOn, head)) refuse('fixed-same-head', `${id} was raised on ${head.slice(0, 12)}, the head you are recording: "fixed" is a later head that you READ with the fix in it`);
+    if (!f) recordRefuse('fixed-not-open', `"fixed" names ${id}, which is not recorded on ${ticketId} (recorded: ${Object.keys(t.findings).join(', ') || 'none'})`);
+    if (findingClosed(f) || (t.reviews ?? []).some((r) => r.closed.includes(id))) recordRefuse('fixed-not-open', `"fixed" names ${id}, which is already closed (${f.settled ? 'settled' : f.decision ? 'decided: ' + f.decision.text.slice(0, 80) : 'fixed'})`);
+    if (!f.by || !reviewers.has(f.by)) recordRefuse('fixed-by-non-reviewer', `${id} was not raised by a reviewer of ${ticketId} (by: ${f.by ?? 'nobody — typed state'}): only a reviewer's own finding is closed by a reviewer's record; the coordinator's way is \`state set ${ticketId} --decide ${id}=<reason>\` (listed by \`fanout closeout\`)`);
+    if (f.raisedOn && sameSha(f.raisedOn, head)) recordRefuse('fixed-same-head', `${id} was raised on ${head.slice(0, 12)}, the head you are recording: "fixed" is a later head that you READ with the fix in it`);
   }
 
   // the reviewer's findings go through the state's own transition (severity / report / specSentence / demonstration rules), as the head THEY read
@@ -144,8 +144,8 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   // approve = nothing BLOCKING / MAJOR (nor, under minorPolicy spec|demonstrated, a blocking MINOR) is left open; changes-requested says what
   const c = countsThrough(nt, entry.n);
   const heldIds = [...new Set([...c.open.filter((id) => nt.findings[id].severity !== 'MINOR'), ...blockingMinors(out, ticketId).filter((id) => c.open.includes(id))])];
-  if (a.verdict === 'approve' && heldIds.length) refuse('approve-open-finding', `approve with ${heldIds.length} open finding(s) that block the merge (${heldIds.map((id) => `${id} ${nt.findings[id].severity}`).join(', ')}) — record changes-requested, or close them with "fixed" if you read their fix on this head (policy: minorPolicy=${switchesOf(state).minorPolicy})`);
-  if (a.verdict === 'changes-requested' && heldIds.length === 0) refuse('changes-no-finding', 'changes-requested with no open BLOCKING / MAJOR finding (nor a blocking MINOR under this run\'s minorPolicy): list the finding that stops the merge in "findings", or record approve');
+  if (a.verdict === 'approve' && heldIds.length) recordRefuse('approve-open-finding', `approve with ${heldIds.length} open finding(s) that block the merge (${heldIds.map((id) => `${id} ${nt.findings[id].severity}`).join(', ')}) — record changes-requested, or close them with "fixed" if you read their fix on this head (policy: minorPolicy=${switchesOf(state).minorPolicy})`);
+  if (a.verdict === 'changes-requested' && heldIds.length === 0) recordRefuse('changes-no-finding', 'changes-requested with no open BLOCKING / MAJOR finding (nor a blocking MINOR under this run\'s minorPolicy): list the finding that stops the merge in "findings", or record approve');
   return out;
 }
 
@@ -197,6 +197,6 @@ export function unrecordedReviewers(state: FanoutState): Array<{ ticket: string;
 
 /** `state set --decide` under seatRecords=on is the COORDINATOR's, proven by the host (an implementer / another agent cannot lift a reviewer's finding; a forged `by` in a --json patch is overwritten with the vouched id). */
 export function assertDecideCaller(state: FanoutState, caller: { id: string | null; role: string; proof: string }): void {
-  if (caller.role !== 'coordinator') refuse('decide-caller', `only the run's coordinator (${state.run}) records "not fixed" with a reason (\`state set <ticket> --decide <finding>=<reason>\`); the caller is ${caller.id ?? 'unidentified'} (${caller.role})`);
-  if (caller.proof !== 'host-vouched') refuse('decide-caller', `the host did not vouch for ${caller.id}: ${caller.proof} — run it from the coordinator's own live session (a forged ORCHESTRA_WS_ID proves nothing)`);
+  if (caller.role !== 'coordinator') recordRefuse('decide-caller', `only the run's coordinator (${state.run}) records "not fixed" with a reason (\`state set <ticket> --decide <finding>=<reason>\`); the caller is ${caller.id ?? 'unidentified'} (${caller.role})`);
+  if (caller.proof !== 'host-vouched') recordRefuse('decide-caller', `the host did not vouch for ${caller.id}: ${caller.proof} — run it from the coordinator's own live session (a forged ORCHESTRA_WS_ID proves nothing)`);
 }
