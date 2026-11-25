@@ -72,6 +72,7 @@
     "test:fanout-seat-records": "node scripts/e2e-fanout-seat-records.mjs",
     "test:fanout-seat-records-mutants": "node scripts/e2e-fanout-seat-records.mjs --mutants",
     "test:fanout-review-mutants": "node scripts/fanout-review-mutants.mjs",
+    "test:fanout-park-mutants": "node scripts/fanout-park-mutants.mjs",
     "test:fanout-record": "node scripts/e2e-fanout-record.mjs",
     "test:fanout-record-mutants": "node scripts/e2e-fanout-record.mjs --mutants",
     "test:fanout-checks": "node scripts/e2e-fanout-checks.mjs",

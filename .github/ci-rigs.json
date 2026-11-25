@@ -199,6 +199,12 @@
    "timeoutMin": 30
   },
   {
+   "id": "test:fanout-park-mutants",
+   "command": "pnpm run test:fanout-park-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 30
+  },
+  {
    "id": "test:fanout-switches-mutants",
    "command": "pnpm run test:fanout-switches-mutants",
    "class": "LOCAL_ONLY",
