@@ -27,11 +27,13 @@ export interface LoopSide {
   checksSeen: Record<string, string>;
   /** #605-only: tickets whose start Admission held (reported once by `fleet.start()`); busy for the stall clock until the ticket shows a head. */
   held: Record<string, true>;
+  /** #605-only: wait key (`held:T`, `review:T:head`, `ci:T:head`) → when the loop first waited on it; a wait counts as progress only for a bounded time. */
+  busySince: Record<string, string>;
 }
 /** `FanoutState` + the sidecar. The frozen helpers below take and return this. */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {} });
+const emptySide = (): LoopSide => ({ parked: {}, rounds: {}, choices: [], pause: null, asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {} });
 const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function readSide(file: string): LoopSide {

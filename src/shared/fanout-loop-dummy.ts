@@ -15,7 +15,7 @@ import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
 export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'wait'] as const;
-export const STEP_KINDS_REVIEWER = ['approve', 'changes'] as const;
+export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
 export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string }
 export interface Scenario {
   version: 1;
@@ -25,7 +25,7 @@ export interface Scenario {
   ci?: Record<string, string[]>;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
-  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -88,6 +88,7 @@ export class DummyWorld {
   readonly prs = new Map<number, Pr>();
   readonly impls = new Map<string, Impl>();
   readonly revs = new Map<string, Rev>();
+  private revCursor = new Map<string, number>();
   private mailbox: Array<LoopMail & { read: boolean }> = [];
   private timers: Array<{ at: number; n: number; fn: () => void }> = [];
   private n = 0;
@@ -253,7 +254,7 @@ export class DummyWorld {
     const { id, act } = res;
     if (act === 'spawn' || act === 'replace') {
       const steps = this.sc.agents?.[ticket]?.reviewer ?? [];
-      this.revs.set(id, { ws: id, ticket, steps, idx: 0, armed: false });
+      this.revs.set(id, { ws: id, ticket, steps, idx: this.revCursor.get(ticket) ?? 0, armed: false }); // a replacement reviewer carries on the ticket's script
       this.ev('review-spawn', ticket, { ws: id, head, action: act });
     } else if (act === 'wake') this.ev('review-wake', ticket, { ws: id, head });
     const r = this.revs.get(id);
@@ -272,6 +273,9 @@ export class DummyWorld {
     if (!head) return;
     const step = r.steps[r.idx] ?? { do: 'approve' as const };
     r.idx++;
+    this.revCursor.set(r.ticket, r.idx);
+    if (step.do === 'die') { this.revs.delete(r.ws); this.ev('review-died', r.ticket, { ws: r.ws }); return; }
+    if (step.do === 'silent') { this.ev('review-silent', r.ticket, { ws: r.ws }); return; }
     const open = Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision).map(([id]) => id);
     const findings = step.do === 'changes' ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, { severity: 'BLOCKING', evidence: 'argued', report: { input: 'the scripted input', happens: 'the scripted failure', where: 'src/x.ts:1', proof: 'scripted' } }])) : {};
     const tree = this.commits.get(head)?.tree ?? null;
@@ -307,6 +311,7 @@ export class DummyWorld {
     const p = this.prs.get(n)!;
     const run = this.runFor(p, head);
     const steps = this.sc.faults?.zeroStepCi?.includes(p.ticket) ? 0 : 3;
+    if (this.sc.faults?.noChecks?.includes(p.ticket)) return []; // the forge shows no check at all
     const late = this.sc.faults?.lateCheck?.[p.ticket];
     const lint: ForgeCheck = { name: 'lint', jobId: `job-${p.n}-${p.runs.indexOf(run)}-lint`, status: 'green', steps, at: this.iso(run.startedAt) };
     if (late !== undefined && this.t < run.startedAt + late) return [lint]; // the workflow has not registered its other checks yet

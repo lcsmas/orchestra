@@ -32,6 +32,8 @@ export interface LoopOptions {
   maxPasses: number;
   /** check names that must exist on a head before it can merge (decideDelivery's `requiredChecks`); absent = none declared */
   requiredChecks?: string[];
+  /** how long an Admission hold may stay unreleased before it stops counting as a wait (default 12 h) */
+  holdMs?: number;
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -68,6 +70,8 @@ export interface LoopCtx {
   note(line: string): void;
   /** work is under way that the loop cannot see as a state change (a held start, a CI running, a reviewer reading): it counts as progress for the stall clock */
   busy: boolean;
+  /** a BOUNDED wait: true (and the stall clock is fed) while `key` has been waited on for less than `boundMs`; false once it ran out — then the ticket is stalled for real. */
+  waitOn(key: string, boundMs: number): boolean;
   /** run one ticket's (or one message's) share of a step: a thrown PORT error is logged and retried next pass — it never ends the run (a refusal or a kill does) */
   guard(label: string, fn: () => Promise<void>): Promise<boolean>;
   st(): LoopState;
@@ -125,7 +129,8 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
   const s = ctx.st();
   const heldNow = activeTickets(s).filter((id) => s.loop.held[id] && !s.tickets[id].head);
-  if (heldNow.length) ctx.busy = true; // an Admission hold reported earlier, not released yet: a wait, not a stall
+  const holdMs = deps.options.holdMs ?? 12 * 3_600_000;
+  for (const id of heldNow) ctx.waitOn(`held:${id}`, holdMs); // an Admission hold reported earlier, not released yet: a wait, not a stall — for `holdMs`
   if (Object.keys(s.loop.held).some((id) => !heldNow.includes(id))) ctx.update((x) => ({ ...x, loop: { ...x.loop, held: Object.fromEntries(Object.entries(x.loop.held).filter(([id]) => heldNow.includes(id))) } }));
   const need = activeTickets(s).filter((id) => { const t = s.tickets[id]; return (t.status === 'todo' || t.status === 'started') && (!t.implementer || !deps.fleet.live(t.implementer)); });
   if (!need.length) return;
@@ -134,13 +139,13 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
   for (const x of r.started) ctx.did(`started ${x.ticket} (${x.ws})`);
   for (const x of r.respawned) ctx.did(`restarted ${x.ticket} (${x.ws})`);
   if (r.waiting.length) ctx.update((y) => ({ ...y, loop: { ...y.loop, held: { ...y.loop.held, ...Object.fromEntries(r.waiting.map((x) => [x.ticket, true as const])) } } }));
-  for (const x of r.waiting) { ctx.busy = true; ctx.note(`waiting: ${x.ticket} — ${x.why}`); } // an Admission hold is a wait, not a fault, and not a stall
+  for (const x of r.waiting) { ctx.waitOn(`held:${x.ticket}`, holdMs); ctx.note(`waiting: ${x.ticket} — ${x.why}`); } // an Admission hold is a wait, not a fault, and not a stall
   for (const x of r.failed) ctx.note(`could not start ${x.ticket}: ${x.error} (tried again next pass)`);
 }
 
-/** Decision 5, fail CLOSED: the marker anywhere in the body, any case, any spacing or punctuation, parks; only a body without it is a question that gets the fixed answer. */
+/** Decision 5, fail CLOSED: the marker opening ANY line of the body (any case, spacing or punctuation) parks; only a body without it is a question that gets the fixed answer. */
 export function parseNoSafeOption(body: string): { reason: string } | null {
-  const m = /no[\s_-]*safe[\s_-]*option/i.exec(body);
+  const m = /^[ \t\W_]*no[ \t_-]*safe[ \t_-]*option\b/im.exec(body); // the marker OPENS a line (any case/spacing/punctuation): a question that merely contains the words ("is there no safe option name collision?") stays a question
   if (!m) return null;
   const rest = body.slice(m.index + m[0].length).replace(/^[\s:.\-–—]+/, '').trim();
   return { reason: rest.split('\n')[0].slice(0, 300) || '(no reason given)' };
@@ -255,7 +260,8 @@ export async function stepReview(ctx: LoopCtx): Promise<void> {
     if (!t.pr || !t.head) return;
     if (reviewOn(t, t.head, t.tree)) return; // a verdict on this content is recorded
     const last = t.review?.briefs[t.review.briefs.length - 1];
-    if (last && sameSha(last.head, t.head)) { ctx.busy = true; return; } // briefed on this head: the reviewer owes its record (a reviewer reading is work under way)
+    const rv = t.review?.reviewer?.id;
+    if (last && sameSha(last.head, t.head) && (!rv || deps.fleet.live(rv))) { ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs); return; } // briefed on this head and the reviewer is alive: it owes its record (bounded); a DEAD reviewer is replaced below
     const r = await deps.fleet.spawnReviewer(id, t.head);
     ctx.did(`reviewer ${r.id} reads ${id} at ${t.head.slice(0, 12)}`);
   });
@@ -346,7 +352,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
       verdict: { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head },
       waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [],
     });
-    if (dec.action === 'wait') { ctx.busy = true; return; } // a CI running / registering is work under way
+    if (dec.action === 'wait') { ctx.waitOn(`ci:${id}:${t.head}`, deps.options.stallMs); return; } // a CI running / registering is work under way (bounded)
     if (dec.action !== 'merge') { if (dec.action === 'refuse') ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); return; }
     const upMergedAt = Math.max(0, ...t.dependsOn.map((u) => ms(s0.tickets[u].updatedAt)));
     const checkAt = Math.max(0, ...checks.map((c) => (c.at ? ms(c.at) : 0)));
@@ -376,6 +382,13 @@ function newCtx(deps: LoopDeps, pass: number, seen: Set<string>): LoopCtx {
   const ctx: LoopCtx = {
     note: (line) => { if (!seen.has(line)) { seen.add(line); deps.log(`[pass ${pass}] ${line}`); } },
     deps, run: deps.run, pass, signals: new Set(), approved: new Map(), progress: [], finished: false, busy: false,
+    waitOn: (key, boundMs) => {
+      let since = ctx.st().loop.busySince[key];
+      if (!since) { since = deps.now(); const at = since; ctx.update((x) => ({ ...x, loop: { ...x.loop, busySince: { ...x.loop.busySince, [key]: at } } })); }
+      if (ms(deps.now()) - ms(since) <= boundMs) { ctx.busy = true; return true; }
+      ctx.note(`${key}: waited ${Math.round((ms(deps.now()) - ms(since)) / 60_000)} min — no longer counted as progress`);
+      return false;
+    },
     guard: async (label, fn) => {
       try { await fn(); return true; } catch (e) {
         if (e instanceof LoopKilled || e instanceof SeatRefusal) throw e;
@@ -388,6 +401,17 @@ function newCtx(deps: LoopDeps, pass: number, seen: Set<string>): LoopCtx {
     did: (msg) => { ctx.progress.push(msg); deps.log(`[pass ${pass}] ${msg}`); },
   };
   return ctx;
+}
+
+/** What a stalled ticket is waiting for, read from the state (the park reason says it). */
+function stuckWhy(s: LoopState, id: string): string {
+  const t = s.tickets[id];
+  if (!t.implementer) return 'has no implementer';
+  if (!t.head) return 'has no candidate (no head recorded)';
+  if (!t.pr) return 'is not nominated (no PR)';
+  if (!reviewOn(t, t.head, t.tree)) return 'has no recorded review on its head';
+  const open = t.dependsOn.filter((u) => !isMerged(s, u));
+  return open.length ? `waits for ${open.join(', ')}` : 'is approved but not mergeable (CI or the forge)';
 }
 
 export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
@@ -413,7 +437,7 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     if (ctx.finished) return finish(parkedTickets(s).length ? 3 : 0);
     const stalled = ms(deps.now()) - lastProgress > deps.options.stallMs;
     if (stalled || passes >= deps.options.maxPasses) {
-      const reason = stalled ? `stalled ${Math.round(deps.options.stallMs / 60_000)} min: no change, no start waiting, no CI or review under way` : `pass limit ${deps.options.maxPasses}`;
+      const reason = stalled ? `stalled ${Math.round(deps.options.stallMs / 60_000)} min: ${activeTickets(s).map((id) => `${id} ${stuckWhy(s, id)}`).join('; ')}` : `pass limit ${deps.options.maxPasses}`;
       for (const id of activeTickets(s)) ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));
       deps.log(`ending: ${reason}; the unfinished tickets are parked`);
       return finish(3, reason);
