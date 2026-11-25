@@ -1,5 +1,5 @@
 // #605 — `orchestra fanout run`: argv, the dummy gate, the exit codes (0 merged · 3 parked · 2 refusal · 1 could not run). The loop itself: src/shared/fanout-loop.test.ts; the built CLI: scripts/e2e-fanout-run.mjs.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,7 +8,10 @@ import { runFanoutRun, RUN_USAGE } from './fanout-run.ts';
 import type { FanoutDeps } from './fanout-state.ts';
 
 const scen = (n: string): string => path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'shared', 'fanout-loop-scenarios', `${n}.json`);
-const deps = (env: Record<string, string> = {}): FanoutDeps => ({ env: { ORCHESTRA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-run-cli-')), ...env }, cwd: '/', runner: () => ({ code: 1, stdout: '', stderr: '' }), now: () => '2026-11-25T10:00:00.000Z', readStdin: () => '' });
+const made: string[] = [];
+const mk = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-run-cli-')); made.push(d); return d; };
+after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
+const deps = (env: Record<string, string> = {}): FanoutDeps => ({ env: { ORCHESTRA_HOME: mk(), ...env }, cwd: '/', runner: () => ({ code: 1, stdout: '', stderr: '' }), now: () => '2026-11-25T10:00:00.000Z', readStdin: () => '' });
 const DUMMY = { ORCHESTRA_FANOUT_DUMMY: '1' };
 
 test('help: the usage names the exit codes and the gate', async () => {
@@ -35,7 +38,7 @@ test('argv refusals: --tickets with --plan, a positional, a bad minor policy, an
   assert.equal((await runFanoutRun(['A'], deps(DUMMY))).code, 1);
   assert.match((await runFanoutRun(['--minor-policy', 'maybe', '--scenario', scen('rts7')], deps(DUMMY))).stderr, /\[run-minor-policy\]/);
   assert.equal((await runFanoutRun(['--bogus'], deps(DUMMY))).code, 1);
-  const bad = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-run-bad-')), 's.json');
+  const bad = path.join(mk(), 's.json');
   fs.writeFileSync(bad, '{"version":2}');
   const r = await runFanoutRun(['--scenario', bad], deps(DUMMY));
   assert.equal(r.code, 2);

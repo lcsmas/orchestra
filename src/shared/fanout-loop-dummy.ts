@@ -380,7 +380,7 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
   let d = buildDummy({ home: i.home, run, scenario: i.scenario });
   if (i.wrap) d = i.wrap(d);
   const log: string[] = [];
-  const options: LoopOptions = { ...DEFAULT_OPTIONS, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
+  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 5000, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
   const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options });
   d.world.dump();
   const s = readLoopState(i.home, run);

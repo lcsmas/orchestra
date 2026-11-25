@@ -1,6 +1,6 @@
 // #605 — the Boucle on the dummy fleet: one pass of the real loop per scenario (src/shared/fanout-loop-scenarios/), judged from the event log. Each rule of #601 has a must-pass scenario AND a must-fail one
 // (the judge on a log that breaks it); scripts/e2e-fanout-run.mjs mutates the loop and every mutant must turn one of these red.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,7 +13,9 @@ import { newState, sha256Hex } from './fanout-state.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
 const load = (name: string): Scenario => parseScenario(JSON.parse(fs.readFileSync(path.join(dir, `${name}.json`), 'utf8')));
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-loop-'));
+const made: string[] = [];
+const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-loop-')); made.push(d); return d; };
+after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
 const go = (name: string, opts: Parameters<typeof runDummyLoop>[0]['options'] = {}) => runDummyLoop({ home: tmp(), scenario: load(name), options: { stallMs: 30 * 60_000, ...opts } });
 const mergeOrder = (evs: Ev[]): string[] => evs.filter((e) => e.ev === 'merge').map((e) => String(e.ticket));
 
