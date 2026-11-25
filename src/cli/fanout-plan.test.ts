@@ -469,3 +469,17 @@ test('m3: a remembered refusal also stops a plan handed over by file (applyPlanT
   assert.throws(() => applyPlanText({ home, run: RUN, text: JSON.stringify(goodPlan()), now: NOW }), /plan-refused-twice/);
   assert.equal(load(home).loopPlan, undefined);
 });
+
+test('m-new: a run that holds a decision is refused [plan-after-decision] UP FRONT — by the verb and the host op, no agent is spawned', async (t) => {
+  const { home, d } = run(t);
+  assert.equal(runFanout(['state', 'set', '--run', RUN, '--run-decision', 'Write code only after every upstream is merged'], d).code, 0);
+  const f = fakeHost(home);
+  const r = await ask(f);
+  assert.equal(r.ok, false);
+  assert.match((r as { error: string }).error, /^\[plan-after-decision\]/);
+  const v = await runPlan(['--tickets', 'A,B'], d, async () => { throw new Error('the host must not be asked'); });
+  assert.equal(v.code, 2);
+  assert.match(v.stderr, /^\[plan-after-decision\]/);
+  assert.equal(f.spawns.length, 0);
+  assert.equal(fs.existsSync(planSidecarFile(home, RUN)), false);
+});

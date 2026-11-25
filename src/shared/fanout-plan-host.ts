@@ -161,6 +161,7 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
       if (cur.planRefusal) { early = refusal(cur.planRefusal.code, `the plan step of run ${run} ended (${cur.planRefusal.at}): ${cur.planRefusal.detail}`); return cur; }
       const locked = switchesLockedWhy(stampDefaults(cur));
       if (locked) { early = refusal('plan-after-spawn', `run ${run} already spawned (${locked}) — the plan of the loop is written before the first spawn`); return cur; }
+      if (cur.decisions?.length) { early = refusal('plan-after-decision', `run ${run} already holds ${cur.decisions.length} run decision(s): they ride in every brief verbatim — no plan agent is spawned (start from a state with none)`); return cur; }
       repo = cur.repo;
       const sc = readPlanSidecar(deps.home, run);
       const d = decidePlanAgent(sc, tickets, now, live);

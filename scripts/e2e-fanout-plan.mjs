@@ -123,6 +123,8 @@ const mutants = [
   ['host: the ticket list may change after the request', PH, "if (!same) return { action: 'refuse', refusal: 'plan-tickets-changed'", "if (false as boolean) return { action: 'refuse', refusal: 'plan-tickets-changed'"],
   ['host: the brief is not the rendered one', PH, "task = renderPlanBrief(tickets, { run });", "task = String(input.task ?? '');"],
   ['host: the agent is not a child of the coordinator', PH, "const parent = deps.isWorkspace(run) ? run : caller;", "const parent = undefined as unknown as string;"],
+  ['host: a run holding a decision still gets a plan agent (the refusal comes too late)', PH, "if (cur.decisions?.length) { early = refusal('plan-after-decision'", "if (false as boolean) { early = refusal('plan-after-decision'"],
+  ['cli: a run holding a decision still asks the host', C, "if (state.decisions?.length) throw new SeatRefusal('plan-after-decision'", "if (false as boolean) throw new SeatRefusal('plan-after-decision'"],
   ['host: a run that already spawned is asked for a plan', PH, "if (locked) { early = refusal('plan-after-spawn'", "if (false as boolean) { early = refusal('plan-after-spawn'"],
   ['host: a taken-over claim is overwritten by the late spawn', PH, "if (!sc || sc.agent?.id !== null || sc.agent.at !== now) { mine = false; return cur as FanoutState; }", "if (!sc) { mine = false; return cur as FanoutState; }"],
   ['submit: an apply failure is not recorded (the coordinator waits out its timeout)', PH, "writePlanSidecar(i.home, run, { ...sc, outcome: 'failed', failure: msg });", "void msg;"],
@@ -158,7 +160,7 @@ function only_and_main() {
   const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
   build();
   const base = run([...UNIT, ...CLI_TEST]);
-  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 52 && base.pass === base.tests;
+  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 53 && base.pass === base.tests;
   console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
   if (!baseOk) { console.log(base.out.split('\n').filter((l) => /^not ok|error:/.test(l)).slice(0, 12).join('\n')); process.exit(1); }
   if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }

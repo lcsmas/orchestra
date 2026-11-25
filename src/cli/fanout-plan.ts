@@ -53,6 +53,7 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
     const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id (index.ts), never the bare env
     if (!caller || caller !== r.run) throw new SeatRefusal('plan-caller', `only the run's coordinator (${r.run}) asks for its plan${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?)'}`);
     if (state.loopPlan) return accepted(state, r.note);
+    if (state.decisions?.length) throw new SeatRefusal('plan-after-decision', `run ${r.run} already holds ${state.decisions.length} run decision(s): they ride in every brief verbatim — no plan agent is spawned (start from a state with none)`);
     const timeoutMin = p.vals['--timeout'] === undefined ? 45 : Number(p.vals['--timeout']);
     if (!Number.isFinite(timeoutMin) || timeoutMin <= 0) throw new FanoutStateError('--timeout must be a number of minutes > 0');
     const sleep = opts.sleep ?? realSleep, nowMs = opts.nowMs ?? Date.now, pollMs = opts.pollMs ?? 2_000, recheckMs = opts.recheckMs ?? 45_000;
