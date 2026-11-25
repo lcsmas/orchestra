@@ -355,12 +355,12 @@ test('closeout lists EVERY demonstrated finding and how it ended: fixed on head 
 });
 
 // ── the render ───────────────────────────────────────────────────────────────────────────────────────────
-/** What master rendered (sha256, computed from the master tree BEFORE #572 with scripts-style gen: SKILL.md + verifier-and-review.md + an aggregate over every file): these stay byte-identical. */
+/** What master rendered (sha256, computed from the master tree BEFORE #572 with scripts-style gen; re-pinned by #568 for its one verifier-on CI sentence, the verifier=off row is unchanged: SKILL.md + verifier-and-review.md + an aggregate over every file): these stay byte-identical. */
 const MASTER: Record<string, { skill: string; review: string; all: string }> = {
-  default: { skill: '9292fc7a4561e3f501a024cc8330153da134a7a22ca3d81e4971c521abb6e8d3', review: 'd6f9e0fcd2b5f2e0ca244fbc31c38d2152a547d9ff29054b66938779c88efff0', all: 'cad304be97a4eb3ca23c95fa4aa873caf1a1fc3ec091d2d6472942f03d09f806' },
-  refuse: { skill: '7981dcf67565d5e33567329ee67aaccc55e4cc45c92c887909eb053a95a664fb', review: 'd6f9e0fcd2b5f2e0ca244fbc31c38d2152a547d9ff29054b66938779c88efff0', all: 'b5b0936e2e39aef4abf4931eea7d4b3801edbab5cc10644a99b2869b5833a0f2' },
-  spec: { skill: 'ba4c551deee54e886d0a94d15cdedf935f1628ed8a9e4c2bdfcc70336f34e9be', review: '530fb0662a317327d11db370123bd9b327ec74defc1a846b8c35ad83af4d74ce', all: '2749e734ffdd49cd5f5744dd32ee3bfe555969a9735af9f5702a47eaf1acb51a' },
-  'spec+acceptance': { skill: '2b7ed8dd33184ffbdbf939d00a3826f874986229eb9eb5ab615f7aa06e3253e6', review: '530fb0662a317327d11db370123bd9b327ec74defc1a846b8c35ad83af4d74ce', all: '8d0b9c4a62b0392d6d48ccb3546385808db911844dccf12667312fc9c7a82de6' },
+  default: { skill: 'a9073a594a19c8018dfcd34ebf4abbfc2e7c3eca5e28b9899bf398186480950a', review: '4d5535bf76b2f11f850c0caaf1c11232ab50a5c8d9f942a4ae2f6b7809d57d0c', all: 'da2e03144c77afd046f82cf208776e896c850d121b0b1940bdec38b16860f92c' },
+  refuse: { skill: '72c2e3a9fc1c78c5ad2d39250830e12a88657aac583dbf50fed4812805c3d7d2', review: '4d5535bf76b2f11f850c0caaf1c11232ab50a5c8d9f942a4ae2f6b7809d57d0c', all: '71833e56b55f3a801123c6400c5c1ed51cee223577b4777ad3e5e999483e7038' },
+  spec: { skill: '628de901ab799af63ae87ea68fc9daa55909bfeae72adb02c97b7cc622651437', review: '249bd05cdd4636b34c5ee0034f647b8d56a6bbfeba5c009b099b03c17b5beff8', all: '37815546f87371800cf4eed8a3a6865422e0711a11a610889ff45c6df720d853' },
+  'spec+acceptance': { skill: 'f3fd918b3db0af2a0b92f64ca1af84e3a12eb7f5c37340045c0e196ec291078a', review: '249bd05cdd4636b34c5ee0034f647b8d56a6bbfeba5c009b099b03c17b5beff8', all: '0ad3d37526a314cface18a0998cef5a4bc9be36abb63a45c680607fa5b5885d2' },
   'off-verifier-spec': { skill: '007e917a550fe6b9f75eae5834e90037a2dde27306766e2ed8ac258aaec97563', review: '401fe5cf96fde7ed8f45a0276eaa6f9d6e10387e86e70af4dc8ce9e75d96ad6f', all: 'c5ecff9037bc7f3f5147de55b2c77277220ca4ca268ce5ee630c8e94c0628915' },
 };
 const CFG: Record<string, Partial<Switches>> = { default: {}, refuse: { minorPolicy: 'refuse' }, spec: { minorPolicy: 'spec' }, 'spec+acceptance': { minorPolicy: 'spec', acceptance: 'on' }, 'off-verifier-spec': { minorPolicy: 'spec', verifier: 'off' } };
