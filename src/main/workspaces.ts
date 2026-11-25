@@ -55,8 +55,12 @@ import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
 import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE } from '../shared/verified-fanout-skill.ts';
 import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanout-state.ts';
+import { handSpawnRefusalFor } from '../shared/fanout-start.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
+import { installFanoutRoleFiles } from './verified-fanout-install.ts';
+import { FANOUT_REVIEWER_SKILL_TEMPLATE } from '../shared/fanout-reviewer-skill.ts';
+import { FANOUT_IMPLEMENTER_SKILL_TEMPLATE } from '../shared/fanout-implementer-skill.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
 import { DEFAULT_BUS_SWITCHES, busSwitchNotice, busSwitchNoticeDecision, mechanismFromWire, serializeSwitches } from '../shared/bus-switches.ts';
 import { anyChildLive } from '../shared/refreeze-liveness.ts';
@@ -342,7 +346,7 @@ export async function createWorkspace(
   defaultKind: ModelDefaultKind = 'workspace',
   /** #382: `namedBy` = the id of the agent that NAMED this workspace at `orchestra spawn --name` (→ `namedByParent`). Absent → today's record.
    *  `exactName` = the agent route: when the requested name and all its suffixes are taken, REFUSE instead of falling back to a random branch. */
-  naming?: { namedBy?: string; exactName?: boolean },
+  naming?: { namedBy?: string; exactName?: boolean; /** #587 PR B: a respawn on the ticket's branch — the requested name IS the existing branch (no suffix pick). Set only by `fanout start`. */ reuseBranch?: boolean },
   /** #401: asks the agent spawn route which profil navigateur this workspace inherits. Called SYNCHRONOUSLY at the record build — after the worktree
    *  exists (the slow part), with no `await` before the first upsert — so a human detach / switch of the parent meanwhile is honoured. Deliberately not
    *  a {@link CreateWorkspaceInput} field: that type crosses the renderer IPC. */
@@ -402,7 +406,7 @@ export async function createWorkspace(
     // No `current` branch to exempt — nothing exists yet — so pass ''.
     // `new Set(taken)` is a SNAPSHOT taken BEFORE the listing's await: any in-flight name is in the snapshot or already in the listing. Passing the live
     // set instead lets a creation that finishes DURING the listing delete its reservation before this pick reads it, while the listing predates its branch.
-    const free = requested ? await freeBranchName(input.repoPath, requested, '', { reserved: new Set(taken), avoidFolders: naming?.exactName === true }) : '';
+    const free = requested && naming?.reuseBranch ? requested : requested ? await freeBranchName(input.repoPath, requested, '', { reserved: new Set(taken), avoidFolders: naming?.exactName === true }) : '';
     if (requested && !free && naming?.exactName) {
       // Every other caller keeps the random fallback (pinned-Linear, accès mobile); an AGENT's name is its human label — never silently swapped.
       throw new Error(`refusing to spawn: the name "${requested}" and all its suffixes (-2 … -99) are taken — pick another name. Nothing was created.`);
@@ -416,7 +420,7 @@ export async function createWorkspace(
 
   log.info(`creating workspace ${branch} (repo=${repoName} base=${baseBranch})`);
   try {
-    await createWorktree(input.repoPath, branch, baseBranch, worktreePath);
+    await createWorktree(input.repoPath, branch, baseBranch, worktreePath, naming?.reuseBranch ? { reuse: true } : undefined);
   } finally {
     taken.delete(branch); // created ⇒ git now holds the name; failed ⇒ the name is free again
   }
@@ -1505,6 +1509,8 @@ export async function dispatchSpawnRequest(
     key?: string;
     /** #480: `orchestra spawn --account` (id / label / `default`). Absent → the child takes the CALLER's (`from`) account — see `resolveChildAccount`. */
     account?: string;
+    /** #587 PR B: respawn ON the existing branch `branch` (see createWorkspace). Set only by `fanout start` (in-process: hooks-server /spawn never passes it). */
+    reuseBranch?: boolean;
   },
 ): Promise<SpawnResult> {
   const task = input.task.trim();
@@ -1592,7 +1598,7 @@ export async function dispatchSpawnRequest(
       branch: input.branch,
       ...(input.account ? { account: input.account } : {}),
       ...(input.from ? { accountFrom: input.from } : {}), // #480: also for --detached (it skips only the parent nesting)
-    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName }, input.profile !== undefined ? decideProfile : undefined);
+    }, input.defaultKind, { namedBy: input.namedBy, exactName: input.exactName, ...(input.reuseBranch ? { reuseBranch: true } : {}) }, input.profile !== undefined ? decideProfile : undefined);
     created = { id: ws.id, branch: ws.branch };
     // #435: the task IS the spawner's dispatch to the child — written BEFORE the agent starts; a failed write starts nothing and removes the workspace.
     const after = await startAfterDispatch({
@@ -1623,9 +1629,14 @@ export async function dispatchSpawnRequest(
  *  `--detached` (no `parentId`). A `/spawn` with no `from` is a human at a terminal: a human-created workspace, not pinned. */
 export async function dispatchAgentSpawnRequest(
   input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy' | 'exactName' | 'origin'> & { name?: string | null },
+  /** #587 PR B: set ONLY by `fanout start` (in-process, never from the socket body): its implementers are the one `impl-` spawn a seatRecords run allows. */
+  opts: { viaFanoutStart?: boolean } = {},
 ): Promise<SpawnResult> {
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
+  const fromWs = input.from ? store.getWorkspace(input.from) : undefined;
+  const handSpawn = handSpawnRefusalFor(orchestraHome(), fromWs ? resolveWaveRunId(fromWs) : input.from, checked.name, opts.viaFanoutStart === true); // #587 PR B: under seatRecords=on an `impl-` spawn by the run's coordinator goes through `fanout start`
+  if (handSpawn) return { ok: false, error: handSpawn };
   const { name: _name, ...rest } = input;
   // #465: no --model/--effort → the role's pin (name prefix + optional <ORCHESTRA_HOME>/fleet-roles.json); an explicit flag wins; a bad override file refuses the spawn.
   let roleDefaults: { model?: string; effort?: string };
@@ -4494,6 +4505,8 @@ const HOOKS_VERSION = createHash('sha256')
       BROWSER_SKILL,
       VERIFIED_FANOUT_SKILL,
       VERIFIED_FANOUT_SKILL_TEMPLATE, // #554: the per-switch variants (an edit to an off-only block must force the reinstall too)
+      FANOUT_REVIEWER_SKILL_TEMPLATE, // #590: the role files (seatRecords=on) — an edit must force the reinstall too
+      FANOUT_IMPLEMENTER_SKILL_TEMPLATE,
       JSON.stringify(VERIFIED_FANOUT_FILES),
       JSON.stringify(VERIFIED_FANOUT_V2_REFERENCES),
       HOOK_ACTIVITY_SUBMIT_CMD,
@@ -4898,6 +4911,8 @@ export async function installOrchestraHooks(
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
       // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
       installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e), fanoutSwitches),
+      // #590: seatRecords=on ⇒ the reviewer's and the implementer's rules in `.orchestra/roles/` (ours, whatever skill the repo has); off ⇒ none
+      installFanoutRoleFiles(worktreePath, (e) => log.warn(`fanout role files install skipped for ${worktreePath}`, e), fanoutSwitches),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

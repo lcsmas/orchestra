@@ -79,6 +79,10 @@ When the coordinator records a merge candidate, spawn ONE short-lived
 reviewer per candidate — **nested under the coordinator like every fleet
 member, never `--detached`**: a detached reviewer is sidebar noise for the
 human and, worse, orphaned from the close-out sweep (nobody deletes what
+<!--sw seatRecords=on-->
+the roster does not own). Ephemeral ≠ detached.
+<!--/sw-->
+<!--sw seatRecords=off-->
 the roster does not own). Ephemeral ≠ detached. It: it reads the diff, the ledger spec, and
 `references/traps.md`, tries to BREAK the change (invent the input that
 produces the wrong output), reports findings as a ledger comment with a
@@ -97,7 +101,8 @@ each and change nothing).
 - **MINOR** — a real defect with limited reach (rare input, unlikely race, a
   test that lets a mutant survive).
 - **NIT** — cosmetic (comment, doc, naming) — not reported by the spawned reviewer.
-<!--sw minorPolicy=spec-->
+<!--/sw-->
+<!--sw minorPolicy=spec seatRecords=off-->
 
 **A MINOR that breaks a sentence of the ticket (#552, `minorPolicy: spec`).** A finding may carry
 `specSentence` — text quoted from the ticket's spec — and `kind: process` when the sentence is about how
@@ -111,7 +116,7 @@ says now>` (process) or the coordinator records `--decide <id>=<text>`; it may b
 (a process finding never: its fix is the PR-body edit). **Limit: code checks the sentence is IN the spec,
 not that it is really broken — judging that stays with the reviewer.** A MINOR with no sentence stays `noted`.
 <!--/sw-->
-<!--sw minorPolicy=demonstrated-->
+<!--sw minorPolicy=demonstrated seatRecords=off-->
 
 **A finding with a demonstration (#572, `minorPolicy: demonstrated`).** Reviewer: for each finding about product behaviour give
 `input` (the concrete situation), `observed` (what the code does, with a product `file:line`) and `expected` (what the ticket asks, or why the result is wrong for the user),
@@ -143,7 +148,9 @@ coordinator+verifier reading the same artifact is one review counted twice).
 The coordinator NEVER reviews (it wrote the specs — a stake).
 <!--/sw-->
 What it does with the findings is the §4 merge rule.
+<!--sw seatRecords=off-->
 
 **Done when:** the reviewer's comment is on the ledger — findings or an
 explicit "none found, here is what I attacked" (an empty report must name its
 attack surface, or it is indistinguishable from a shallow pass).
+<!--/sw-->

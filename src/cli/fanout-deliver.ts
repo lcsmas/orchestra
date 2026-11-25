@@ -11,6 +11,7 @@ import {
   FanoutStateError,
   readState,
   resolveFanoutRun,
+  seatRecordsOn,
   stateFile,
   switchesOf,
   updateState,
@@ -37,7 +38,8 @@ import {
   decideUpstreams,
 } from '../shared/fanout-deliver.ts';
 import { decideDeliverReceipt, parseReceipt, type DeliverAcceptanceReason, type Receipt } from '../shared/fanout-acceptance.ts';
-import type { Acceptance, FollowUpReason, TicketState } from '../shared/fanout-state.ts';
+import type { Acceptance, FanoutState, FollowUpReason, TicketState } from '../shared/fanout-state.ts';
+import { recordedVerdictOf } from '../shared/fanout-record.ts';
 import { askFollowUp, followUpFromState, type FollowUpReader } from './fanout-followup.ts';
 import { bypassInto, type AcceptancePhase } from '../shared/fanout-acceptance.ts';
 import { acceptanceFromState, rereadFrozenAtHead } from './fanout-acceptance.ts';
@@ -147,7 +149,7 @@ export function parseDeliverArgs(args: string[]): ParsedArgs {
 
 export interface DeliverResult {
   verdict: 'merged' | 'already-merged' | 'refused' | 'unchecked';
-  reason?: RefuseReason | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | 'acceptance-pending' | FollowUpReason | DeliverAcceptanceReason;
+  reason?: RefuseReason | 'typed-verdict' | 'ungated-merge' | 'record-missing' | 'no-verdict' | 'timeout' | 'gh-failed' | 'bad-verdict' | 'no-verified-head' | 'merge-failed' | 'bad-args' | 'bad-state' | 'acceptance-pending' | FollowUpReason | DeliverAcceptanceReason;
   detail?: string;
   ticket: string;
   branch: string;
@@ -165,6 +167,8 @@ export interface DeliverResult {
   combinedSuite?: string;
   /** #506 — true: the state named this ticket and its upstreams (maybe none) were checked; false: NO state was consulted (none found, no --run), so order/content were NOT checked. Absent: refused before the check. */
   upstreamsChecked?: boolean;
+  /** #589 (seatRecords=on) — the verdict came from the state: the recorded reviewer, its round, the word it recorded, the counts DERIVED from its open findings. Absent = the verdict file / no review gate (seatRecords off). */
+  recorded?: { reviewer: string; round: number; verdict: string; blocking: number; major: number; minor: number };
   /** #510 — true: the ticket's frozen acceptance tests were proven (gate receipt for this head + this hash, and every frozen file re-read byte-identical at the head through gh). Absent: the ticket has none. */
   acceptanceChecked?: boolean;
   /** #515 — the ticket carries a spec but no frozen tests and was merged anyway: `bypassed` = `--no-acceptance-gate` (recorded in the state), `waived` = a recorded `acceptance waive`. */
@@ -189,6 +193,9 @@ export interface DeliverDeps {
 
   /** #563 — the run's `verifier` switch, read only when `--no-review-gate` is given (off = no verifier seat: the review verdict is the only gate, so the ungated merge is refused). null = no state consulted. Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
   verifierSwitch?: (opts: { ticket: string; run?: string }) => 'on' | 'off' | null;
+
+  /** #589 — the run's fanout state when its `seatRecords` switch is ON (the verdict is then READ from it, `--review-verdict` / `--no-review-gate` refused); null = off / no state consulted. Throws like `acceptance` ⇒ exit 1. Absent = not consulted. */
+  recorded?: (opts: { ticket: string; run?: string }) => FanoutState | null;
 
   /** #515 — leave the `--no-acceptance-gate` bypass on the ticket in the state (best effort; a failure is logged, the escape is also in the printed result). */
   recordBypass?: (o: { ticket: string; run: string; head: string }) => void;
@@ -247,6 +254,25 @@ export function verifierSwitchFromState(opts: { ticket: string; run?: string }, 
   throw new FanoutStateError(`ticket ${opts.ticket} is not in the fanout state of run ${run}: a mistyped --ticket would skip the verifier switch`);
 }
 
+/** #589 — the state of the run that names `ticket` when its `seatRecords` is ON; null = off, no state, or a ticket the state does not name (LENIENT: the strict readers — upstreams, acceptance — refuse those cases themselves, so a seatRecords-off run behaves exactly as before). An unreadable state throws. */
+export function recordedStateFor(opts: { ticket: string; run?: string }, env: NodeJS.ProcessEnv = process.env): FanoutState | null {
+  const { run, inherited } = resolveFanoutRun(opts.run, env);
+  if (!run) return null;
+  const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+  for (const r of opts.run || !inherited ? [run] : [run, inherited]) {
+    const state = readState(stateFile(home, r));
+    if (state?.tickets[opts.ticket]) {
+      if (!seatRecordsOn(state) && opts.run) { // a `--run` naming ANOTHER run that is off, while the caller's own run records: a decoy run would skip the switch
+        const own = resolveFanoutRun(undefined, env).run;
+        const ownState = own && own !== r ? readState(stateFile(home, own)) : null;
+        if (ownState && seatRecordsOn(ownState)) throw new FanoutStateError(`[run-switch] --run ${r} has seatRecords=off but your own run ${own} has seatRecords=on: a delivery under another run would skip the recorded-verdict rule — deliver under your own run (drop --run)`);
+      }
+      return seatRecordsOn(state) ? state : null;
+    }
+  }
+  return null;
+}
+
 export const realDeps = (): DeliverDeps => ({
   gh: realGh,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -257,6 +283,7 @@ export const realDeps = (): DeliverDeps => ({
   acceptance: (o) => acceptanceFromState(o),
   followUp: (o) => followUpFromState(o),
   verifierSwitch: (o) => verifierSwitchFromState(o),
+  recorded: (o) => recordedStateFor(o),
   recordBypass: (o) => {
     const home = process.env.ORCHESTRA_HOME && process.env.ORCHESTRA_HOME.trim() ? process.env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
     updateState(stateFile(home, o.run), (cur) => { if (!cur) throw new Error('no state'); return bypassInto(cur, o.ticket, { head: o.head, now: new Date().toISOString() }); });
@@ -391,13 +418,14 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
   let verdictVia: DeliverResult['viaTree'];
   let headVia: DeliverResult['viaTree'];
   let acceptanceGate: 'bypassed' | 'waived' | undefined;
+  let recordedInfo: DeliverResult['recorded'];
   let bypassRec: { run: string; head: string } | null = null;
   const done = (result: Omit<DeliverResult, 'ticket' | 'branch' | 'into' | 'reviewGated'>, reviewGated: boolean): DeliverOutcome => {
     if (bypassRec && (result.verdict === 'merged' || result.verdict === 'already-merged')) {
       try { deps.recordBypass?.({ ticket: opts.ticket, run: bypassRec.run, head: bypassRec.head }); } catch (e) { deps.log(`acceptance: could not record the bypass in the state (${(e as Error).message}); it is in this result (acceptanceGate:"bypassed")`); }
       bypassRec = null;
     }
-    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}), ...(acceptanceGate ? { acceptanceGate } : {}), ...((headVia ?? verdictVia) ? { viaTree: headVia ?? verdictVia } : {}) };
+    const full: DeliverResult = { ...result, ...base, reviewGated, ...(upstreamsChecked !== undefined ? { upstreamsChecked } : {}), ...(acceptanceChecked ? { acceptanceChecked } : {}), ...(acceptanceGate ? { acceptanceGate } : {}), ...(recordedInfo ? { recorded: recordedInfo } : {}), ...((headVia ?? verdictVia) ? { viaTree: headVia ?? verdictVia } : {}) };
     if (result.verdict === 'merged' || result.verdict === 'already-merged') full.combinedSuite = combinedSuiteCommand(opts.into, opts.suiteCmd);
     const exit = full.verdict === 'refused' ? DELIVER_EXIT.refused : full.verdict === 'unchecked' ? DELIVER_EXIT.unchecked : DELIVER_EXIT.merged;
     return { exit, result: full };
@@ -414,18 +442,39 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     return { exit: DELIVER_EXIT.unchecked, result: { verdict: 'unchecked', reason: 'bad-args', detail: 'unsafe --into/--branch', ...base, reviewGated: false } };
   }
   // 1. The review verdict (required unless `--no-review-gate`, #473) and the verified head.
-  if (!opts.reviewVerdict && !opts.noReviewGate) {
+  // #512 — a verdict is keyed on CONTENT: the git tree of a sha, read once per sha.
+  const treeMemo = new Map<string, Promise<string | null>>();
+  const treeOf = (sha: string): Promise<string | null> => { let p = treeMemo.get(sha); if (!p) { p = readTree(gh, opts.repo, sha); treeMemo.set(sha, p); } return p; };
+  // 0. #589 — seatRecords=on: the verdict is the recorded reviewer's, read from the state; a typed verdict file and the ungated merge are refused.
+  let recState: FanoutState | null = null;
+  if (deps.recorded) {
+    try { recState = deps.recorded({ ticket: opts.ticket, run: opts.run }); } catch (e) {
+      return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s seatRecords switch: ${(e as Error).message}` }, false);
+    }
+  }
+  let recordedHead: string | undefined;
+  let verdict: ReviewVerdict | undefined;
+  if (recState) {
+    if (opts.reviewVerdict) return done({ verdict: 'refused', reason: 'typed-verdict', detail: `[typed-verdict] seatRecords=on: the review verdict is the reviewer's recorded one (\`orchestra fanout record\`), read from the state — a verdict file typed by the coordinator is refused. Drop --review-verdict` }, false);
+    if (opts.noReviewGate) return done({ verdict: 'refused', reason: 'ungated-merge', detail: `[ungated-merge] seatRecords=on: a merge needs the recorded reviewer's verdict on the delivered head — --no-review-gate is refused. Spawn / wake the reviewer: \`orchestra fanout review ${opts.ticket}\`` }, false);
+    recordedHead = opts.verifiedHead ?? recState.tickets[opts.ticket]?.head ?? undefined;
+    if (!recordedHead || !/^[0-9a-f]{40}$/.test(recordedHead)) return done({ verdict: 'unchecked', reason: 'no-verified-head', detail: `give --verified-head <40-hex sha>: the merge is bound to the head the recorded verdict speaks about (the state records ${recState.tickets[opts.ticket]?.head ?? 'none'})` }, false);
+    const rd = recordedVerdictOf(recState, opts.ticket, recordedHead, await treeOf(recordedHead));
+    if (!rd.ok) return done({ verdict: 'refused', reason: rd.reason, detail: rd.detail, head: recordedHead }, false);
+    verdict = { round: rd.recorded.round, blocking: rd.recorded.blocking, major: rd.recorded.major, minor: rd.recorded.minor, head: rd.recorded.head };
+    recordedInfo = { reviewer: rd.recorded.reviewer, round: rd.recorded.round, verdict: rd.recorded.verdict, blocking: rd.recorded.blocking, major: rd.recorded.major, minor: rd.recorded.minor };
+  }
+  if (!recState && !opts.reviewVerdict && !opts.noReviewGate) {
     return done({ verdict: 'refused', reason: 'no-verdict', detail: 'no review verdict: pass --review-verdict <file> (the round\'s counts + head), or --no-review-gate to merge without a review round (reviewGated:false stays in the result)' }, false);
   }
-  if (opts.noReviewGate && deps.verifierSwitch) { // #563: verifier=off — the reviewer's verdict is the only gate left, never skippable
+  if (!recState && opts.noReviewGate && deps.verifierSwitch) { // #563: verifier=off — the reviewer's verdict is the only gate left, never skippable
     let sw: 'on' | 'off' | null;
     try { sw = deps.verifierSwitch({ ticket: opts.ticket, run: opts.run }); } catch (e) {
       return done({ verdict: 'unchecked', reason: 'bad-state', detail: `cannot read the fanout state for ${opts.ticket}'s verifier switch: ${(e as Error).message}` }, false);
     }
     if (sw === 'off') return done({ verdict: 'refused', reason: 'no-verdict', detail: 'verifier=off (#563): there is no verifier seat, the review verdict is the only gate — pass --review-verdict <file>; --no-review-gate is refused' }, false);
   }
-  let verdict: ReviewVerdict | undefined;
-  if (opts.reviewVerdict) {
+  if (!recState && opts.reviewVerdict) {
     let raw: string;
     try {
       raw = deps.readFile(opts.reviewVerdict);
@@ -437,20 +486,19 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     verdict = p.verdict;
   }
   const reviewGated = verdict !== undefined;
-  const verifiedHead = opts.verifiedHead ?? verdict?.head;
+  const verifiedArg = opts.verifiedHead ?? recordedHead; // #589: under seatRecords the delivered head is the state's own
+  const verifiedHead = verifiedArg ?? verdict?.head;
   if (!verifiedHead) {
     return done({ verdict: 'unchecked', reason: 'no-verified-head', detail: 'give --verified-head <sha> or --review-verdict <file> (its "head"): the merge is bound to a head' }, reviewGated);
   }
-  // #512 — a verdict is keyed on CONTENT: the review round's head and the verified head may be different shas (rebase, author rewrite) if their git trees are equal.
-  const treeMemo = new Map<string, Promise<string | null>>();
-  const treeOf = (sha: string): Promise<string | null> => { let p = treeMemo.get(sha); if (!p) { p = readTree(gh, opts.repo, sha); treeMemo.set(sha, p); } return p; };
+  // #512 — the review round's head and the verified head may be different shas (rebase, author rewrite) if their git trees are equal.
   let verdictSameTree = false;
-  if (opts.verifiedHead && verdict && verdict.head !== opts.verifiedHead) {
-    const [a, b] = [await treeOf(verdict.head), await treeOf(opts.verifiedHead)];
-    if (a && a === b) { verdictSameTree = true; verdictVia = { verifiedHead: opts.verifiedHead, tree: a }; deps.log(`review verdict is for ${verdict.head.slice(0, 12)}, verified head is ${opts.verifiedHead.slice(0, 12)}: same git tree ${a.slice(0, 12)} — the verdict stands`); }
+  if (verifiedArg && verdict && verdict.head !== verifiedArg) {
+    const [a, b] = [await treeOf(verdict.head), await treeOf(verifiedArg)];
+    if (a && a === b) { verdictSameTree = true; verdictVia = { verifiedHead: verifiedArg, tree: a }; deps.log(`review verdict is for ${verdict.head.slice(0, 12)}, verified head is ${verifiedArg.slice(0, 12)}: same git tree ${a.slice(0, 12)} — the verdict stands`); }
     else {
       return done(
-        { verdict: 'refused', reason: 'verdict-head-mismatch', detail: `--verified-head ${opts.verifiedHead.slice(0, 12)} != the verdict's head ${verdict.head.slice(0, 12)}${a && b ? ' (the trees differ: the content changed)' : ' (trees unreadable: compared by sha)'}`, head: opts.verifiedHead },
+        { verdict: 'refused', reason: 'verdict-head-mismatch', detail: `--verified-head ${verifiedArg.slice(0, 12)} != the verdict's head ${verdict.head.slice(0, 12)}${a && b ? ' (the trees differ: the content changed)' : ' (trees unreadable: compared by sha)'}`, head: verifiedArg },
         reviewGated,
       );
     }

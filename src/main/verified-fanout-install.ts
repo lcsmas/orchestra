@@ -8,6 +8,7 @@ import { VERIFIED_FANOUT_MARKER, VERIFIED_FANOUT_SKILL_NAME, renderVerifiedFanou
 import { renderSwitchBlocks } from '../shared/fanout-switch-render.ts';
 import { DEFAULT_SWITCHES, type Switches } from '../shared/fanout-state.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
+import { FANOUT_ROLE_FILES, fanoutRoleFilesWanted } from '../shared/fanout-role-files.ts';
 
 /** 'written' = SKILL.md + files (re)written; 'skipped-foreign' = the repo's own skill (unmarked SKILL.md, or the dir is a symlink), nothing touched; 'skipped-error' = an fs error, reported to `onError`. */
 export type VerifiedFanoutInstall = 'written' | 'skipped-foreign' | 'skipped-error';
@@ -45,6 +46,23 @@ export async function installVerifiedFanoutSkill(skillsDir: string, onError?: (e
     // SKILL.md LAST (#474 review): a failure part-way never leaves a NEW SKILL.md pointing at references that did not land.
     await writeAtomic(skillFile, renderVerifiedFanoutSkill(switches));
     return 'written';
+  } catch (e) {
+    try { onError?.(e); } catch { /* the reporter must not throw either */ }
+    return 'skipped-error';
+  }
+}
+
+/** #590: under seatRecords=on write the role texts (reviewer, implementer) to `<worktree>/.orchestra/roles/` — Orchestra's own dir, so they exist whatever `verified-fanout` skill the repo has; off ⇒ none, and an earlier install's copies go. NEVER throws (like the skill install). */
+export async function installFanoutRoleFiles(worktreePath: string, onError?: (e: unknown) => void, switches: Partial<Switches> = DEFAULT_SWITCHES): Promise<'written' | 'removed' | 'skipped-error'> {
+  try {
+    const wanted = fanoutRoleFilesWanted(switches);
+    for (const r of FANOUT_ROLE_FILES) {
+      const dest = path.join(worktreePath, r.worktreePath);
+      if (!wanted) { await rm(dest, { force: true }); continue; }
+      await mkdir(path.dirname(dest), { recursive: true });
+      await writeAtomic(dest, r.render(switches), 0o644);
+    }
+    return wanted ? 'written' : 'removed';
   } catch (e) {
     try { onError?.(e); } catch { /* the reporter must not throw either */ }
     return 'skipped-error';

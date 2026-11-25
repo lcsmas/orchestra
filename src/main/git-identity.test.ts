@@ -295,7 +295,7 @@ test('#513 wiring: no other code creates a worktree behind the chokepoint\'s bac
 });
 test('#513 wiring: every creating caller goes through createWorktree', () => {
   const ws = read('workspaces.ts');
-  assert.match(body(ws, 'export async function createWorkspace('), /await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath\)/);
+  assert.match(body(ws, 'export async function createWorkspace('), /await createWorktree\(input\.repoPath, branch, baseBranch, worktreePath, naming\?\.reuseBranch \? \{ reuse: true \} : undefined\)/); // #587 PR B: a respawn reuses the ticket's branch
   assert.match(body(ws, 'export async function dispatchAdoptRepoRequest('), /await createWorktree\(repoPath, branch, baseBranch, newWorktreePath\)/);
   assert.match(read('sandbox-import.ts'), /await createWorktree\(ws\.repoPath, branch, ws\.baseBranch, worktreePath\)/);
 });

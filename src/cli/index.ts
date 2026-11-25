@@ -101,9 +101,12 @@ import {
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
+import { runStart } from './fanout-start.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
+import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
+import { fanoutCompletionRefusal, runRecord, stateSetNeedsHost } from './fanout-record.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -950,6 +953,7 @@ function busCtx(
           capMod.countCapabilityReject(db, runId ?? id.runId);
         }
       : undefined,
+    completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId) ?? (selfWorkspaceId() && selfWorkspaceId() !== sender ? fanoutCompletionRefusal(selfWorkspaceId()!, runId) : null), // #589: `--as <other handle>` does not shed the caller's own workspace
   };
 }
 
@@ -2472,9 +2476,28 @@ async function main(argv: string[]): Promise<void> {
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
       }
       const fanoutDeps: FanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
+      if (args[0] === 'review') { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; } // #588: `fanout review` is the coordinator's, proven by the host's /identity (src/shared/fanout-caller.ts)
+      if (args[0] === 'record') { // #589 — `fanout record` is the REVIEWER's: the host's /identity is the caller proof, and a keyed session the host cannot vouch records nothing
+        await settleHostIdentity();
+        fanoutDeps.identity = hostIdentity;
+        if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session (is Orchestra running, and is this the live session of the reviewer?). Nothing was recorded.');
+      }
+      if (stateSetNeedsHost(args, process.env)) { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; } // #589: a `--decide` on a seatRecords=on run is the coordinator's, proven by the host
       if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
         await settleHostIdentity();
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
+      }
+      if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)
+        const helpOnly = args.includes('--help') || args.includes('-h'); // a `--help` start is not a start: usage, rc 0, host never asked
+        if (!helpOnly) await settleHostIdentity();
+        if (!helpOnly && hostIdentity?.source !== 'host') fail('refusing to start: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof). Nothing was started.');
+        fanoutDeps.vouchedCaller = (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null;
+        const sr = await runStart(args.slice(1), fanoutDeps, (body) => request('/fanoutAcceptance', body, { timeoutMs: 600_000 }));
+        if (sr.stdout) process.stdout.write(sr.stdout);
+        if (sr.code === 1) fail(sr.stderr.trimEnd());
+        if (sr.stderr) process.stderr.write(sr.stderr);
+        if (sr.code !== 0) throw new CliExit(sr.code);
+        return;
       }
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
       const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);
@@ -2484,7 +2507,7 @@ async function main(argv: string[]): Promise<void> {
           fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
         } catch { fanoutDeps.spawned = null; }
       }
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
@@ -2497,6 +2520,9 @@ async function main(argv: string[]): Promise<void> {
         if (call.body.op === 'skills') { // #554: best effort — the state is the truth, the skill re-render is a courtesy
           if (!res.ok) process.stderr.write(`note: the host did not re-render the verified-fanout skill (${String(res.error ?? 'refused')}): it follows the switches at the next session start\n`);
           else if (((res.refreshed as string[] | undefined) ?? []).length) process.stdout.write('verified-fanout skill re-rendered from the switches\n');
+        } else if (call.body.op === 'review') { // #588
+          if (!res.ok) fail(`${ticket}: the reviewer was NOT spawned or woken: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout review ${ticket}`);
+          process.stdout.write(res.action === 'noop' ? `${ticket}: nothing to do — ${String(res.note)}\n` : `${ticket}: ${res.action === 'wake' ? 'woke its reviewer' : res.action === 'replace' ? 'replaced its reviewer with' : 'spawned its reviewer'} ${String(res.name)} (${String(res.id)}) — brief ${String(res.hash).slice(0, 12)}\n`);
         } else if (call.body.op === 'spawn') {
           if (!res.ok) fail(`ticket ${ticket} is registered but its test writer was NOT spawned: ${String(res.error ?? 'the host refused')}\nretry: orchestra fanout acceptance spawn ${ticket}`);
           process.stdout.write(`${ticket}: Orchestra spawned its test writer ${String(res.name)} (${String(res.id)}) — it freezes the tests to the shared acceptance branch\n`);

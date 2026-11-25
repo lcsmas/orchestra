@@ -63,6 +63,11 @@ export interface FindingRecord {
   report?: FindingReport;
   decision?: FindingDecision;
   settled?: FindingSettled;
+  /** #589 (I4, seatRecords=on) — written ONLY by `orchestra fanout record`: the recording reviewer's workspace id, its finding text, the head it was raised on, and who read the fix on which later head. */
+  by?: string;
+  text?: string;
+  raisedOn?: string;
+  fixedBy?: { by: string; head: string; at: string };
 }
 /** #553 (T2) — the four parts a measured MINOR on product code carries: T1's `findingOf` validates each when `report` is present; this is the rule that it IS present. */
 export const REPORT_PARTS = ['input', 'happens', 'where', 'proof'] as const;
@@ -84,6 +89,9 @@ export interface AcceptFlow {
   /** Coordinator-only escape (`acceptance waive`): the ticket cannot have acceptance tests. */
   waived: { decision: string; reason: string; at: string } | null;
 }
+
+/** #589 (I4) — one recorded verdict: who, the exact head (+ its tree) it read, the finding ids it raised / closed as fixed. */
+export interface ReviewEntry { n: number; reviewer: string; head: string; tree: string | null; verdict: 'approve' | 'changes-requested'; findings: string[]; closed: string[]; at: string }
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -131,13 +139,30 @@ export interface TicketState {
   accept: AcceptFlow | null;
   /** #564 — pre-nomination check records by git TREE of the head they ran on (DERIVED: only `orchestra fanout check` writes it; absent = none, never written empty). */
   checks?: Record<string, CheckRecord>;
+  /** #589 (I4, seatRecords=on) — the verdicts the recorded reviewer recorded (`orchestra fanout record`), oldest first. Counts are DERIVED (`reviewCounts`), never stored. */
+  reviews?: ReviewEntry[];
   /** #587 (seatRecords) — true once `--depends-on` was given (`none` = declared empty). Optional: never written under seatRecords=off, a v1 file without it loads (= false). */
   depsDeclared?: boolean;
   /** #587 — the interface other tickets build against (null / absent = none). Optional like the rest: written only by `--interface`. */
   iface?: Iface | null;
   /** #587 — upstream id → the `iface.version` of that upstream this ticket follows (`--follows`). Absent = follows nothing. */
   follows?: Record<string, number>;
+  /** #588 (I3) — the reviewer Orchestra spawned for this ticket + every brief it was sent (written ONLY by `orchestra fanout review` / its host op; absent = none). */
+  review?: ReviewRecord;
+  /** #587 PR B (ledger #591 I6) — written ONLY by `orchestra fanout start` (the host): when this ticket's implementer was launched, `spawn` or `respawn` (a dead one replaced), the sha256 of the brief it was given, how many briefs the ticket has had. Not settable by `state set`. */
+  start?: { at: string; kind: 'spawn' | 'respawn'; briefHash: string; briefs: number };
   updatedAt: string;
+}
+
+/** #588 (I3) — one brief sent to the ticket's reviewer: `kind` = first spawn / delta to the SAME live reviewer / a new reviewer after the old one died. `hash` = sha256 of `text`. */
+export interface ReviewBrief { n: number; kind: 'spawn' | 'wake' | 'replace'; head: string; base: string | null; hash: string; text: string; reviewer: string | null; at: string }
+export interface ReviewRecord {
+  /** The recorded reviewer (`id` null = the spawn is in flight, or failed — `error`). null = none yet. */
+  reviewer: { id: string | null; name: string; at: string; error?: string } | null;
+  /** The head the reviewer was last briefed on, and its base. */
+  head: string | null;
+  base: string | null;
+  briefs: ReviewBrief[];
 }
 /** #587 — one superseded version of an interface: `reason` = WHY it was replaced (the reason given with the next version), `at` = when. */
 export interface IfaceVersion { version: number; text: string; reason: string | null; at: string }
@@ -167,6 +192,7 @@ export interface FanoutState {
   updatedAt: string;
   reconciledAt: string | null;
 }
+
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
 export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;
@@ -211,7 +237,8 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
+TICKET_KEYS.add('reviews'); // #589 (I4)
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -312,6 +339,14 @@ function ifaceOfStored(v: unknown, where: string): Iface | null {
     return { version: h.version as number, text: h.text, reason: h.reason as string | null, at: isoOf(h.at, `${where} iface.history[${i}].at`) };
   });
   return { version: v.version as number, text: v.text, history };
+}
+function startOf(v: unknown, where: string): NonNullable<TicketState['start']> {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: start must be {at, kind, briefHash, briefs}`);
+  refuseUnknown(v, new Set(['at', 'kind', 'briefHash', 'briefs']), `${where} start`);
+  if (v.kind !== 'spawn' && v.kind !== 'respawn') throw new FanoutStateError(`${where}: start.kind must be spawn|respawn`);
+  if (typeof v.briefHash !== 'string' || !SHA256.test(v.briefHash)) throw new FanoutStateError(`${where}: start.briefHash must be a sha256`);
+  if (!Number.isInteger(v.briefs) || (v.briefs as number) < 1) throw new FanoutStateError(`${where}: start.briefs must be an integer ≥ 1`);
+  return { at: isoOf(v.at, `${where} start.at`), kind: v.kind, briefHash: v.briefHash, briefs: v.briefs as number };
 }
 function followsOf(v: unknown, where: string): Record<string, number> {
   if (!isObj(v)) throw new FanoutStateError(`${where}: follows must be {<upstream ticket>: <interface version>}`);
@@ -549,6 +584,7 @@ function isoOf(v: unknown, where: string): string {
   return v;
 }
 const FINDING_KEYS = new Set(['severity', 'evidence', 'kind', 'specSentence', 'demonstration', 'report', 'decision', 'settled']);
+for (const k of ['by', 'text', 'raisedOn', 'fixedBy']) FINDING_KEYS.add(k); // #589 (I4)
 /** #572 — a stored / patched demonstration: SHAPE only (strings, printable, bounded). A blank / short / missing field is NOT an error here: it is recorded with its refusal reason (`classifyDemonstration`). */
 function demonstrationOf(v: unknown, where: string): Demonstration {
   if (!isObj(v)) throw new FanoutStateError(`${where}.demonstration must be {${DEMONSTRATION_FIELDS.join(', ')}}`);
@@ -589,7 +625,30 @@ export function findingOf(v: unknown, where: string): FindingRecord {
     refuseUnknown(v.settled, new Set(['how', 'at', 'ref']), `${where}.settled`);
     out.settled = { how: enumOf(v.settled.how, ['fixed', 'pr-body'] as const, `${where}.settled.how`), at: isoOf(v.settled.at, `${where}.settled.at`), ref: lineOf(v.settled.ref, `${where}.settled.ref`, 500) };
   }
+  // #589 (I4): the reviewer's own record (parsed always — a stored state holds them; the patch path refuses them off-switch, `assertPatchSource`)
+  if (v.by !== undefined) out.by = lineOf(v.by, `${where}.by`, 200);
+  if (v.text !== undefined) out.text = lineOf(v.text, `${where}.text`);
+  if (v.raisedOn !== undefined) { if (typeof v.raisedOn !== 'string' || !HEX_SHA.test(v.raisedOn)) throw new FanoutStateError(`${where}.raisedOn must be a 7-40 lowercase hex sha`); out.raisedOn = v.raisedOn; }
+  if (v.fixedBy !== undefined) {
+    if (!isObj(v.fixedBy)) throw new FanoutStateError(`${where}.fixedBy must be {by, head, at}`);
+    refuseUnknown(v.fixedBy, new Set(['by', 'head', 'at']), `${where}.fixedBy`);
+    if (typeof v.fixedBy.head !== 'string' || !HEX_SHA.test(v.fixedBy.head)) throw new FanoutStateError(`${where}.fixedBy.head must be a 7-40 lowercase hex sha`);
+    out.fixedBy = { by: lineOf(v.fixedBy.by, `${where}.fixedBy.by`, 200), head: v.fixedBy.head, at: isoOf(v.fixedBy.at, `${where}.fixedBy.at`) };
+  }
   return out;
+}
+/** #589 (I4) — the stored `reviews`: every field shape-checked, `n` strictly increasing from 1. */
+function reviewsOf(v: unknown, where: string): ReviewEntry[] {
+  if (!Array.isArray(v)) throw new FanoutStateError(`${where}: reviews must be an array`);
+  return v.map((e, i) => {
+    const at = `${where}: reviews[${i}]`;
+    if (!isObj(e)) throw new FanoutStateError(`${at} must be an object`);
+    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at']), at);
+    if (!Number.isInteger(e.n) || (e.n as number) !== i + 1) throw new FanoutStateError(`${at}.n must be ${i + 1} (reviews are numbered 1.. in order)`);
+    if (typeof e.head !== 'string' || !HEX_SHA.test(e.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
+    const ids = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of finding ids`); return x as string[]; };
+    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`) };
+  });
 }
 function findingsOf(v: unknown): Record<string, FindingRecord> {
   if (v === undefined || v === null) return {};
@@ -670,6 +729,34 @@ function wsIdOf(v: unknown, name: string): string | null {
   const s = strOrNull(v, name);
   if (s !== null && !SAFE_ID.test(s)) throw new FanoutStateError(`${name} must be a workspace id (letters, digits, . _ -)`);
   return s;
+}
+/** #588 — a ticket's review record: the reviewer slot + the briefs sent (each `hash` is the sha256 of its `text`; a mismatch is a corrupt state). */
+function reviewOf(v: unknown, where: string): ReviewRecord {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: review must be an object`);
+  refuseUnknown(v, new Set(['reviewer', 'head', 'base', 'briefs']), `${where} review`);
+  const iso = (x: unknown, n: string): string => { if (typeof x !== 'string' || Number.isNaN(Date.parse(x))) throw new FanoutStateError(`${where}: ${n} must be an ISO date`); return x; };
+  let reviewer: ReviewRecord['reviewer'] = null;
+  if (v.reviewer !== undefined && v.reviewer !== null) {
+    const r = v.reviewer;
+    if (!isObj(r)) throw new FanoutStateError(`${where}: review.reviewer must be an object or null`);
+    refuseUnknown(r, new Set(['id', 'name', 'at', 'error']), `${where} review.reviewer`);
+    if (typeof r.name !== 'string' || !r.name.trim()) throw new FanoutStateError(`${where}: review.reviewer.name missing`);
+    reviewer = { id: wsIdOf(r.id, 'review.reviewer.id'), name: r.name, at: iso(r.at, 'review.reviewer.at'), ...(typeof r.error === 'string' && r.error ? { error: r.error.slice(0, 500) } : {}) };
+  }
+  const sha = (x: unknown, n: string): string | null => { const s = strOrNull(x, n); if (s !== null && !HEX_SHA.test(s)) throw new FanoutStateError(`${where}: ${n} must be 7-40 lowercase hex`); return s; };
+  if (v.briefs !== undefined && !Array.isArray(v.briefs)) throw new FanoutStateError(`${where}: review.briefs must be an array`);
+  const briefs = ((v.briefs as unknown[] | undefined) ?? []).map((b, i): ReviewBrief => {
+    if (!isObj(b)) throw new FanoutStateError(`${where}: review.briefs[${i}] must be an object`);
+    refuseUnknown(b, new Set(['n', 'kind', 'head', 'base', 'hash', 'text', 'reviewer', 'at']), `${where} review.briefs[${i}]`);
+    if (b.n !== i + 1) throw new FanoutStateError(`${where}: review.briefs[${i}].n must be ${i + 1}`);
+    const kind = enumOf(b.kind, ['spawn', 'wake', 'replace'] as const, `review.briefs[${i}].kind`);
+    const head = sha(b.head, 'review.briefs.head');
+    if (!head) throw new FanoutStateError(`${where}: review.briefs[${i}].head missing`);
+    if (typeof b.hash !== 'string' || !/^[0-9a-f]{64}$/.test(b.hash)) throw new FanoutStateError(`${where}: review.briefs[${i}].hash must be a sha256 hex`);
+    if (typeof b.text !== 'string' || !b.text) throw new FanoutStateError(`${where}: review.briefs[${i}].text missing`);
+    return { n: b.n, kind, head, base: sha(b.base, 'review.briefs.base'), hash: b.hash, text: b.text, reviewer: wsIdOf(b.reviewer, 'review.briefs.reviewer'), at: iso(b.at, 'review.briefs.at') };
+  });
+  return { reviewer, head: sha(v.head, 'review.head'), base: sha(v.base, 'review.base'), briefs };
 }
 function acceptFlowOf(v: unknown, where: string): AcceptFlow | null {
   if (v === undefined || v === null) return null;
@@ -924,7 +1011,10 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.depsDeclared === true ? { depsDeclared: true as const } : t.depsDeclared === undefined || t.depsDeclared === false ? {} : (() => { throw new FanoutStateError(`ticket ${id}: depsDeclared must be a boolean`); })()),
       ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),
       ...(t.follows !== undefined ? { follows: followsOf(t.follows, `ticket ${id}`) } : {}),
+      ...(t.start !== undefined ? { start: startOf(t.start, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
+      ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
+      ...(t.reviews !== undefined ? { reviews: reviewsOf(t.reviews, `ticket ${id}`) } : {}), // #589 (I4)
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -1134,7 +1224,25 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
  *  - `nominated` / `gated` are admitted while an upstream is open only on its verified candidate (#506: nominated|gated, head recorded,
  *    no failing verdict, and `builtOn[upstream]` = that head) — an upstream that moved since is REFUSED until the dependent re-records.
  */
-export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
+/** #589 (I4) — who may write what, BEFORE the transition. seatRecords=on: a finding / a settle is recorded by the reviewer's `fanout record` only (the coordinator's `--finding`, `--finding-json`, `--settle`, or their `--json` keys ⇒ `[finding-source]`),
+ *  and a decision needs a written reason (`[decision-reason-blank]`). off: the four record-only finding fields are unknown, as before #589. */
+function assertPatchSource(state: FanoutState, id: string, patch: Record<string, unknown>): void {
+  const findings = isObj(patch.findings) ? Object.entries(patch.findings) : [];
+  if (!seatRecordsOn(state)) {
+    for (const [k, f] of findings) if (isObj(f)) for (const bad of ['by', 'text', 'raisedOn', 'fixedBy']) if (bad in f) throw new FanoutStateError(`unknown field "${bad}" in findings[${k}]`);
+    return;
+  }
+  if (findings.length || ('findings' in patch && patch.findings !== undefined && !isObj(patch.findings))) throw new SeatRefusal('finding-source', `${id}: seatRecords=on — a finding is recorded by the ticket's reviewer (\`orchestra fanout record ${id} --head <sha> --verdict approve|changes-requested --json <file|->\`), never typed by the coordinator (--finding / --finding-json refused)`);
+  if (isObj(patch.settle) && Object.keys(patch.settle).length) throw new SeatRefusal('finding-source', `${id}: seatRecords=on — a finding is closed as fixed by the reviewer that read the fix (\`fanout record ${id} … --json\` {"fixed":[…]}); the coordinator's --settle is refused. Not fixing it: \`state set ${id} --decide <finding>=<reason>\``);
+  if (patch.verdict === 'approve' || patch.verdict === 'changes-requested') throw new SeatRefusal('typed-verdict', `${id}: seatRecords=on — the word approve / changes-requested is the reviewer's, written by its \`fanout record\`; the coordinator's --verdict ${patch.verdict} is refused (pass / fail / none stay yours)`);
+  for (const [k, v] of Object.entries(isObj(patch.decide) ? patch.decide : {})) if (!isObj(v) || typeof v.text !== 'string' || !v.text.trim()) throw new SeatRefusal('decision-reason-blank', `${id}: --decide ${k} needs a written reason (the closeout lists each decision with it): \`state set ${id} --decide ${k}=<why it is not fixed>\``);
+}
+export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: Parameters<typeof applyTicketPatchCore>[4] = {}): FanoutState {
+  assertPatchSource(stampDefaults(state0), id, patch); // #589
+  return applyTicketPatchCore(state0, id, patch, now, derived);
+}
+/** The transition itself (#589: `fanout record` calls it directly, with the reviewer's findings the wrapper above refuses to the coordinator). */
+export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
   refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');
@@ -1253,6 +1361,9 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   }
   if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
   if ('implementer' in patch) next.implementer = wsIdOf(patch.implementer, 'implementer');
+  // #588 (review r1 MINOR-2): the recorded REVIEWER of a ticket may never be recorded as its implementer / verifier (refused at the write, not only at the next `fanout review`)
+  const rid = next.review?.reviewer?.id;
+  if (rid && (('implementer' in patch && next.implementer === rid) || ('verifier' in patch && patch.verifier === rid))) throw new SeatRefusal('review-role', `${id}: ${rid} is this ticket's recorded reviewer — it cannot also be its ${next.implementer === rid ? 'implementer' : 'verifier'}`);
   if ('verifier' in patch) {
     next.verifier = wsIdOf(patch.verifier, 'verifier');
     if (next.verifier && switchesOf(state).verifier === 'off') throw new FanoutStateError(`${id}: verifier=off (#563) — this run has no verifier seat, so no verifier workspace is recorded`);

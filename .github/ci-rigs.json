@@ -193,10 +193,31 @@
    "group": 12
   },
   {
+   "id": "test:fanout-review-mutants",
+   "command": "pnpm run test:fanout-review-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 30
+  },
+  {
    "id": "test:fanout-switches-mutants",
    "command": "pnpm run test:fanout-switches-mutants",
    "class": "LOCAL_ONLY",
    "reason": "exit 1 although '137/143 mutants killed, 0 survived, 6 refused' (6 refused mutants fail the rig on the runner)."
+  },
+  {
+   "id": "test:fanout-record",
+   "command": "pnpm run test:fanout-record",
+   "class": "RUNS_IN_CI",
+   "wallSec": 5,
+   "group": 12
+  },
+  {
+   "id": "test:fanout-record-mutants",
+   "command": "pnpm run test:fanout-record-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 30,
+   "wallSec": 30,
+   "group": 12
   },
   {
    "id": "test:fanout-checks",
@@ -226,6 +247,20 @@
    "class": "RUNS_IN_CI",
    "wallSec": 40,
    "group": 11
+  },
+  {
+   "id": "test:fanout-start",
+   "command": "pnpm run test:fanout-start",
+   "class": "RUNS_IN_CI",
+   "wallSec": 2,
+   "group": 12
+  },
+  {
+   "id": "test:fanout-start-mutants",
+   "command": "pnpm run test:fanout-start-mutants",
+   "class": "RUNS_IN_CI",
+   "wallSec": 45,
+   "group": 5
   },
   {
    "id": "test:acceptance-forced",

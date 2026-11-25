@@ -233,6 +233,8 @@ export interface BusVerbCtx {
    *  the counter moves in shadow mode. No-op if unwired (unit tests without a
    *  counter). */
   countCapabilityReject?: (runId?: string) => void;
+  /** #589 (seatRecords=on) — the refusal text when `sender`'s completion filed in `runId` must wait: a recorded reviewer has not yet recorded the verdict of its head (null = nothing to refuse). Unwired = never refuses. */
+  completionRefusal?: (sender: string, runId: string) => string | null;
 }
 
 /** The slice of src/main/bus.ts the verbs use (injected so a test can drive the
@@ -599,6 +601,8 @@ export function verbSend(ctx: BusVerbCtx, a: SendArgs): void {
   // accepted untokened even under capability=ON; a `--cap` on it is ignored.
   const cap = a.cap?.trim() || null;
   if (CAPABILITY_COMPLETION_KINDS.includes(a.kind!)) {
+    const unrecorded = ctx.completionRefusal?.(wctx.id.handle, wctx.id.runId); // #589: BEFORE the capability and the write — a recorded reviewer's completion waits for its record
+    if (unrecorded) ctx.fail(unrecorded);
     const valid = cap !== null && ctx.bus.verifyCapability(ctx.db, wctx.id.runId, cap);
     if (!valid) {
       // COUNTED always (shadow counter moves in shadow mode) …

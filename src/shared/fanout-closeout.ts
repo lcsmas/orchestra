@@ -116,3 +116,17 @@ export function renderDemonstratedCloseout(c: DemonstratedCloseout): string {
   const refused = c.refused.map((r) => `  ${r.ticket}/${r.finding}  demonstration refused: ${r.refusal}`);
   return [head, ...rows, ...refused].join('\n') + '\n';
 }
+
+// ── #589 (seatRecords=on) — every finding the coordinator closed as "not fixed" (`state set <ticket> --decide <finding>=<reason>`), with its written reason: the closing report names each. ──
+export interface DecidedFinding { ticket: string; finding: string; severity: string; by: string; text: string; at: string; raisedBy?: string; raisedOn?: string }
+export function decidedCloseout(state: FanoutState): DecidedFinding[] {
+  const out: DecidedFinding[] = [];
+  for (const [ticket, t] of Object.entries(state.tickets)) {
+    for (const [finding, f] of Object.entries(t.findings)) if (f.decision) out.push({ ticket, finding, severity: f.severity, by: f.decision.by, text: f.decision.text, at: f.decision.at, ...(f.by ? { raisedBy: f.by } : {}), ...(f.raisedOn ? { raisedOn: f.raisedOn } : {}) });
+  }
+  return out;
+}
+export function renderDecidedCloseout(d: DecidedFinding[]): string {
+  const head = `decided NOT fixed (#589): ${d.length} finding(s) the coordinator closed with a written reason${d.length ? ' — each is a merge the reviewer did not clear' : ''}`;
+  return [head, ...d.map((x) => `  ${x.ticket}/${x.finding}  ${x.severity}${x.raisedOn ? ` @${x.raisedOn.slice(0, 8)}` : ''}  decided by ${x.by} at ${x.at}: ${oneLine(x.text, 300)}`)].join('\n') + '\n';
+}
