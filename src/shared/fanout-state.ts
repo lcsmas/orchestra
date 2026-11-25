@@ -1296,6 +1296,9 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   }
   if (next.status === 'merged' && !next.mergedHead) { next.mergedHead = next.head; next.mergedTree = next.tree; }
   if ('implementer' in patch) next.implementer = wsIdOf(patch.implementer, 'implementer');
+  // #588 (review r1 MINOR-2): the recorded REVIEWER of a ticket may never be recorded as its implementer / verifier (refused at the write, not only at the next `fanout review`)
+  const rid = next.review?.reviewer?.id;
+  if (rid && (('implementer' in patch && next.implementer === rid) || ('verifier' in patch && patch.verifier === rid))) throw new SeatRefusal('review-role', `${id}: ${rid} is this ticket's recorded reviewer — it cannot also be its ${next.implementer === rid ? 'implementer' : 'verifier'}`);
   if ('verifier' in patch) {
     next.verifier = wsIdOf(patch.verifier, 'verifier');
     if (next.verifier && switchesOf(state).verifier === 'off') throw new FanoutStateError(`${id}: verifier=off (#563) — this run has no verifier seat, so no verifier workspace is recorded`);

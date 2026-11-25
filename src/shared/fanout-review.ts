@@ -69,6 +69,15 @@ const openFindingsOf = (t: TicketState): BriefFinding[] =>
     return { id, severity: f.severity, text: x.text ?? null, raisedOn: x.raisedOn ?? null };
   });
 
+/** The upstream heads `t` was built on while those upstreams are NOT merged (a merged upstream is already in the target: nothing to exclude). */
+const builtOnOpen = (state: FanoutState, t: TicketState): Array<{ id: string; sha: string }> =>
+  Object.entries(t.builtOn).filter(([up]) => state.tickets[up]?.status !== 'merged').map(([id, sha]) => ({ id, sha }));
+/** #588 (review r1 MINOR-1) — the base of a STACKED ticket = the one upstream head it was built on (the review reads only what is above it); null = not stacked on exactly one (the CLI then uses merge-base with the target). */
+export function stackedBase(state: FanoutState, ticket: string): string | null {
+  const open = builtOnOpen(state, state.tickets[ticket]);
+  return open.length === 1 ? open[0].sha : null;
+}
+
 /** The brief's input from the state alone (+ the base the CLI computed). The same state + head + base + kind ⇒ the same input ⇒ the same text. */
 export function briefInputOf(state: FanoutState, ticket: string, o: { kind: BriefKind; head: string; base: string | null; reviewerSkillPath?: string | null }): BriefInput {
   const t = state.tickets[ticket];
@@ -83,6 +92,7 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     switchesLine: renderSwitchesLine(state),
     follows: t.dependsOn.flatMap((id) => { const i = interfaceOf(state, id); return i ? [{ id, current: i.version, followed: follows[id] ?? null }] : []; }),
     switches: switchesOf(state),
+    builtOn: builtOnOpen(state, t),
     openFindings: o.kind === 'spawn' ? [] : openFindingsOf(t),
     ...(o.reviewerSkillPath !== undefined ? { reviewerSkillPath: o.reviewerSkillPath } : {}),
   };

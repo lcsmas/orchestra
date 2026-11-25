@@ -32,6 +32,8 @@ export interface BriefInput {
   follows: BriefFollow[];
   /** The switch values (the per-switch sentences key on them). */
   switches: Switches;
+  /** The upstream heads this ticket was built on (`builtOn`) while they are not merged: the review reads what is above them. */
+  builtOn: Array<{ id: string; sha: string }>;
   /** Findings still open on this ticket (wake / replace carry them). */
   openFindings: BriefFinding[];
   /** I5 — path of the reviewer's role file, when one exists. */
@@ -45,8 +47,15 @@ export const REVIEWER_RULES = [
   'Report only BLOCKING, MAJOR, and MINOR that touches correctness or a ticket promise — never NITs. Label every finding measured (you ran it / traced it) or argued (reasoning only).',
   'Severity: BLOCKING = must not merge as is (red CI/build on a base that is green, data loss, security hole). MAJOR = wrong behaviour on a real input, or a ticket promise not kept. MINOR = a real defect with limited reach.',
   'A red check is the candidate\'s only if the same check is green on the base head: run it there first.',
-  'Merge rule you work under: a review round with 0 BLOCKING, 0 MAJOR and no unsettled spec-sentence MINOR merges on its current gate; every other MINOR is `noted` — no follow-up PR.',
 ].join('\n');
+
+/** The merge rule the reviewer works under, per `minorPolicy` — the SAME wording as the verified-fanout skill's per-policy variants (verified-fanout-skill.ts, §4); rendered from the policy, never a constant. */
+export const MERGE_RULES: Readonly<Record<Switches['minorPolicy'], string>> = {
+  spec: 'Merge rule you work under: a review round with 0 BLOCKING, 0 MAJOR and no unsettled spec-sentence MINOR merges on its current gate; every other MINOR is `noted` — no follow-up PR.',
+  refuse: 'Merge rule you work under: a review round with 0 BLOCKING and 0 MAJOR merges on its current gate; every MINOR is `noted` — no follow-up PR.',
+  legacy: "Merge rule you work under: a review round with 0 BLOCKING and 0 MAJOR merges on its current gate; a MINOR that touches correctness or a ticket promise goes to the candidate's ONE follow-up branch, every other finding is `noted`.",
+  demonstrated: 'Merge rule you work under: a review round with 0 BLOCKING, 0 MAJOR and no unsettled demonstrated finding merges on its current gate; a MINOR that touches correctness or a ticket promise goes to the ONE follow-up branch, every other finding is `noted`.',
+};
 
 /** One sentence per switch VALUE that changes what the reviewer must do. A switch in any other value adds nothing: no sentence of its own. Keyed `<name>=<value>`. */
 export const SWITCH_SENTENCES: Readonly<Record<string, string>> = {
@@ -55,7 +64,6 @@ export const SWITCH_SENTENCES: Readonly<Record<string, string>> = {
   'minorPolicy=spec': 'minorPolicy=spec: a MINOR that breaks a sentence of the ticket carries `specSentence` — a LITERAL substring of the ticket text (no trim, no case-fold); a process sentence ("write the list in the PR") is `kind: process`.',
   'minorPolicy=demonstrated': 'minorPolicy=demonstrated: for every finding about product behaviour give `input` (the concrete situation), `observed` (what the code does, with a product `file:line`) and `expected` (what the ticket asks, or why the result is wrong for the user) — or say plainly that you cannot; never invent an input you did not trace.',
   'preNominationChecks=on': 'preNominationChecks=on: the candidate carries a passing `orchestra fanout check` record for its tree; do not repeat what it covers, attack what it cannot.',
-  'verifier=off': 'verifier=off: this run has no verifier seat — your review and the CI on the head are the only gate.',
 };
 
 export const switchSentencesOf = (sw: Switches): string[] =>
@@ -76,7 +84,8 @@ export function renderReviewerBrief(i: BriefInput): string {
     `branch: ${i.branch ?? 'unknown'}${i.pr ? ` (PR #${i.pr})` : ''}`,
     `target: ${i.target}`,
     `head: ${i.head}`,
-    `base: ${i.base ?? 'unknown (merge-base not computed)'}`,
+    `base: ${i.base ?? 'unknown (merge-base not computed)'}${i.builtOn.length ? ' (the head this ticket was built on)' : ''}`,
+    ...i.builtOn.map((b) => `built on: ${b.id}@${b.sha} (read only what is ABOVE it: its diff is the upstream's)`),
     ...(i.kind === 'wake' && i.prevHead ? [`previous head: ${i.prevHead}`] : []),
     `coordinator: ${i.coordinator} (report to it)`, '');
   out.push('## Ticket text', i.ticketText ? indent(i.ticketText) : i.ticketRef ? `(no text captured; spec reference: ${i.ticketRef})` : '(no spec recorded for this ticket)', '');
@@ -93,7 +102,7 @@ export function renderReviewerBrief(i: BriefInput): string {
     for (const f of i.openFindings) out.push(`- ${f.id} [${f.severity}]${f.raisedOn ? ` raised on ${short(f.raisedOn)}` : ''}${f.text ? `: ${f.text}` : ''}`);
     out.push('');
   }
-  out.push('## Rules', REVIEWER_RULES, '');
+  out.push('## Rules', REVIEWER_RULES, MERGE_RULES[i.switches.minorPolicy], '');
   if (i.reviewerSkillPath) out.push(`Your role file: ${i.reviewerSkillPath}`, '');
   out.push('## How to end',
     `Write your findings (id, severity, measured|argued, the evidence) and your verdict (approve | changes-requested) on the head ${i.head}, then end with: orchestra send --type worker_done --to ${i.coordinator} --cap "$(orchestra token)" "<verdict + findings>".`,
