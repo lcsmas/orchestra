@@ -1,0 +1,131 @@
+# Pull-request CI (#568): tsc + the full suite + the rig matrix, no silent green. No secret, read-only token.
+# The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the suite job when a rig is in neither.
+# How to add a rig / the local-only list: docs/codebase-map/build-release.md § Pull-request CI.
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches-ignore: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          bus-abi: 'false'
+      - run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs typecheck
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-typecheck
+          path: ${{ runner.temp }}/ci-result
+          retention-days: 1
+          if-no-files-found: warn
+
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - run: echo "SUITE_T0=$(date +%s)" >> "$GITHUB_ENV"
+      # continue-on-error: the NEXT step is the verdict (it reads this step's `outcome`, and tolerates only the knownFail tests of .github/ci-skips.json).
+      # Consequence: `orchestra fanout gate` cannot DERIVE this job as the suite check (it refuses a continue-on-error step): pin it with `--require-check suite`.
+      - name: Run the suite
+        id: suite
+        continue-on-error: true
+        run: pnpm run test > "$RUNNER_TEMP/suite.tap" 2>&1
+      - name: Verdict — tests run / passed / failed / skipped (a skip or a zero fails)
+        if: always()
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs suite "$RUNNER_TEMP/suite.tap"
+        env:
+          SUITE_OUTCOME: ${{ steps.suite.outcome }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-suite
+          path: ${{ runner.temp }}/ci-result
+          retention-days: 1
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: suite-tap
+          path: ${{ runner.temp }}/suite.tap
+          retention-days: 3
+
+  inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: m
+        run: |
+          m="$(node --experimental-strip-types --no-warnings scripts/ci/rigs.mjs matrix)"
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  rigs:
+    needs: inventory
+    runs-on: ubuntu-latest
+    # each group installs once and runs its rigs in sequence (D5, ledger #569); the longest group is ~45 min of rigs
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.inventory.outputs.matrix) }}
+    name: rigs (group ${{ matrix.group }}/${{ matrix.count }} rigs)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit
+      - uses: ./.github/actions/setup
+        with:
+          bundles: 'true'
+          desktop: 'true'
+      - run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-group-${{ matrix.group }}
+          path: ${{ runner.temp }}/ci-result
+          retention-days: 1
+          if-no-files-found: warn
+
+  summary:
+    needs: [typecheck, suite, inventory, rigs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - run: node --experimental-strip-types --no-warnings scripts/ci/rigs.mjs summary "$RUNNER_TEMP/results"
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}

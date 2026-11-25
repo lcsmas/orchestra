@@ -248,11 +248,10 @@ do it), `--notes-file`. On build failure it prints the undo
 (`git tag -d $TAG && git reset --hard HEAD~1`).
 
 ## CI — .github/workflows/release.yml (~90 lines)
-**This is the ONLY workflow file — a release BUILDER, not a verification CI**
-(issue #80, T80.0): it triggers on `push` tag `v*` / `workflow_dispatch`, so
-nothing runs on a push or PR, and its ubuntu runners have no compositor. That is
-why the compositor gates (`pnpm run test:gates`, above) are wired into the
-verifier/release flow, not a CI job — there is no test-CI surface to attach to.
+**The release BUILDER** (issue #80, T80.0): it triggers on `push` tag `v*` /
+`workflow_dispatch`, so it never runs on a push or PR, and its ubuntu runners
+have no compositor. The verification CI is the separate **Pull-request CI**
+workflow (`.github/workflows/ci.yml`, #568) — next section.
 Triggers on `push` tag `v*` (or manual `workflow_dispatch` with a tag). Build
 matrix: `ubuntu-latest`→x64, `ubuntu-24.04-arm`→arm64. Each: checkout the tag,
 pnpm + Node 20, `apt install build-essential libfuse2`, `pnpm install
@@ -276,6 +275,78 @@ Publish job
 (`needs: build`, only on real tags) downloads both and attaches them to the
 release via `softprops/action-gh-release` — **appends** to a release the local
 `pnpm run release` already created, or creates one in `--ci-only` mode.
+
+## Pull-request CI — .github/workflows/ci.yml (#568)
+Runs on `pull_request` → `master` AND on `push` to every non-master branch (a
+PR therefore gets two runs per head: both must be green). `permissions:
+contents: read`, no secret, no token; `concurrency` group per event + PR/ref with
+`cancel-in-progress`; `ubuntu-latest` x64; pnpm via `pnpm/action-setup` + Node 22
+(`--experimental-strip-types`; the release workflow's Node 20 cannot run the suite).
+
+| Job | What it runs | Verdict |
+|---|---|---|
+| `typecheck` | `npx tsc --noEmit` | exit 0 |
+| `suite` | `pnpm run test > suite.tap` (step `continue-on-error`), then the verdict step `scripts/ci/run-job.mjs suite` (reads the step's `outcome`; full TAP uploaded as artifact `suite-tap` on failure) | TAP summary: red if tests = 0, fail > 0, **skipped > 0** unless the test is in `.github/ci-skips.json` `skips` with a reason (3 btrfs-only tests measured on the runner), or no summary (truncated run). `knownFail` lists tests red on the runner for a runner reason (5: 4 in `keyring-rig-driver.test.ts` hardcode uid 1000, the runner is 1001; 1 in `keeper-docker-relay.test.ts` compares socket inodes and ext4 reuses them — a ~1-in-3 flake): tolerated only when EVERY failed test is listed, matched by name |
+| `rigs (group N/…)` | the `RUNS_IN_CI` rigs of `.github/ci-rigs.json` spread over `groups` jobs (D5, ledger #569; `fail-fast: false`): each group installs once, then `scripts/ci/run-group.mjs N` runs its rigs **in sequence** through `scripts/ci/run-job.mjs rig <id>`; a red rig does NOT stop the group, the step fails at the end, and ONE per-rig table (pass/fail, counts, duration, attempts) goes to the job summary | per rig: exit 0 **and** ≥ 1 PASS arm counted (TAP summary, else the rig's own PASS lines / `passPattern`), and no VOID / BROKEN / not-exercised line (counted as skipped). A contained rig whose headless sway never came up (`[rig] ABORT: could not set the marker…`) ran no arm: it is retried up to 3 attempts; any other red (not a timeout) gets ONE fresh re-run (a timing clause that flakes once on a shared runner — measured: e2e-pause-gates `redrive`, e2e-acces-mobile `distinct-request-ids` — passes on a fresh process, a regression is red twice); attempts are printed and shown in the table, a timeout is final. After each rig the runner SIGKILLs its process group (what the rig left behind must not reach the next rig of the group). Per-rig timeout = `timeoutMin` |
+| `summary` | `needs` all, `if: always()`; downloads every `result-*` artifact, `scripts/ci/rigs.mjs summary` | red if any needed job failed / was cancelled / was skipped, if a result file is missing, or a `RUNS_IN_CI` rig did not report |
+
+Every job writes `$GITHUB_STEP_SUMMARY`: run / passed / failed / skipped (rigs: their
+own arm counts). **No silent green**: a job that ran 0 tests/arms is red. The
+`summary` job prints the per-job table and the **LOCAL-ONLY rig list with each reason**
+on every run.
+
+**Files.** `.github/ci-rigs.json` (the ONE rig list: `id`, `command`, `class` =
+`RUNS_IN_CI` | `LOCAL_ONLY`, `reason`, optional `pre` / `timeoutMin` / `passPattern` /
+`failPattern` / `wallSec`) · `src/shared/ci-rigs.ts` (reader, validator, TAP + arm
+parsers, `judge`) · `src/shared/ci-rigs.test.ts` (the guard) · `scripts/ci/run-job.mjs`
+(runs/judges one job) · `scripts/ci/rigs.mjs` (`matrix` / `summary`) ·
+`scripts/ci/run-group.mjs` (one group, sequentially) · `scripts/ci/each-arm.mjs` (one-arm-per-process rigs, arms read from the rig's own source, an arm gets up to 3 fresh-process attempts — all printed, a deterministic red fails 3×,
+`--expect-abort` for a must-abort self-test arm) · `scripts/ci/rig-table.mjs` (renders the
+classification table) · `.github/actions/setup` (pnpm, Node 22, install, **runner prep**,
+`build:bus-abi`, bundles, and the desktop stack for rigs).
+
+**Runner prep the rigs assume** (environment only — no rig is rewritten, nothing mocked):
+`node` on `/usr/local/bin:/usr/bin:/bin` (the rigs resolve it on that PATH; the image's own node
+there is ABI 137), a git identity, the "live" dirs/files a dev machine has (`~/.claude`,
+`~/.local/bin`, `~/.claude.json`: the scratch guards classify them as live only when they exist), unprivileged user
+namespaces (`apparmor_restrict_unprivileged_userns=0`: bwrap/unshare rigs), and — for every
+rig job — `sway grim bubblewrap neovim xwayland gnome-keyring …`, the `claude` CLI pinned to
+2.1.325 (the session-budget family drives it against its LOCAL FAKE API: **no token, no
+account**) and the pinned `agent-browser`.
+
+**Adding a rig.** A new `package.json` `test:*` / `canary:*` script, or a new top-level
+`scripts/e2e-*.{mjs,sh}` that no such script reaches, makes `src/shared/ci-rigs.test.ts` (in the
+suite job) fail until `.github/ci-rigs.json` has an entry: `RUNS_IN_CI` with the command that
+proves it, or `LOCAL_ONLY` with the reason seen on a runner. Try it on a runner first (push the
+branch with the entry as `RUNS_IN_CI`; a red job tells you the reason). A stale entry also fails.
+
+**Groups (D5, measured).** Same content, same classification: one job per rig (140 jobs) 49 / 63 min (queue-bound);
+`groups: 4` 71 min (rigs run sequentially, ~65 min of rigs per group); `groups: 12` **28 min** (groups 16–25 min). Local gate of
+the same content: 20–50 min. Shipped: `groups: 12` in `.github/ci-rigs.json` (one number; `rigs.mjs assign` re-balances from `wallSec`).
+
+**Rig time budget.** A `RUNS_IN_CI` rig finishes in < 15 min on the runner; slower ones are
+`LOCAL_ONLY` ("over the per-PR time budget"). The classification table (rig, class, reason or
+wall time, command) is rendered by `node --experimental-strip-types scripts/ci/rig-table.mjs`
+and lives in the body of issue #568.
+
+**The LOCAL-ONLY list** (rendered in every run's summary; reasons seen in the runner logs).
+Families: REFUSED by `scripts/refuse-real-runtime.mjs` (Electron against the human's real
+`/run/user`), the heavy-rig token canaries, rigs that need a packaged AppImage / `gh` auth /
+a running Orchestra's generated files, systemd/cgroup specifics of the hosted runner, rigs that are red on
+master (mutant anchors no longer match, an OFF-by-default switch, a stubbed `window`), and rigs
+over the time budget. The authoritative list is `node scripts/ci/rig-table.mjs --local-only`.
+
+**For the verifier and `fanout deliver`.** The suite step is `continue-on-error` (a verdict step decides),
+so `fanout gate` cannot DERIVE the suite check (`suiteJobsOf` refuses such a step — pinned by
+`ci-rigs.test.ts`): run it with `--require-check suite`. With a green PR CI on exactly the verified head
+(`orchestra fanout gate --require-check suite` says `fullSuite: ci`, `ciGreenOnHead`) the verifier does NOT rerun
+tsc, the suite or the CI-run rigs: it runs only the LOCAL-ONLY rigs the diff touches and its
+own probes. `fanout deliver` needs no change: `ciVerdict` (src/shared/fanout-deliver.ts)
+already refuses a head with a failed check (`ci-red`), waits on pending ones, refuses
+`no-checks` after the grace and `zero-steps` for a green job that ran no step — so a PR
+with this workflow can only merge on a green `typecheck` + `suite` + every rig + `summary`
+(the `summary` job also fails when a needed job was skipped or cancelled, which `deliver`
+reads as neutral).
 
 ## Bundled skills (.claude/skills/, version-controlled)
 `.gitignore` ignores `.claude/*` but **un-ignores** `.claude/skills/` so these

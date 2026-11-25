@@ -453,9 +453,9 @@ test('skill render: every combination renders, leaves no directive behind, and t
   for (const needle of ['## 1b. Acceptance tests', 'references/acceptance-tests.md', 'Routing rule', 'unsettled spec-sentence MINOR', 'finding-unsettled']) assert.ok(full.includes(needle), needle);
 });
 
-// sha256 of what v0.5.378 rendered for a run on ITS defaults (earlyGate on, acceptance on, minorPolicy spec): SKILL.md + every installed file. Regenerate: node --experimental-strip-types scripts/diff-fanout-skill-vs-375.mjs --tag v0.5.378 --switches acceptance=on,minorPolicy=spec  (must print "no difference").
+// sha256 of what v0.5.378 rendered (SKILL.md + verifier-and-review.md re-pinned by #568: the verifier-on CI sentence) for a run on ITS defaults (earlyGate on, acceptance on, minorPolicy spec): SKILL.md + every installed file. Regenerate: node --experimental-strip-types scripts/diff-fanout-skill-vs-375.mjs --tag v0.5.378 --switches acceptance=on,minorPolicy=spec  (must print "no difference").
 const V378_RENDER_SHA256: Record<string, string> = {
-  'SKILL.md': '2b7ed8dd33184ffbdbf939d00a3826f874986229eb9eb5ab615f7aa06e3253e6',
+  'SKILL.md': 'cc58eeb1cd446517d38e43e31ef161d2a65fee1bbab9d9a12e80106970149344',
   'references/meta-rules.md': 'a203d4a735e79e7339c7ed88617e4f403cc80d4fd547d8e943f7cd7956aa5bcd',
   'references/prose.md': '68ce78da7a108a475c211afe24b8cdb661e7d6391b69f5134f34126b6499c3ed',
   'references/traps.md': '2da64c32010533252c26e8ffe069a8a8c86d374e96cf20849963c49ac4187560',
@@ -466,7 +466,7 @@ const V378_RENDER_SHA256: Record<string, string> = {
   'references/closeout-and-gates.md': 'f4d7f7a7b0c3013d36590a0364a84128757b0b5346b9fe64b1c1d5a2dcae45c7',
   'references/fleet-bus.md': 'bf6aa4ba306934656d9a88f30bc8b8ab149067e3bc612eeb1e2ba9ab60d2606a',
   'references/lead-ops-tiers.md': '268ff1e15fd4450415e764218ae37cac817f704bb193e2f89b776cce67df766b',
-  'references/verifier-and-review.md': '530fb0662a317327d11db370123bd9b327ec74defc1a846b8c35ad83af4d74ce',
+  'references/verifier-and-review.md': '249bd05cdd4636b34c5ee0034f647b8d56a6bbfeba5c009b099b03c17b5beff8',
 };
 
 test('#559 skill render: with acceptance=on,minorPolicy=spec the installed SKILL.md and every reference are BYTE-IDENTICAL to what v0.5.378 rendered (sha256), the default install differs only by the features it turns off', async (t) => {

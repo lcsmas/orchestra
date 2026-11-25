@@ -162,8 +162,8 @@ Gate rhythm:
   mid-run costs one full cycle. Its review line is the §4 merge rule's verbatim sentence.
 <!--sw verifier=on-->
 - **The full suite and the build run on the verifier's seat, once per candidate, unless the target has PR CI:**
-  ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ skip what CI runs, wait for
-  ¤ciGreenOnHead¤ — the suite check is derived or pinned with ¤--require-check¤; a moved head's CI is never accepted).
+  ¤orchestra fanout gate --branch <b> --into <target> --head <sha>¤ derives it (¤fullSuite: ci¤ ⇒ wait for ¤ciGreenOnHead¤, rerun nothing CI ran (tsc, suite, CI rigs);
+  run only the summary's LOCAL-ONLY rigs + own probes. ¤--require-check¤ pins the suite check; a moved head's CI is never accepted).
 <!--/sw-->
 <!--sw verifier=off-->
 - **The PR's CI is the build and the full suite; nobody re-runs it by hand.** ¤deliver¤ refuses a head with no CI (¤no-checks¤), a red one (¤ci-red¤) or a check that ran nothing (¤zero-steps¤);
