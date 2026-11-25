@@ -15,8 +15,10 @@ import { renderFanoutImplementerSkill, FANOUT_IMPLEMENTER_SKILL_PATH } from './f
 import { FANOUT_ROLE_FILES, fanoutRoleFilesWanted } from './fanout-role-files.ts';
 import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from './verified-fanout-files.ts';
-import { installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
-import type { Switches } from './fanout-state.ts';
+import { installFanoutRoleFiles, installVerifiedFanoutSkill } from '../main/verified-fanout-install.ts';
+import { REVIEWER_RULES, renderReviewerBrief } from './fanout-review-brief.ts';
+import { briefInputOf } from './fanout-review.ts';
+import { switchesOf, type Switches } from './fanout-state.ts';
 
 const sha = (s: string): string => createHash('sha256').update(s).digest('hex');
 const AXES: Record<string, string[]> = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] };
@@ -341,37 +343,63 @@ test('#590 on: the coordinator\'s spawn rule names the implementer file, §3b na
   assert.ok(!renderVerifiedFanoutSkill(asSw({}, 'off')).includes('roles/implementer.md'), 'OFF names no role file');
 });
 
-// ---------------------------------------------------------------- (4) the installer -------------------------------------------------------------------------------------------
-test('#590 installer: seatRecords=on writes roles/reviewer.md + roles/implementer.md (rendered by the run\'s switches); off writes none and removes an earlier install\'s copies', async () => {
+// ---------------------------------------------------------------- (4) the installer + the brief -----------------------------------------------------------------------------
+test('#590 installer: seatRecords=on writes .orchestra/roles/reviewer.md + implementer.md (rendered by the run\'s switches); off writes none and removes an earlier install\'s copies', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'fanout-roles-'));
   try {
     const sw = { minorPolicy: 'demonstrated', verifier: 'off', seatRecords: 'on' } as Partial<Switches>;
-    assert.equal(await installVerifiedFanoutSkill(dir, undefined, sw), 'written');
-    for (const r of FANOUT_ROLE_FILES) assert.equal(await readFile(path.join(dir, 'verified-fanout', r.path), 'utf8'), r.render(sw), `${r.path} is the rendered role text`);
-    assert.match(await readFile(path.join(dir, 'verified-fanout', 'roles/reviewer.md'), 'utf8'), /A finding with a demonstration/, 'the reviewer file follows minorPolicy');
-    assert.equal(await readFile(path.join(dir, 'verified-fanout', 'SKILL.md'), 'utf8'), renderVerifiedFanoutSkill(sw));
-    assert.equal(await installVerifiedFanoutSkill(dir, undefined, { ...sw, seatRecords: 'off' }), 'written');
-    for (const r of FANOUT_ROLE_FILES) await assert.rejects(stat(path.join(dir, 'verified-fanout', r.path)), /ENOENT/, `${r.path} removed under off`);
-    assert.equal(await installVerifiedFanoutSkill(dir, undefined, {}), 'written');
-    for (const r of FANOUT_ROLE_FILES) await assert.rejects(stat(path.join(dir, 'verified-fanout', r.path)), /ENOENT/, `${r.path} never written by the default`);
+    assert.equal(await installFanoutRoleFiles(dir, undefined, sw), 'written');
+    for (const r of FANOUT_ROLE_FILES) assert.equal(await readFile(path.join(dir, r.worktreePath), 'utf8'), r.render(sw), `${r.worktreePath} is the rendered role text`);
+    assert.match(await readFile(path.join(dir, FANOUT_REVIEWER_SKILL_PATH), 'utf8'), /A finding with a demonstration/, 'the reviewer file follows minorPolicy');
+    assert.equal(await installFanoutRoleFiles(dir, undefined, { ...sw, seatRecords: 'off' }), 'removed');
+    for (const r of FANOUT_ROLE_FILES) await assert.rejects(stat(path.join(dir, r.worktreePath)), /ENOENT/, `${r.worktreePath} removed under off`);
+    assert.equal(await installFanoutRoleFiles(dir, undefined, {}), 'removed');
+    for (const r of FANOUT_ROLE_FILES) await assert.rejects(stat(path.join(dir, r.worktreePath)), /ENOENT/, `${r.worktreePath} never written by the default`);
     assert.equal(fanoutRoleFilesWanted({}), false); assert.equal(fanoutRoleFilesWanted({ seatRecords: 'on' }), true);
+    assert.match(FANOUT_REVIEWER_SKILL_PATH, /^\.orchestra\//, 'in Orchestra\'s own dir');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('#590 installer: a repo\'s OWN verified-fanout skill is never given role files (unmarked SKILL.md ⇒ skipped-foreign)', async () => {
+test('#590 installer: a repo\'s OWN verified-fanout skill is kept AND the role files still land (they live in .orchestra/, not in the skill dir)', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'fanout-roles-foreign-'));
   try {
-    await mkdir(path.join(dir, 'verified-fanout'), { recursive: true });
-    await writeFile(path.join(dir, 'verified-fanout', 'SKILL.md'), '# the repo\'s own skill\n');
-    assert.equal(await installVerifiedFanoutSkill(dir, undefined, { seatRecords: 'on' } as Partial<Switches>), 'skipped-foreign');
-    await assert.rejects(stat(path.join(dir, 'verified-fanout', 'roles/reviewer.md')), /ENOENT/);
+    const skills = path.join(dir, '.claude', 'skills');
+    await mkdir(path.join(skills, 'verified-fanout'), { recursive: true });
+    await writeFile(path.join(skills, 'verified-fanout', 'SKILL.md'), '# the repo\'s own skill\n');
+    const sw = { seatRecords: 'on' } as Partial<Switches>;
+    assert.equal(await installVerifiedFanoutSkill(skills, undefined, sw), 'skipped-foreign');
+    assert.equal(await installFanoutRoleFiles(dir, undefined, sw), 'written');
+    assert.equal(await readFile(path.join(skills, 'verified-fanout', 'SKILL.md'), 'utf8'), '# the repo\'s own skill\n', 'the repo\'s skill is untouched');
+    for (const r of FANOUT_ROLE_FILES) assert.ok((await stat(path.join(dir, r.worktreePath))).isFile());
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('#590 installer: an fs error is reported, never thrown (the hook install it sits in must go on)', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'fanout-roles-err-'));
+  try {
+    await writeFile(path.join(dir, '.orchestra'), 'a file where the dir should be');
+    const seen: unknown[] = [];
+    assert.equal(await installFanoutRoleFiles(dir, (e) => seen.push(e), { seatRecords: 'on' } as Partial<Switches>), 'skipped-error');
+    assert.equal(seen.length, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('#590 the reviewer\'s brief carries the role file path (I5) — by default, and the path is one the installer writes; the pointer replaced the inline rules', () => {
+  const input = { run: 'r1', coordinator: 'r1', ticket: 'T1', kind: 'spawn', ticketText: 'T1 must frob.', ticketRef: null, target: 'master', head: 'a'.repeat(40), base: 'b'.repeat(40), prevHead: null, branch: 'b1', pr: null, ownInterface: null, upstreamInterfaces: [], decisions: [], switches: { ...switchesOf(null), seatRecords: 'on' }, openFindings: [] } as unknown as Parameters<typeof renderReviewerBrief>[0];
+  const withPath = renderReviewerBrief({ ...input, reviewerSkillPath: FANOUT_REVIEWER_SKILL_PATH });
+  assert.ok(withPath.includes(`Your role file: ${FANOUT_REVIEWER_SKILL_PATH}`) && withPath.includes(REVIEWER_RULES));
+  assert.ok(FANOUT_ROLE_FILES.some((r) => r.worktreePath === FANOUT_REVIEWER_SKILL_PATH), 'the named path is a written file');
+  assert.ok(!renderReviewerBrief(input).includes('Your role file'), 'no path ⇒ no pointer line (the field is optional in the pure renderer)');
+  assert.ok(!REVIEWER_RULES.includes('BLOCKING = must not merge'), 'the severity scale is no longer duplicated in the brief — one text per role');
+  const state = { run: 'r1', target: 'master', switches: { seatRecords: 'on' }, tickets: { T1: { id: 'T1', dependsOn: [], findings: {}, spec: null, specText: 't', branch: 'b1', pr: null, head: 'a'.repeat(40) } }, decisions: [] } as unknown as Parameters<typeof briefInputOf>[0];
+  assert.equal(briefInputOf(state, 'T1', { kind: 'spawn', head: 'a'.repeat(40), base: null }).reviewerSkillPath, FANOUT_REVIEWER_SKILL_PATH, 'the production input names the file without the host passing it');
 });
 
 test('#590 installer wiring: the role templates are in the HOOKS_VERSION hash (an edit reinstalls) — and the check fails on a hash without them', () => {
   const w = readFileSync(new URL('../main/workspaces.ts', import.meta.url), 'utf8');
   const hash = w.slice(w.indexOf('const HOOKS_VERSION'), w.indexOf('.digest('));
   assert.ok(hash.length > 500, 'the hash source was found');
+  assert.match(w, /installFanoutRoleFiles\(worktreePath, \(e\) => log\.warn\([^)]*\), fanoutSwitches\)/, 'installOrchestraHooks installs the role files for the run\'s switches');
   for (const name of ['FANOUT_REVIEWER_SKILL_TEMPLATE', 'FANOUT_IMPLEMENTER_SKILL_TEMPLATE']) {
     assert.ok(hash.includes(name), `${name} is hashed`);
     assert.ok(!hash.replaceAll(name, 'X').includes(name), 'the mutated hash source (name removed) fails the same check');

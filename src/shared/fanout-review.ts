@@ -1,5 +1,6 @@
 // #588 (I3) — `orchestra fanout review`: the pure decisions on the STATE (refusals, spawn/wake/replace/noop, the brief input, the claim/settle of the reviewer slot).
 // The CLI half is src/cli/fanout-review.ts; the host half (spawn / wake) is src/shared/fanout-review-host.ts. Every refusal message STARTS with its bracketed name.
+import { FANOUT_REVIEWER_SKILL_PATH } from './fanout-reviewer-skill.ts';
 import { briefHash, renderReviewerBrief, type BriefFinding, type BriefInput, type BriefKind } from './fanout-review-brief.ts';
 import { renderDecisions, renderInterfaces, renderSwitchesLine } from './fanout-brief-common.ts';
 import { isVouched, type Caller } from './fanout-caller.ts';
@@ -94,7 +95,7 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     switches: switchesOf(state),
     builtOn: builtOnOpen(state, t),
     openFindings: o.kind === 'spawn' ? [] : openFindingsOf(t),
-    ...(o.reviewerSkillPath !== undefined ? { reviewerSkillPath: o.reviewerSkillPath } : {}),
+    reviewerSkillPath: o.reviewerSkillPath !== undefined ? o.reviewerSkillPath : FANOUT_REVIEWER_SKILL_PATH, // #590 (I5): the brief names the reviewer's role file
   };
 }
 

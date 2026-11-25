@@ -1,14 +1,14 @@
 /**
  * #590 (vague #585, ledger #591 I5) — the implementer's rules under `seatRecords=on`: ONE text per role.
  * Today's lines of the coordinator skill (`verified-fanout-skill.ts` §0b / §3) MOVED here, not rewritten (ledger D4): `fanout-role-texts.test.ts` holds each unit to the coordinator's OFF text
- * byte for byte and every unit to its role in a list. Installed (seatRecords=on only) as `.claude/skills/verified-fanout/roles/implementer.md`; the coordinator's spawn brief names this path (§2).
+ * byte for byte and every unit to its role in a list. Installed (seatRecords=on only) as `<worktree>/.orchestra/roles/implementer.md` (ours whatever skill the repo has); the coordinator's spawn brief names this path (§2).
  * Written with `String.raw`; `¤` stands for a backtick. Switch blocks (`<!--sw …-->`) are rendered by the run's switches like the skill's.
  */
 import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { DEFAULT_SWITCHES, type Switches } from './fanout-state.ts';
 
 /** Where the installer writes it, relative to a worktree; the coordinator's spawn brief names it. */
-export const FANOUT_IMPLEMENTER_SKILL_PATH = '.claude/skills/verified-fanout/roles/implementer.md';
+export const FANOUT_IMPLEMENTER_SKILL_PATH = '.orchestra/roles/implementer.md';
 
 export const FANOUT_IMPLEMENTER_SKILL_TEMPLATE = String.raw`<!-- orchestra-generated: fan-out role text — implementer (#590) -->
 # Fan-out implementer — your rules

@@ -10,6 +10,8 @@
  * `docs/evidence/470-v1-vs-v2.diff` is the full-context `diff -u` of v1 against this text.
  */
 import { renderSwitchBlocks } from './fanout-switch-render.ts';
+import { FANOUT_IMPLEMENTER_SKILL_PATH } from './fanout-implementer-skill.ts';
+import { FANOUT_REVIEWER_SKILL_PATH } from './fanout-reviewer-skill.ts';
 import { DEFAULT_SWITCHES, switchesOf, type Switches } from './fanout-state.ts';
 
 export const VERIFIED_FANOUT_SKILL_NAME = 'verified-fanout';
@@ -275,7 +277,7 @@ One ¤orchestra spawn --name <rôle>-<object>-<ticket> --task "<brief>"¤ per su
 skill); record each printed workspace id + branch in the ledger.
 <!--sw seatRecords=on-->
 
-**Every implementer's brief names its rules file** — ¤.claude/skills/verified-fanout/roles/implementer.md¤ (the self-gate, the pre-review, the nomination, the reports) — and tells it NOT to load ¤verified-fanout¤: that skill is yours.
+**Every implementer's brief names its rules file** — ¤${FANOUT_IMPLEMENTER_SKILL_PATH}¤ (the self-gate, the pre-review, the nomination, the reports) — and tells it NOT to load ¤verified-fanout¤: that skill is yours.
 <!--/sw-->
 
 <!--sw verifier=on-->
@@ -323,7 +325,7 @@ that touch correctness or a ticket promise — never NITs.**
 **Reviewer brief (#572):** per product finding demand ¤input¤ / ¤observed¤ (¤file:line¤) / ¤expected¤, or ¤cannot¤ (see the reference).
 <!--/sw-->
 <!--sw seatRecords=on-->
-**Spawn it with ¤orchestra fanout review <ticket> [--run <id>]¤** (the ¤review-¤ name, the model and the brief are code: the ticket's spec, the run's decisions, the plan and interfaces, head and base; no flag takes free text, ¤--print¤ shows the brief without spawning). It reads the diff, tries to BREAK the change and RECORDS its verdict with ¤orchestra fanout record¤ — its rules, the severity scale and the record's shape are in its own file (¤.claude/skills/verified-fanout/roles/reviewer.md¤, named in its brief). **Never write a reviewer's rules or verdict yourself**: a reviewer that died without a record is woken or replaced by the same verb (¤deliver¤ says ¤record-missing¤).
+**Spawn it with ¤orchestra fanout review <ticket> [--run <id>]¤** (the ¤review-¤ name, the model and the brief are code: the ticket's spec, the run's decisions, the plan and interfaces, head and base; no flag takes free text, ¤--print¤ shows the brief without spawning). It reads the diff, tries to BREAK the change and RECORDS its verdict with ¤orchestra fanout record¤ — its rules, the severity scale and the record's shape are in its own file (¤${FANOUT_REVIEWER_SKILL_PATH}¤, named in its brief). **Never write a reviewer's rules or verdict yourself**: a reviewer that died without a record is woken or replaced by the same verb (¤deliver¤ says ¤record-missing¤).
 <!--/sw-->
 
 **No spawned reviewer when the candidate's diff touches no production code** (tests, comments, docs, rigs

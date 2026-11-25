@@ -2,14 +2,14 @@
  * #590 (vague #585, ledger #591 I5) — the reviewer's rules under `seatRecords=on`: ONE text per role.
  * Today's text MOVED here, not rewritten (ledger D4): SKILL.md §3b's reviewer lines + the reviewer's half of `references/verifier-and-review.md` + the report caps of §0b; `fanout-role-texts.test.ts`
  * holds every unit to the coordinator's OFF text byte for byte (the `new` ones — the recording paragraphs — are the only text that is not moved) and to its role in a list.
- * Installed (seatRecords=on only) as `.claude/skills/verified-fanout/roles/reviewer.md`; the reviewer's brief (`renderReviewerBrief`, #588) names this path.
+ * Installed (seatRecords=on only) as `<worktree>/.orchestra/roles/reviewer.md` (ours whatever skill the repo has); the reviewer's brief (`renderReviewerBrief`, #588) names this path.
  * Written with `String.raw`; `¤` stands for a backtick. Switch blocks are rendered by the run's switches like the skill's.
  */
 import { renderSwitchBlocks } from './fanout-switch-render.ts';
 import { DEFAULT_SWITCHES, type Switches } from './fanout-state.ts';
 
 /** Where the installer writes it, relative to a worktree; the reviewer's brief names it. */
-export const FANOUT_REVIEWER_SKILL_PATH = '.claude/skills/verified-fanout/roles/reviewer.md';
+export const FANOUT_REVIEWER_SKILL_PATH = '.orchestra/roles/reviewer.md';
 
 export const FANOUT_REVIEWER_SKILL_TEMPLATE = String.raw`<!-- orchestra-generated: fan-out role text — reviewer (#590) -->
 # Fan-out reviewer — your rules

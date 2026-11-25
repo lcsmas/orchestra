@@ -57,7 +57,7 @@ import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE } from '../shared
 import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanout-state.ts';
 import { handSpawnRefusalFor } from '../shared/fanout-start.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
-import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
+import { installFanoutRoleFiles, installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { FANOUT_REVIEWER_SKILL_TEMPLATE } from '../shared/fanout-reviewer-skill.ts';
 import { FANOUT_IMPLEMENTER_SKILL_TEMPLATE } from '../shared/fanout-implementer-skill.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
@@ -4910,6 +4910,8 @@ export async function installOrchestraHooks(
       writeSkill(BROWSER_SKILL_NAME, BROWSER_SKILL),
       // #470: the bundled verified-fanout v2 + v1's references/ (D8); never overwrites a repo's own unmarked copy; a personal-level copy shadows it (docs/codebase-map/build-release.md)
       installVerifiedFanoutSkill(skillsDir, (e) => log.warn(`verified-fanout skill install skipped for ${worktreePath}`, e), fanoutSwitches),
+      // #590: seatRecords=on ⇒ the reviewer's and the implementer's rules in `.orchestra/roles/` (ours, whatever skill the repo has); off ⇒ none
+      installFanoutRoleFiles(worktreePath, (e) => log.warn(`fanout role files install skipped for ${worktreePath}`, e), fanoutSwitches),
     ]);
 
     const settingsDir = path.join(worktreePath, '.claude');

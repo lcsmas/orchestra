@@ -1,5 +1,5 @@
 // #588 (I3) — the reviewer's brief, rendered by CODE from the run state: no free text from the coordinator (the coordinator's words reach it only as the run's decisions, `state set --run-decision`).
-// Pure and deterministic: the same BriefInput renders the same text (no clock, no random); `briefHash` is its sha256. Rules text = REVIEWER_RULES (#590 later moves it to its own file).
+// Pure and deterministic: the same BriefInput renders the same text (no clock, no random); `briefHash` is its sha256. Rules = the pointer REVIEWER_RULES + the role file (#590).
 import { SWITCH_NAMES, type Switches } from './fanout-state.ts';
 import { briefHash } from './fanout-brief-common.ts'; // the pieces shared with the implementer's brief (#587 PR A): decisions / switches line / interfaces are rendered by `briefInputOf` through them
 
@@ -40,13 +40,10 @@ export interface BriefInput {
   reviewerSkillPath?: string | null;
 }
 
-/** The reviewer's rules — what it reports, how it grades, the merge rule it works under. A fixed constant: it never varies with the coordinator's words. */
+/** The reviewer's rules (#590, I5): they live in ONE file per role (`fanout-reviewer-skill.ts`, installed at `FANOUT_REVIEWER_SKILL_PATH`) — what it reports, how it grades, the merge rule, how it records. The brief carries the pointer, never a second copy. A fixed constant. */
 export const REVIEWER_RULES = [
   'You are the reviewer of ONE merge candidate. You read; you do not edit, commit, push or merge.',
-  'Read the diff of the head below against its base, the ticket text, the frozen interfaces and the run decisions; try to BREAK the change (invent the input that produces the wrong output).',
-  'Report only BLOCKING, MAJOR, and MINOR that touches correctness or a ticket promise — never NITs. Label every finding measured (you ran it / traced it) or argued (reasoning only).',
-  'Severity: BLOCKING = must not merge as is (red CI/build on a base that is green, data loss, security hole). MAJOR = wrong behaviour on a real input, or a ticket promise not kept. MINOR = a real defect with limited reach.',
-  'A red check is the candidate\'s only if the same check is green on the base head: run it there first.',
+  'Your rules — what you report, how you grade (BLOCKING / MAJOR / MINOR), the merge rule you work under, how you RECORD your verdict — are in your role file, named below: read it first. Do NOT load the verified-fanout skill: it is the coordinator\'s.',
 ].join('\n');
 
 /** The merge rule the reviewer works under, per `minorPolicy` — the SAME wording as the verified-fanout skill's per-policy variants (verified-fanout-skill.ts, §4); rendered from the policy, never a constant. */
