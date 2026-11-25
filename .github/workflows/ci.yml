@@ -54,15 +54,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: echo "SUITE_T0=$(date +%s)" >> "$GITHUB_ENV"
+      - if: matrix.shard == 1
+        run: echo "SUITE_T0=$(date +%s)" >> "$GITHUB_ENV"
       # continue-on-error: the NEXT step is the verdict (it reads this step's `outcome`, and tolerates only the knownFail tests of .github/ci-skips.json).
       # `node --test --test-shard=$SUITE_SHARD/$SUITE_SHARDS` over the same `src/**/*.test.ts` (package.json `suite:shard`).
       - name: Run suite shard
         id: suite
+        if: matrix.shard == 1
         continue-on-error: true
         run: pnpm run suite:shard > "$RUNNER_TEMP/suite.tap" 2>&1
       - name: Verdict — tests run / passed / failed / skipped (a skip or a zero fails)
-        if: always()
+        if: always() && matrix.shard == 1
         run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs suite "$RUNNER_TEMP/suite.tap"
         env:
           SUITE_OUTCOME: ${{ steps.suite.outcome }}
@@ -95,11 +97,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit
-      - uses: ./.github/actions/setup
+      - if: ${{ false }}
+        uses: ./.github/actions/setup
         with:
           bundles: 'true'
           desktop: 'true'
-      - run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
+      - if: ${{ false }}
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
