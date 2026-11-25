@@ -3,17 +3,16 @@
 # How to add a rig / the local-only list: docs/codebase-map/build-release.md § Pull-request CI.
 name: CI
 
+# pull_request ONLY (#586): a `push` trigger ran a second copy per head on every PR branch and the two shared the concurrent-job limit; a push with no PR starts none.
 on:
   pull_request:
     branches: [master]
-  push:
-    branches-ignore: [master]
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:

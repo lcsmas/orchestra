@@ -277,10 +277,11 @@ release via `softprops/action-gh-release` — **appends** to a release the local
 `pnpm run release` already created, or creates one in `--ci-only` mode.
 
 ## Pull-request CI — .github/workflows/ci.yml (#568)
-Runs on `pull_request` → `master` AND on `push` to every non-master branch (a
-PR therefore gets two runs per head: both must be green). `permissions:
-contents: read`, no secret, no token; `concurrency` group per event + PR/ref with
-`cancel-in-progress`; `ubuntu-latest` x64; pnpm via `pnpm/action-setup` + Node 22
+Runs on `pull_request` → `master` ONLY (#586: the former `push` trigger ran a second copy per
+head, the two shared the concurrent-job limit and a PR's CI took 25–45 min instead of ~24):
+one run per push on a branch with a PR, none on a push with no PR; `fanout deliver`/`gate`
+read that run's check on the head. `permissions: contents: read`, no secret, no token;
+`concurrency` group `ci-pr-<PR number>` with `cancel-in-progress` (a new push cancels the previous head's run); `ubuntu-latest` x64; pnpm via `pnpm/action-setup` + Node 22
 (`--experimental-strip-types`; the release workflow's Node 20 cannot run the suite).
 
 | Job | What it runs | Verdict |
