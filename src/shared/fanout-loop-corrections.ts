@@ -120,14 +120,15 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
     const changing = changingReviews(state, id);
     const fpOf = (x: (typeof changing)[number]): string => situationFingerprint({ openFindings: x.fix, tree: x.r.tree ?? x.r.head });
     // the round of review n is recorded under n = the review's number (n shared with #607's CI rounds: asked in the report); read from the CURRENT state each time
-    const done = (s: FanoutState, x: (typeof changing)[number]): boolean => ((s.tickets[id] as T3).rounds ?? []).some((q) => q.n === x.r.n && q.fingerprint === fpOf(x));
+    const done = (s: FanoutState, x: (typeof changing)[number]): boolean => ((s.tickets[id] as T3).rounds ?? []).some((q) => q.n === x.r.n); // by number ONLY: a later settle / decision changes `fix`, never un-does a round
     let cur = state;
     let stop = false;
     for (const x of changing.filter((c) => !done(state, c))) {
       const fp = fpOf(x);
       const seenFp = (cur.tickets[id] as T3).rounds?.some((q) => q.fingerprint === fp) ?? false;
       // a finding id is never reused (`finding-exists`), so an undo cycle shows up as the same CONTENT rejected again: the earlier changing review that read this tree
-      const seenTree = !!x.r.tree && changing.some((o) => o.r.n < x.r.n && o.r.tree === x.r.tree);
+      // (an ADJACENT same-tree review is the author doing nothing: `seenFp` parks it when the findings are the same, a reviewer who changed its mind about unchanged content gets a round)
+      const seenTree = !!x.r.tree && changing.some((o, i) => o.r.n < x.r.n && o.r.tree === x.r.tree && changing.slice(i + 1).some((m) => m.r.n < x.r.n && m.r.tree !== x.r.tree));
       const keep = (s: FanoutState): FanoutState => {
         const rr = recordRound(s, id, fp, deps.now());
         const rs = (rr.state.tickets[id] as T3).rounds!;
@@ -146,7 +147,7 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
       const a = await sendBatch(ctx, cur, id, x, ((cur.tickets[id] as T3).rounds?.length ?? 0) + 1);
       if (a.kind === 'blocked') { out.push({ ticket: id, action: 'blocked', why: a.why }); stop = true; break; }
       cur = store.update(keep);
-      out.push({ ticket: id, action: 'sent', to: a.to, round: x.r.n, findings: x.fix, noted: x.noted, replaced: a.replaced });
+      out.push({ ticket: id, action: 'sent', to: a.to, round: a.round, findings: x.fix, noted: x.noted, replaced: a.replaced });
     }
     if (stop) continue;
     // (2) the author pushed: the recorded reviewer reads the fix (host op: same live reviewer, a replacement only for a dead one, noop when already briefed on this head)
@@ -163,7 +164,7 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
   return out;
 }
 
-async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x: { r: ReviewEntry; fix: string[]; noted: string[] }, round: number): Promise<{ kind: 'sent'; to: string; replaced: boolean } | { kind: 'blocked'; why: string }> {
+async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x: { r: ReviewEntry; fix: string[]; noted: string[] }, round: number): Promise<{ kind: 'sent'; to: string; replaced: boolean; round: number } | { kind: 'blocked'; why: string }> {
   const { deps } = ctx;
   const store = ctx.store ?? diskStore(deps);
   let author = state.tickets[id].implementer;
@@ -178,7 +179,7 @@ async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x:
   const text = renderBatch(store.read()!, id, x, round, replaced);
   try { await deps.fleet.wake(author, text); } catch (e) { deps.log(`corrections: ${id} — wake of ${author} failed (${(e as Error).message}); retried on the next pass`); return { kind: 'blocked', why: 'wake-failed' }; }
   deps.log(`corrections: ${id} — one batch of ${x.fix.length} to ${author}${x.noted.length ? `; noted, not sent: ${x.noted.join(', ')}` : ''}`);
-  return { kind: 'sent', to: author, replaced };
+  return { kind: 'sent', to: author, replaced, round };
 }
 
 /** The named step of `LOOP_STEPS` (ledger #613 FROZEN NAMES v1): `stepCorrections(ctx)`. */

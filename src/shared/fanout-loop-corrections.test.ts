@@ -274,3 +274,60 @@ test('a parked ticket is left alone by later passes', async () => {
   assert.equal(w.woken.length, before);
   assert.equal(w.reviewerCalls.length, 0);
 });
+
+// ── review r1 findings (pre-review) ──────────────────────────────────────────────────────────────────────────────
+test('a later settle of a finding never makes the round look undone: no second batch (restart after a state change)', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x'), b2: finding('MAJOR', 'y') });
+  await runCorrections(w.ctx);
+  w.state = { ...w.state, tickets: { ...w.state.tickets, A: { ...w.state.tickets.A, findings: { ...w.state.tickets.A.findings, b2: { ...w.state.tickets.A.findings.b2, settled: { how: 'fixed', at: T, ref: sha('1') } } } } } };
+  await runCorrections(w.ctx);
+  assert.equal(w.woken.length, 1);
+});
+test('a reviewer that changes its mind about UNCHANGED content (other findings, adjacent review) gets a round, not a park', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  await runCorrections(w.ctx);
+  push(w, 'A', sha('2'), 't1');
+  review(w, 'A', sha('2'), 't1', 'changes-requested', { b2: finding('BLOCKING', 'y', { raisedOn: sha('2') }) }, ['b1']);
+  assert.equal((await runCorrections(w.ctx))[0].action, 'sent');
+  assert.equal(parkedOf(w, 'A'), undefined);
+});
+test('catching up after a restart: several unrecorded reviews → ONE batch (the latest), every round recorded under its review number', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  push(w, 'A', sha('2'), 't2');
+  review(w, 'A', sha('2'), 't2', 'changes-requested', { b2: finding('BLOCKING', 'y', { raisedOn: sha('2') }) }, ['b1']);
+  const out = await runCorrections(w.ctx);
+  assert.equal(w.woken.length, 1);
+  assert.match(w.woken[0].text, /\bb2\b/);
+  assert.deepEqual(roundsOf(w, 'A').map((r) => r.n), [1, 2]);
+  assert.equal(out.length, 1);
+});
+test('an unrecorded review on an OLD head (the author already pushed) is recorded, not sent', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  push(w, 'A', sha('2'), 't2');
+  const out = await runCorrections(w.ctx);
+  assert.equal(w.woken.length, 0);
+  assert.deepEqual(roundsOf(w, 'A').map((r) => r.n), [1]);
+  assert.deepEqual(out, [{ ticket: 'A', action: 'reviewer-woken', head: sha('2'), reviewer: 'rv-A' }]);
+});
+test('a round is recorded under the review NUMBER, not its rank (review 2 approved, review 3 changes → n = 3)', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'approve');
+  review(w, 'A', sha('1'), 't1', 'approve');
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  await runCorrections(w.ctx);
+  assert.deepEqual(roundsOf(w, 'A').map((r) => r.n), [3]);
+});
+test('catching up: an older review that reads the SAME content as the head is not sent either — only the latest review is', async () => {
+  const w = world();
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  push(w, 'A', sha('2'), 't1');
+  review(w, 'A', sha('2'), 't1', 'changes-requested', { b2: finding('BLOCKING', 'y', { raisedOn: sha('2') }) }, ['b1']);
+  await runCorrections(w.ctx);
+  assert.equal(w.woken.length, 1);
+  assert.match(w.woken[0].text, /\bb2\b/);
+  assert.doesNotMatch(w.woken[0].text, /\bb1\b/);
+});
