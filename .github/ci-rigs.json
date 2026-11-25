@@ -904,6 +904,14 @@
    "group": 6
   },
   {
+   "id": "test:fanout-relaunch-mutants",
+   "command": "pnpm run test:fanout-relaunch-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 30,
+   "wallSec": 20,
+   "group": 6
+  },
+  {
    "id": "test:command-output-e2e",
    "command": "pnpm run build:bundles && bash scripts/command-output/e2e-command-output.sh .",
    "class": "LOCAL_ONLY",

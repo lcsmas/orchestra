@@ -1,0 +1,177 @@
+// #608 (spec #601 decision 11) — the closing report of `orchestra fanout run`: what merged, what was parked and why, the choices the agents took, the findings left, the cost per ticket.
+// PURE and DERIVED: every line comes from the state (+ the per-ticket token counts the host read from the transcripts) — no model types a line, so the report equals the state.
+// The `parked` / `choices` / `pause` / `flaky` fields are written by #603 / #607 (frozen names, ledger #613); they are read through the narrow views below so this file builds before they land.
+import fs from 'node:fs';
+import path from 'node:path';
+import type { FanoutState, FindingRecord, TicketState } from './fanout-state.ts';
+
+// ── the frozen-name views (#603): delete the casts at connect, keep the shapes ──
+export type ParkCauseView = 'question' | 'situation' | 'ci' | 'upstream';
+export interface ParkedView { cause: ParkCauseView; reason: string; at?: string; blockedBy?: string }
+export interface ChoiceView { n: number; ticket: string; question: string; rule: 'reversible-default' | 'no-safe-option'; answer: string; at: string }
+export interface PauseInfo { at: string; reason: string; check: string | null; prs: number[] }
+export interface FlakyView { ticket: string; check: string; at?: string }
+
+export const parkedOf = (t: TicketState | undefined): ParkedView | null => (t as { parked?: ParkedView } | undefined)?.parked ?? null;
+export const choicesOf = (s: FanoutState): ChoiceView[] => (s as { choices?: ChoiceView[] }).choices ?? [];
+export const pauseOf = (s: FanoutState): PauseInfo | null => (s as { pause?: PauseInfo }).pause ?? null;
+const flakyOf = (s: FanoutState): FlakyView[] => (s as { flaky?: FlakyView[] }).flaky ?? [];
+/** `status === 'parked'` (#603) — a string compare so this file reads a state of either vintage. */
+export const isParked = (t: TicketState | undefined): boolean => (t?.status as string) === 'parked' || !!parkedOf(t);
+
+export interface TokenCost { tokens: number; input?: number; output?: number; cacheRead?: number; cacheCreate?: number }
+
+export interface ReportParked { ticket: string; cause: ParkCauseView; reason: string; blockedBy?: string }
+/** `question` + a pointer to where the agent's own pick is written (its PR body, `## Choices`). */
+export interface ReportChoice { n: number; ticket: string; question: string; rule: ChoiceView['rule']; answer: string; pr: number | null; branch: string | null }
+/** A finding that did NOT end fixed: `open` (nobody closed it), `decided` (the coordinator wrote a reason), `pr-body` (settled in the PR body, no code change). */
+export interface ReportFinding { ticket: string; finding: string; severity: FindingRecord['severity']; end: 'open' | 'decided' | 'pr-body'; note?: string }
+
+export interface Report {
+  run: string;
+  merged: string[];
+  parked: ReportParked[];
+  dropped: string[];
+  /** neither merged, parked nor dropped: only non-empty when the run stopped early (a pause, or `fanout run` killed). */
+  unfinished: string[];
+  choices: ReportChoice[];
+  findingsLeft: ReportFinding[];
+  /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607 records it as `flaky` on the state). */
+  flaky: string[];
+  costPerTicket: Record<string, TokenCost | null>;
+  paused: PauseInfo | null;
+}
+
+const oneLine = (s: string, n = 300): string => { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+
+/** Ticket ids in plan order when the plan is declared, else state order — the report is the same on every build of the same state. */
+export function orderedTickets(state: FanoutState): string[] {
+  const all = Object.keys(state.tickets);
+  const planned = (state.plan?.tickets ?? []).filter((id) => id in state.tickets);
+  return [...planned, ...all.filter((id) => !planned.includes(id))];
+}
+
+export function findingsLeftOf(ticket: string, t: TicketState): ReportFinding[] {
+  const out: ReportFinding[] = [];
+  for (const [finding, f] of Object.entries(t.findings)) {
+    if (f.settled?.how === 'fixed') continue;
+    if (f.decision) out.push({ ticket, finding, severity: f.severity, end: 'decided', note: oneLine(f.decision.text) });
+    else if (f.settled) out.push({ ticket, finding, severity: f.severity, end: 'pr-body', note: f.settled.ref });
+    else out.push({ ticket, finding, severity: f.severity, end: 'open' });
+  }
+  return out;
+}
+
+/** The report from the state alone. `costs` = the host's per-ticket token counts (null/absent = not measurable, printed as such, never 0). */
+export function buildReport(state: FanoutState, costs: Record<string, TokenCost | null> = {}): Report {
+  const ids = orderedTickets(state);
+  const merged: string[] = [], dropped: string[] = [], unfinished: string[] = [], parked: ReportParked[] = [];
+  for (const id of ids) {
+    const t = state.tickets[id];
+    if (t.status === 'merged') merged.push(id);
+    else if (t.status === 'dropped') dropped.push(id);
+    else if (isParked(t)) {
+      const p = parkedOf(t);
+      parked.push({ ticket: id, cause: p?.cause ?? 'situation', reason: p?.reason ?? '(no reason recorded)', ...(p?.blockedBy ? { blockedBy: p.blockedBy } : {}) });
+    } else unfinished.push(id);
+  }
+  const choices = choicesOf(state).map((c): ReportChoice => ({ n: c.n, ticket: c.ticket, question: c.question, rule: c.rule, answer: c.answer, pr: state.tickets[c.ticket]?.pr ?? null, branch: state.tickets[c.ticket]?.branch ?? null }));
+  return {
+    run: state.run, merged, parked, dropped, unfinished, choices,
+    findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
+    flaky: flakyOf(state).map((f) => `${f.ticket}/${f.check}`),
+    costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
+    paused: pauseOf(state),
+  };
+}
+
+/** Exit code of `fanout run` (frozen, #605): 0 every ticket merged · 3 ≥ 1 parked · 4 paused (resumable) · 1 the run stopped with tickets unfinished and nothing to say why. A `dropped` ticket is the human's word and does not fail the run. */
+export function reportExit(r: Report): 0 | 1 | 3 | 4 {
+  if (r.paused) return 4;
+  if (r.parked.length) return 3;
+  if (r.unfinished.length) return 1;
+  return 0;
+}
+
+const fmtTokens = (c: TokenCost | null): string => (c ? `${c.tokens.toLocaleString('en-US')} tokens` : 'not measured');
+
+/** The stderr text of the report — code-rendered from {@link Report}, one fact per line. */
+export function renderReport(r: Report): string {
+  const L: string[] = [];
+  const total = Object.values(r.costPerTicket).reduce((n, c) => n + (c?.tokens ?? 0), 0);
+  L.push(`fanout run ${r.run}: ${r.merged.length} merged, ${r.parked.length} parked${r.dropped.length ? `, ${r.dropped.length} dropped` : ''}${r.unfinished.length ? `, ${r.unfinished.length} unfinished` : ''}${r.paused ? ' — PAUSED' : ''}`);
+  if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — run \`orchestra fanout run --run ${r.run}\` again to resume`);
+  L.push(`merged: ${r.merged.length ? r.merged.join(', ') : '(none)'}`);
+  if (r.parked.length) { L.push('parked:'); for (const p of r.parked) L.push(`  ${p.ticket}  [${p.cause}]  ${oneLine(p.reason)}`); }
+  if (r.unfinished.length) L.push(`unfinished: ${r.unfinished.join(', ')}`);
+  if (r.dropped.length) L.push(`dropped: ${r.dropped.join(', ')}`);
+  if (r.choices.length) {
+    L.push(`choices taken by the agents (${r.choices.length}) — the agent's own pick is under \`## Choices\` in its PR body:`);
+    for (const c of r.choices) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+  }
+  if (r.findingsLeft.length) {
+    L.push(`findings left (${r.findingsLeft.length}):`);
+    for (const f of r.findingsLeft) L.push(`  ${f.ticket}/${f.finding}  ${f.severity}  ${f.end}${f.note ? `: ${f.note}` : ''}`);
+  }
+  if (r.flaky.length) L.push(`flaky (red, then green on the one re-run): ${r.flaky.join(', ')}`);
+  L.push(`cost: ${Object.entries(r.costPerTicket).map(([id, c]) => `${id} ${fmtTokens(c)}`).join(' · ')}${Object.keys(r.costPerTicket).length ? ` · total ${total.toLocaleString('en-US')} tokens (measured tickets only)` : ''}`);
+  return L.join('\n') + '\n';
+}
+
+// ── cost per ticket, from the transcripts ─────────────────────────────────────────────────────────────────────────────
+
+/** Tokens of one Claude Code transcript (`<configDir>/projects/<cwd>/<session>.jsonl`): the `usage` of every assistant line, once per `message.id` (a message streamed as several lines repeats its usage; the LAST line carries the final `output_tokens`). Subagent (sidechain) lines count: they are the ticket's cost. A line that does not parse is skipped. */
+export function tokensOfTranscript(jsonl: string): Required<TokenCost> {
+  const byId = new Map<string, { i: number; o: number; r: number; c: number }>();
+  let anon = 0;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  for (const raw of jsonl.split('\n')) {
+    const line = raw.trim();
+    if (!line || !line.includes('"usage"')) continue;
+    let e: { type?: unknown; message?: { id?: unknown; usage?: Record<string, unknown> } };
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e.type !== 'assistant' || !e.message?.usage) continue;
+    const u = e.message.usage;
+    byId.set(typeof e.message.id === 'string' ? e.message.id : `anon-${anon++}`, { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) });
+  }
+  let input = 0, output = 0, cacheRead = 0, cacheCreate = 0;
+  for (const v of byId.values()) { input += v.i; output += v.o; cacheRead += v.r; cacheCreate += v.c; }
+  return { tokens: input + output + cacheRead + cacheCreate, input, output, cacheRead, cacheCreate };
+}
+
+/** Sum of {@link tokensOfTranscript} over files; null when NO file could be read (unmeasured is not 0). */
+export function tokensOfFiles(files: string[], read: (p: string) => string = (p) => fs.readFileSync(p, 'utf8')): Required<TokenCost> | null {
+  let any = false;
+  const sum: Required<TokenCost> = { tokens: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  for (const f of files) {
+    let text: string;
+    try { text = read(f); } catch { continue; }
+    any = true;
+    const t = tokensOfTranscript(text);
+    sum.tokens += t.tokens; sum.input += t.input; sum.output += t.output; sum.cacheRead += t.cacheRead; sum.cacheCreate += t.cacheCreate;
+  }
+  return any ? sum : null;
+}
+
+/** Every `*.jsonl` of a transcript directory (a workspace restarted or cleared has one file per session — all of them are the ticket's cost). [] when the directory is absent. */
+export function transcriptFilesIn(dir: string): string[] {
+  try { return fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')).sort().map((n) => path.join(dir, n)); } catch { return []; }
+}
+
+/** `FleetPort.costOf` from three seams: the workspaces that worked on a ticket (implementer + every reviewer), the transcript files of a workspace, the file reader. */
+export function makeCostOf(deps: { workspacesOf: (ticket: string) => string[]; transcriptsOf: (ws: string) => string[]; read?: (p: string) => string }): (ticket: string) => Promise<TokenCost | null> {
+  return async (ticket) => tokensOfFiles(deps.workspacesOf(ticket).flatMap(deps.transcriptsOf), deps.read);
+}
+
+/** The costs of every ticket through the fleet's port; a port that throws reads as not measured (the report never fails for a cost). */
+export async function collectCosts(state: FanoutState, costOf: (ticket: string) => Promise<TokenCost | null>): Promise<Record<string, TokenCost | null>> {
+  const out: Record<string, TokenCost | null> = {};
+  for (const id of orderedTickets(state)) { try { out[id] = await costOf(id); } catch { out[id] = null; } }
+  return out;
+}
+
+/** Every workspace that worked on a ticket and is recorded in the state: its implementer, and every reviewer it ever had (the recorded one and each brief's). Unique, in that order. */
+export function workspacesOfTicket(t: TicketState): string[] {
+  const ids = [t.implementer, t.review?.reviewer?.id, ...(t.review?.briefs ?? []).map((b) => b.reviewer)];
+  return [...new Set(ids.filter((x): x is string => !!x))];
+}
