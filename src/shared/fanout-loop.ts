@@ -396,7 +396,7 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
   const seen = new Set<string>();
   const finish = (exit: LoopResult['exit'], reason?: string): LoopResult => {
     const s = readLoopState(deps.home, deps.run);
-    return { exit, report: s ? buildReport(s, deps) : buildReport(withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null }), deps), passes, ...(reason ? { reason } : {}) };
+    return { exit, report: s ? buildReport(s, {}) : buildReport(withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null }), {}), passes, ...(reason ? { reason } : {}) };
   };
   for (;;) {
     passes++;

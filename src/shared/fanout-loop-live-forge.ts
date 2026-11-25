@@ -4,7 +4,7 @@
 import type { ForgeCheck, ForgePort } from './fanout-loop-ports.ts';
 import type { ExecResult } from './fanout-loop-live-git.ts';
 import { FanoutStateError } from './fanout-state.ts';
-import { classifyMergeFailure, normaliseRollupItem, parseActionsJobUrl, type RollupItem } from './fanout-deliver.ts';
+import { classifyMergeFailure, isUserStep, normaliseRollupItem, parseActionsJobUrl, type RollupItem } from './fanout-deliver.ts';
 
 export type Gh = (args: string[]) => Promise<ExecResult>;
 export interface MergeAnswer { ok: boolean; reason?: string; detail?: string }
@@ -14,7 +14,7 @@ export interface LiveForgeDeps {
   /** `owner/name`; absent = the repository of the working directory. */
   repo?: string;
   /** The merge, through the shipped `deliver` (production). `reason` = deliver's refusal reason (`head-moved`, `ci-red`, `record-missing`, …). */
-  deliver?: (i: { n: number; head: string }) => Promise<MergeAnswer>;
+  deliver?: (i: { n: number; head: string; method: 'merge' | 'squash' | 'rebase' }) => Promise<MergeAnswer>;
   /** Rigs only: merge with a bare `gh pr merge --merge --match-head-commit` (NO review / CI / upstream gate). Without `deliver` AND without this, `merge` refuses to run. */
   bareMerge?: true;
   /** The branch's current head (the git port's `head`): a MERGED pull request is adopted by `openPr` only when it is THIS head's (a reused branch name with an old merged PR gets a new one). */
@@ -57,6 +57,25 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     const stamp = r.startedAt ?? r.completedAt;
     return j ? `${j.run}@${stamp ?? ''}` : stamp ? `${nameOf(r)}@${stamp}` : undefined;
   };
+
+  /** Review 614 BLOCKING-1: a green Actions job carries the count of USER steps that succeeded (`gh run view --json jobs`, cached per run/job — a re-run is a new job id): the loop's `decideDelivery` refuses a green that proves nothing ran. An external status has no steps to count (undefined: refused too). */
+  const stepCache = new Map<string, number>();
+  async function stepsOf(r: Row): Promise<number | undefined> {
+    const state = normaliseRollupItem(r, () => null).state;
+    if (state === 'neutral') return 0; // skipped: ran nothing
+    if (state !== 'success') return undefined;
+    const j = parseActionsJobUrl(r.detailsUrl ?? r.targetUrl);
+    if (!j) return undefined;
+    const key = `${j.run}/${j.job ?? ''}`;
+    const have = stepCache.get(key);
+    if (have !== undefined) return have;
+    const jobs = (await json<{ jobs?: Array<{ databaseId?: number; steps?: Array<{ name?: string; conclusion?: string }> }> }>(['run', 'view', j.run, '--json', 'jobs', ...repoArgs])).jobs ?? [];
+    const mine = jobs.filter((x) => j.job === null || String(x.databaseId) === j.job);
+    if (!mine.length) throw new GhError(`gh run view ${j.run}: job ${j.job} not found`); // fail closed: never "no steps to worry about"
+    const n = mine.reduce((a, x) => a + (x.steps ?? []).filter((st) => (st.conclusion ?? '').toLowerCase() === 'success' && isUserStep(st.name)).length, 0);
+    stepCache.set(key, n);
+    return n;
+  }
 
   async function logExtract(r: Row): Promise<string | undefined> {
     const j = parseActionsJobUrl(r.detailsUrl ?? r.targetUrl);
@@ -109,7 +128,8 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
         const jobId = jobIdOf(r);
         const at = r.completedAt && !r.completedAt.startsWith('0001') ? r.completedAt : undefined;
         const extract = status === 'red' ? await logExtract(r) : undefined;
-        return { name: nameOf(r), status, ...(jobId ? { jobId } : {}), ...(extract ? { logExtract: extract } : {}), ...(at ? { at } : {}) };
+        const steps = status === 'green' ? await stepsOf(r) : undefined;
+        return { name: nameOf(r), status, ...(jobId ? { jobId } : {}), ...(steps !== undefined ? { steps } : {}), ...(extract ? { logExtract: extract } : {}), ...(at ? { at } : {}) };
       }));
     },
 
@@ -120,17 +140,18 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
       const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
       for (let waited = 0; ; waited += 15_000) {
         const v = await view(n);
-        if (!(v.statusCheckRollup ?? []).some((r) => statusOf(r) === 'pending')) break;
+        const inRed = (r: Row): boolean => { const j = parseActionsJobUrl(r.detailsUrl ?? r.targetUrl); return !!j && runs.includes(j.run); }; // only the red run's own jobs: a required external status stuck EXPECTED is not a sibling
+        if (!(v.statusCheckRollup ?? []).some((r) => inRed(r) && statusOf(r) === 'pending')) break;
         if (waited >= (deps.rerunWaitMs ?? 20 * 60_000)) throw new GhError(`#${n}: the Actions run is still in progress after ${Math.round(waited / 60_000)} min — it cannot be re-run yet`);
         await sleep(15_000);
       }
       for (const run of runs) await gh(['run', 'rerun', run, '--failed', ...repoArgs]); // the red jobs only
     },
 
-    async merge(n, matchHead) {
-      if (deps.deliver) return deps.deliver({ n, head: matchHead });
+    async merge(n, matchHead, method) {
+      if (deps.deliver) return deps.deliver({ n, head: matchHead, method });
       if (!deps.bareMerge) throw new GhError('the live forge has no `deliver` wired: a merge is never done around it (rigs pass bareMerge: true)');
-      const r = await deps.gh(['pr', 'merge', String(n), '--merge', '--match-head-commit', matchHead, ...repoArgs]);
+      const r = await deps.gh(['pr', 'merge', String(n), `--${method}`, '--match-head-commit', matchHead, ...repoArgs]);
       if (r.code === 0) return { ok: true };
       return { ok: false, reason: classifyMergeFailure(r.stderr) === 'head-moved' ? 'head-moved' : 'gh-failed', detail: r.stderr.trim().slice(0, 300) };
     },

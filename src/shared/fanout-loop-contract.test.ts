@@ -25,11 +25,12 @@ const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fan
 after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
 const NOW = '2026-01-01T00:00:00.000Z';
 const sha40 = (): string => crypto.randomBytes(20).toString('hex');
-/** The arm must fail on a broken port: a thrown assertion is the PASS of a must-fail arm. */
-async function mustFail<T>(name: string, h: T, arm: (h: T) => Promise<void>): Promise<void> {
-  let failed = false;
-  try { await arm(h); } catch { failed = true; }
-  assert.ok(failed, `${name}: the arm did NOT fail on the broken port — it cannot tell a broken port from a good one`);
+/** The arm must fail on a port broken in ONE rule, and by the assertion that names THAT rule (`[rule]` in its message): a twin that fails for any other reason proves nothing about this rule. */
+async function mustFail<T>(rule: string, h: T, arm: (h: T) => Promise<void>): Promise<void> {
+  let msg: string | null = null;
+  try { await arm(h); } catch (e) { msg = e instanceof Error ? e.message : String(e); }
+  assert.ok(msg !== null, `[${rule}] the arm did NOT fail on the port broken in that rule — it cannot tell a broken port from a good one`);
+  assert.ok(msg!.includes(`[${rule}]`), `[${rule}] the arm failed, but not on this rule: ${msg!.slice(0, 200)}`);
 }
 
 // ════════════════════════════════════════ GitPort ════════════════════════════════════════
@@ -67,44 +68,49 @@ const gitArms: Array<[string, (h: GitH) => Promise<void>]> = [
     const c1 = h.commit('b1');
     assert.equal(await h.port.head('b1'), c1);
     const c2 = h.commit('b1');
-    assert.equal(await h.port.head('b1'), c2);
-    assert.equal(await h.port.head('no-such-branch'), null);
+    assert.equal(await h.port.head('b1'), c2, '[head.moves]');
+    assert.equal(await h.port.head('no-such-branch'), null, '[head.unknown]');
   }],
   ['tree: a hex tree for a known commit, different for a different content, null for an unknown sha', async (h) => {
     const a = h.commit('t1'), b = h.commit('t1');
     const ta = await h.port.tree(a), tb = await h.port.tree(b);
-    assert.match(String(ta), /^[0-9a-f]{40}$/);
-    assert.notEqual(ta, tb);
-    assert.equal(await h.port.tree(sha40()), null);
+    assert.match(String(ta), /^[0-9a-f]{40}$/, '[tree.hex]');
+    assert.notEqual(ta, tb, '[tree.differs]');
+    assert.equal(await h.port.tree(sha40()), null, '[tree.unknown]');
   }],
   ['isMerged: an ancestor is merged, a sibling is not, an unknown sha is not, a commit contains itself', async (h) => {
     const up = h.commit('up');
     h.commit('dep');
-    assert.equal(await h.port.isMerged(up, 'dep'), false, 'not yet connected');
+    assert.equal(await h.port.isMerged(up, 'dep'), false, '[merged.unconnected] not yet connected');
     h.merge('dep', 'up');
-    assert.equal(await h.port.isMerged(up, 'dep'), true, 'connected by a merge commit');
-    assert.equal(await h.port.isMerged('dep', 'up'), false, 'the other way round is not');
-    assert.equal(await h.port.isMerged(sha40(), 'dep'), false);
-    assert.equal(await h.port.isMerged(up, up), true);
+    assert.equal(await h.port.isMerged(up, 'dep'), true, '[merged.connected] connected by a merge commit');
+    assert.equal(await h.port.isMerged('dep', 'up'), false, '[merged.reverse] the other way round is not');
+    assert.equal(await h.port.isMerged(sha40(), 'dep'), false, '[merged.unknown]');
+    assert.equal(await h.port.isMerged(up, up), true, '[merged.self]');
   }],
   ['emptyBranch: a branch holding nothing over its base, idempotent; deleteBranch removes it and a missing one is fine', async (h) => {
     const mainHead = (await h.port.head('main'))!;
     const e = await h.port.emptyBranch('orchestra-start-check-1', 'main');
-    assert.equal(await h.port.tree(e.head), await h.port.tree(mainHead), 'no content of its own');
-    assert.equal(await h.port.head('orchestra-start-check-1'), e.head);
-    assert.equal((await h.port.emptyBranch('orchestra-start-check-1', 'main')).head, e.head, 'a second call adopts the branch');
+    assert.equal(await h.port.tree(e.head), await h.port.tree(mainHead), '[empty.tree] no content of its own');
+    assert.equal(await h.port.head('orchestra-start-check-1'), e.head, '[empty.exists]');
+    assert.equal((await h.port.emptyBranch('orchestra-start-check-1', 'main')).head, e.head, '[empty.idempotent] a second call adopts the branch');
     await h.port.deleteBranch('orchestra-start-check-1');
-    assert.equal(await h.port.head('orchestra-start-check-1'), null);
+    assert.equal(await h.port.head('orchestra-start-check-1'), null, '[empty.deleted]');
     await h.port.deleteBranch('orchestra-start-check-1');
   }],
 ];
-const brokenGit = (p: GitPort): GitPort => ({ ...p, head: async (b) => (await p.head(b)) ?? (await p.head('main')), isMerged: async () => true, tree: async (s) => s, emptyBranch: async (_b, base) => ({ head: (await p.head(base))! }) });
-
 for (const [label, mk] of [['dummy', dummyGit], ['live', liveGit]] as const) {
   for (const [name, arm] of gitArms) test(`GitPort [${label}] ${name}`, async () => { await arm(mk()); });
 }
-test('GitPort MUST-FAIL: the arms fail on a port that answers main for an unknown branch / says everything is merged / echoes the sha as its tree', async () => {
-  for (const mk of [dummyGit, liveGit]) for (const [name, arm] of gitArms) { const h = mk(); await mustFail(name, { ...h, port: brokenGit(h.port) }, arm); }
+/** ONE rule broken per port: [rule that must name the failure, the arm, the breaker]. */
+const gitBreakers: Array<[string, string, (p: GitPort) => GitPort]> = [
+  ['head.unknown', 'head', (p) => ({ ...p, head: async (b) => (await p.head(b)) ?? (await p.head('main')) })],
+  ['tree.unknown', 'tree', (p) => ({ ...p, tree: async (s) => (await p.tree(s)) ?? s })],
+  ['merged.unconnected', 'isMerged', (p) => ({ ...p, isMerged: async () => true })],
+  ['empty.exists', 'emptyBranch', (p) => ({ ...p, emptyBranch: async (_b, base) => ({ head: (await p.head(base))! }) })],
+];
+test('GitPort MUST-FAIL: one rule broken per port, and the arm fails on THAT rule\'s assertion (dummy and live)', async () => {
+  for (const mk of [dummyGit, liveGit]) for (const [rule, arm, brk] of gitBreakers) { const h = mk(); await mustFail(rule, { ...h, port: brk(h.port) }, gitArms.find(([n]) => n.startsWith(arm))![1]); }
 });
 
 // ════════════════════════════════════════ ForgePort ════════════════════════════════════════
@@ -146,26 +152,27 @@ const forgeArms: Array<[string, (h: ForgeH) => Promise<void>]> = [
   ['openPr: idempotent per branch (the same number), a different branch gets its own', async (h) => {
     h.branch('T1'); h.branch('T2');
     const a = await open(h, 'T1');
-    assert.equal((await open(h, 'T1')).n, a.n);
-    assert.notEqual((await open(h, 'T2')).n, a.n);
+    assert.equal((await open(h, 'T1')).n, a.n, '[open.same]');
+    assert.notEqual((await open(h, 'T2')).n, a.n, '[open.other]');
   }],
   ['prState: open at the branch head, follows a new commit', async (h) => {
     const c1 = h.branch('T1');
     const { n } = await open(h, 'T1');
-    assert.deepEqual(await h.port.prState(n), { state: 'open', head: c1 });
+    assert.deepEqual(await h.port.prState(n), { state: 'open', head: c1 }, '[state.open]');
     const c2 = h.commit('T1');
-    assert.equal((await h.port.prState(n)).head, c2);
+    assert.equal((await h.port.prState(n)).head, c2, '[state.head]');
   }],
-  ['checks: pending while the CI runs, green with a job id once it is done', async (h) => {
+  ['checks: pending while the CI runs, green with a job id, the steps that ran and a finish time once it is done', async (h) => {
     const head = h.branch('T1');
     const { n } = await open(h, 'T1');
     const before = await h.port.checks(n, head);
-    assert.ok(before.length > 0 && before.every((c) => c.status === 'pending'), JSON.stringify(before));
+    assert.ok(before.some((c) => c.status === 'pending') && before.every((c) => c.status !== 'red'), `[checks.pending] while the CI runs at least one check is pending, none red: ${JSON.stringify(before)}`);
     await h.settle();
     const after = await h.port.checks(n, head);
-    assert.deepEqual(after.map((c) => c.status), after.map(() => 'green'));
-    assert.ok(after.every((c) => typeof c.jobId === 'string' && c.jobId), 'a job id on every check');
-    assert.ok(after.every((c) => c.at), 'the time each check finished (readiness order)');
+    assert.deepEqual(after.map((c) => c.status), after.map(() => 'green'), '[checks.green]');
+    assert.ok(after.every((c) => typeof c.jobId === 'string' && c.jobId), '[checks.jobid] a job id on every check');
+    assert.ok(after.every((c) => typeof c.steps === 'number' && c.steps >= 1), '[checks.steps] a green job carries the count of steps that ran (decideDelivery refuses a green that proves nothing ran)');
+    assert.ok(after.every((c) => c.at), '[checks.at] the time each check finished (readiness order)');
   }],
   ['checks: ONE red check is named, carries a log extract, the others stay green', async (h) => {
     h.ci('T1', ['red:test', 'green']);
@@ -174,9 +181,9 @@ const forgeArms: Array<[string, (h: ForgeH) => Promise<void>]> = [
     await h.settle();
     const cs = await h.port.checks(n, head);
     const red = cs.filter((c) => c.status === 'red');
-    assert.deepEqual(red.map((c) => c.name), ['test']);
-    assert.match(String(red[0].logExtract), /FAIL/);
-    assert.ok(cs.filter((c) => c.name !== 'test').every((c) => c.status === 'green'));
+    assert.deepEqual(red.map((c) => c.name), ['test'], '[checks.red]');
+    assert.match(String(red[0].logExtract), /FAIL/, '[checks.extract]');
+    assert.ok(cs.filter((c) => c.name !== 'test').every((c) => c.status === 'green'), '[checks.others]');
   }],
   ['rerun: the red check comes back green AND its job id CHANGED (the loop tells a re-run from the old run by it)', async (h) => {
     h.ci('T1', ['red:test', 'green']);
@@ -187,53 +194,51 @@ const forgeArms: Array<[string, (h: ForgeH) => Promise<void>]> = [
     await h.port.rerun(n, [red.name]);
     await h.settle();
     const after = (await h.port.checks(n, head)).find((c) => c.name === red.name)!;
-    assert.equal(after.status, 'green');
-    assert.ok(after.jobId && after.jobId !== red.jobId, `job id ${red.jobId} → ${after.jobId}`);
+    assert.equal(after.status, 'green', '[rerun.green]');
+    assert.ok(after.jobId && after.jobId !== red.jobId, `[rerun.jobid] job id ${red.jobId} → ${after.jobId}`);
   }],
   ['merge: a MERGE COMMIT bound to the head; the PR reads merged', async (h) => {
     const head = h.branch('T1');
     const { n } = await open(h, 'T1');
     await h.settle();
-    assert.deepEqual(await h.port.merge(n, head), { ok: true });
-    assert.equal((await h.port.prState(n)).state, 'merged');
-    assert.equal(h.mergeParents(), 2, 'two parents: a merge commit, not a squash');
+    assert.deepEqual(await h.port.merge(n, head, 'merge'), { ok: true }, '[merge.ok]');
+    assert.equal((await h.port.prState(n)).state, 'merged', '[merge.state]');
+    assert.equal(h.mergeParents(), 2, '[merge.commit] two parents: a merge commit, not a squash');
   }],
   ['merge: refused when the head moved ("head-moved"), the PR stays open', async (h) => {
     const old = h.branch('T1');
     const { n } = await open(h, 'T1');
     h.commit('T1');
     await h.settle();
-    const r = await h.port.merge(n, old);
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'head-moved');
-    assert.equal((await h.port.prState(n)).state, 'open');
+    const r = await h.port.merge(n, old, 'merge');
+    assert.equal(r.ok, false, '[merge.moved]');
+    assert.equal(r.reason, 'head-moved', '[merge.moved.reason]');
+    assert.equal((await h.port.prState(n)).state, 'open', '[merge.moved.open]');
   }],
   ['close: the PR reads closed; closing twice is fine', async (h) => {
     h.branch('T1');
     const { n } = await open(h, 'T1');
     await h.port.close(n);
-    assert.equal((await h.port.prState(n)).state, 'closed');
+    assert.equal((await h.port.prState(n)).state, 'closed', '[close.closed]');
     await h.port.close(n);
   }],
 ];
 for (const [label, mk] of [['dummy', dummyForge], ['live', () => liveForge()]] as const) {
-  for (const [name, arm] of forgeArms) {
-    // KNOWN GAP of the dummy world (#605's file): its `close` only logs an event, the PR stays open. The arm stands on the live port; reported to #605.
-    const gap = label === 'dummy' && name.startsWith('close:') ? { todo: 'dummy forge: close(n) does not close the PR (fanout-loop-dummy.ts, #605)' } : {};
-    test(`ForgePort [${label}] ${name}`, gap, async () => { await arm(mk()); });
-  }
+  for (const [name, arm] of forgeArms) test(`ForgePort [${label}] ${name}`, async () => { await arm(mk()); });
 }
-test('ForgePort MUST-FAIL: the arms fail on a port whose openPr always opens, whose rerun does nothing, whose merge ignores the head, whose checks are always green', async () => {
-  const breakers: Array<[string, (p: ForgePort) => ForgePort]> = [
-    ['openPr: idempotent', (p) => { let k = 0; return { ...p, openPr: async (i) => ({ n: (await p.openPr(i)).n + k++ }) }; }],
-    ['rerun', (p) => ({ ...p, rerun: async () => undefined })],
-    ['merge: refused when the head moved', (p) => ({ ...p, merge: async (n) => p.merge(n, (await p.prState(n)).head) })],
-    ['checks: ONE red', (p) => ({ ...p, checks: async (n, h) => (await p.checks(n, h)).map((c) => ({ ...c, status: 'green' as const })) })],
-  ];
-  for (const mk of [dummyForge, () => liveForge()]) for (const [key, brk] of breakers) {
-    const arm = forgeArms.find(([n]) => n.includes(key))![1];
+const forgeBreakers: Array<[string, string, (p: ForgePort) => ForgePort]> = [
+  ['open.same', 'openPr', (p) => { let k = 0; return { ...p, openPr: async (i) => ({ n: (await p.openPr(i)).n + k++ }) }; }],
+  ['checks.steps', 'checks: pending', (p) => ({ ...p, checks: async (n, h) => (await p.checks(n, h)).map(({ steps: _s, ...c }) => c) })],
+  ['checks.red', 'checks: ONE red', (p) => ({ ...p, checks: async (n, h) => (await p.checks(n, h)).map((c) => ({ ...c, status: 'green' as const })) })],
+  ['rerun.green', 'rerun', (p) => ({ ...p, rerun: async () => undefined })],
+  ['rerun.jobid', 'rerun', (p) => { const old = new Map<string, string>(); return { ...p, checks: async (n, h) => (await p.checks(n, h)).map((c) => { if (c.status === 'red' && c.jobId) old.set(c.name, c.jobId); return { ...c, ...(old.has(c.name) ? { jobId: old.get(c.name) } : {}) }; }) }; }],
+  ['merge.moved', 'merge: refused', (p) => ({ ...p, merge: async (n, _h, m) => p.merge(n, (await p.prState(n)).head, m) })],
+  ['merge.ok', 'merge: a MERGE', (p) => ({ ...p, merge: async (n, h) => p.merge(n, h, 'squash') })],
+];
+test('ForgePort MUST-FAIL: one rule broken per port, and the arm fails on THAT rule\'s assertion (dummy and live)', async () => {
+  for (const mk of [dummyForge, () => liveForge()]) for (const [rule, arm, brk] of forgeBreakers) {
     const h = mk();
-    await mustFail(`${h.name}/${key}`, { ...h, port: brk(h.port) }, arm);
+    await mustFail(rule, { ...h, port: brk(h.port) }, forgeArms.find(([n]) => n.startsWith(arm))![1]);
   }
 });
 
@@ -308,48 +313,53 @@ const wsOf = (h: FleetH, t: string): string => readState(stateFile(h.home, h.run
 const fleetArms: Array<[string, (h: FleetH) => Promise<void>]> = [
   ['start: one implementer per ticket, a second start launches none (never two for a ticket); live() tells them apart from strangers', async (h) => {
     const r1 = await h.fleet.start();
-    assert.deepEqual(r1.started.map((x) => x.ticket).sort(), ['T1', 'T2']);
+    assert.deepEqual(r1.started.map((x) => x.ticket).sort(), ['T1', 'T2'], '[start.each]');
     const r2 = await h.fleet.start();
-    assert.deepEqual(r2.started, [], 'nothing started twice');
-    assert.equal(h.world.events.filter((e) => e.ev === 'spawn').length, 2);
-    assert.ok(h.fleet.live(wsOf(h, 'T1')) && h.fleet.live(wsOf(h, 'T2')));
-    assert.equal(h.fleet.live('ws-not-ours'), false);
+    assert.deepEqual(r2.started, [], '[start.once] nothing started twice');
+    assert.equal(h.world.events.filter((e) => e.ev === 'spawn').length, 2, '[start.once.spawns]');
+    assert.ok(h.fleet.live(wsOf(h, 'T1')) && h.fleet.live(wsOf(h, 'T2')), '[live.started]');
+    assert.equal(h.fleet.live('ws-not-ours'), false, '[live.stranger]');
   }],
-  ['mail: the run\'s messages once, in order, `ask` as `ask`; a second read brings nothing', async (h) => {
+  ['mail: the run\'s messages in order, `ask` as `ask`; unread until `ack`; an ack below the last message loses nothing after it; acked ones never come back', async (h) => {
     await h.fleet.start();
     const w1 = wsOf(h, 'T1'), w2 = wsOf(h, 'T2');
     h.world.post('ask', w1, 'T1', 'Which name?');
     h.world.post('status', w2, 'T2', 'nominated');
     h.world.post('worker_done', w1, 'T1', 'done');
     const m = await h.fleet.mail();
-    assert.deepEqual(m.map((x) => [x.seq, x.kind, x.sender]), [[1, 'ask', w1], [2, 'status', w2], [3, 'worker_done', w1]]);
-    assert.deepEqual(m.map((x) => x.body), ['Which name?', 'nominated', 'done']);
-    assert.deepEqual(await h.fleet.mail(), []);
+    assert.deepEqual(m.map((x) => [x.seq, x.kind, x.sender]), [[1, 'ask', w1], [2, 'status', w2], [3, 'worker_done', w1]], '[mail.order]');
+    assert.deepEqual(m.map((x) => x.body), ['Which name?', 'nominated', 'done'], '[mail.bodies]');
+    assert.deepEqual((await h.fleet.mail()).map((x) => x.seq), [1, 2, 3], '[mail.unacked] mail() alone never consumes: a loop that failed on a message reads it again');
+    await h.fleet.ack(1);
+    const rest = (await h.fleet.mail()).map((x) => x.seq);
+    assert.ok(rest.includes(2) && rest.includes(3), `[mail.ack.partial] an ack of seq 1 must not lose seq 2 and 3 (read ${JSON.stringify(rest)})`);
+    await h.fleet.ack(3);
+    assert.deepEqual(await h.fleet.mail(), [], '[mail.acked] acked: gone');
     h.world.post('status', w1, 'T1', 'later');
-    assert.deepEqual((await h.fleet.mail()).map((x) => x.body), ['later']);
+    assert.deepEqual((await h.fleet.mail()).map((x) => x.body), ['later'], '[mail.later]');
   }],
   ['wake / send: the ask to connect and the fixed answer REACH the agent', async (h) => {
     await h.fleet.start();
     const w1 = wsOf(h, 'T1'), w2 = wsOf(h, 'T2');
     const head = sha40();
     await h.fleet.wake(w2, `CONNECT T1 ${head}\nT2: connect once`);
-    assert.ok(h.world.events.some((e) => e.ev === 'connect-ask' && e.ticket === 'T2' && e.head === head), 'the agent got the ask');
+    assert.ok(h.world.events.some((e) => e.ev === 'connect-ask' && e.ticket === 'T2' && e.head === head), '[wake.reaches] the agent got the ask');
     await h.fleet.send(w1, FIXED_ANSWER, 'answer');
-    assert.ok(h.world.events.some((e) => e.ev === 'send' && e.kind === 'answer' && e.text === FIXED_ANSWER && e.to === w1), 'the agent got the answer');
+    assert.ok(h.world.events.some((e) => e.ev === 'send' && e.kind === 'answer' && e.text === FIXED_ANSWER && e.to === w1), '[send.reaches] the agent got the answer');
   }],
   ['spawnReviewer: one reviewer per head — the same head answers the same id and spawns nothing; a new head wakes the same reviewer', async (h) => {
     await h.fleet.start();
     const head = h.world.commit([h.world.branches.get('main')!], 'T1:c', 'T1:c');
     updateState(stateFile(h.home, h.run), (s) => applyTicketPatch(s!, 'T1', { head, status: 'nominated', pr: 1 }, NOW, { tree: sha40() }));
     const r1 = await h.fleet.spawnReviewer('T1', head);
-    assert.ok(r1.id);
-    assert.deepEqual(await h.fleet.spawnReviewer('T1', head), r1, 'the same head: the same reviewer');
-    assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 1, 'ONE reviewer spawned');
+    assert.ok(r1.id, '[review.id]');
+    assert.deepEqual(await h.fleet.spawnReviewer('T1', head), r1, '[review.same] the same head: the same reviewer');
+    assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 1, '[review.once] ONE reviewer spawned');
     const head2 = h.world.commit([head], 'T1:d', 'T1:d');
     updateState(stateFile(h.home, h.run), (s) => applyTicketPatch(s!, 'T1', { head: head2 }, NOW, { tree: sha40() }));
-    assert.deepEqual(await h.fleet.spawnReviewer('T1', head2), r1, 'a new head wakes the SAME reviewer');
-    assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 1);
-    assert.ok(h.world.events.some((e) => e.ev === 'review-wake'));
+    assert.deepEqual(await h.fleet.spawnReviewer('T1', head2), r1, '[review.wake] a new head wakes the SAME reviewer');
+    assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 1, '[review.wake.once]');
+    assert.ok(h.world.events.some((e) => e.ev === 'review-wake'), '[review.wake.event]');
   }],
   ['costOf: a count of tokens for a ticket that worked, never a throw', async (h) => {
     await h.fleet.start();
@@ -359,31 +369,36 @@ const fleetArms: Array<[string, (h: FleetH) => Promise<void>]> = [
 ];
 for (const kind of ['dummy', 'live'] as const) for (const [name, arm] of fleetArms) test(`FleetPort [${kind}] ${name}`, async () => { await arm(await fleetHarness(kind)); });
 
-test('FleetPort MUST-FAIL: the arms fail on a fleet that starts twice, re-reads the same mail, drops the answer, or spawns a reviewer per call', async () => {
-  const breakers: Array<[string, (f: FleetPort) => FleetPort]> = [
-    ['start', (f) => ({ ...f, start: async () => { await f.start(); return f.start().then((r) => ({ ...r, started: [{ ticket: 'T1', ws: 'x', branch: 'x' }] })); } })],
-    ['mail', (f) => { let all: Awaited<ReturnType<FleetPort['mail']>> = []; return { ...f, mail: async () => { all = [...all, ...(await f.mail())]; return all; } }; }],
-    ['wake / send', (f) => ({ ...f, send: async () => undefined })],
-    ['spawnReviewer', (f) => ({ ...f, spawnReviewer: async (t, h) => { const a = await f.spawnReviewer(t, h); return { id: `${a.id}-${Math.random()}` }; } })],
-  ];
-  for (const kind of ['dummy', 'live'] as const) for (const [key, brk] of breakers) {
-    const arm = fleetArms.find(([n]) => n.startsWith(key))![1];
+const fleetBreakers: Array<[string, string, (f: FleetPort) => FleetPort]> = [
+  ['start.once', 'start:', (f) => { let n = 0; return { ...f, start: async () => { const r = await f.start(); return n++ ? { ...r, started: [{ ticket: 'T1', ws: 'x', branch: 'x' }] } : r; } }; }],
+  ['mail.unacked', 'mail:', (f) => ({ ...f, mail: async () => { const m = await f.mail(); if (m.length) await f.ack(Math.max(...m.map((x) => x.seq))); return m; } })], // acks on read: a message whose handling failed is gone
+  ['mail.ack.partial', 'mail:', (f) => ({ ...f, ack: async (n) => { await f.ack(n + 1000); } })], // an ack of one acks everything
+  ['wake.reaches', 'wake / send', (f) => ({ ...f, wake: async () => undefined })],
+  ['send.reaches', 'wake / send', (f) => ({ ...f, send: async () => undefined })],
+  ['review.same', 'spawnReviewer', (f) => ({ ...f, spawnReviewer: async (t, h) => { const a = await f.spawnReviewer(t, h); return { id: `${a.id}-${Math.random()}` }; } })],
+];
+test('FleetPort MUST-FAIL: one rule broken per port, and the arm fails on THAT rule\'s assertion (dummy and live)', async () => {
+  for (const kind of ['dummy', 'live'] as const) for (const [rule, arm, brk] of fleetBreakers) {
     const h = await fleetHarness(kind);
-    await mustFail(`${kind}/${key}`, { ...h, fleet: brk(h.fleet) }, arm);
+    await mustFail(rule, { ...h, fleet: brk(h.fleet) }, fleetArms.find(([n]) => n.startsWith(arm))![1]);
   }
 });
 
 // ════════════════════════════════════════ what only the LIVE ports do ════════════════════════════════════════
-test('live fleet: an unacked lot is READ AGAIN after a kill (at-least-once), acked only once the next pass starts; `question` reads as `ask`', async () => {
+test('live fleet: a lot not acked (a kill, a failed message) is READ AGAIN by the next loop; `ack` of its last message closes it; `question` reads as `ask`', async () => {
   const h = await fleetHarness('live');
   await h.fleet.start();
   h.world.post('ask', wsOf(h, 'T1'), 'T1', 'Q?');
   assert.equal((await h.fleet.mail()).length, 1);
-  assert.equal(h.bus.calls.filter((c) => c[0] === 'ack').length, 0, 'not acked while the pass is running');
+  assert.equal(h.bus.calls.filter((c) => c[0] === 'ack').length, 0, 'mail() never acks');
   const again = await createLiveFleet({ run: 'fl', caller: 'fl', cli: h.bus.cli, host: (await fleetHarness('live')).bus.host, readState: () => readState(stateFile(h.home, h.run)) }); // a restarted loop = a new port on the same bus
-  assert.deepEqual((await again.mail()).map((m) => m.body), ['Q?'], 'the killed loop never acked it: the next one reads it');
-  assert.deepEqual(await again.mail(), [], 'and acks it when ITS next pass starts');
+  const m = await again.mail();
+  assert.deepEqual(m.map((x) => [x.kind, x.body]), [['ask', 'Q?']], 'the killed loop never acked it: the next one reads it');
+  await again.ack(m[0].seq - 1);
+  assert.equal(h.bus.calls.filter((c) => c[0] === 'ack').length, 0, 'an ack below the lot\'s last message acks nothing');
+  await again.ack(m[0].seq);
   assert.equal(h.bus.calls.filter((c) => c[0] === 'ack').length, 1);
+  assert.deepEqual(await again.mail(), []);
 });
 test('live fleet: a refusal of the shipped verb ([start-caller]) is a SeatRefusal the loop ends on (exit 2), a crash of the verb is not', async () => {
   const h = await fleetHarness('live');
@@ -400,13 +415,13 @@ test('live fleet: a host that cannot say who is alive stops the loop (never "eve
   assert.match(String(broken), /could not tell which workspaces are alive/);
 });
 test('live forge: a merge goes THROUGH the injected deliver — its refusal is the loop\'s (no bare `gh pr merge` when deliver is wired)', async () => {
-  const seen: Array<{ n: number; head: string }> = [];
+  const seen: Array<{ n: number; head: string; method: string }> = [];
   const h = liveForge(async (i) => { seen.push(i); return { ok: false, reason: 'ci-red', detail: 'check "test" is red' }; });
   const head = h.branch('T1');
   const { n } = await open(h, 'T1');
   await h.settle();
-  assert.deepEqual(await h.port.merge(n, head), { ok: false, reason: 'ci-red', detail: 'check "test" is red' });
-  assert.deepEqual(seen, [{ n, head }]);
+  assert.deepEqual(await h.port.merge(n, head, 'merge'), { ok: false, reason: 'ci-red', detail: 'check "test" is red' });
+  assert.deepEqual(seen, [{ n, head, method: 'merge' }]);
   assert.equal(h.fake.calls.filter((c) => c[0] === 'pr' && c[1] === 'merge').length, 0, 'gh never merged around deliver');
   assert.equal((await h.port.prState(n)).state, 'open');
 });
@@ -452,13 +467,13 @@ const localOriginArm = async (r: ReturnType<typeof pushedRepo>): Promise<void> =
   const c1 = r.commitLocal('b1'); r.push('b1');
   assert.equal(await r.port.head('b1'), c1, 'pushed, same on both sides');
   const c2 = r.commitLocal('b1');
-  assert.equal(await r.port.head('b1'), c2, 'a local commit not pushed yet: LOCAL wins (nothing is pushed)');
+  assert.equal(await r.port.head('b1'), c2, '[head.local-ahead] a local commit not pushed yet: LOCAL wins (nothing is pushed)');
   r.push('b1');
   const c3 = r.commitRemoteOnly('b1');
-  assert.equal(await r.port.head('b1'), c3, 'the remote is ahead of the local branch: ORIGIN wins');
+  assert.equal(await r.port.head('b1'), c3, '[head.origin-ahead] the remote is ahead of the local branch: ORIGIN wins');
 };
 test('live git: local refs win while nothing is pushed, origin once it is ahead', async () => { await localOriginArm(pushedRepo()); });
-test('live git MUST-FAIL: a port that cannot see local branches fails the arm (the rule is exercised, not assumed)', async () => { const r = pushedRepo(); await mustFail('local/origin', { ...r, port: r.broken }, localOriginArm); });
+test('live git MUST-FAIL: a port that cannot see local branches fails the arm (the rule is exercised, not assumed)', async () => { const r = pushedRepo(); await mustFail('head.local-ahead', { ...r, port: r.broken }, localOriginArm); });
 test('live git: a stale probe (the base moved since a killed start check) is REPLACED, a still-empty one adopted; only probe names are created / deleted', async () => {
   const r = pushedRepo();
   const probe = 'orchestra-start-check-abc';
@@ -481,7 +496,7 @@ test('live forge: an old MERGED pull request of a reused branch name is not adop
   const old = h.branch('T1');
   const first = await open(h, 'T1');
   await h.settle();
-  await h.port.merge(first.n, old);
+  await h.port.merge(first.n, old, 'merge');
   assert.equal((await open(h, 'T1')).n, first.n, 'the branch still sits on the merged head: the merged PR is the answer');
   h.commit('T1'); // the branch is reused: new commits
   const second = await open(h, 'T1');
@@ -500,7 +515,7 @@ test('live forge: a re-run waits for the OTHER jobs of the run to finish (gh ref
 });
 test('live forge: with neither `deliver` nor the rigs\' bareMerge, merge REFUSES to run (no default path around deliver)', async () => {
   const p = createLiveForge({ gh: new FakeForge().gh });
-  await assert.rejects(p.merge(1, sha40()), /no `deliver` wired/);
+  await assert.rejects(p.merge(1, sha40(), 'merge'), /no `deliver` wired/);
 });
 test('live fleet: a reviewer is never spawned on a head the state does not hold (the head moved under the loop)', async () => {
   const h = await fleetHarness('live');

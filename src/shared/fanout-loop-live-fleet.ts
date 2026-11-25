@@ -30,8 +30,6 @@ export interface LiveFleetDeps {
 export type LiveFleet = FleetPort & {
   /** Re-read which of the run's workspaces are alive (the snapshot `live()` answers from). Called by the factory, `start()` and `mail()`. */
   refresh(): Promise<void>;
-  /** Ack the lot still held: the pass is over. */
-  close(): Promise<void>;
 };
 
 /** Every workspace the state records for the run: each ticket's implementer, its recorded reviewer and every reviewer it ever had. */
@@ -59,7 +57,7 @@ const loopKind = (kind: string): string => (kind === 'question' ? 'ask' : kind);
 
 export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
   let liveSet = new Set<string>();
-  let held: number | null = null; // the lot this pass is working on: acked once the pass is over (a kill before that replays it — at-least-once, never lost)
+  let held: { lot: number; last: number } | null = null; // the lot `mail()` handed out: acked by `ack(upToSeq)` once the loop has handled every message of it (a kill, or a failed message, before that replays it — at-least-once, never lost)
 
   const refresh = async (): Promise<void> => {
     const ids = workspacesOfRun(deps.readState());
@@ -67,13 +65,6 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
     const r = await deps.host({ op: 'live', run: deps.run, from: deps.caller, key: deps.key, ids });
     if (!r.ok || !Array.isArray(r.live)) throw new FanoutStateError(`the host could not tell which workspaces are alive: ${String(r.error ?? 'no answer')}`);
     liveSet = new Set((r.live as unknown[]).filter((x): x is string => typeof x === 'string'));
-  };
-  const ackHeld = async (): Promise<void> => {
-    if (held === null) return;
-    const lot = held;
-    const r = await deps.cli(['ack', String(lot)]);
-    if (r.code !== 0 && !/not an outstanding lot/.test(r.stderr)) throw verbError('ack', r); // an already-acked lot is fine; a real failure is not (the lot would replay forever)
-    held = null;
   };
   const say = async (to: string, text: string): Promise<void> => {
     const r = await deps.cli(['send', '--type', 'status', '--to', to, '--', text]);
@@ -92,15 +83,20 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
     live: (ws) => liveSet.has(ws),
     wake: (ws, text) => say(ws, text),
     send: (to, text, _kind) => say(to, text), // the bus has no `answer` kind: the fixed answer is an ordinary status the agent reads on its next turn
-    async mail() {
-      await ackHeld(); // the previous pass has finished: its lot is spent
+    async mail() { // never acks (FleetPort.ack does): until it is acked, the same lot comes back — `check` replays an outstanding lot
       await refresh();
-      const r = await deps.cli(['check', '--limit', String(deps.lotLimit ?? 200)]); // a plain check NEVER acks (#115): a kill between here and the next ack replays the lot
+      const r = await deps.cli(['check', '--limit', String(deps.lotLimit ?? 200)]); // a plain check NEVER acks (#115)
       if (r.code !== 0) throw verbError('check', r);
       let lot: LotOut;
       try { lot = JSON.parse(r.stdout) as LotOut; } catch { throw new FanoutStateError(`orchestra check: not JSON: ${r.stdout.slice(0, 120)}`); }
-      held = lot.lot;
+      held = lot.lot !== null && lot.messages.length ? { lot: lot.lot, last: Math.max(...lot.messages.map((m) => m.sequence)) } : null;
       return lot.messages.map((m): LoopMail => ({ seq: m.sequence, kind: loopKind(m.kind), sender: m.sender, ticket: null, body: m.body }));
+    },
+    async ack(upToSeq) { // the lot is the bus's unit: acked only when the loop is past its LAST message (a lower `upToSeq` — a message still failing — acks nothing, the whole lot replays)
+      if (!held || upToSeq < held.last) return;
+      const r = await deps.cli(['ack', String(held.lot)]);
+      if (r.code !== 0 && !/not an outstanding lot/.test(r.stderr)) throw verbError('ack', r); // an already-acked lot is fine
+      held = null;
     },
     async spawnReviewer(ticket, head) {
       const s = deps.readState();
@@ -114,7 +110,6 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
     },
     async costOf(ticket) { return deps.costOf ? deps.costOf(ticket) : null; },
     refresh,
-    close: ackHeld,
   };
   await refresh();
   return fleet;

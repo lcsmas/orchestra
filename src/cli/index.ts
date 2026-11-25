@@ -2489,7 +2489,12 @@ async function main(argv: string[]): Promise<void> {
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
       }
       if (args[0] === 'run') { // #605 — the Boucle: `fanout run` (src/cli/fanout-run.ts); exit 0 merged · 3 parked ≥1 · 4 paused · 2 refusal · 1 could not run
-        const rr = await runFanoutRun(args.slice(1), fanoutDeps);
+        if (!args.includes('--scenario') && !args.includes('--help') && !args.includes('-h')) { // #614: the LIVE loop leads on the word of the HOST (a session it cannot vouch leads nothing), like `fanout start`
+          await settleHostIdentity();
+          if (hostIdentity?.source !== 'host') fail('refusing to run: the host could not vouch this session (is Orchestra running, and is this the live session of the run\'s no-agent workspace? an ORCHESTRA_WS_ID in the env is not proof). Nothing was started.');
+          fanoutDeps.vouchedCaller = (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null;
+        }
+        const rr = await runFanoutRun(args.slice(1), fanoutDeps, (body) => request('/fanoutAcceptance', body, { timeoutMs: 600_000 }));
         if (rr.stdout) process.stdout.write(rr.stdout);
         if (rr.code === 1) fail(rr.stderr.trimEnd());
         if (rr.stderr) process.stderr.write(rr.stderr);

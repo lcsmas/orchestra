@@ -6,6 +6,8 @@ import type { LoopOptions } from '../shared/fanout-loop.ts';
 import { parseScenario, runDummyLoop } from '../shared/fanout-loop-dummy.ts';
 import type { Plan } from '../shared/fanout-loop-compat.ts';
 import { homeOf, parseArgs, type FanoutDeps, type RunResult } from './fanout-state.ts';
+import type { Host } from '../shared/fanout-loop-live-fleet.ts';
+import { runLive } from './fanout-run-live.ts';
 
 export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,b,c | --plan <plan.json>] [--scenario <scenario.json>] [--start-check] [--minor-policy <legacy|refuse|spec|demonstrated>]
   Leads the vague from its plan to its closing report: starts EVERY implementer at once on the frozen interfaces, reads the run's mail (the only reader), connects a dependent to its upstream when the upstream's reviewer
@@ -15,12 +17,13 @@ export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,
   Prints the closing report as JSON on stdout (merged, parked {ticket,cause,reason}, choices, findingsLeft, flaky, costPerTicket, paused) and a text summary on stderr.
   Exit: 0 every ticket merged · 3 the run ended with at least one parked ticket · 4 paused (resumable: run again) · 2 refusal ([run-…]) · 1 could not run.
   --scenario <file> runs the DUMMY fleet (scripted agents, git, PR host and CI on a virtual clock) and judges its event log; refused unless ORCHESTRA_FANOUT_DUMMY=1 ([run-scenario-gated]).
-  Limit (this build): the live fleet / forge ports are not wired — without --scenario the verb exits 1 ([run-live-ports]).`;
+  Without --scenario it runs on the LIVE ports as the run's coordinator (a no-agent workspace, #612: \`orchestra spawn --no-agent --run-command "orchestra fanout run …"\`): fleet = the shipped verbs (fanout start|review, check, ack, send) + the host,
+  forge = gh (the merge goes through the shipped \`fanout deliver\`, so its refusals are the loop's), git = git. Refused [run-caller] unless the host vouches the caller as the run's coordinator.`;
 
 const reportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
   `merged ${r.merged.length}${r.merged.length ? ` (${r.merged.join(', ')})` : ''} · parked ${r.parked.length}${r.parked.map((p) => ` ${p.ticket} [${p.cause}] ${p.reason}`).join(';')} · choices ${r.choices.length}\n`;
 
-export async function runFanoutRun(args: string[], deps: FanoutDeps): Promise<RunResult> {
+export async function runFanoutRun(args: string[], deps: FanoutDeps, host?: Host): Promise<RunResult> {
   try {
     if (args.includes('--help') || args.includes('-h')) return { code: 0, stdout: `${RUN_USAGE}\n`, stderr: '' };
     const p = parseArgs(args, ['--run', '--tickets', '--plan', '--scenario', '--minor-policy'], ['--start-check']);
@@ -35,7 +38,16 @@ export async function runFanoutRun(args: string[], deps: FanoutDeps): Promise<Ru
     const tickets = p.vals['--tickets'] ? p.vals['--tickets'].split(',').map((x) => x.trim()).filter(Boolean) : null;
     const options: Partial<LoopOptions> = { minorPolicy: minor as LoopOptions['minorPolicy'], startCheck: p.bools.has('--start-check'), ...(plan ? { plan } : {}), ...(tickets ? { tickets } : {}) };
 
-    if (p.vals['--scenario'] === undefined) throw new FanoutStateError('[run-live-ports] the live fleet / forge ports are not wired in this build: `fanout run` leads a vague on the dummy fleet only (--scenario <file>, ORCHESTRA_FANOUT_DUMMY=1)');
+    if (p.vals['--scenario'] === undefined) { // #614: the loop on the LIVE ports, as the run's coordinator (a no-agent workspace, #612) — every effect through a shipped verb or the host
+      if (!host) throw new FanoutStateError('[run-live-ports] the host route is not reachable from here (fanout run needs the running app)');
+      const caller = (deps.vouchedCaller ?? '').trim();
+      const run = assertRunId(p.vals['--run'] ?? caller);
+      if (!caller || caller !== run) throw new SeatRefusal('run-caller', `only the run's coordinator (${run}) leads it${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof)'}`);
+      const log: string[] = [];
+      const result = await runLive({ home: homeOf(deps.env), run, caller, env: deps.env, cwd: deps.cwd, options, host, log: (l) => { log.push(l); process.stderr.write(`${l}\n`); } });
+      const out = { exit: result.exit, passes: result.passes, ...(result.reason ? { reason: result.reason } : {}), report: result.report };
+      return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: reportText(result.report) };
+    }
     if (deps.env.ORCHESTRA_FANOUT_DUMMY !== '1') throw new SeatRefusal('run-scenario-gated', '--scenario swaps in the dummy fleet and is refused unless ORCHESTRA_FANOUT_DUMMY=1: it never touches a real workspace, branch or pull request');
     let scenario;
     try { scenario = parseScenario(JSON.parse(fs.readFileSync(p.vals['--scenario'], 'utf8'))); } catch (e) { if (e instanceof FanoutStateError) throw new SeatRefusal('run-scenario-bad', e.message); throw new SeatRefusal('run-scenario-bad', `${p.vals['--scenario']}: ${e instanceof Error ? e.message : String(e)}`); }

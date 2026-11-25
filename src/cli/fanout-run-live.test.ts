@@ -47,7 +47,7 @@ async function rig(o: { approve: boolean; ci?: string[] }) {
 test('deliver is the merge: a recorded approval + a green CI on the head merges, with a MERGE COMMIT', async () => {
   const r = await rig({ approve: true });
   r.fake.advance(300_000); // the CI is done
-  assert.deepEqual(await r.forge.merge(r.n, r.head), { ok: true });
+  assert.deepEqual(await r.forge.merge(r.n, r.head, 'merge'), { ok: true });
   assert.equal((await r.forge.prState(r.n)).state, 'merged');
   const call = r.fake.calls.find((c) => c[0] === 'pr' && c[1] === 'merge')!;
   assert.ok(call.includes('--merge') && !call.includes('--squash') && !call.includes('--rebase'), call.join(' '));
@@ -56,7 +56,7 @@ test('deliver is the merge: a recorded approval + a green CI on the head merges,
 test('MUST-FAIL: no recorded verdict → deliver refuses, gh merges nothing (the loop cannot bypass the review gate)', async () => {
   const r = await rig({ approve: false });
   r.fake.advance(300_000);
-  const a = await r.forge.merge(r.n, r.head);
+  const a = await r.forge.merge(r.n, r.head, 'merge');
   assert.deepEqual([a.ok, a.reason], [false, 'record-missing'], JSON.stringify(a));
   assert.equal(r.merges(), 0, 'no `gh pr merge` was issued');
   assert.equal((await r.forge.prState(r.n)).state, 'open');
@@ -64,7 +64,7 @@ test('MUST-FAIL: no recorded verdict → deliver refuses, gh merges nothing (the
 test('MUST-FAIL: a red CI on the head → deliver refuses (a recorded approval does not buy a merge on a red check)', async () => {
   const r = await rig({ approve: true, ci: ['red:test'] });
   r.fake.advance(300_000);
-  const a = await r.forge.merge(r.n, r.head);
+  const a = await r.forge.merge(r.n, r.head, 'merge');
   assert.deepEqual([a.ok, a.reason], [false, 'ci-red'], JSON.stringify(a));
   assert.equal(r.merges(), 0);
 });
@@ -72,7 +72,7 @@ test('MUST-FAIL: the head moved after the approval → refused, nothing merged',
   const r = await rig({ approve: true });
   r.fake.advance(300_000);
   r.fake.push('T1', sha40());
-  const a = await r.forge.merge(r.n, r.head);
+  const a = await r.forge.merge(r.n, r.head, 'merge');
   assert.deepEqual([a.ok, a.reason], [false, 'head-moved'], JSON.stringify(a));
   assert.equal(r.merges(), 0);
 });
@@ -80,7 +80,7 @@ test('MUST-FAIL control: the bare fallback (no deliver wired) merges a ticket wi
   const r = await rig({ approve: false });
   r.fake.advance(300_000);
   const bare = createLiveForge({ gh: r.fake.gh, bareMerge: true });
-  assert.deepEqual(await bare.merge(r.n, r.head), { ok: true });
+  assert.deepEqual(await bare.merge(r.n, r.head, 'merge'), { ok: true });
 });
 test('MUST-FAIL: deliver acted on another pull request of the branch (the tracked one is closed) → refused before deliver can pick it, never reported as this PR\'s merge', async () => {
   const r = await rig({ approve: true });
@@ -89,7 +89,7 @@ test('MUST-FAIL: deliver acted on another pull request of the branch (the tracke
   const again = (await r.fake.gh(['pr', 'create', '--head', 'T1', '--base', 'main', '--title', 'T1: again'])).stdout; // … and a second one is open on the same branch
   assert.match(again, /\/pull\/2/);
   r.fake.advance(300_000);
-  const a = await r.forge.merge(r.n, r.head);
+  const a = await r.forge.merge(r.n, r.head, 'merge');
   assert.deepEqual([a.ok, a.reason], [false, 'pr-not-open'], JSON.stringify(a));
   assert.equal((await r.fake.gh(['pr', 'view', '2', '--json', 'state'])).stdout.includes('MERGED'), false, 'nothing merged under the loop\'s feet');
 });

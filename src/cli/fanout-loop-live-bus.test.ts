@@ -37,7 +37,7 @@ function setup(t: { after: (fn: () => void) => void }): { cli: Cli; post: (kind:
 }
 const fleetOn = (cli: Cli) => createLiveFleet({ run: RUN, caller: RUN, cli, host: async () => ({ ok: true, live: [] }), readState: () => null });
 
-test('real bus: a question arrives as `ask`, in order, once; the lot is acked when the NEXT pass starts', async (t) => {
+test('real bus: a question arrives as `ask`, in order; mail() alone never consumes; ack of the last message closes the lot', async (t) => {
   const b = setup(t);
   const f = await fleetOn(b.cli);
   b.post('question', 'ws-a', 'NO SAFE OPTION: the spec contradicts itself');
@@ -45,7 +45,19 @@ test('real bus: a question arrives as `ask`, in order, once; the lot is acked wh
   const m1 = await f.mail();
   assert.deepEqual(m1.map((m) => [m.kind, m.sender, m.body]), [['ask', 'ws-a', 'NO SAFE OPTION: the spec contradicts itself'], ['status', 'ws-b', 'nominated']]);
   assert.ok(m1[0].seq < m1[1].seq);
-  assert.deepEqual(await f.mail(), [], 'the previous lot was acked at the start of this pass, nothing new');
+  assert.deepEqual((await f.mail()).map((m) => m.seq), m1.map((m) => m.seq), 'not acked: the same lot again');
+  await f.ack(m1[1].seq);
+  assert.deepEqual(await f.mail(), [], 'acked: nothing new');
+});
+
+test('real bus (review 614 MAJOR-1): a message whose handling FAILED is read again — an ack below the lot\'s last message acks nothing', async (t) => {
+  const b = setup(t);
+  const f = await fleetOn(b.cli);
+  b.post('question', 'ws-a', 'which name?');
+  const m = await f.mail();
+  assert.equal(m.length, 1); // the loop\'s `send` throws here: it acks nothing past the failed message
+  await f.ack(m[0].seq - 1);
+  assert.deepEqual((await f.mail()).map((x) => x.body), ['which name?'], 'still there on the next pass');
 });
 
 test('real bus: a loop killed after reading the lot reads it AGAIN (never lost); an acked one is not replayed', async (t) => {
@@ -55,8 +67,9 @@ test('real bus: a loop killed after reading the lot reads it AGAIN (never lost);
   assert.equal((await first.mail()).length, 1);
   // killed here: no ack. A new loop on the same bus:
   const second = await fleetOn(b.cli);
-  assert.deepEqual((await second.mail()).map((m) => m.body), ['which name?'], 'replayed');
-  await second.close(); // the pass finished: acked
+  const m = await second.mail();
+  assert.deepEqual(m.map((x) => x.body), ['which name?'], 'replayed');
+  await second.ack(m[0].seq);
   const third = await fleetOn(b.cli);
   assert.deepEqual(await third.mail(), [], 'acked: gone');
 });

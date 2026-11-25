@@ -42,8 +42,8 @@ export function deliverDepsFor(home: string): DeliverDeps {
 }
 
 /** The merge, through the shipped `deliver`: its verdict (recorded approval, CI, upstream order, acceptance, follow-up) is the loop's — nothing here merges around it. */
-export function mergeThroughDeliver(i: { home: string; run: string; log: (l: string) => void; deps?: Partial<DeliverDeps> }): (x: { n: number; head: string }) => Promise<MergeAnswer> {
-  return async ({ n, head }) => {
+export function mergeThroughDeliver(i: { home: string; run: string; log: (l: string) => void; deps?: Partial<DeliverDeps> }): (x: { n: number; head: string; method: 'merge' | 'squash' | 'rebase' }) => Promise<MergeAnswer> {
+  return async ({ n, head, method }) => {
     const s = readState(stateFile(i.home, i.run));
     const entry = Object.entries(s?.tickets ?? {}).find(([, t]) => t.pr === n);
     if (!s || !entry || !entry[1].branch) return { ok: false, reason: 'no-ticket', detail: `no ticket of run ${i.run} has pull request #${n}` };
@@ -54,7 +54,7 @@ export function mergeThroughDeliver(i: { home: string; run: string; log: (l: str
     let state = '';
     try { state = String((JSON.parse(seen.stdout) as { state?: unknown }).state ?? ''); } catch { /* unreadable */ }
     if (seen.code !== 0 || state !== 'OPEN') return { ok: false, reason: 'pr-not-open', detail: `pull request #${n} is ${state || 'unreadable'} (${seen.stderr.trim().slice(0, 160)}): deliver would pick another pull request of ${t.branch}` };
-    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: 'merge', timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, d);
+    const out = await deliver({ branch: t.branch!, into: s.target, ticket, strategy: method, timeoutMs: 15 * 60_000, intervalMs: 20_000, noChecksGraceMs: 120_000, requireChecks: [], run: i.run, ...(s.repo ? { repo: s.repo } : {}), verifiedHead: head }, d);
     const r = out.result;
     if (r.pr !== undefined && r.pr !== n) return { ok: false, reason: 'pr-mismatch', detail: `deliver acted on pull request #${r.pr} for branch ${t.branch}, the loop tracks #${n}` }; // deliver finds its PR by branch: never report another PR's merge as this one's
     if (out.exit === 0 && (r.verdict === 'merged' || r.verdict === 'already-merged')) return { ok: true };
@@ -95,7 +95,5 @@ export async function runLive(i: LiveRunInput): Promise<LoopResult> {
     log: i.log,
     options: { ...DEFAULT_OPTIONS, ...i.options, target },
   });
-  // only after a COMPLETE pass: a loop that crashed — or ended on a refusal (exit 2) — mid-pass leaves its lot unacked, and the next start reads it again
-  if (result.exit !== 2) await fleet.close().catch((e: unknown) => i.log(`could not ack the last lot (it will be read again): ${e instanceof Error ? e.message : String(e)}`));
   return result;
 }
