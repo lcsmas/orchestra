@@ -1,0 +1,1 @@
+{"checks":[{"run":"npx tsc --noEmit","cwd":".","timeoutSec":900}]}

@@ -86,6 +86,10 @@ test('ci.yml is read-only, secret-free and fans out through the data file', () =
   assert.match(wf, /^permissions:\n  contents: read\n/m);
   assert.ok(!/secrets\.|write-all|contents: write|pull-requests: write/.test(wf), 'a secret or write permission crept into ci.yml');
   assert.match(wf, /cancel-in-progress: true/);
+  // #586: pull_request only — a `push` trigger doubles every PR head's run; the concurrency group must still key on the PR so a new head cancels the old
+  assert.ok(!/^\s*push:/m.test(wf), 'ci.yml has a push trigger: two runs per PR head (#586)');
+  assert.match(wf, /^  pull_request:\n    branches: \[master\]\n/m);
+  assert.match(wf, /group: ci-pr-\$\{\{ github\.event\.pull_request\.number \}\}/);
   assert.match(wf, /scripts\/ci\/rigs\.mjs matrix/);
   assert.match(wf, /run-group\.mjs/);
   assert.match(wf, /fail-fast: false/);
