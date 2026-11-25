@@ -28,10 +28,11 @@ function world(opts: { policy?: 'legacy' | 'demonstrated' | 'spec'; tickets?: st
     const t: TicketState = {
       branch: `impl-${id}`, pr: 1, head: sha('1'), verdict: 'none', dependsOn: [], builtOn: {}, frozenInterface: null, mergedAccepted: null, status: 'nominated', acceptance: null, tree: 't1',
       builtOnTree: {}, findings: {}, followUpOf: null, mergedHead: null, mergedTree: null, forgottenMerges: [], fixes: [], spec: null, specText: null, implementer: `ws-${id}`, verifier: null, accept: null,
-      review: { reviewer: { id: `rv-${id}`, name: `review-${id}`, at: T }, head: sha('1'), base: null, briefs: [] }, reviews: [], updatedAt: T,
+      depsDeclared: true, review: { reviewer: { id: `rv-${id}`, name: `review-${id}`, at: T }, head: sha('1'), base: null, briefs: [] }, reviews: [], updatedAt: T,
     };
     state = { ...state, tickets: { ...state.tickets, [id]: t } };
   }
+  state = { ...state, plan: { tickets: opts.tickets ?? ['A'], declaredAt: T } }; // a real run declares its plan (a status patch needs it)
   const w: World = {
     state, woken: [], started: 0, reviewerCalls: [], heads: Object.fromEntries((opts.tickets ?? ['A']).map((id) => [`impl-${id}`, sha('1')])), trees: { [sha('1')]: 't1' },
     live: new Set((opts.tickets ?? ['A']).flatMap((id) => [`ws-${id}`, `rv-${id}`])), failWake: false, reviewerAnswer: 'same', ctx: null as unknown as CorrectionsCtx,
@@ -44,9 +45,9 @@ function world(opts: { policy?: 'legacy' | 'demonstrated' | 'spec'; tickets?: st
       fleet: {
         live: (ws) => w.live.has(ws),
         wake: async (ws, text) => { if (w.failWake) throw new Error('boom'); w.woken.push({ ws, text }); },
-        start: async () => { // the shipped startRun: a replacement ONLY for a ticket with no live implementer
+        start: async () => { // the shipped startRun: a replacement ONLY for a todo|started ticket with no live implementer (a nominated|gated one is SKIPPED, fanout-start.ts)
           w.started++;
-          for (const [id, t] of Object.entries(w.state.tickets)) if (t.implementer && !w.live.has(t.implementer)) { const n = `${t.implementer}-r`; w.live.add(n); w.state = { ...w.state, tickets: { ...w.state.tickets, [id]: { ...t, implementer: n } } }; }
+          for (const [id, t] of Object.entries(w.state.tickets)) if ((t.status === 'todo' || t.status === 'started') && t.implementer && !w.live.has(t.implementer)) { const n = `${t.implementer}-r`; w.live.add(n); w.state = { ...w.state, tickets: { ...w.state.tickets, [id]: { ...t, implementer: n } } }; }
         },
         spawnReviewer: async (ticket, head) => { w.reviewerCalls.push({ ticket, head }); return { id: w.reviewerAnswer === 'same' ? w.state.tickets[ticket].review!.reviewer!.id! : 'rv-other' }; },
       },
@@ -339,39 +340,43 @@ const processWorld = async (): Promise<World> => {
   await runCorrections(w.ctx);
   return w;
 };
-test('a process finding: the batch tells the author how it is closed (PR body + a commit + one status)', async () => {
+test('a process finding: the batch tells the author how it is closed (PR body + a commit)', async () => {
   const w = await processWorld();
   assert.match(w.woken[0].text, /edit the PR body, then push a commit/);
-});
-test('the author ANSWERS a process batch by status mail with no new head: the SAME reviewer is woken to re-read the PR body + head (raw wake, no second reviewer)', async () => {
-  const w = await processWorld();
-  w.woken.length = 0;
-  w.ctx.mails = [{ kind: 'status', sender: 'ws-A', ticket: 'A', body: 'PR body edited' }];
-  const out = await runCorrections(w.ctx);
-  assert.deepEqual(out, [{ ticket: 'A', action: 'reviewer-woken', head: sha('1'), reviewer: 'rv-A' }]);
-  assert.equal(w.woken.length, 1);
-  assert.equal(w.woken[0].ws, 'rv-A');
-  assert.match(w.woken[0].text, /re-read the PR body and the head/);
-  assert.equal(w.reviewerCalls.length, 0);
-});
-test('MUST-FAIL: no answer → the reviewer is not woken; a mail from someone else or a plain `ask` is not an answer', async () => {
-  const w = await processWorld();
-  w.woken.length = 0;
-  assert.deepEqual(await runCorrections(w.ctx), []);
-  w.ctx.mails = [{ kind: 'status', sender: 'ws-other', ticket: null, body: 'hi' }, { kind: 'ask', sender: 'ws-A', ticket: 'A', body: 'question?' }];
-  assert.deepEqual(await runCorrections(w.ctx), []);
-  assert.equal(w.woken.length, 0);
-});
-test('the answer arrives with a DEAD reviewer: the host op replaces it (same call as a new head)', async () => {
-  const w = await processWorld();
-  w.live.delete('rv-A');
-  w.ctx.mails = [{ kind: 'worker_done', sender: 'ws-A', ticket: 'A', body: 'done' }];
-  await runCorrections(w.ctx);
-  assert.equal(w.reviewerCalls.length, 1);
 });
 test('an empty commit (new sha, same tree) wakes the reviewer: the finding can only be closed on a LATER head', async () => {
   const w = await processWorld();
   push(w, 'A', sha('2'), 't1');
   const out = await runCorrections(w.ctx);
   assert.deepEqual(out, [{ ticket: 'A', action: 'reviewer-woken', head: sha('2'), reviewer: 'rv-A' }]);
+});
+test('MUST-FAIL: with no new head nothing wakes the reviewer — the author\'s chatter cannot lead to a same-head verdict (and a false park)', async () => {
+  const w = await processWorld();
+  w.woken.length = 0;
+  assert.deepEqual(await runCorrections(w.ctx), []);
+  assert.equal(w.woken.length, 0);
+  assert.equal(w.reviewerCalls.length, 0);
+});
+test('the dead author of a NOMINATED ticket: back to started (implementer + branch kept), then start() replaces it — the shipped startRun skips nominated|gated', async () => {
+  const w = world();
+  w.live.delete('ws-A');
+  review(w, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  assert.equal(w.state.tickets.A.status, 'nominated');
+  await runCorrections(w.ctx);
+  assert.equal(w.state.tickets.A.status, 'started');
+  assert.equal(w.state.tickets.A.branch, 'impl-A');
+  assert.equal(w.woken[0].ws, 'ws-A-r');
+  assert.equal(w.state.tickets.A.implementer, 'ws-A-r');
+});
+test('a dead author of a GATED ticket too; a LIVE author keeps its status', async () => {
+  const g = world();
+  g.state = { ...g.state, tickets: { ...g.state.tickets, A: { ...g.state.tickets.A, status: 'gated' } } };
+  g.live.delete('ws-A');
+  review(g, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  await runCorrections(g.ctx);
+  assert.equal(g.state.tickets.A.status, 'started');
+  const l = world();
+  review(l, 'A', sha('1'), 't1', 'changes-requested', { b1: finding('BLOCKING', 'x') });
+  await runCorrections(l.ctx);
+  assert.equal(l.state.tickets.A.status, 'nominated');
 });

@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import { countsThrough } from './fanout-record.ts';
 import {
-  blockingMinors, readState, sameContent, stateFile, switchesOf, updateState,
+  applyTicketPatch, blockingMinors, readState, sameContent, stateFile, switchesOf, updateState,
   type FanoutState, type FindingRecord, type ReviewEntry, type TicketState,
 } from './fanout-state.ts';
 
@@ -59,9 +59,7 @@ export interface CorrectionsDeps {
 }
 /** Where the state lives: the file under `home` by default; a test hands an in-memory one. */
 export interface CorrectionsStore { read(): FanoutState | null; update(fn: (s: FanoutState) => FanoutState): FanoutState }
-/** The mail of THIS pass, as the loop's own mail step read it (the loop is the ONLY reader of the run's mail: this step never calls `fleet.mail()`). Absent = none. */
-export interface CorrectionsMail { kind: string; sender: string; ticket: string | null; body: string }
-export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore; mails?: CorrectionsMail[] }
+export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore }
 
 export type CorrectionsOutcome =
   | { ticket: string; action: 'sent'; to: string; round: number; findings: string[]; noted: string[]; replaced: boolean }
@@ -105,7 +103,7 @@ export function renderBatch(state: FanoutState, ticket: string, c: { r: ReviewEn
 }
 
 /** The pass: for every ticket in review that is not merged / dropped / parked — (1) a review that asked for changes and whose round is not recorded yet is a round: the same situation (or the same tree) seen before parks the ticket,
- *  else the batch goes to the live author (a dead one is replaced through `start`, which never doubles a live one) and the round is recorded AFTER the send (a crash resends, never loses); (2) a head the reviewer has not read since the batch
+ *  else the batch goes to the live author (a dead one is replaced through `start`, which never doubles a live one) and the round is recorded AFTER the send (a crash resends, never loses); (2) a head (a new sha, even with the same tree) the reviewer has not read since the batch
  *  wakes the recorded reviewer (`spawnReviewer`: same one while live). */
 export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOutcome[]> {
   const { deps } = ctx;
@@ -163,11 +161,6 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
       const got = await deps.fleet.spawnReviewer(id, head); // a NEW sha (even with the same tree) is read: a finding raised on a head is only closed on a later one
       if (live && got.id !== want) { deps.log(`corrections: ${id} — a second reviewer ${got.id} for the live ${want}: its verdict is not the one that read the findings`); out.push({ ticket: id, action: 'reviewer-changed', expected: want, got: got.id }); continue; }
       out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: got.id });
-    } else if (last && want && done(store.read()!, last) && t2.implementer && (ctx.mails ?? []).some((m) => m.sender === t2.implementer && (m.kind === 'status' || m.kind === 'worker_done'))) {
-      // the author ANSWERED the batch without a new head (a PR-body edit): the same reviewer re-reads the PR body + the head — raw wake, the host op is a noop on an already-briefed head; a dead one is replaced there
-      if (!deps.fleet.live(want)) { const got = await deps.fleet.spawnReviewer(id, head); out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: got.id }); continue; }
-      await deps.fleet.wake(want, `The author of ${id} answered your corrections on ${short(head)} with no new commit (a PR-body edit): re-read the PR body and the head, then record your verdict on ${short(head)}.`);
-      out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: want });
     }
   }
   return out;
@@ -179,6 +172,8 @@ async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x:
   let author = state.tickets[id].implementer;
   let replaced = false;
   if (!author || !deps.fleet.live(author)) {
+    // the shipped `startRun` skips every ticket that is not todo|started (ruling v1.3): a nominated|gated ticket whose author died goes back to `started` (implementer + branch kept), then start() replaces the author
+    if (state.tickets[id].status === 'nominated' || state.tickets[id].status === 'gated') store.update((s) => applyTicketPatch(s, id, { status: 'started' }, deps.now()));
     await deps.fleet.start(); // only a ticket with NO live implementer is (re)started there
     const again = store.read()!.tickets[id].implementer;
     if (!again || !deps.fleet.live(again)) { deps.log(`corrections: ${id} — no live author yet (${author ?? 'none recorded'}); the batch waits for the next pass`); return { kind: 'blocked', why: 'no-live-author' }; }
