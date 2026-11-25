@@ -41,7 +41,8 @@ const mutants = [
   // the record: who, which ticket, which head
   ['record: the switch is not checked (off records)', R, "if (!seatRecordsOn(state)) return refuse('record-off'", `if (${F}) return refuse('record-off'`],
   ['record: a ticket with no recorded reviewer is not refused', R, "if (!t || !reviewer) {", `if (${F}) {`],
-  ['record: any caller records (the identity is not compared with the recorded reviewer)', R, "if (a.callerId === null || a.callerId !== reviewer) {", `if (${F}) {`],
+  ['record: an id the host did not vouch records (env-asserted identity accepted)', R, "|| a.callerVouched !== true) {\n    if (a.callerId === reviewer", "|| false as boolean) {\n    if (a.callerId === reviewer"],
+  ['record: any caller records (the identity is not compared with the recorded reviewer)', R, "if (a.callerId === null || a.callerId !== reviewer || a.callerVouched !== true) {", `if (${F}) {`],
   ['record: the head is not compared with the briefed head', R, "if (!/^[0-9a-f]{7,40}$/.test(a.head) || !sameSha(expected, a.head)) {", `if (${F}) {`],
   ['record: the briefed head is the ticket\'s head, not the reviewer\'s latest brief', R, "return b.length ? b[b.length - 1].head : t.review?.head ?? t.head ?? null;", "return t.head ?? null;"],
   ['record: any verdict word is accepted', R, "if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return refuse('record-verdict'", `if (${F}) return refuse('record-verdict'`],
@@ -77,7 +78,7 @@ const mutants = [
   // the closed exits
   ['state set: --finding / --finding-json / --json findings accepted from the coordinator', S, "if (findings.length || ('findings' in patch && patch.findings !== undefined && !isObj(patch.findings))) throw", `if (${F}) throw`],
   ['state set: the coordinator\'s --settle accepted', S, "if (isObj(patch.settle) && Object.keys(patch.settle).length) throw", `if (${F}) throw`],
-  ['state set: a decision with a blank reason accepted', S, "if (!isObj(v) || typeof v.text !== 'string' || !v.text.trim()) throw new FanoutStateError(`[decision-reason-blank]", `if (${F}) throw new FanoutStateError(\`[decision-reason-blank]`],
+  ['state set: a decision with a blank reason accepted', S, "if (!isObj(v) || typeof v.text !== 'string' || !v.text.trim()) throw new SeatRefusal('decision-reason-blank'", `if (${F}) throw new SeatRefusal('decision-reason-blank'`],
   ['state set: the patch source is not asserted at all', S, "  assertPatchSource(stampDefaults(state0), id, patch); // #589\n", ""],
   ['state set: the switch-off branch is skipped (off behaves as on)', S, "  if (!seatRecordsOn(state)) {\n    for (const [k, f] of findings)", `  if (${F}) {\n    for (const [k, f] of findings)`],
   ['state set: a blank --decide reason gets the new refusal off the switch', C, "if (blankDecide !== null && !seatRecordsOn(before)) decideArg(blankDecide);", ""],
@@ -97,7 +98,8 @@ const mutants = [
   ['gate: no refusal without a recorded verdict', G, "if (!rd.ok) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: rd.reason", `if (${F}) return { exit: DELIVER_EXIT.refused, result: { verdict: 'refused', reason: rd.reason`],
   ['gate: open BLOCKING / MAJOR of the recorded verdict do not refuse', G, "if (r.blocking > 0 || r.major > 0) return", `if (${F}) return`],
   // the verb
-  ['record verb: the caller is the one named by the ticket (identity not resolved)', K, "const caller = resolveCaller(cur, deps.env);", "const caller: { id: string | null } = { id: cur.tickets[ticket]?.review?.reviewer?.id ?? null };"],
+  ['record verb: the caller is the one named by the ticket (identity not resolved)', K, "const caller = resolveCaller(cur, deps.env, deps.identity);", "const caller = { id: cur.tickets[ticket]?.review?.reviewer?.id ?? null, role: 'reviewer', proof: 'host-vouched' } as ReturnType<typeof resolveCaller>;"],
+  ['record verb: the host answer is not passed (every caller is env-asserted)', K, "resolveCaller(cur, deps.env, deps.identity)", "resolveCaller(cur, deps.env)"],
   ['record verb: the tree of the head is not derived', K, "const tree = /^[0-9a-f]{7,40}$/.test(head) ? treeOfSha(deps.runner, head, deps.cwd, repo) : null;", "const tree = null as string | null;"],
   // close-out
   ['closeout: the decided list is printed off the switch', CO, "const decided = seatRecordsOn(state) ? decidedCloseout(state) : null;", "const decided = decidedCloseout(state);"],

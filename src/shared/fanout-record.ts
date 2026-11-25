@@ -1,12 +1,12 @@
 // #589 (I4, switch seatRecords=on) — the reviewer RECORDS its verdict and findings; `gate` and `deliver` read nothing else. Pure; the verb is src/cli/fanout-record.ts.
 // Every refusal is a FanoutStateError whose message STARTS with its name in brackets. Who the caller is = `resolveCaller` (#588, src/shared/fanout-caller.ts) — this file never judges identity itself.
-import { FanoutStateError, applyTicketPatchCore, blockingMinors, findingClosed, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
+import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, findingClosed, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
 import type { FileOnHead } from './fanout-demonstration.ts';
 
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
 const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
-const refuse = (name: string, msg: string): never => { throw new FanoutStateError(`[${name}] ${msg}`); };
+const refuse = (name: string, msg: string): never => { throw new SeatRefusal(name, msg); };
 
 /** The command a reviewer ends with — printed by every refusal that sends it here. */
 export const recordCommand = (ticket: string, head: string): string => `orchestra fanout record ${ticket} --head ${head} --verdict approve|changes-requested --json <file|->`;
@@ -83,8 +83,10 @@ export interface RecordArgs {
   head: string;
   verdict: string;
   input: RecordInput;
-  /** `resolveCaller(state, env).id` — null = the caller could not be named. */
+  /** `resolveCaller(state, env, identity).id` — null = the caller could not be named. */
   callerId: string | null;
+  /** `isVouched(resolveCaller(…))` — the HOST verified {id, session key} (#588): an id read from the env alone is forgeable and records nothing. Absent = not vouched. */
+  callerVouched?: boolean;
   tree: string | null;
   now: string;
   fileOnHead?: FileOnHead;
@@ -98,7 +100,8 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   if (!t || !reviewer) {
     return refuse('record-wrong-ticket', `${ticketId} ${t ? 'has no recorded reviewer' : 'is not in the state of run ' + state.run} (tickets with a reviewer: ${Object.entries(state.tickets).filter(([, x]) => x.review?.reviewer?.id).map(([k]) => k).join(', ') || 'none'}) — a verdict is recorded on the ticket its reviewer was spawned for (\`orchestra fanout review <ticket>\`)`);
   }
-  if (a.callerId === null || a.callerId !== reviewer) {
+  if (a.callerId === null || a.callerId !== reviewer || a.callerVouched !== true) {
+    if (a.callerId === reviewer && a.callerVouched !== true) return refuse('record-not-reviewer', `the host could not vouch that you are ${t.review!.reviewer!.name} (${reviewer}): an id read from the environment is forgeable, so it records nothing — run this from the reviewer's own session (is Orchestra running, and is this its live session?)`);
     return refuse('record-not-reviewer', `only ${ticketId}'s recorded reviewer (${t.review!.reviewer!.name}, ${reviewer}) records its verdict — you are ${a.callerId ?? 'not identified'}${state.tickets[ticketId] && Object.entries(state.tickets).some(([k, x]) => k !== ticketId && x.review?.reviewer?.id === a.callerId) ? ', the recorded reviewer of another ticket' : ''}. A verdict typed by anyone else is not read by gate or deliver`);
   }
   const expected = reviewHeadOf(t);
