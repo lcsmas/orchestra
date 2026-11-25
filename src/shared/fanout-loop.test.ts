@@ -17,7 +17,7 @@ const load = (name: string): Scenario => parseScenario(JSON.parse(fs.readFileSyn
 const made: string[] = [];
 const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-loop-')); made.push(d); return d; };
 after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); });
-const go = (name: string, opts: Parameters<typeof runDummyLoop>[0]['options'] = {}) => runDummyLoop({ home: tmp(), scenario: load(name), options: { stallMs: 30 * 60_000, ...opts } });
+const go = (name: string, opts: Parameters<typeof runDummyLoop>[0]['options'] = {}) => runDummyLoop({ home: tmp(), scenario: load(name), options: { stallMs: 30 * 60_000, maxPasses: 1500, ...opts } });
 const mergeOrder = (evs: Ev[]): string[] => evs.filter((e) => e.ev === 'merge').map((e) => String(e.ticket));
 
 test('rts7: seven tickets, every one merged, exit 0, the judge finds nothing', async () => {
@@ -362,6 +362,8 @@ test('MAJOR-2: the dummy forge merges by MERGE COMMIT only — a squash is refus
   assert.equal(w.commits.get(w.branches.get('main')!)!.parents.length, 2, 'a two-parent merge commit');
 });
 test('MINOR-1: NO SAFE OPTION is parsed fail-CLOSED (case, spacing, colon, not first line); only a body without the marker is a question', async () => {
+  assert.equal(parseNoSafeOption('There is no safe option name collision here? Which of the two names should I use?'), null, 'a question that merely contains the words is a question');
+  assert.equal(parseNoSafeOption('Do we have no safe option for the rollback?'), null);
   for (const body of ['NO SAFE OPTION:\nthe reason', 'NO SAFE OPTION:the reason', 'NO SAFE OPTION:', 'no safe option: x', '  NO SAFE OPTION: x', 'Hello\nNO SAFE OPTION: x', 'No-Safe_Option - x']) {
     assert.ok(parseNoSafeOption(body), body);
     const s = sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body } as never] } });
@@ -373,7 +375,7 @@ test('MINOR-1: NO SAFE OPTION is parsed fail-CLOSED (case, spacing, colon, not f
   assert.equal(parseNoSafeOption('NO SAFE OPTION:')!.reason, '(no reason given)');
   assert.equal(parseNoSafeOption('NO SAFE OPTION: a\nb')!.reason, 'a');
 });
-test('MINOR-2: a held start, a CI that takes hours and a reviewer that reads for hours are not a stall (4 h clock)', async () => {
+test('MINOR-2: a held start, a CI and a reviewer that take 5 h are waits (bounded: they feed the 4 h clock for up to its length), not a stall', async () => {
   const long = { stallMs: 4 * 3_600_000 };
   const held = await runDummyLoop({ home: tmp(), scenario: sc('held', { admissionHold: { T2: 300 } }), options: long });
   assert.equal(held.result.exit, 0, held.result.reason);
@@ -454,4 +456,72 @@ test('a respawned author is asked to connect AGAIN (the ask is keyed by implemen
   await runLoop(depsOf(home, d, { fleet }, { maxPasses: 40 }));
   const t3 = wakes.filter(([, l]) => l.startsWith('CONNECT T1 '));
   assert.deepEqual(t3.map(([ws]) => ws).filter((w) => w.startsWith('ws-impl-T3')), ['ws-impl-T3', 'ws-impl-T3-r2']);
+});
+
+// ── review 605 r2: a wait is bounded ───────────────────────────────────────────────────────────────────────────────
+const bounded = { stallMs: 30 * 60_000, holdMs: 60 * 60_000, maxPasses: 1500 };
+test('r2 MAJOR-1 MUST-FAIL: a reviewer that is ALIVE and never records is bounded — the ticket is parked (situation) with the true reason, long before the pass limit', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: [{ do: 'silent' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 3);
+  assert.ok(r.result.passes < 200, `ended at pass ${r.result.passes}`);
+  assert.match(r.result.reason ?? '', /^stalled 30 min: T1 has no recorded review on its head/);
+  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T1', 'situation']]);
+  assert.deepEqual(r.result.report.merged, ['T2']);
+});
+test('r2 MAJOR-1: a DEAD reviewer is replaced (the loop calls the host op again) — the run recovers, nothing parked', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: [{ do: 'die' }, { do: 'approve' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 0);
+  assert.equal(r.result.report.merged.length, 2);
+  assert.deepEqual(r.world.events.filter((e) => e.ev === 'review-spawn' && e.ticket === 'T1').map((e) => e.action), ['spawn', 'replace']);
+});
+test('r2 MAJOR-1 MUST-FAIL: an agent that is silent after an Admission hold is bounded by holdMs — parked, not waited for ever', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('held', { admissionHold: { T2: 3 }, agents: { T2: { implementer: [] } } }), options: bounded });
+  assert.equal(r.result.exit, 3);
+  assert.ok(r.result.passes < 400, `ended at pass ${r.result.passes}`);
+  assert.match(r.result.report.parked.find((p) => p.ticket === 'T2')!.reason, /^stalled 30 min: .*T2 has no candidate/);
+});
+test('r2 MAJOR-1 MUST-FAIL: a PR the forge shows no check on waits only for the bound — then parked, not for ever', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('zero-step-ci', { faults: { noChecks: ['A'] } }), options: bounded });
+  assert.equal(r.result.exit, 3);
+  assert.ok(r.result.passes < 200, `ended at pass ${r.result.passes}`);
+  assert.deepEqual(r.result.report.merged, ['B']);
+  assert.match(r.result.report.parked[0].reason, /A is approved but not mergeable/);
+});
+
+// ── review 605 r3: replacements are capped ─────────────────────────────────────────────────────────────────────────
+test('r3 MAJOR MUST-FAIL: a reviewer that dies every time is replaced at most `maxReplacements` times, then the ticket is parked — never 300 spawns', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: Array.from({ length: 800 }, () => ({ do: 'die' as const })) } } }), options: { ...bounded, stallMs: 30 * 60_000 } });
+  assert.equal(r.result.exit, 3);
+  assert.equal(r.world.events.filter((e) => e.ev === 'review-spawn' && e.ticket === 'T1').length, 3, '1 spawn + 2 replacements (the cap), no more');
+  assert.ok(r.result.passes < 100, `ended at pass ${r.result.passes}`);
+  const p = r.result.report.parked.find((x) => x.ticket === 'T1')!;
+  assert.deepEqual([p.cause, /^reviewer died 2 times on /.test(p.reason)], ['situation', true]);
+  assert.deepEqual(r.result.report.merged, ['T2']);
+});
+test('r3 MAJOR MUST-FAIL: an implementer that dies at once every time is replaced at most `maxReplacements` times, then parked ("implementer died N times")', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 3);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 3, '1 spawn + 2 respawns');
+  assert.ok(r.result.passes < 100, `ended at pass ${r.result.passes}`);
+  assert.match(r.result.report.parked.find((x) => x.ticket === 'T1')!.reason, /^implementer died 2 times/);
+  assert.deepEqual(r.result.report.merged, ['T2']);
+});
+test('r3: the cap is a LoopOptions field — maxReplacements 0 parks at the first death, 5 allows five replacements', async () => {
+  const die = sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }] } } });
+  const zero = await runDummyLoop({ home: tmp(), scenario: die, options: { ...bounded, maxReplacements: 0 } });
+  assert.equal(zero.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 1);
+  const five = await runDummyLoop({ home: tmp(), scenario: die, options: { ...bounded, maxReplacements: 5 } });
+  assert.equal(five.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 6);
+});
+test('r3: a replacement that WORKS is not penalised — one death then a good agent: merged, nothing parked', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { implementer: [{ do: 'die' }], respawn: [{ do: 'code' }, { do: 'nominate' }], reviewer: [{ do: 'die' }, { do: 'approve' }] } } }), options: bounded });
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.equal(r.result.report.merged.length, 2);
+});
+test('r3 MINOR: a SECOND hold of the same ticket starts its own clock (it does not inherit the first hold\'s age)', async () => {
+  const scenario: Scenario = { version: 1, run: 'two-holds', repo: { tickets: [{ id: 'A', dependsOn: [], spec: 'spec/A.md' }, { id: 'B', dependsOn: [], spec: 'spec/B.md' }] }, admissionHold: { A: 15 }, agents: { A: { implementer: [{ do: 'code' }, { do: 'die' }], respawn: [{ do: 'code' }, { do: 'nominate' }] } } };
+  const r = await runDummyLoop({ home: tmp(), scenario, options: { stallMs: 5 * 60_000, holdMs: 25 * 60_000, maxPasses: 1500 } });
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.deepEqual([...r.result.report.merged].sort(), ['A', 'B']);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'A' && e.held === true).length, 2, 'two hold episodes');
 });
