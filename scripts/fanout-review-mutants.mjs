@@ -19,14 +19,14 @@ const T = ['src/cli/fanout-review.test.ts'];
 
 /** One mutant = exact-once edits [file, find, replacement]; the named tests must go red. */
 const MUTANTS = [
-  { id: 'R01', name: 'seatRecords=off no longer refuses the review ([review-off])', edits: [[REV, "if (!seatRecordsOn(state)) refuse('review-off'", "if (false as boolean) refuse('review-off'"]] },
-  { id: 'R02', name: 'a ticket with no head is reviewed ([review-no-head])', edits: [[REV, 'if (!t.head) refuse(', 'if (false as boolean) refuse(']] },
-  { id: 'R03', name: 'an incomplete plan no longer refuses ([review-plan])', edits: [[REV, 'if (missing.length) refuse(', 'if (false as boolean) refuse(']] },
-  { id: 'R04', name: 'a non-coordinator caller is accepted ([review-caller] role)', edits: [[REV, "if (caller.role !== 'coordinator') refuse(name,", "if (false as boolean) refuse(name,"]] },
-  { id: 'R05', name: 'the host vouch is not required (a forged ORCHESTRA_WS_ID passes)', edits: [[REV, 'if (!isVouched(caller)) refuse(name,', 'if (false as boolean) refuse(name,']] },
+  { id: 'R01', name: 'seatRecords=off no longer refuses the review ([review-off])', edits: [[REV, "if (!seatRecordsOn(state)) reviewRefuse('review-off'", "if (false as boolean) reviewRefuse('review-off'"]] },
+  { id: 'R02', name: 'a ticket with no head is reviewed ([review-no-head])', edits: [[REV, 'if (!t.head) reviewRefuse(', 'if (false as boolean) reviewRefuse(']] },
+  { id: 'R03', name: 'an incomplete plan no longer refuses ([review-plan])', edits: [[REV, 'if (missing.length) reviewRefuse(', 'if (false as boolean) reviewRefuse(']] },
+  { id: 'R04', name: 'a non-coordinator caller is accepted ([review-caller] role)', edits: [[REV, "if (caller.role !== 'coordinator') reviewRefuse(name,", "if (false as boolean) reviewRefuse(name,"]] },
+  { id: 'R05', name: 'the host vouch is not required (a forged ORCHESTRA_WS_ID passes)', edits: [[REV, 'if (!isVouched(caller)) reviewRefuse(name,', 'if (false as boolean) reviewRefuse(name,']] },
   { id: 'R06', name: 'resolveCaller treats an env-asserted id as host-vouched', edits: [[CALLER, ": resolution?.source === 'host' ? HOST_VOUCHED", ': id ? HOST_VOUCHED']] },
-  { id: 'R07', name: 'the ticket\'s implementer may be its reviewer ([review-role])', edits: [[REV, "if (reviewerId === t.implementer) refuse(", "if (false as boolean) refuse("]] },
-  { id: 'R08', name: 'the coordinator may be the reviewer ([review-role])', edits: [[REV, "if (reviewerId === state.run) refuse(", "if (false as boolean) refuse("]] },
+  { id: 'R07', name: 'the ticket\'s implementer may be its reviewer ([review-role])', edits: [[REV, "if (reviewerId === t.implementer) reviewRefuse(", "if (false as boolean) reviewRefuse("]] },
+  { id: 'R08', name: 'the coordinator may be the reviewer ([review-role])', edits: [[REV, "if (reviewerId === state.run) reviewRefuse(", "if (false as boolean) reviewRefuse("]] },
   { id: 'R09', name: 'a second call on the same head wakes the reviewer again (no noop)', edits: [[REV, 'if (t.review?.head && sameSha(t.review.head, head)) return', 'if (false as boolean) return']] },
   { id: 'R10', name: 'a LIVE reviewer is replaced on a new head instead of woken', edits: [[REV, "return { action: 'wake', kind: 'wake' };", "return { action: 'replace', kind: 'replace' };"]] },
   { id: 'R11', name: 'a dead reviewer is not replaced', edits: [[REV, "if (!isLive(rv.id)) return { action: 'replace', kind: 'replace' };", '']] },
