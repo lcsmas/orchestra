@@ -18,7 +18,7 @@
    "command": "pnpm run test:disk-guard",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:disk-guard-ui",
@@ -43,56 +43,56 @@
    "command": "pnpm run test:wiring",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:hung-cli",
    "command": "pnpm run test:hung-cli",
    "class": "RUNS_IN_CI",
    "wallSec": 114,
-   "group": 8
+   "group": 10
   },
   {
    "id": "test:claude-code-update",
    "command": "pnpm run build:bundles && bash scripts/e2e-claude-code-update.sh .",
    "class": "RUNS_IN_CI",
    "wallSec": 92,
-   "group": 10
+   "group": 11
   },
   {
    "id": "test:liveness-failed-call",
    "command": "pnpm run test:liveness-failed-call",
    "class": "RUNS_IN_CI",
    "wallSec": 7,
-   "group": 9
+   "group": 5
   },
   {
    "id": "test:session-debug-log",
    "command": "pnpm run test:session-debug-log",
    "class": "RUNS_IN_CI",
    "wallSec": 3,
-   "group": 3
+   "group": 4
   },
   {
    "id": "test:context-seed",
    "command": "pnpm run test:context-seed",
    "class": "RUNS_IN_CI",
    "wallSec": 5,
-   "group": 6
+   "group": 9
   },
   {
    "id": "test:session-budget",
    "command": "pnpm run test:session-budget",
    "class": "RUNS_IN_CI",
    "wallSec": 52,
-   "group": 11
+   "group": 7
   },
   {
    "id": "test:fanout-open",
    "command": "pnpm run test:fanout-open",
    "class": "RUNS_IN_CI",
    "wallSec": 8,
-   "group": 1
+   "group": 8
   },
   {
    "id": "test:fanout-open-mutants",
@@ -100,14 +100,14 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 35,
-   "group": 2
+   "group": 9
   },
   {
    "id": "test:fanout-followup",
    "command": "pnpm run test:fanout-followup",
    "class": "RUNS_IN_CI",
    "wallSec": 16,
-   "group": 11
+   "group": 10
   },
   {
    "id": "test:fanout-followup-mutants",
@@ -120,22 +120,20 @@
    "command": "pnpm run test:spec-sentence",
    "class": "RUNS_IN_CI",
    "wallSec": 10,
-   "group": 6
+   "group": 11
   },
   {
    "id": "test:spec-sentence-mutants",
    "command": "pnpm run test:spec-sentence-mutants",
-   "class": "RUNS_IN_CI",
-   "timeoutMin": 30,
-   "wallSec": 405,
-   "group": 11
+   "class": "LOCAL_ONLY",
+   "reason": "exit 1 on current master (#572): 'MUTANT 14 \"block: settled / decided findings still block\": anchor found 0× (needs exactly 1) — the bundle shape changed, fix the rig' (14/14 killed otherwise) — red on master, not env; passed on the previous master."
   },
   {
    "id": "test:fanout-closeout",
    "command": "pnpm run test:fanout-closeout",
    "class": "RUNS_IN_CI",
    "wallSec": 6,
-   "group": 12
+   "group": 1
   },
   {
    "id": "test:fanout-closeout-mutants",
@@ -143,7 +141,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 148,
-   "group": 7
+   "group": 1
   },
   {
    "id": "test:fanout-acceptance",
@@ -162,7 +160,7 @@
    "command": "pnpm run test:fanout-jest-config",
    "class": "RUNS_IN_CI",
    "wallSec": 6,
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:fanout-jest-config-mutants",
@@ -170,14 +168,14 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 149,
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:fanout-tree-verdict",
    "command": "pnpm run test:fanout-tree-verdict",
    "class": "RUNS_IN_CI",
    "wallSec": 19,
-   "group": 7
+   "group": 3
   },
   {
    "id": "test:fanout-tree-verdict-mutants",
@@ -192,7 +190,7 @@
    "command": "pnpm run test:fanout-switches",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 4
+   "group": 12
   },
   {
    "id": "test:fanout-switches-mutants",
@@ -205,7 +203,7 @@
    "command": "pnpm run test:fanout-checks",
    "class": "RUNS_IN_CI",
    "wallSec": 6,
-   "group": 11
+   "group": 12
   },
   {
    "id": "test:fanout-checks-mutants",
@@ -213,14 +211,14 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 368,
-   "group": 12
+   "group": 11
   },
   {
    "id": "test:acceptance-forced",
    "command": "pnpm run test:acceptance-forced",
    "class": "RUNS_IN_CI",
    "wallSec": 20,
-   "group": 12
+   "group": 1
   },
   {
    "id": "test:acceptance-forced-mutants",
@@ -235,7 +233,7 @@
    "command": "pnpm run test:harness-brief",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 9
+   "group": 1
   },
   {
    "id": "test:harness-brief-mutants",
@@ -243,14 +241,14 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 32,
-   "group": 4
+   "group": 3
   },
   {
    "id": "test:freeze-check",
    "command": "pnpm run test:freeze-check",
    "class": "RUNS_IN_CI",
    "wallSec": 17,
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:freeze-check-mutants",
@@ -265,7 +263,7 @@
    "command": "pnpm run test:harness-amend",
    "class": "RUNS_IN_CI",
    "wallSec": 8,
-   "group": 2
+   "group": 9
   },
   {
    "id": "test:harness-amend-mutants",
@@ -273,35 +271,35 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 342,
-   "group": 9
+   "group": 10
   },
   {
    "id": "test:role-guard-cli",
    "command": "pnpm run test:role-guard-cli",
    "class": "RUNS_IN_CI",
    "wallSec": 11,
-   "group": 8
+   "group": 4
   },
   {
    "id": "test:session-identity",
    "command": "pnpm run test:session-identity",
    "class": "RUNS_IN_CI",
    "wallSec": 16,
-   "group": 2
+   "group": 5
   },
   {
    "id": "test:pause-ui-render",
    "command": "pnpm run test:pause-ui-render",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:memcap-render",
    "command": "pnpm run test:memcap-render",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:memcap-shot",
@@ -314,21 +312,21 @@
    "command": "pnpm run test:memory-cap-row-render",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:memory-cap-row-shot",
    "command": "pnpm run test:memory-cap-row-shot",
    "class": "RUNS_IN_CI",
    "wallSec": 11,
-   "group": 7
+   "group": 9
   },
   {
    "id": "test:watchers-strip-render",
    "command": "pnpm run test:watchers-strip-render",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 2
+   "group": 3
   },
   {
    "id": "test:pause-ui-mutants",
@@ -348,7 +346,7 @@
    "command": "pnpm run test:migrate-transcripts",
    "class": "RUNS_IN_CI",
    "wallSec": 4,
-   "group": 8
+   "group": 11
   },
   {
    "id": "test:migrate-transcripts-mutants",
@@ -356,7 +354,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 19,
-   "group": 3
+   "group": 1
   },
   {
    "id": "test:pause-trap",
@@ -369,7 +367,7 @@
    "command": "pnpm run test:pause-reliquats",
    "class": "RUNS_IN_CI",
    "wallSec": 41,
-   "group": 7
+   "group": 12
   },
   {
    "id": "test:browser-reliquats",
@@ -382,7 +380,7 @@
    "command": "pnpm run test:browser-reliquats-shot",
    "class": "RUNS_IN_CI",
    "wallSec": 8,
-   "group": 4
+   "group": 6
   },
   {
    "id": "test:browser-reliquats-mutants",
@@ -402,7 +400,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 13,
-   "group": 8
+   "group": 3
   },
   {
    "id": "test:pause-trap-mutants",
@@ -421,7 +419,7 @@
    "command": "pnpm run test:admission-hold",
    "class": "RUNS_IN_CI",
    "wallSec": 20,
-   "group": 9
+   "group": 2
   },
   {
    "id": "test:admission-wake",
@@ -436,7 +434,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 28,
-   "group": 11
+   "group": 9
   },
   {
    "id": "test:mail-strangers-mutants",
@@ -444,14 +442,14 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 53,
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:old-channel-closed",
    "command": "pnpm run test:old-channel-closed",
    "class": "RUNS_IN_CI",
    "wallSec": 3,
-   "group": 8
+   "group": 5
   },
   {
    "id": "test:old-channel-closed-mutants",
@@ -459,7 +457,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 79,
-   "group": 5
+   "group": 10
   },
   {
    "id": "test:run-close-mutants",
@@ -492,7 +490,7 @@
    "command": "pnpm run test:reliquats-memory",
    "class": "RUNS_IN_CI",
    "wallSec": 30,
-   "group": 5
+   "group": 7
   },
   {
    "id": "test:reliquats-memory-mutants",
@@ -507,7 +505,7 @@
    "command": "pnpm run test:container-memory",
    "class": "RUNS_IN_CI",
    "wallSec": 58,
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:container-memory-mutants",
@@ -520,7 +518,7 @@
    "command": "pnpm run test:container-memory-shot",
    "class": "RUNS_IN_CI",
    "wallSec": 9,
-   "group": 3
+   "group": 2
   },
   {
    "id": "test:composed-night",
@@ -528,7 +526,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 51,
-   "group": 9
+   "group": 5
   },
   {
    "id": "test:plain-parent-mutants",
@@ -543,7 +541,7 @@
    "command": "pnpm run test:spawn-account-inherit",
    "class": "RUNS_IN_CI",
    "wallSec": 2,
-   "group": 12
+   "group": 7
   },
   {
    "id": "test:roles-position",
@@ -564,7 +562,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 97,
-   "group": 6
+   "group": 5
   },
   {
    "id": "test:attach-any-agent-mutants",
@@ -572,7 +570,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 300,
-   "group": 3
+   "group": 4
   },
   {
    "id": "test:composed-night-mutants",
@@ -599,7 +597,7 @@
    "timeoutMin": 30,
    "pre": "mkdir -p ~/.cache/pause-canary",
    "wallSec": 14,
-   "group": 5
+   "group": 8
   },
   {
    "id": "canary:memhog",
@@ -633,35 +631,35 @@
    "command": "pnpm run test:rewind",
    "class": "RUNS_IN_CI",
    "wallSec": 33,
-   "group": 9
+   "group": 4
   },
   {
    "id": "test:bloc-html-setting",
    "command": "pnpm run test:bloc-html-setting",
    "class": "RUNS_IN_CI",
    "wallSec": 89,
-   "group": 9
+   "group": 12
   },
   {
    "id": "test:bloc-html-instruction",
    "command": "pnpm run test:bloc-html-instruction",
    "class": "RUNS_IN_CI",
    "wallSec": 45,
-   "group": 8
+   "group": 7
   },
   {
    "id": "test:relance",
    "command": "pnpm run test:relance",
    "class": "RUNS_IN_CI",
    "wallSec": 162,
-   "group": 2
+   "group": 8
   },
   {
    "id": "test:handoff-cache",
    "command": "pnpm run test:handoff-cache",
    "class": "RUNS_IN_CI",
    "wallSec": 166,
-   "group": 8
+   "group": 10
   },
   {
    "id": "test:handoff-role",
@@ -683,35 +681,35 @@
    "class": "RUNS_IN_CI",
    "wallSec": 361,
    "timeoutMin": 15,
-   "group": 11
+   "group": 12
   },
   {
    "id": "test:inbox-redrive",
    "command": "pnpm run test:inbox-redrive",
    "class": "RUNS_IN_CI",
    "wallSec": 11,
-   "group": 10
+   "group": 11
   },
   {
    "id": "test:keeper-stop-semantics",
    "command": "pnpm run test:keeper-stop-semantics",
    "class": "RUNS_IN_CI",
    "wallSec": 10,
-   "group": 5
+   "group": 10
   },
   {
    "id": "test:keeper-facade-restart",
    "command": "pnpm run test:keeper-facade-restart",
    "class": "RUNS_IN_CI",
    "wallSec": 3,
-   "group": 7
+   "group": 4
   },
   {
    "id": "test:pinned-node",
    "command": "pnpm run test:pinned-node",
    "class": "RUNS_IN_CI",
    "wallSec": 39,
-   "group": 12
+   "group": 6
   },
   {
    "id": "test:pinned-node-mutants",
@@ -754,7 +752,7 @@
    "command": "pnpm run test:memory-cap-real-cli",
    "class": "RUNS_IN_CI",
    "wallSec": 2,
-   "group": 11
+   "group": 6
   },
   {
    "id": "test:memory-cap-mutants",
@@ -768,28 +766,28 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 20,
-   "group": 12
+   "group": 4
   },
   {
    "id": "test:pause-containers",
    "command": "pnpm run test:pause-containers",
    "class": "RUNS_IN_CI",
    "wallSec": 87,
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:hook-cost",
    "command": "pnpm run test:hook-cost",
    "class": "RUNS_IN_CI",
    "wallSec": 12,
-   "group": 10
+   "group": 6
   },
   {
    "id": "test:tool-lines",
    "command": "pnpm run test:tool-lines",
    "class": "RUNS_IN_CI",
    "wallSec": 30,
-   "group": 6
+   "group": 11
   },
   {
    "id": "test:bloc-html-chrome",
@@ -812,7 +810,7 @@
    "command": "pnpm run test:bloc-html",
    "class": "RUNS_IN_CI",
    "wallSec": 327,
-   "group": 7
+   "group": 8
   },
   {
    "id": "test:agent-view-removal",
@@ -820,14 +818,14 @@
    "class": "RUNS_IN_CI",
    "wallSec": 350,
    "timeoutMin": 15,
-   "group": 10
+   "group": 11
   },
   {
    "id": "test:sidebar-orca",
    "command": "pnpm run test:sidebar-orca",
    "class": "RUNS_IN_CI",
    "wallSec": 34,
-   "group": 11
+   "group": 2
   },
   {
    "id": "test:network-visibility-shot",
@@ -846,7 +844,7 @@
    "command": "pnpm run test:fixtures",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:command-output-mutants",
@@ -854,7 +852,7 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "wallSec": 6,
-   "group": 10
+   "group": 6
   },
   {
    "id": "test:command-output-e2e",
@@ -873,21 +871,21 @@
    "command": "pnpm run test:bus-wake-e2e",
    "class": "RUNS_IN_CI",
    "wallSec": 8,
-   "group": 11
+   "group": 3
   },
   {
    "id": "test:bus-contention",
    "command": "pnpm run test:bus-contention",
    "class": "RUNS_IN_CI",
    "wallSec": 2,
-   "group": 6
+   "group": 10
   },
   {
    "id": "test:bus-status",
    "command": "pnpm run test:bus-status",
    "class": "RUNS_IN_CI",
    "wallSec": 2,
-   "group": 10
+   "group": 11
   },
   {
    "id": "test:bus-pane",
@@ -900,21 +898,21 @@
    "command": "pnpm run test:bus-notice",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:reparent-notice",
    "command": "pnpm run test:reparent-notice",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:session-key-keeper",
    "command": "pnpm run test:session-key-keeper",
    "class": "RUNS_IN_CI",
    "wallSec": 6,
-   "group": 2
+   "group": 3
   },
   {
    "id": "test:session-identity-mutants",
@@ -941,14 +939,14 @@
    "command": "pnpm run test:native-manifest",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
-   "group": 4
+   "group": 5
   },
   {
    "id": "test:rig-selftest",
    "command": "pnpm run test:rig-selftest",
    "class": "RUNS_IN_CI",
    "wallSec": 47,
-   "group": 4
+   "group": 3
   },
   {
    "id": "test:fork-control",
@@ -973,14 +971,14 @@
    "command": "pnpm run test:release-gate",
    "class": "RUNS_IN_CI",
    "wallSec": 136,
-   "group": 5
+   "group": 7
   },
   {
    "id": "test:release-receipt",
    "command": "pnpm run test:release-receipt",
    "class": "RUNS_IN_CI",
    "wallSec": 74,
-   "group": 7
+   "group": 1
   },
   {
    "id": "test:release-receipt-mutants",
@@ -995,21 +993,21 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-acces-mobile.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 324,
-   "group": 6
+   "group": 7
   },
   {
    "id": "scripts/e2e-attach-any-agent.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-attach-any-agent.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 32,
-   "group": 3
+   "group": 10
   },
   {
    "id": "scripts/e2e-boot-heal-bound.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-boot-heal-bound.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 5,
-   "group": 3
+   "group": 7
   },
   {
    "id": "scripts/e2e-browser-cli-mutants.sh",
@@ -1028,14 +1026,14 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli-parity.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 98,
-   "group": 12
+   "group": 1
   },
   {
    "id": "scripts/e2e-browser-cli.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 64,
-   "group": 8
+   "group": 6
   },
   {
    "id": "scripts/e2e-browser-design-proxy-mutants.sh",
@@ -1050,14 +1048,14 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-design-proxy.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 42,
-   "group": 6
+   "group": 5
   },
   {
    "id": "scripts/e2e-browser-design-source.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-design-source.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 34,
-   "group": 5
+   "group": 1
   },
   {
    "id": "scripts/e2e-browser-hidden-drive.sh",
@@ -1079,35 +1077,35 @@
    "class": "RUNS_IN_CI",
    "wallSec": 337,
    "timeoutMin": 15,
-   "group": 8
+   "group": 9
   },
   {
    "id": "scripts/e2e-browser-tab-memory.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tab-memory.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 77,
-   "group": 12
+   "group": 2
   },
   {
    "id": "scripts/e2e-browser-tabs-registry.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tabs-registry.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 29,
-   "group": 2
+   "group": 12
   },
   {
    "id": "scripts/e2e-browser-tabs.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tabs.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 79,
-   "group": 2
+   "group": 4
   },
   {
    "id": "scripts/e2e-browser-whole-flow.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-whole-flow.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 47,
-   "group": 3
+   "group": 9
   },
   {
    "id": "scripts/e2e-bus-page-header.sh",
@@ -1120,7 +1118,7 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-container-budget.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 1
+   "group": 8
   },
   {
    "id": "scripts/e2e-cookie-fuse.sh",
@@ -1133,7 +1131,7 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-delete-resurrect.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 7,
-   "group": 9
+   "group": 12
   },
   {
    "id": "scripts/e2e-former-branch-drive.sh",
@@ -1146,14 +1144,14 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-former-branch.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 4,
-   "group": 7
+   "group": 10
   },
   {
    "id": "scripts/e2e-hibernate-wake.sh",
    "command": "bash scripts/e2e-hibernate-wake.sh",
    "class": "RUNS_IN_CI",
    "wallSec": 42,
-   "group": 10
+   "group": 11
   },
   {
    "id": "scripts/e2e-inherit-empty-boot.sh",
@@ -1166,14 +1164,14 @@
    "command": "node scripts/e2e-inherit-empty-no-prune.mjs all",
    "class": "RUNS_IN_CI",
    "wallSec": 11,
-   "group": 9
+   "group": 7
   },
   {
    "id": "scripts/e2e-keeper-lifecycle.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-keeper-lifecycle.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 127,
-   "group": 1
+   "group": 5
   },
   {
    "id": "scripts/e2e-keyring-mutants.mjs",
@@ -1192,7 +1190,7 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-memory-alert.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 255,
-   "group": 9
+   "group": 3
   },
   {
    "id": "scripts/e2e-memory-guard-modal.mjs",
@@ -1211,14 +1209,14 @@
    "command": "pnpm run build:bundles && bash scripts/e2e-migrate-parent-names.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 29,
-   "group": 10
+   "group": 6
   },
   {
    "id": "scripts/e2e-opening-task.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-opening-task.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 43,
-   "group": 1
+   "group": 8
   },
   {
    "id": "scripts/e2e-packaged-run-proof.sh",
@@ -1231,14 +1229,14 @@
    "command": "node scripts/ci/each-arm.mjs --expect-abort hang_selftest=\"deadline: the arm hung\" node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-pause-auto.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 110,
-   "group": 2
+   "group": 8
   },
   {
    "id": "scripts/e2e-pause-gates.mjs",
    "command": "node scripts/ci/each-arm.mjs --expect-abort hang_selftest=\"deadline: the arm hung\" node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-pause-gates.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 100,
-   "group": 5
+   "group": 2
   },
   {
    "id": "scripts/e2e-r1-repro.mjs",
@@ -1251,7 +1249,7 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-r2-repro.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 10,
-   "group": 12
+   "group": 7
   },
   {
    "id": "scripts/e2e-rename-authority.sh",
@@ -1264,21 +1262,21 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-resilient-watchers.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 58,
-   "group": 1
+   "group": 11
   },
   {
    "id": "scripts/e2e-rss-page-size.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-rss-page-size.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 21,
-   "group": 7
+   "group": 10
   },
   {
    "id": "scripts/e2e-session-wedge.sh",
    "command": "bash scripts/e2e-session-wedge.sh",
    "class": "RUNS_IN_CI",
    "wallSec": 31,
-   "group": 1
+   "group": 5
   },
   {
    "id": "scripts/e2e-spawn-name-human-paths.mjs",
@@ -1292,35 +1290,35 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-race.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 14,
-   "group": 6
+   "group": 12
   },
   {
    "id": "scripts/e2e-spawn-name.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-spawn-name.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 89,
-   "group": 11
+   "group": 6
   },
   {
    "id": "scripts/e2e-spawn-profile.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-spawn-profile.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "wallSec": 223,
-   "group": 10
+   "group": 9
   },
   {
    "id": "scripts/e2e-spawn-prompt-duplication.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-prompt-duplication.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 5,
-   "group": 5
+   "group": 8
   },
   {
    "id": "scripts/e2e-stop-before-move.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-stop-before-move.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 7,
-   "group": 4
+   "group": 1
   },
   {
    "id": "scripts/e2e-usage-resume-rig.sh",
@@ -1333,14 +1331,14 @@
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-verified-fanout-skill-install.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 1,
-   "group": 2
+   "group": 9
   },
   {
    "id": "scripts/e2e-browser-agent-tabs.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-agent-tabs.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "timeoutMin": 15,
-   "group": 5
+   "group": 6
   },
   {
    "id": "scripts/e2e-browser-popups-mutants.mjs",
@@ -1359,7 +1357,7 @@
    "command": "pnpm run build:bundles && node scripts/e2e-browser-tabs-mutants.mjs",
    "class": "RUNS_IN_CI",
    "timeoutMin": 15,
-   "group": 12
+   "group": 5
   },
   {
    "id": "scripts/e2e-composed-drive.sh",
@@ -1391,7 +1389,7 @@
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-failure.mjs",
    "class": "RUNS_IN_CI",
    "timeoutMin": 15,
-   "group": 4
+   "group": 12
   },
   {
    "id": "scripts/e2e-usage-resume-chain.mjs",
