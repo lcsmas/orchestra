@@ -343,7 +343,8 @@ test('MAJOR 1: A\'s re-run (in flight when B went red) finishes red AFTER the re
   const r = await w.pass();
   assert.equal(r.paused, false);
   assert.equal(w.wakes.length, 0, 'the environment is not told to an author');
-  assert.deepEqual(w.reruns.map((x) => x.n), [1, 2], 'B got its one re-run');
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 1, 2], 'A (its re-run was spent) and B each get ONE environment re-run');
+  w.script[1] = [red('unit', { jobId: 'A3' })];
   w.script[2] = [red('unit', { jobId: 'B2' })];
   assert.equal((await w.pass()).paused, true);
   assert.equal(w.wakes.length, 0);
@@ -363,7 +364,79 @@ test('MAJOR 1: the environment mark is forgotten once the check is green (a late
   w.push('A', sha('1'));
   w.script[1] = [red('unit', { jobId: 'n1' })];
   await w.pass();
-  assert.equal(w.wakes.length, 1, 'told: it is no longer the environment');
+  assert.equal(w.reruns.length, 3, 'its own re-run was never spent (the environment one does not count): a normal red gets it');
+  w.script[1] = [red('unit', { jobId: 'n2' })];
+  await w.pass();
+  assert.equal(w.wakes.length, 1, 'then told: it is no longer the environment');
+});
+
+test('MAJOR A: a ticket that spent its re-run BEFORE the pause is not stuck after the resume — environment re-run, then green (4 passes)', async () => {
+  const w = two();
+  w.script[1] = [red('unit', { jobId: 'A1' })];
+  await w.pass(); // A: its one re-run
+  w.script[2] = [red('unit', { jobId: 'B1' })];
+  assert.equal((await w.pass()).paused, true);
+  w.state = resumeRun(w.state, T);
+  w.script[1] = [red('unit', { jobId: 'A2' })]; // A's own re-run finished red (the environment was still broken)
+  await w.pass(); // A and B: environment re-run
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 1, 2]);
+  w.script[1] = [green('unit')]; // the environment was fixed
+  w.script[2] = [green('unit')];
+  for (let i = 0; i < 4; i++) { w.clock += 20 * 60_000; await w.pass(); }
+  assert.equal(w.wakes.length, 0);
+  assert.equal(w.state.tickets.A.ci?.env.length, 0);
+  assert.equal(w.state.tickets.A.ci?.flaky.length, 0, 'an environment re-run is not flaky');
+});
+
+test('MAJOR A: the environment re-run is spent once — if A stays red alone (not two PRs), the author is told, never stuck', async () => {
+  const w = two();
+  w.script[1] = [red('unit', { jobId: 'A1' })];
+  await w.pass();
+  w.script[2] = [red('unit', { jobId: 'B1' })];
+  await w.pass(); // pause
+  w.state = resumeRun(w.state, T);
+  w.script[1] = [red('unit', { jobId: 'A2' })];
+  await w.pass(); // env re-runs
+  w.script[1] = [red('unit', { jobId: 'A3', logExtract: 'FAIL real bug' })];
+  w.script[2] = [green('unit')];
+  for (let i = 0; i < 4; i++) { w.clock += 20 * 60_000; await w.pass(); }
+  assert.equal(w.wakes.length, 1);
+  assert.equal(w.wakes[0].ws, 'ws-A');
+  assert.equal(w.reruns.length, 3, 'no further re-run');
+});
+
+test('an environment re-run stands in for the ticket\'s own: red alone after it, the author is told, no second re-run', async () => {
+  const w = two();
+  w.script[1] = [red('unit', { jobId: 'A1' })];
+  w.script[2] = [red('unit', { jobId: 'B1' })];
+  await w.pass(); // pause, nobody re-run yet
+  w.state = resumeRun(w.state, T);
+  await w.pass(); // environment re-runs
+  assert.equal(w.reruns.length, 2);
+  w.script[1] = [red('unit', { jobId: 'A2', logExtract: 'FAIL real' })];
+  w.script[2] = [green('unit')];
+  await w.pass();
+  assert.equal(w.reruns.length, 2);
+  assert.equal(w.wakes.length, 1);
+});
+
+test('m6: B depends on A; A pushed its fix and is still pending (or green but unmerged): B\'s old red is not its own — no re-run spent, nobody told', async () => {
+  for (const upstream of [[pend('unit')], [green('unit')]]) {
+    const w = world({ tickets: [{ id: 'A', pr: 1, head: sha('a') }, { id: 'B', pr: 2, head: sha('b'), deps: ['A'] }] });
+    w.script[1] = upstream;
+    w.script[2] = [red('unit')];
+    await w.pass();
+    assert.equal(w.reruns.filter((x) => x.n === 2).length, upstream[0].status === 'green' ? 1 : 0, 'pending upstream: held; green upstream: B red is its own again');
+    assert.equal(w.wakes.length, 0);
+  }
+});
+
+test('m6: once the upstream is MERGED a dependent\'s red is its own again', async () => {
+  const w = world({ tickets: [{ id: 'A', pr: 1, head: sha('a') }, { id: 'B', pr: 2, head: sha('b'), deps: ['A'] }] });
+  w.state = { ...w.state, tickets: { ...w.state.tickets, A: { ...w.state.tickets.A, status: 'merged' } } };
+  w.script[2] = [red('unit')];
+  await w.pass();
+  assert.deepEqual(w.reruns.map((x) => x.n), [2]);
 });
 
 const stack = (): ReturnType<typeof world> => world({ tickets: [{ id: 'A', pr: 1, head: sha('a') }, { id: 'B', pr: 2, head: sha('b'), deps: ['A'] }, { id: 'C', pr: 3, head: sha('c'), deps: ['B'] }] });

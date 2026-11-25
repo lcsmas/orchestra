@@ -108,17 +108,22 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
   const rec = (id: string, head: string): CiRecord => recordOf(state.tickets[id], head);
 
   // 2. the environment: the same check red on ≥2 pull requests → pause, before ANY re-run or message (an author must not chase a fault that is not theirs).
-  const redOf = new Map(rows.map((r) => [r.id, new Set(r.checks.filter((c) => c.status === 'red').map((c) => c.name))]));
-  /** A red a transitive upstream shows too is that upstream's fault carried down (a connected stack): not the environment, and not its author's to chase. */
-  const inherited = (id: string, name: string): boolean => {
+  const checksOf = new Map(rows.map((r) => [r.id, r.checks]));
+  /** While a transitive upstream is neither merged nor settled green, a dependent's red is not its own (a connected stack carries the upstream's fault; a not-yet-connected one lacks its code): no pause count, no re-run spent, no author message. */
+  const carried = (id: string): boolean => {
     const seen = new Set<string>();
-    const walk = (x: string): boolean => (state.tickets[x]?.dependsOn ?? []).some((u) => !seen.has(u) && (seen.add(u), redOf.get(u)?.has(name) === true || walk(u)));
+    const walk = (x: string): boolean => (state.tickets[x]?.dependsOn ?? []).some((u) => {
+      if (seen.has(u)) return false;
+      seen.add(u);
+      const c = checksOf.get(u);
+      return (state.tickets[u]?.status !== 'merged' && !(c && ciStatus(c) === 'green')) || walk(u);
+    });
     return walk(id);
   };
   const byCheck = new Map<string, Array<{ id: string; pr: number }>>();
   for (const r of rows) {
     const rc0 = rec(r.id, r.head);
-    for (const c of r.checks) if (c.status === 'red' && !acknowledged(rc0, c, deps.now(), deps.options.rerunSettleMs ?? 0) && !inherited(r.id, c.name)) byCheck.set(c.name, [...(byCheck.get(c.name) ?? []), { id: r.id, pr: r.pr }]);
+    for (const c of r.checks) if (c.status === 'red' && !acknowledged(rc0, c, deps.now(), deps.options.rerunSettleMs ?? 0) && !carried(r.id)) byCheck.set(c.name, [...(byCheck.get(c.name) ?? []), { id: r.id, pr: r.pr }]);
   }
   const shared = [...byCheck.entries()].filter(([, v]) => v.length >= 2).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
   if (shared.length > 0) {
@@ -129,7 +134,7 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
       let n = pauseRun(s, { reason, check: name, prs }, deps.now());
       for (const [cn, v] of shared) for (const h of v) {
         const job = rows.find((x) => x.id === h.id)?.checks.find((c) => c.name === cn)?.jobId ?? null;
-        n = withCi(n, h.id, (x) => ({ ...x, env: [...x.env.filter((e) => e.name !== cn), { name: cn, job }] }), deps.now());
+        n = withCi(n, h.id, (x) => ({ ...x, env: [...x.env.filter((e) => e.name !== cn), { name: cn, job, reran: false }] }), deps.now());
       }
       return n;
     });
@@ -155,19 +160,32 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
     if (reds.length === 0) { // green: what a re-run turned green was flaky (unless the environment was blamed for it)
       const flaky = (rc.rerun?.names ?? []).filter((n) => !rc.env.some((e) => e.name === n) && !rc.flaky.includes(n));
       // a green closes the episode: what the author was told no longer counts against a later red on another head
-      if (flaky.length > 0 || rc.seen.length > 0 || Object.keys(rc.tells).length > 0) state = ctx.update((s) => withCi(s, id, (x) => ({ ...x, flaky: uniq([...x.flaky, ...flaky]), seen: [], tells: {} }), deps.now()));
+      if (flaky.length > 0 || rc.rerun !== null || rc.seen.length > 0 || Object.keys(rc.tells).length > 0) state = ctx.update((s) => withCi(s, id, (x) => ({ ...x, flaky: uniq([...x.flaky, ...flaky]), rerun: null, seen: [], tells: {} }), deps.now())); // the re-run is judged once
       if (flaky.length > 0) { res.flaky.push(...flaky.map((n) => `${id}:${n}`)); deps.log(`ci: ${id} #${r.pr}: ${flaky.join(', ')} green on the re-run — flaky`); }
       continue;
     }
     if (rc.told) continue; // the author has the red of THIS head; waiting for a fix
-    const own = reds.filter((c) => !inherited(id, c.name));
-    if (own.length === 0) { deps.log(`ci: ${id} #${r.pr}: red on ${reds.map((c) => c.name).join(', ')} like its upstream — waiting for it`); continue; }
+    if (carried(id)) { deps.log(`ci: ${id} #${r.pr}: red on ${reds.map((c) => c.name).join(', ')} while an upstream is not merged nor settled green — not its own, waiting`); continue; }
+    const own = reds;
 
     const names = own.map((c) => c.name).sort();
     // The ONE automatic re-run of the TICKET (never again, whatever the head) — recorded first, so a crash can never re-run twice.
     // Without a job id on every red a new run cannot be told from the old one: no re-run path (bounded), the author is told straight away.
     const canTell = own.every((c) => c.jobId) || (deps.options.rerunSettleMs ?? 0) > 0;
-    if (rc.reruns === 0 && canTell) {
+    // An environment red (marked at a pause) gets ONE more re-run once the run resumed — it never counts against the ticket's own re-run — so a ticket never sits on it without a next step.
+    const envOpen = own.filter((c) => rc.env.some((e) => e.name === c.name && !e.reran));
+    if (envOpen.length > 0) {
+      const en = envOpen.map((c) => c.name).sort();
+      const mark = (done: boolean) => (s0: CiState) => withCi(s0, id, (x) => ({ ...x, env: x.env.map((e) => (en.includes(e.name) ? { ...e, reran: done } : e)), ...(done && canTell ? { rerun: { at: deps.now(), names: en, jobs: Object.fromEntries(envOpen.filter((c) => c.jobId).map((c) => [c.name, c.jobId as string])) } } : {}) }), deps.now());
+      state = ctx.update(mark(true));
+      if (canTell) {
+        try { await deps.forge.rerun(r.pr, en); res.reran.push(id); deps.log(`ci: ${id} #${r.pr}: environment re-run ${en.join(', ')}`); }
+        catch (e) { deps.log(`ci: ${id} #${r.pr}: environment re-run failed (${(e as Error).message}) — retried next pass`); state = ctx.update(mark(false)); }
+        continue;
+      }
+    }
+    const envSpent = own.some((c) => rc.env.some((e) => e.name === c.name && e.reran));
+    if (rc.reruns === 0 && canTell && !envSpent) {
       const jobs: Record<string, string> = {};
       for (const c of own) if (c.jobId) jobs[c.name] = c.jobId;
       state = ctx.update((s) => withCi(s, id, (x) => ({ ...x, reruns: x.reruns + 1, rerun: { at: deps.now(), names, jobs } }), deps.now()));
@@ -177,8 +195,7 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
     }
     if (rc.reruns === 0) deps.log(`ci: ${id} #${r.pr}: no job id from the forge — no automatic re-run, the author is told`);
     // the environment (a check the run blamed at its pause) is waited out, not told
-    const tellReds = own.filter((c) => !rc.env.some((e) => e.name === c.name));
-    if (tellReds.length === 0) { deps.log(`ci: ${id} #${r.pr}: red on ${names.join(', ')} — the environment, waiting for it`); continue; }
+    const tellReds = own;
 
     // red again (after the re-run, or after an earlier fix): same failure as the one the author was told → park; else tell.
     const tellNames = tellReds.map((c) => c.name).sort();

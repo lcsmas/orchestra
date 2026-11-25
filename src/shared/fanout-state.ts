@@ -169,7 +169,7 @@ export interface CiRecord {
   tells: Record<string, number>;
   flaky: string[];
   /** reds the run blamed on the environment: the check and the job id of the run that was red (null = the forge gave none) */
-  env: Array<{ name: string; job: string | null }>;
+  env: Array<{ name: string; job: string | null; reran: boolean }>;
 }
 
 /** #588 (I3) — one brief sent to the ticket's reviewer: `kind` = first spawn / delta to the SAME live reviewer / a new reviewer after the old one died. `hash` = sha256 of `text`. */
@@ -689,10 +689,10 @@ function ciRecordOf(v: unknown, where: string): CiRecord {
   if (v.env !== undefined && !Array.isArray(v.env)) throw new FanoutStateError(`${at}.env must be an array`);
   const env = ((v.env ?? []) as unknown[]).map((e, i) => {
     if (!isObj(e)) throw new FanoutStateError(`${at}.env[${i}] must be an object`);
-    refuseUnknown(e, new Set(['name', 'job']), `${at}.env[${i}]`);
+    refuseUnknown(e, new Set(['name', 'job', 'reran']), `${at}.env[${i}]`);
     if (typeof e.name !== 'string' || !e.name.trim() || CTRL.test(e.name)) throw new FanoutStateError(`${at}.env[${i}].name must be a check name`);
     if (e.job !== null && (typeof e.job !== 'string' || !e.job)) throw new FanoutStateError(`${at}.env[${i}].job must be a job id or null`);
-    return { name: e.name, job: e.job as string | null };
+    return { name: e.name, job: e.job as string | null, reran: e.reran === true };
   });
   return { head: v.head, rerun, told, reruns: (v.reruns as number | undefined) ?? 0, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
 }
