@@ -1,8 +1,8 @@
 // #553 — `orchestra fanout closeout [--run <id>] [--json] [--file [--repo owner/name]]`: one ready-to-file ticket text per MEASURED, non-process MINOR of the vague.
 // READ-ONLY on the state. The default output is the list (for the ledger closing report) and NO tracker call; `--file` is the opt-in filing, best effort,
 // never changes the exit code and never gates anything (the run does not wait for it). The rule is `closeoutTexts` (src/shared/fanout-closeout.ts).
-import { FanoutStateError, stateFile, switchesOf } from '../shared/fanout-state.ts';
-import { closeoutTexts, demonstratedCloseout, renderCloseout, renderDemonstratedCloseout, type TicketText } from '../shared/fanout-closeout.ts';
+import { FanoutStateError, seatRecordsOn, stateFile, switchesOf } from '../shared/fanout-state.ts';
+import { closeoutTexts, decidedCloseout, demonstratedCloseout, renderCloseout, renderDecidedCloseout, renderDemonstratedCloseout, type TicketText } from '../shared/fanout-closeout.ts';
 import { homeOf, loadOrFail, parseArgs, runOf, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
 export const CLOSEOUT_USAGE = `       orchestra fanout closeout [--run <id>] [--json] [--file [--repo <owner/name>]]
@@ -26,7 +26,8 @@ function closeout(args: string[], deps: FanoutDeps): RunResult {
   const state = loadOrFail(stateFile(homeOf(deps.env), r.run));
   const res = closeoutTexts(state);
   const dem = switchesOf(state).minorPolicy === 'demonstrated' ? demonstratedCloseout(state) : null; // #572: only under that value — every other close-out is byte-identical
-  const out = p.bools.has('--json') ? `${JSON.stringify({ run: state.run, texts: res.texts, skipped: res.skipped, noEvidence: res.noEvidence, settledFixed: res.settledFixed, malformed: res.malformed, ...(dem ? { demonstrated: dem } : {}) }, null, 2)}\n` : renderCloseout(res, state.run) + (dem ? `\n${renderDemonstratedCloseout(dem)}` : '');
+  const decided = seatRecordsOn(state) ? decidedCloseout(state) : null; // #589: only under that switch — every other close-out is byte-identical
+  const out = p.bools.has('--json') ? `${JSON.stringify({ run: state.run, texts: res.texts, skipped: res.skipped, noEvidence: res.noEvidence, settledFixed: res.settledFixed, malformed: res.malformed, ...(dem ? { demonstrated: dem } : {}), ...(decided ? { decided } : {}) }, null, 2)}\n` : renderCloseout(res, state.run) + (dem ? `\n${renderDemonstratedCloseout(dem)}` : '') + (decided ? `\n${renderDecidedCloseout(decided)}` : '');
   if (!p.bools.has('--file')) return { code: 0, stdout: out, stderr: r.note };
   const repo = p.vals['--repo'] ?? state.repo ?? null;
   const lines = res.texts.map((t) => fileOne(t, repo, deps));

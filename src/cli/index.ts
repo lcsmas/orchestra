@@ -105,6 +105,9 @@ import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
+import { runRecord } from './fanout-record.ts';
+import { readState as readFanoutState, stateFile } from '../shared/fanout-state.ts';
+import { reviewerDoneRefusal } from '../shared/fanout-record.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -951,7 +954,17 @@ function busCtx(
           capMod.countCapabilityReject(db, runId ?? id.runId);
         }
       : undefined,
+    completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId) ?? (selfWorkspaceId() && selfWorkspaceId() !== sender ? fanoutCompletionRefusal(selfWorkspaceId()!, runId) : null), // #589: `--as <other handle>` does not shed the caller's own workspace
   };
+}
+
+/** #589 (seatRecords=on) — the fanout state of the run a completion is filed in names its sender as a recorded reviewer with no verdict on its head: the refusal text (it prints the command). Reads the state file; unreadable / absent / switch off = null (never blocks a worker_done it cannot judge). */
+export function fanoutCompletionRefusal(sender: string, runId: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
+    const state = readFanoutState(stateFile(home, runId));
+    return state ? reviewerDoneRefusal(state, sender) : null;
+  } catch { return null; }
 }
 
 /**
@@ -2473,8 +2486,10 @@ async function main(argv: string[]): Promise<void> {
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
       }
       // #588 — `fanout review` and `state set --run-decision` are the coordinator's, proven by the HOST (an env id is forgeable; src/shared/fanout-caller.ts): ask `/identity` once and hand the answer to the verb.
-      const needsCaller = args[0] === 'review' || (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision'));
+      // #589 — `fanout record` is the REVIEWER's: the same host proof, and a keyed session the host cannot vouch records nothing.
+      const needsCaller = args[0] === 'review' || args[0] === 'record' || (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision'));
       if (needsCaller) await settleHostIdentity();
+      if (args[0] === 'record' && process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session (is Orchestra running, and is this the live session of the reviewer?). Nothing was recorded.');
       const fanoutDeps: FanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8'), ...(needsCaller ? { identity: hostIdentity } : {}) };
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
       const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);
@@ -2484,7 +2499,7 @@ async function main(argv: string[]): Promise<void> {
           fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
         } catch { fanoutDeps.spawned = null; }
       }
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());
