@@ -205,6 +205,21 @@
    "reason": "exit 1 although '137/143 mutants killed, 0 survived, 6 refused' (6 refused mutants fail the rig on the runner)."
   },
   {
+   "id": "test:fanout-record",
+   "command": "pnpm run test:fanout-record",
+   "class": "RUNS_IN_CI",
+   "wallSec": 5,
+   "group": 12
+  },
+  {
+   "id": "test:fanout-record-mutants",
+   "command": "pnpm run test:fanout-record-mutants",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 30,
+   "wallSec": 30,
+   "group": 12
+  },
+  {
    "id": "test:fanout-checks",
    "command": "pnpm run test:fanout-checks",
    "class": "RUNS_IN_CI",
