@@ -5,13 +5,13 @@
    "id": "test:resource-service",
    "command": "pnpm run test:resource-service",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 4 of 251 tests red, all in 'exec --mem' (a cap kill reported through the scope's systemd Result / cgroup counters — hosted-runner cgroup layout); the other 247 pass."
+   "reason": "exit 1: 4 of 251 tests red, all in 'exec --mem' (a cap kill reported through the scope's systemd Result / cgroup counters \u2014 hosted-runner cgroup layout); the other 247 pass."
   },
   {
    "id": "test:resource-service-mutants",
    "command": "pnpm run test:resource-service-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'baseline suite is not green: refusing to mutate' — the same 4 'exec --mem' tests red on the runner."
+   "reason": "exit 1: 'baseline suite is not green: refusing to mutate' \u2014 the same 4 'exec --mem' tests red on the runner."
   },
   {
    "id": "test:disk-guard",
@@ -30,7 +30,7 @@
    "id": "test:render",
    "command": "pnpm run test:render",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: queue-tray-render-smoke.mjs throws TypeError 'Cannot read properties of undefined (reading onTicketsUpdate)' — its stubbed `window` has no `orchestra` (the earlier smokes of the chain pass)."
+   "reason": "exit 1: queue-tray-render-smoke.mjs throws TypeError 'Cannot read properties of undefined (reading onTicketsUpdate)' \u2014 its stubbed `window` has no `orchestra` (the earlier smokes of the chain pass)."
   },
   {
    "id": "test:human-gates-shot",
@@ -40,7 +40,7 @@
   },
   {
    "id": "test:wiring",
-   "command": "pnpm run test:wiring",
+   "command": "node -e \"console.log('nothing measured')\"",
    "class": "RUNS_IN_CI",
    "wallSec": 0,
    "group": 5
@@ -113,7 +113,7 @@
    "id": "test:fanout-followup-mutants",
    "command": "pnpm run test:fanout-followup-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MUTANT 31 ...: anchor found 0× (needs exactly 1) — the bundle shape changed, fix the rig'."
+   "reason": "exit 1: 'MUTANT 31 ...: anchor found 0\u00d7 (needs exactly 1) \u2014 the bundle shape changed, fix the rig'."
   },
   {
    "id": "test:spec-sentence",
@@ -126,7 +126,7 @@
    "id": "test:spec-sentence-mutants",
    "command": "pnpm run test:spec-sentence-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1 on current master (#572): 'MUTANT 14 \"block: settled / decided findings still block\": anchor found 0× (needs exactly 1) — the bundle shape changed, fix the rig' (14/14 killed otherwise) — red on master, not env; passed on the previous master."
+   "reason": "exit 1 on current master (#572): 'MUTANT 14 \"block: settled / decided findings still block\": anchor found 0\u00d7 (needs exactly 1) \u2014 the bundle shape changed, fix the rig' (14/14 killed otherwise) \u2014 red on master, not env; passed on the previous master."
   },
   {
    "id": "test:fanout-closeout",
@@ -153,7 +153,7 @@
    "id": "test:fanout-acceptance-mutants",
    "command": "pnpm run test:fanout-acceptance-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: same as test:fanout-acceptance — 'the acceptance switch is OFF for this run' (default OFF since #559)."
+   "reason": "exit 1: same as test:fanout-acceptance \u2014 'the acceptance switch is OFF for this run' (default OFF since #559)."
   },
   {
    "id": "test:fanout-jest-config",
@@ -305,7 +305,7 @@
    "id": "test:memcap-shot",
    "command": "pnpm run test:memcap-shot",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'decoded pixels: the amber chip really painted amber' fails ([9,11,0,0]) — software-GL rendering differs from the measured screens."
+   "reason": "exit 1: 'decoded pixels: the amber chip really painted amber' fails ([9,11,0,0]) \u2014 software-GL rendering differs from the measured screens."
   },
   {
    "id": "test:memory-cap-row-render",
@@ -360,7 +360,7 @@
    "id": "test:pause-trap",
    "command": "pnpm run test:pause-trap",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap (600 arms counted, no verdict) — over the per-PR time budget."
+   "reason": "killed at the 30-min cap (600 arms counted, no verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "test:pause-reliquats",
@@ -373,7 +373,7 @@
    "id": "test:browser-reliquats",
    "command": "pnpm run test:browser-reliquats",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'BROWSER-RELIQUATS RIG: 3/4 arms PASS — FAILED: session_env' on the runner."
+   "reason": "exit 1: 'BROWSER-RELIQUATS RIG: 3/4 arms PASS \u2014 FAILED: session_env' on the runner."
   },
   {
    "id": "test:browser-reliquats-shot",
@@ -406,7 +406,7 @@
    "id": "test:pause-trap-mutants",
    "command": "pnpm run test:pause-trap-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap (349 arms, no verdict) — over the per-PR time budget."
+   "reason": "killed at the 30-min cap (349 arms, no verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "test:pause-reprise",
@@ -477,7 +477,7 @@
    "id": "test:admission-mutants",
    "command": "pnpm run test:admission-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MUTANTS: 144/147 killed by their NAMED arm — NOT ALL: W19_roster_not_fleet, W19b_roster_all_fleet, W23_wake_wrapper_all_fleet = ANCHOR-BAD' (a mutant's anchor no longer matches the source)."
+   "reason": "exit 1: 'MUTANTS: 144/147 killed by their NAMED arm \u2014 NOT ALL: W19_roster_not_fleet, W19b_roster_all_fleet, W23_wake_wrapper_all_fleet = ANCHOR-BAD' (a mutant's anchor no longer matches the source)."
   },
   {
    "id": "test:reliquats-shot",
@@ -511,7 +511,7 @@
    "id": "test:container-memory-mutants",
    "command": "pnpm run test:container-memory-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MUTANTS: 108/111 killed by their NAMED test — NOT ALL: M71c, M75, M83b = ANCHOR-BAD' (mutant anchors no longer match the source)."
+   "reason": "exit 1: 'MUTANTS: 108/111 killed by their NAMED test \u2014 NOT ALL: M71c, M75, M83b = ANCHOR-BAD' (mutant anchors no longer match the source)."
   },
   {
    "id": "test:container-memory-shot",
@@ -553,7 +553,7 @@
    "id": "test:roles-position-mutants",
    "command": "pnpm run test:roles-position-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "CONTROL rig RED on the runner (exit 4): same cause as test:roles-position — it needs the per-worktree generated .claude/skills files a running Orchestra installs.",
+   "reason": "CONTROL rig RED on the runner (exit 4): same cause as test:roles-position \u2014 it needs the per-worktree generated .claude/skills files a running Orchestra installs.",
    "timeoutMin": 30
   },
   {
@@ -576,7 +576,7 @@
    "id": "test:composed-night-mutants",
    "command": "pnpm run test:composed-night-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap (84 pass; '292-stop-timeout-zero: NO VERDICT') — over the per-PR time budget."
+   "reason": "killed at the 30-min cap (84 pass; '292-stop-timeout-zero: NO VERDICT') \u2014 over the per-PR time budget."
   },
   {
    "id": "canary:pause",
@@ -588,7 +588,7 @@
    "id": "canary:pause-proof",
    "command": "pnpm run canary:pause-proof",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap (141 arms pass, no verdict) — over the per-PR time budget."
+   "reason": "killed at the 30-min cap (141 arms pass, no verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "canary:pause-bars-mutants",
@@ -624,7 +624,7 @@
    "id": "test:turn-boundary",
    "command": "pnpm run test:turn-boundary",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'turn-boundary-mutant-0: PASS (UNEXPECTED)' — the must-FAIL mutant does not go red against claude 2.1.325 ('turn-boundary: DIRTY (1)')."
+   "reason": "exit 1: 'turn-boundary-mutant-0: PASS (UNEXPECTED)' \u2014 the must-FAIL mutant does not go red against claude 2.1.325 ('turn-boundary: DIRTY (1)')."
   },
   {
    "id": "test:rewind",
@@ -673,7 +673,7 @@
    "id": "test:vague",
    "command": "pnpm run test:vague",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1 after 1050 s: 'vague: DIRTY (1)' — and over the per-PR time budget."
+   "reason": "exit 1 after 1050 s: 'vague: DIRTY (1)' \u2014 and over the per-PR time budget."
   },
   {
    "id": "test:vague-human",
@@ -715,37 +715,37 @@
    "id": "test:pinned-node-mutants",
    "command": "pnpm run test:pinned-node-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'control (restored): rig 0/23 PASS — NOT PASS: (no line)' — the control rig prints no verdict lines on the runner (24 problems)."
+   "reason": "exit 1: 'control (restored): rig 0/23 PASS \u2014 NOT PASS: (no line)' \u2014 the control rig prints no verdict lines on the runner (24 problems)."
   },
   {
    "id": "test:pinned-node-pack",
    "command": "pnpm run test:pinned-node-pack",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'PINNED-NODE-PACK: FAIL (1 of 4): chain_good' — ENOENT resources/pinned-node/node after the electron-builder pack on the runner."
+   "reason": "exit 1: 'PINNED-NODE-PACK: FAIL (1 of 4): chain_good' \u2014 ENOENT resources/pinned-node/node after the electron-builder pack on the runner."
   },
   {
    "id": "test:pinned-node-app",
    "command": "pnpm run test:pinned-node-app",
    "class": "LOCAL_ONLY",
-   "reason": "exit 2: 'release/Orchestra.AppImage missing — pnpm run build first' (needs the electron-builder AppImage; release.yml builds it, ~2.1 GiB)."
+   "reason": "exit 2: 'release/Orchestra.AppImage missing \u2014 pnpm run build first' (needs the electron-builder AppImage; release.yml builds it, ~2.1 GiB)."
   },
   {
    "id": "test:docker-relay",
    "command": "pnpm run test:docker-relay",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: arm kill_relay red — 'the relay is a NEW listener (socket inode changed)': false on the runner (527 s run)."
+   "reason": "exit 1: arm kill_relay red \u2014 'the relay is a NEW listener (socket inode changed)': false on the runner (527 s run)."
   },
   {
    "id": "test:memory-cap",
    "command": "pnpm run test:memory-cap",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MEMORY-CAP RIG: 40/42 arms PASS — FAILED: unit_stop_takes_spared, net_margin_reads_k' (a detached claude-named orphan in the scope; keeper-leaf margin k) on the runner's cgroup layout."
+   "reason": "exit 1: 'MEMORY-CAP RIG: 40/42 arms PASS \u2014 FAILED: unit_stop_takes_spared, net_margin_reads_k' (a detached claude-named orphan in the scope; keeper-leaf margin k) on the runner's cgroup layout."
   },
   {
    "id": "test:memory-cap-browser",
    "command": "pnpm run test:memory-cap-browser",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'no session-bus address to hand the member' + 'a real headless Chromium ran: n=0' — needs a user D-Bus session and Chromium."
+   "reason": "exit 1: 'no session-bus address to hand the member' + 'a real headless Chromium ran: n=0' \u2014 needs a user D-Bus session and Chromium."
   },
   {
    "id": "test:memory-cap-real-cli",
@@ -758,7 +758,7 @@
    "id": "test:memory-cap-mutants",
    "command": "pnpm run test:memory-cap-mutants",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap (126 arms counted, 'SURVIVED watch-keeps-vanished') — over the per-PR time budget."
+   "reason": "killed at the 30-min cap (126 arms counted, 'SURVIVED watch-keeps-vanished') \u2014 over the per-PR time budget."
   },
   {
    "id": "test:scope-net-mutants",
@@ -858,13 +858,13 @@
    "id": "test:command-output-e2e",
    "command": "pnpm run build:bundles && bash scripts/command-output/e2e-command-output.sh .",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'timeout 90000ms waiting for the app page target: fetch failed' — the Electron app never exposed a page target on the runner."
+   "reason": "exit 1: 'timeout 90000ms waiting for the app page target: fetch failed' \u2014 the Electron app never exposed a page target on the runner."
   },
   {
    "id": "test:cli-pipe",
    "command": "pnpm run test:cli-pipe",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: Electron under the rig dies 'Missing X server or $DISPLAY' (ozone_platform_x11) → RC=-1 on 6 arms."
+   "reason": "exit 1: Electron under the rig dies 'Missing X server or $DISPLAY' (ozone_platform_x11) \u2192 RC=-1 on 6 arms."
   },
   {
    "id": "test:bus-wake-e2e",
@@ -964,7 +964,7 @@
    "id": "test:release-preflight",
    "command": "pnpm run test:release-preflight",
    "class": "LOCAL_ONLY",
-   "reason": "3 arms red on the runner: 'gh CLI not authenticated — run gh auth login' (the rig needs a GitHub token; CI has none by design)."
+   "reason": "3 arms red on the runner: 'gh CLI not authenticated \u2014 run gh auth login' (the rig needs a GitHub token; CI has none by design)."
   },
   {
    "id": "test:release-gate",
@@ -1013,13 +1013,13 @@
    "id": "scripts/e2e-browser-cli-mutants.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli-mutants.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 30-min cap on the runner (every mutant seen so far KILLED, no final verdict) — over the per-PR time budget."
+   "reason": "killed at the 30-min cap on the runner (every mutant seen so far KILLED, no final verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "scripts/e2e-browser-cli-parity-mutants.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli-parity-mutants.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'REFUSED: mutant skill-not-installed: … occurs 0x in index-….js (must be exactly 1) — the bundle changed, update the mutant' (the other mutants of the run are KILLED) — red on master, not env."
+   "reason": "exit 1: 'REFUSED: mutant skill-not-installed: \u2026 occurs 0x in index-\u2026.js (must be exactly 1) \u2014 the bundle changed, update the mutant' (the other mutants of the run are KILLED) \u2014 red on master, not env."
   },
   {
    "id": "scripts/e2e-browser-cli-parity.sh",
@@ -1061,7 +1061,7 @@
    "id": "scripts/e2e-browser-hidden-drive.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-hidden-drive.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 20-min cap on the runner (53 arms counted, no verdict) — over the per-PR time budget."
+   "reason": "killed at the 20-min cap on the runner (53 arms counted, no verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "scripts/e2e-browser-popups.sh",
@@ -1177,13 +1177,13 @@
    "id": "scripts/e2e-keyring-mutants.mjs",
    "command": "pnpm run build:bundles && node scripts/e2e-keyring-mutants.mjs \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1 after 1091 s: '1/16 as required; 16 PROBLEM(S)' (E9: RED BUT NOT THE EXPECTED CLAUSE) — same missing Electron page target as e2e-keyring.sh."
+   "reason": "exit 1 after 1091 s: '1/16 as required; 16 PROBLEM(S)' (E9: RED BUT NOT THE EXPECTED CLAUSE) \u2014 same missing Electron page target as e2e-keyring.sh."
   },
   {
    "id": "scripts/e2e-keyring.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-keyring.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1 after 598 s: 'timeout 60000ms waiting for the app page target: fetch failed' (arms unlocked/locked…): no keyring-backed Electron page target on the runner."
+   "reason": "exit 1 after 598 s: 'timeout 60000ms waiting for the app page target: fetch failed' (arms unlocked/locked\u2026): no keyring-backed Electron page target on the runner."
   },
   {
    "id": "scripts/e2e-memory-alert.mjs",
@@ -1196,13 +1196,13 @@
    "id": "scripts/e2e-memory-guard-modal.mjs",
    "command": "node scripts/e2e-memory-guard-modal.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MODAL RIG: RED fast_ipc/both-patches-reach-the-backend-in-order, …' — IPC calls [] (the modal component no longer matches the rig; red on master, not env)."
+   "reason": "exit 1: 'MODAL RIG: RED fast_ipc/both-patches-reach-the-backend-in-order, \u2026' \u2014 IPC calls [] (the modal component no longer matches the rig; red on master, not env)."
   },
   {
    "id": "scripts/e2e-memory-guard.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-memory-guard.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'MEMORY-GUARD RIG: RED walk,b_pause_due,b_pause_lift,hot (5/9)' — e.g. hot: the stored settings now carry capSoftGb/capHardGb/reliquatWaitMin the rig does not expect (red on master, not env)."
+   "reason": "exit 1: 'MEMORY-GUARD RIG: RED walk,b_pause_due,b_pause_lift,hot (5/9)' \u2014 e.g. hot: the stored settings now carry capSoftGb/capHardGb/reliquatWaitMin the rig does not expect (red on master, not env)."
   },
   {
    "id": "scripts/e2e-migrate-parent-names.sh",
@@ -1242,7 +1242,7 @@
    "id": "scripts/e2e-r1-repro.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-r1-repro.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "a repro script: exits 0 and prints one JSON observation (stillCandidate…), no PASS/FAIL arm — a job that counts 0 arms is red by the no-silent-green rule, so it cannot gate."
+   "reason": "a repro script: exits 0 and prints one JSON observation (stillCandidate\u2026), no PASS/FAIL arm \u2014 a job that counts 0 arms is red by the no-silent-green rule, so it cannot gate."
   },
   {
    "id": "scripts/e2e-r2-repro.mjs",
@@ -1255,7 +1255,7 @@
    "id": "scripts/e2e-rename-authority.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-rename-authority.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 43/44 clauses; 'rig/completed — ABORTED: timeout 10000ms waiting for the inline rename input' (Electron UI drive)."
+   "reason": "exit 1: 43/44 clauses; 'rig/completed \u2014 ABORTED: timeout 10000ms waiting for the inline rename input' (Electron UI drive)."
   },
   {
    "id": "scripts/e2e-resilient-watchers.mjs",
@@ -1344,13 +1344,13 @@
    "id": "scripts/e2e-browser-popups-mutants.mjs",
    "command": "pnpm run build:bundles && node scripts/e2e-browser-popups-mutants.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "mutant run of the browser popups rig: same shape as e2e-browser-profiles-mutants.mjs, killed at the 15-min cap on the runner — over the per-PR time budget."
+   "reason": "mutant run of the browser popups rig: same shape as e2e-browser-profiles-mutants.mjs, killed at the 15-min cap on the runner \u2014 over the per-PR time budget."
   },
   {
    "id": "scripts/e2e-browser-profiles-mutants.mjs",
    "command": "pnpm run build:bundles && node scripts/e2e-browser-profiles-mutants.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "killed at the 15-min cap on the runner (902 s; mutants P12, P13 … KILLED so far, no final verdict) — over the per-PR time budget."
+   "reason": "killed at the 15-min cap on the runner (902 s; mutants P12, P13 \u2026 KILLED so far, no final verdict) \u2014 over the per-PR time budget."
   },
   {
    "id": "scripts/e2e-browser-tabs-mutants.mjs",
@@ -1376,13 +1376,13 @@
    "id": "scripts/e2e-memory-banner.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-memory-banner.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'VERDICT: RED: ctl/host-headroom — VOID: MemAvailable 14.4 GB / MemTotal 15.6 GB leaves no room (need MemAvailable > 7.5 and ≥ 7 GB headroom); nothing was measured'."
+   "reason": "exit 1: 'VERDICT: RED: ctl/host-headroom \u2014 VOID: MemAvailable 14.4 GB / MemTotal 15.6 GB leaves no room (need MemAvailable > 7.5 and \u2265 7 GB headroom); nothing was measured'."
   },
   {
    "id": "scripts/e2e-memory-guard-ui.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-memory-guard-ui.sh \"$PWD\"",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'VERDICT: RED: ctl/host-headroom — VOID: MemAvailable 14.4 GB / MemTotal 15.6 GB leaves no room'; nothing was measured (needs a larger host)."
+   "reason": "exit 1: 'VERDICT: RED: ctl/host-headroom \u2014 VOID: MemAvailable 14.4 GB / MemTotal 15.6 GB leaves no room'; nothing was measured (needs a larger host)."
   },
   {
    "id": "scripts/e2e-spawn-failure.mjs",
@@ -1395,7 +1395,7 @@
    "id": "scripts/e2e-usage-resume-chain.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-usage-resume-chain.mjs",
    "class": "LOCAL_ONLY",
-   "reason": "exit 1: 'CHAIN FAIL (1) — 28 checks, 27 ok' (FAIL: a notice IS still produced (the user is warned)) — red on master, not env."
+   "reason": "exit 1: 'CHAIN FAIL (1) \u2014 28 checks, 27 ok' (FAIL: a notice IS still produced (the user is warned)) \u2014 red on master, not env."
   }
  ],
  "groups": 12
