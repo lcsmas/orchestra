@@ -3,6 +3,7 @@
 //   plan submit <file|-> --run <id>                                       the PLAN AGENT: checks the plan, answers synchronously with the reasons
 // Exits as the other fanout verbs: 0 accepted · 2 refused (`[plan-…]` first; `[plan-refused-twice]` = the run does not start) · 1 usage / could not run.
 import fs from 'node:fs';
+import { TICKET_ID } from '../shared/fanout-plan.ts';
 import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stateFile } from '../shared/fanout-state.ts';
 import { readPlanSidecar, submitPlan, submitText } from '../shared/fanout-plan-host.ts';
 import { renderPlanBrief } from '../shared/fanout-plan-brief.ts';
@@ -15,7 +16,7 @@ export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [-
   The plan agent submits with \`plan submit\`: the CLI checks the file and answers at once. The plan file holds exactly {version, tickets[{id,title,spec,dependsOn}], interfaces{<depended-on ticket>: text with ≥1 \`exact name\`}}.
   Refused (exit 2, [name] …): [plan-free-text] · [plan-bad-json] · [plan-ticket-missing] · [plan-ticket-unknown] · [plan-duplicate-ticket] · [plan-cycle] · [plan-interface-missing] · [plan-interface-no-name] · [plan-bad-dependency]
   — the first refusal gives the agent the reasons and ONE more submission; the second is [plan-refused-twice]: loopPlan is NOT set, the verb exits 2, the run does not start.
-  Other refusals: [plan-caller] · [plan-not-requested] · [plan-closed] · [plan-tickets-changed] · [plan-agent-dead] · [plan-after-spawn] · [plan-apply-failed] · [seat-records-off]. After an accepted plan \`state set --run-decision\` is refused [decision-after-plan].`;
+  Other refusals: [plan-caller] · [plan-not-requested] · [plan-closed] · [plan-tickets-changed] · [plan-agent-dead] · [plan-after-spawn] · [plan-after-decision] · [plan-bad-ticket-id] · [plan-apply-failed] · [seat-records-off]. After an accepted plan \`state set --run-decision\` is refused [decision-after-plan].`;
 
 export interface PlanLoopOpts {
   /** Real-time pacing (tests hand a fake clock). */
@@ -41,6 +42,8 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]} (fanout plan takes --tickets, --run, --print, --timeout; the plan agent uses \`plan submit\`)`);
     const tickets = [...new Set((p.vals['--tickets'] ?? '').split(',').map((t) => t.trim()).filter(Boolean))];
     if (!tickets.length) throw new FanoutStateError(`--tickets <id,id,…> is required\n${PLAN_USAGE}`);
+    const badId = tickets.find((t) => !TICKET_ID.test(t));
+    if (badId !== undefined) throw new SeatRefusal('plan-bad-ticket-id', `${JSON.stringify(badId.slice(0, 40))} is not a ticket id (letters, digits, . _ # : -, at most 64): the plan agent's brief is rendered from ids, never from text`);
     const r = runOf(p, deps, 'use');
     if (p.bools.has('--print')) return { code: 0, stdout: `${renderPlanBrief(tickets, { run: r.run })}\n`, stderr: r.note };
     const file = stateFile(homeOf(deps.env), r.run);
@@ -64,6 +67,7 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
     for (;;) {
       const st = readState(file);
       if (st?.loopPlan) return accepted(st, note);
+      if (st?.planRefusal) return { code: 2, stdout: '', stderr: `${note}[${st.planRefusal.code}] the plan step ended without a plan (loopPlan not set) — the run does not start: ${st.planRefusal.detail}\n` }; // the state remembers it, whatever happened to the record
       const sc = readPlanSidecar(homeOf(deps.env), r.run);
       if (sc?.outcome === 'refused-twice') {
         const last = sc.attempts[sc.attempts.length - 1];

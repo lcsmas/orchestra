@@ -9,7 +9,7 @@ export const PLAN_TITLE_MAX = 120;
 export const PLAN_SPEC_MAX = 500;
 export const PLAN_IFACE_MAX = 20_000;
 /** Same shape as the state's ticket id (fanout-state.ts SAFE_TICKET): what a plan may name a ticket. */
-const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
+export const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL_LINE = /[\x00-\x1f\x7f]/;
 const CTRL_TEXT = /[\x00-\x08\x0b-\x1f\x7f]/;
 
@@ -74,10 +74,24 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
   return { plan: { version: PLAN_VERSION, tickets, interfaces: Object.fromEntries(ifaceEntries) }, reasons };
 }
 
-/** The exact names an interface text holds: the backticked spans that carry a letter or digit (`orders.status`, `POST /orders`, `OrderCreated`). A span of one character, or of punctuation only, is not a name. */
+export const NAME_MAX = 80;
+const HTTP_METHOD = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/;
+/** Placeholders and filler that are one token but no name. */
+const NOT_A_NAME = new Set(['it', 'this', 'that', 'the', 'thing', 'things', 'stuff', 'todo', 'tbd', 'tba', 'fixme', 'wip', 'none', 'na', 'n/a', 'name', 'names', 'foo', 'bar', 'baz', 'xxx', 'etc']);
+/** A name is ONE token — an identifier / column / route / event (`orders.status`, `OrderCreated`, `/orders/:id`) — or `METHOD /path` (`POST /orders`): ≤ 80 chars, a letter in it, not a placeholder. A span of words is a sentence, not a name. */
+export function isExactName(span: string): boolean {
+  const n = span.trim();
+  if (n.length < 2 || n.length > NAME_MAX || !/[A-Za-z]/.test(n) || CTRL_LINE.test(n)) return false;
+  if (NOT_A_NAME.has(n.toLowerCase())) return false;
+  const parts = n.split(/\s+/);
+  if (parts.length === 1) return true;
+  return parts.length === 2 && HTTP_METHOD.test(parts[0]) && parts[1].startsWith('/');
+}
+
+/** The exact names an interface text holds: its backticked spans that pass {@link isExactName}. Prose around the names is allowed; a backticked sentence is not a name. */
 export function interfaceNames(text: string): string[] {
   const out: string[] = [];
-  for (const m of text.matchAll(/`([^`\n]{2,200})`/g)) { const n = m[1].trim(); if (n.length >= 2 && /[A-Za-z0-9]/.test(n)) out.push(n); }
+  for (const m of text.matchAll(/`([^`\n]{2,200})`/g)) if (isExactName(m[1])) out.push(m[1].trim());
   return out;
 }
 
@@ -92,6 +106,7 @@ export function parsePlan(raw: unknown): Plan {
 export function checkPlan(plan: Plan, ticketIds: string[]): { ok: boolean; reasons: PlanReason[] } {
   const reasons: PlanReason[] = [];
   const want = [...new Set(ticketIds)];
+  if (!plan.tickets.length) reasons.push({ code: 'plan-ticket-missing', detail: 'the plan holds no ticket' });
   const seen = new Map<string, number>();
   for (const t of plan.tickets) seen.set(t.id, (seen.get(t.id) ?? 0) + 1);
   for (const [id, n] of seen) if (n > 1) reasons.push({ code: 'plan-duplicate-ticket', detail: `ticket ${id} appears ${n} times` });
@@ -109,7 +124,7 @@ export function checkPlan(plan: Plan, ticketIds: string[]): { ok: boolean; reaso
   for (const d of depended) {
     const text = Object.hasOwn(plan.interfaces, d) ? plan.interfaces[d] : undefined; // a ticket named `constructor` is not an inherited member
     if (text === undefined || !text.trim()) reasons.push({ code: 'plan-interface-missing', detail: `${d} is depended on by ${plan.tickets.filter((t) => t.dependsOn.includes(d)).map((t) => t.id).join(', ')} and has no interface — add interfaces.${d}` });
-    else if (!interfaceNames(text).length) reasons.push({ code: 'plan-interface-no-name', detail: `interfaces.${d} holds no exact name in backticks (\`orders.status\`, \`POST /orders\`, \`OrderCreated\`): "${short(text.trim())}"` });
+    else if (!interfaceNames(text).length) reasons.push({ code: 'plan-interface-no-name', detail: `interfaces.${d} holds no exact name in backticks — ONE token or \`METHOD /path\` (\`orders.status\`, \`POST /orders\`, \`OrderCreated\`), at most ${NAME_MAX} chars: "${short(text.trim())}"` });
   }
   return { ok: reasons.length === 0, reasons };
 }
@@ -151,6 +166,8 @@ export function applyPlan(state: FanoutState, plan: Plan, now: string, attempts 
     if (state.loopPlan.hash === hash) return state;
     throw new SeatRefusal('plan-already-applied', `run ${state.run} already holds the plan of the loop (${state.loopPlan.at}, ${state.loopPlan.hash.slice(0, 12)}) — a plan is applied once`);
   }
+  if (state.decisions?.length) throw new SeatRefusal('plan-after-decision', `run ${state.run} already holds ${state.decisions.length} run decision(s): they ride in every brief verbatim, and no order may exist next to a plan of the loop — start from a state with none`);
+  if (state.planRefusal) throw new SeatRefusal(state.planRefusal.code, `the plan step of run ${state.run} ended (${state.planRefusal.at}): ${state.planRefusal.detail}`);
   const locked = switchesLockedWhy(stampDefaults(state)); // the plan is declared BEFORE the first spawn: after it, the tickets' seats, dependencies and interfaces are in use
   if (locked) throw new SeatRefusal('plan-after-spawn', `run ${state.run} already spawned (${locked}) — the plan of the loop is written before the first spawn`);
   const ids = plan.tickets.map((t) => t.id);

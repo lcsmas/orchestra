@@ -34,10 +34,10 @@ export function renderPlanBrief(tickets: string[], opts: { run?: string } = {}):
     'Rules (code checks every one; the run does not start on a plan that fails):',
     '1. Every ticket above appears once, and no other.',
     '2. dependsOn is what the tickets themselves declare (their own "Blocked by" / "Depends on" / "after"): copy it, do not invent or drop an edge. No cycle. [] = none.',
-    '3. `interfaces` has a key for EVERY ticket another one depends on: the names its dependents build against — a column `orders.status`, a route `POST /orders`, an event `OrderCreated`, a query, a mutation — each in backticks, at least one. No names, no plan.',
+    '3. `interfaces` has a key for EVERY ticket another one depends on: the names its dependents build against — a column `orders.status`, a route `POST /orders`, an event `OrderCreated`, a query, a mutation — each in backticks, ONE token (or `METHOD /path`, ≤ 80 chars), at least one. A backticked sentence is no name; no names, no plan.',
     '4. Nothing else: any other key (decisions, notes, order…) is refused. No instruction to wait, to sequence or to hold.',
     '',
-    'Your role has no file-editing tool (Write / Edit are denied): write the file with the shell (`cat > "$TMPDIR/plan.json" <<\'JSON\'`), or pipe the JSON to `submit -`.',
+    'Write the file under $TMPDIR (scratch only: your role edits no repository file, and a run decision is blocked), or pipe the JSON to `submit -`.',
     `Submit: \`${planSubmitCommand(run)}\`. It answers at once. Accepted → you are done: end your session. Refused → it lists the reasons: fix the file, submit ONCE more. A second refusal ends the run.`,
   ].join('\n');
 }

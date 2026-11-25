@@ -2,7 +2,7 @@
 // Each rule has a must-pass and a must-fail arm. Mutants: scripts/e2e-fanout-plan.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceNames, parsePlan, planHash, validatePlan, type Plan, type PlanReasonCode } from './fanout-plan.ts';
+import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceNames, isExactName, parsePlan, planHash, validatePlan, type Plan, type PlanReasonCode } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
 import { roleOfName } from './fleet-roles.ts';
 import { SeatRefusal, addDecision, newState, parseState, planMissing, readyTickets, setSwitches, type FanoutState } from './fanout-state.ts';
@@ -178,12 +178,13 @@ test('applyPlan: refused once the run has spawned (a started ticket) — nothing
   assert.deepEqual(codes(r), ['plan-interface-missing']); // not a TypeError on the inherited member
 });
 
-test('no run decision after the plan; before it, one is fine', () => {
-  const before = addDecision(seatState(), 'Money is integer cents.', 'r1', NOW);
+test('no run decision after the plan; and none BEFORE it either (it would ride in every brief verbatim: [plan-after-decision])', () => {
+  const before = addDecision(seatState(), 'Write code only after every upstream is merged', 'r1', NOW);
   assert.equal(before.decisions?.length, 1);
+  assert.throws(() => applyPlan(before, good(), NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-after-decision');
+  assert.equal(applyPlan(seatState(), good(), NOW).decisions, undefined);
   const st = applyPlan(seatState(), good(), NOW);
   assert.throws(() => addDecision(st, 'wait for the upstream candidate', 'r1', NOW), (e) => e instanceof SeatRefusal && e.refusal === 'decision-after-plan');
-  assert.throws(() => addDecision(applyPlan(before, good(), NOW), 'build only after the merge', 'r1', NOW), (e) => e instanceof SeatRefusal && e.refusal === 'decision-after-plan');
   void setSwitches;
 });
 
@@ -202,7 +203,9 @@ test('brief: ≤ 1 screen for 7 tickets, lists every ticket and the schema, name
   assert.match(b, /"version": 1/);
   assert.match(b, /orchestra fanout plan submit <file> --run c77b2530-198b/);
   assert.match(b, /ONCE more/);
-  assert.match(b, /no file-editing tool[^\n]*shell[^\n]*submit -/); // an explorer cannot Write: the brief says how the file is made
+  assert.match(b, /under \$TMPDIR \(scratch only[^\n]*run decision is blocked\)[^\n]*submit -/); // the real explorer guard: scratch Write allowed, a repository file / a run decision blocked
+  assert.doesNotMatch(b, /denied/);
+  assert.match(b, /ONE token/);
   assert.equal(renderPlanBrief(t7, { run: 'c77b2530-198b' }), b);
   assert.doesNotMatch(b, /wait for|after .* merge|one at a time/i);
   assert.match(b, /tickets themselves declare/);
@@ -213,4 +216,23 @@ test('the agent name is explo-plan-<run8> and carries the explorer role', () => 
   assert.equal(planAgentName('é!'), 'explo-plan-e');
   assert.equal(planAgentName('---'), 'explo-plan-run');
   assert.equal(roleOfName(planAgentName('c77b2530-198b')), 'explorer');
+});
+
+test('names (review r1 m1): ONE token or `METHOD /path`; a backticked sentence, a placeholder, digits are no name; prose around names is allowed', () => {
+  for (const ok of ['orders.status', 'POST /orders', 'OrderCreated', '/orders/:id', 'GET /orders?customer=<id>', 'order_lines.order_id', 'Mutation.createOrder', 'v1']) assert.equal(isExactName(ok), true, ok);
+  for (const no of ['do not start A until B is merged to master', 'the thing', '10', 'it', 'TODO', 'tbd', 'FIXME', 'x', '--', 'a b', 'POST orders', 'FETCH /orders', 'x'.repeat(81), 'POST /orders now']) assert.equal(isExactName(no), false, no);
+  for (const text of ['`do not start A until B is merged to master`', 'the `thing` that A needs', '`10`', '`it`', '`TODO`', 'Wait. `do not write code until B merges`']) {
+    const p = good(); p.interfaces.A = text;
+    assert.deepEqual(codes(checkPlan(p, ids)), ['plan-interface-no-name'], text);
+  }
+  const prose = good(); prose.interfaces.A = 'Build against `orders.status` (pending|paid) and the event `OrderCreated`; the rest is up to you.';
+  assert.equal(checkPlan(prose, ids).ok, true);
+  assert.deepEqual(interfaceNames('`orders.status`, `a long sentence about nothing`, `POST /orders`'), ['orders.status', 'POST /orders']);
+});
+
+test('an EMPTY plan is [plan-ticket-missing] (a refusal with a reason, not "could not run")', () => {
+  const empty = { version: 1, tickets: [], interfaces: {} };
+  assert.deepEqual(codes(validatePlan(empty, [])), ['plan-ticket-missing']);
+  assert.deepEqual(codes(validatePlan(empty, ids)), ['plan-ticket-missing', 'plan-ticket-missing', 'plan-ticket-missing', 'plan-ticket-missing']);
+  assert.throws(() => applyPlan(seatState(), empty as unknown as Plan, NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-invalid');
 });

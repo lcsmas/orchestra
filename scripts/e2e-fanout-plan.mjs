@@ -54,9 +54,6 @@ const mutants = [
   ['check: an interface keyed on an unknown ticket is accepted', P, "for (const k of Object.keys(plan.interfaces)) if (!known.has(k)) reasons.push", "for (const k of Object.keys(plan.interfaces)) if (false as boolean) reasons.push"],
   ['check: a depended-on ticket with no interface is accepted', P, "if (text === undefined || !text.trim()) reasons.push", "if (text === undefined && false as boolean) reasons.push"],
   ['check: an interface with no name in backticks is accepted', P, "else if (!interfaceNames(text).length) reasons.push", "else if (false as boolean) reasons.push"],
-  ['check: punctuation in backticks is a name', P, "if (n.length >= 2 && /[A-Za-z0-9]/.test(n)) out.push(n);", "if (n.length >= 2) out.push(n);"],
-  ['check: a one-character span is a name', P, "if (n.length >= 2 && /[A-Za-z0-9]/.test(n)) out.push(n);", "if (/[A-Za-z0-9]/.test(n)) out.push(n);"],
-  ['check: unbalanced / empty backticks are a name', P, "text.matchAll(/`([^`\\n]{2,200})`/g)", "text.matchAll(/`([^`\\n]*)`/g)"],
   ['check: a free-text key at the top of the plan is accepted', P, "if (!['version', 'tickets', 'interfaces'].includes(k)) free(", "if (false as boolean) free("],
   ['check: a free-text key on a ticket is accepted', P, "if (!['id', 'title', 'spec', 'dependsOn'].includes(k)) free(", "if (false as boolean) free("],
   ['check: a title of any length is accepted', P, "else if (t.title.length > PLAN_TITLE_MAX || CTRL_LINE.test(t.title)) free(", "else if (false as boolean) free("],
@@ -83,6 +80,26 @@ const mutants = [
   ['apply: a plan is applied to a run that already spawned', P, "if (locked) throw new SeatRefusal('plan-after-spawn'", "if (false as boolean) throw new SeatRefusal('plan-after-spawn'"],
   ['check: an inherited member name reads as an interface (TypeError)', P, "const text = Object.hasOwn(plan.interfaces, d) ? plan.interfaces[d] : undefined;", "const text = plan.interfaces[d];"],
   ['host: applyPlanText ignores a bad shape', PH, "try { ids = parsePlan(i.text).tickets.map((t) => t.id); } catch (e) { if (e instanceof PlanError) return { ok: false, reasons: e.reasons }; throw e; }", "ids = [];"],
+  ['check: punctuation / digits in backticks is a name', P, "|| !/[A-Za-z]/.test(n) || CTRL_LINE.test(n)) return false;", "|| CTRL_LINE.test(n)) return false;"],
+  ['check: a one-character span is a name', P, "if (n.length < 2 || n.length > NAME_MAX", "if (n.length < 1 || n.length > NAME_MAX"],
+  ['check: a name may be of any length', P, "n.length > NAME_MAX ||", ""],
+  ['check: a placeholder (TODO, it, thing) is a name', P, "if (NOT_A_NAME.has(n.toLowerCase())) return false;", ""],
+  ['check: a sentence in backticks is a name', P, "return parts.length === 2 && HTTP_METHOD.test(parts[0]) && parts[1].startsWith('/');", "return true;"],
+  ['check: any two words are a name (not METHOD /path)', P, "return parts.length === 2 && HTTP_METHOD.test(parts[0]) && parts[1].startsWith('/');", "return parts.length === 2;"],
+  ['check: the METHOD is not checked', P, "return parts.length === 2 && HTTP_METHOD.test(parts[0]) && parts[1].startsWith('/');", "return parts.length === 2 && parts[1].startsWith('/');"],
+  ['check: an empty plan is ok', P, "if (!plan.tickets.length) reasons.push({ code: 'plan-ticket-missing'", "if (false as boolean) reasons.push({ code: 'plan-ticket-missing'"],
+  ['apply: a decision written before the plan survives it', P, "if (state.decisions?.length) throw new SeatRefusal('plan-after-decision'", "if (false as boolean) throw new SeatRefusal('plan-after-decision'"],
+  ['apply: a remembered refusal does not stop a plan', P, "if (state.planRefusal) throw new SeatRefusal(state.planRefusal.code", "if (false as boolean) throw new SeatRefusal('plan-invalid'"],
+  ['start: `fanout start` ignores a plan step that ended without a plan', 'src/shared/fanout-start.ts', "if (state.planRefusal) return new SeatRefusal(", "if (false as boolean) return new SeatRefusal("],
+  ['state: the final refusal is not remembered', PH, "return final ? { ...cur, planRefusal:", "return false ? { ...cur, planRefusal:"],
+  ['state: an unrecordable plan is not remembered', PH, "return { ...cur, planRefusal: { at: i.now, code: 'plan-apply-failed', detail: msg }, updatedAt: i.now };", "return cur;"],
+  ['submit: the remembered refusal is not read (deleting the record reopens the step)', PH, "if (cur.planRefusal) throw new SeatRefusal(cur.planRefusal.code, `the plan step of run ${run} ended", "if (false as boolean) throw new SeatRefusal(cur.planRefusal.code, `the plan step of run ${run} ended"],
+  ['host: the remembered refusal is not read (a new agent is spawned)', PH, "if (cur.planRefusal) { early = refusal(", "if (false as boolean) { early = refusal("],
+  ['submit: an apply failure is swallowed (the agent is told nothing)', PH, "if (failure) throw failure;", "void failure;"],
+  ['cli: the remembered refusal is not seen by the verb', C, "if (st?.planRefusal) return { code: 2,", "if (false as boolean) return { code: 2,"],
+  ['M1: the host renders text from a ticket "id"', PH, "const badId = tickets.find((t) => !TICKET_ID.test(t));", "const badId = undefined as string | undefined;"],
+  ['M1: the verb renders text from a ticket "id"', C, "const badId = tickets.find((t) => !TICKET_ID.test(t));", "const badId = undefined as string | undefined;"],
+  ['brief: it does not say a name is ONE token', PB, "each in backticks, ONE token (or `METHOD /path`, ≤ 80 chars), at least one. A backticked sentence is no name; no names, no plan.", "each in backticks, at least one. No names, no plan."],
   // the submit
   ['submit: a second refusal does not end the run', PH, "const final = n >= PLAN_MAX_SUBMISSIONS;", "const final = n >= 99;"],
   ['submit: the first refusal ends the run (no second try)', PH, "export const PLAN_MAX_SUBMISSIONS = 2;", "export const PLAN_MAX_SUBMISSIONS = 1;"],
@@ -123,7 +140,7 @@ const mutants = [
   ['brief: a ticket is not listed', PB, "...tickets.map((id) => `- ${id}`),", "...tickets.slice(1).map((id) => `- ${id}`),"],
   ['brief: it does not say to copy the tickets\' own dependencies', PB, "dependsOn is what the tickets themselves declare", "dependsOn is what you think best"],
   ['brief: it does not name the submit command with the run', PB, "return `orchestra fanout plan submit <file> --run ${run}`;", "return `orchestra fanout plan submit <file>`;"],
-  ['brief: it does not tell an explorer how to write the file', PB, "'Your role has no file-editing tool (Write / Edit are denied): write the file with the shell", "'Write the file"],
+  ['brief: it does not tell an explorer how to write the file', PB, "'Write the file under $TMPDIR (scratch only: your role edits no repository file", "'Write the file"],
   ['brief: it does not tell the agent to submit once more', PB, "Refused → it lists the reasons: fix the file, submit ONCE more. A second refusal ends the run.", "Refused → it lists the reasons."],
   // the verb
   ['cli: the caller is the bare env id', C, "const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id (index.ts), never the bare env", "const caller = (deps.vouchedCaller ?? deps.env.ORCHESTRA_WS_ID ?? '').trim();", true],
@@ -147,7 +164,7 @@ function only_and_main() {
   const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
   build();
   const base = run([...UNIT, ...CLI_TEST]);
-  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 44 && base.pass === base.tests;
+  const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 51 && base.pass === base.tests;
   console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
   if (!baseOk) { console.log(base.out.split('\n').filter((l) => /^not ok|error:/.test(l)).slice(0, 12).join('\n')); process.exit(1); }
   if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }

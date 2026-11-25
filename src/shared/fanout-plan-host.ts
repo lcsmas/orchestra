@@ -3,7 +3,7 @@
 // step has to remember (which agent, how many submissions) lives in `fanout/<run>/plan-agent.json`, written under the state lock.
 import fs from 'node:fs';
 import path from 'node:path';
-import { applyPlan, parsePlan, planHash, validatePlan, PlanError, type PlanReason } from './fanout-plan.ts';
+import { TICKET_ID, applyPlan, parsePlan, planHash, validatePlan, PlanError, type PlanReason } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
 import { FanoutStateError, SeatRefusal, assertRunId, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
 
@@ -58,11 +58,13 @@ export function submitPlan(i: { home: string; run: string; text: string; caller:
   const run = assertRunId(i.run);
   if (i.text.length > PLAN_FILE_MAX) throw new FanoutStateError(`the plan file is over ${PLAN_FILE_MAX} bytes`);
   let result: SubmitResult | null = null;
+  let failure: unknown = null;
   const accepted: { sc: PlanSidecar | null } = { sc: null };
   updateState(stateFile(i.home, run), (cur) => {
     if (!cur) throw new FanoutStateError(`no fanout state for run ${run} — run \`orchestra fanout state init\` first`);
     const sc = readPlanSidecar(i.home, run);
     if (cur.loopPlan) throw new SeatRefusal('plan-closed', `the plan of run ${run} was accepted (${cur.loopPlan.at}): you are done — end your session`);
+    if (cur.planRefusal) throw new SeatRefusal(cur.planRefusal.code, `the plan step of run ${run} ended (${cur.planRefusal.at}): ${cur.planRefusal.detail}`); // the state remembers it: deleting the plan record reopens nothing
     if (!sc) throw new SeatRefusal('plan-not-requested', `run ${run} has no plan request (the coordinator asks for one with \`orchestra fanout plan --tickets <id,…>\`)`);
     if (sc.outcome === 'refused-twice') throw new SeatRefusal('plan-refused-twice', `the plan of run ${run} was refused twice — the run does not start; nothing more is accepted`);
     if (sc.outcome === 'failed') throw new SeatRefusal('plan-apply-failed', `the plan of run ${run} could not be recorded: ${sc.failure ?? 'unknown'}`);
@@ -74,7 +76,8 @@ export function submitPlan(i: { home: string; run: string; text: string; caller:
       try { next = applyPlan(cur, v.plan, i.now, n); } catch (e) { // a plan that passed the check but cannot be recorded (seat-records-off, plan-after-spawn, a pre-declared interface…): not a refusal of the plan, the step ENDS and the coordinator is told
         const msg = e instanceof Error ? e.message : String(e);
         writePlanSidecar(i.home, run, { ...sc, outcome: 'failed', failure: msg });
-        throw e;
+        failure = e;
+        return { ...cur, planRefusal: { at: i.now, code: 'plan-apply-failed', detail: msg }, updatedAt: i.now };
       }
       accepted.sc = sc; // the sidecar says `accepted` only AFTER the state write below succeeded (the state is the truth)
       result = { kind: 'accepted', attempts: n, hash: planHash(v.plan), tickets: v.plan.tickets.length };
@@ -83,8 +86,9 @@ export function submitPlan(i: { home: string; run: string; text: string; caller:
     const final = n >= PLAN_MAX_SUBMISSIONS;
     writePlanSidecar(i.home, run, { ...sc, attempts: [...sc.attempts, { at: i.now, ok: false, reasons: v.reasons }], outcome: final ? 'refused-twice' : 'open' });
     result = { kind: 'refused', attempt: n, final, reasons: v.reasons };
-    return cur;
+    return final ? { ...cur, planRefusal: { at: i.now, code: 'plan-refused-twice', detail: `refused twice — ${v.reasons.map((r) => `[${r.code}] ${r.detail}`).join('; ').slice(0, 1500)}` }, updatedAt: i.now } : cur;
   });
+  if (failure) throw failure; // after the state remembered it
   if (accepted.sc) writePlanSidecar(i.home, run, { ...accepted.sc, attempts: [...accepted.sc.attempts, { at: i.now, ok: true, reasons: [] }], outcome: 'accepted' });
   return result!;
 }
@@ -142,6 +146,8 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
     const caller = str(input.from);
     if (!caller || caller !== run || !deps.vouches || !deps.vouches(caller, str(input.key))) return refusal('plan-caller', `only the run's coordinator (${run}) asks for its plan${caller && caller !== run ? `, not ${caller}` : ' — the host could not vouch this session'}`);
     const tickets = Array.isArray(input.tickets) ? [...new Set((input.tickets as unknown[]).filter((t): t is string => typeof t === 'string').map((t) => t.trim()).filter(Boolean))] : [];
+    const badId = tickets.find((t) => !TICKET_ID.test(t));
+    if (badId !== undefined) return refusal('plan-bad-ticket-id', `${JSON.stringify(badId.slice(0, 40))} is not a ticket id (letters, digits, . _ # : -, at most 64): the brief is rendered from ids, never from text`);
     if (!tickets.length) return refusal('plan-no-tickets', 'name the run\'s tickets: orchestra fanout plan --tickets <id,id,…>');
     const file = stateFile(deps.home, run);
     const live = deps.isLive ?? deps.isWorkspace;
@@ -156,6 +162,7 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
       if (!cur) throw new FanoutStateError(`no fanout state for run ${run}`);
       if (!seatRecordsOn(cur)) { early = refusal('seat-records-off', `run ${run} has seatRecords=off: the plan step is a seatRecords rule (state init --switch seatRecords=on)`); return cur; }
       if (cur.loopPlan) { adopted = { action: 'accepted', id: null }; return cur; }
+      if (cur.planRefusal) { early = refusal(cur.planRefusal.code, `the plan step of run ${run} ended (${cur.planRefusal.at}): ${cur.planRefusal.detail}`); return cur; }
       const locked = switchesLockedWhy(stampDefaults(cur));
       if (locked) { early = refusal('plan-after-spawn', `run ${run} already spawned (${locked}) — the plan of the loop is written before the first spawn`); return cur; }
       repo = cur.repo;
