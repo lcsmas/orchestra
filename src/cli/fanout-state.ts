@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FanoutStateError,
+  SeatRefusal,
   SETTABLE_KEYS,
   SPEC_SENTENCE_LIMIT,
   SPEC_TEXT_MAX,
@@ -22,7 +23,11 @@ import {
   reconcile,
   resolveFanoutRun,
   setHarness,
+  setPlan,
   setSwitches,
+  seatRecordsOn,
+  planMissing,
+  readyTickets,
   stateFile,
   switchesLine,
   switchesOf,
@@ -139,6 +144,16 @@ The vague's execution state: <ORCHESTRA_HOME>/fanout/<run>/state.json (one write
            Accepted gap: a run that set no switch persists no freeze record, so a ticket moved back to todo (nothing recorded, no child) lets a switch change again; a real spawned child still refuses it (host check + recorded implementer).
            Choose them BEFORE the first spawn (\`state init --switch …\` or \`state set --switch …\`): an agent spawned by hand and not yet recorded in the state is not seen by the freeze.
   --run defaults to YOUR OWN run (your workspace id; init always); show/resume use your parent's run only when you have no state and it does; set needs your own state or --run (#486).`;
+
+/** #587 — the seatRecords verbs, in their own help (`orchestra fanout seat-help`): the main usage stays byte-identical for a run that does not use them. */
+export const SEAT_USAGE = `seatRecords (#585/#587) — switch \`state set --switch seatRecords=on\` (off by default, frozen at the first spawn). On: the plan and the interfaces are declared BEFORE the first spawn.
+  orchestra fanout state set --plan <id,id,…> [--run <id>]        declare the run's ticket list (before the first spawn; --plan-add <id,…> appends, also after it)
+  orchestra fanout state set <ticket> --depends-on a,b|none       declare the dependencies (none = declared empty)
+  orchestra fanout state set <ticket> --interface <text|file|-> [--interface-reason <text>]   the names the dependents use (columns, queries, mutations, events): v1 needs no reason, a change is a new version and needs one; blank refused
+  orchestra fanout state set <ticket> --follows <up>=<version>[,…]   the interface version a dependent built on (a nomination on an older one is refused with the reason of the change)
+  Refused with exit 2, the message starting with its name: [plan-incomplete] (first spawn and --status started|nominated|gated: lists the plan tickets absent from the state, the tickets with no declared dependencies,
+  the depended-on tickets with no interface) · [interface-blank] · [interface-reason-missing] · [interface-stale] · [interface-unfollowed] · [follows-invalid] · [plan-frozen] · [seat-records-off].
+  \`state show\` then lists the plan, the interfaces and the tickets that are ready (todo, not started).`;
 
 const SHA_ARG = /^[0-9a-f]{7,40}$/;
 const TREE_OUT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -296,8 +311,10 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
     if (!sub || sub === '--help' || sub === '-h') return { code: sub ? 0 : 1, stdout: sub ? `${FANOUT_USAGE}\n` : '', stderr: sub ? '' : `${FANOUT_USAGE}\n` };
     if (sub === 'state') return runState(rest, deps);
     if (sub === 'resume') return runResume(rest, deps);
+    if (sub === 'seat-help') return { code: 0, stdout: `${SEAT_USAGE}\n`, stderr: '' };
     return { code: 1, stdout: '', stderr: `unknown fanout verb "${sub}"\n${FANOUT_USAGE}\n` };
   } catch (e) {
+    if (e instanceof SeatRefusal) return { code: 2, stdout: '', stderr: `${e.message}\n` }; // #587: a seatRecords refusal exits 2
     if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };
     throw e;
   }
@@ -318,7 +335,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     return { code: 0, stdout: `initialised ${file}\n`, stderr: initNote, ...(p.vals['--switch'] !== undefined ? { hostCalls: [skillsCall(run, deps)] } : {}) };
   }
   if (verb === 'set') {
-    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--spec-text', '--finding-json', '--settle', '--decide', '--implementer', '--verifier', '--json', '--harness', '--switch'], []);
+    const p = parseArgs(rest, ['--run', '--status', '--branch', '--pr', '--head', '--verdict', '--depends-on', '--built-on', '--frozen-interface', '--accept-merged', '--finding', '--follow-up-of', '--fixes', '--forget-merge', '--spec', '--spec-text', '--finding-json', '--settle', '--decide', '--implementer', '--verifier', '--json', '--harness', '--switch', '--plan', '--plan-add', '--interface', '--interface-reason', '--follows'], []);
     const [ticket, ...extra] = p.pos;
     if (p.vals['--switch'] !== undefined) {
       // #554 — run-level: the switches (no ticket, no other flag); refused once the run has spawned
@@ -332,6 +349,19 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
         return setSwitches(cur, assign, deps.now());
       });
       return { code: 0, stdout: `${switchesLine(snext)}\n`, stderr: sr.note + spawnNote, hostCalls: [skillsCall(sr.run, deps)] };
+    }
+    if (p.vals['--plan'] !== undefined || p.vals['--plan-add'] !== undefined) {
+      // #587 — run-level: the ticket list (no ticket, no other flag); the rules are refused under seatRecords=off
+      if (ticket || (p.vals['--plan'] !== undefined && p.vals['--plan-add'] !== undefined) || Object.keys(p.vals).some((k) => k !== '--plan' && k !== '--plan-add' && k !== '--run')) throw new FanoutStateError('--plan is run-level: `orchestra fanout state set --plan <id,id,…> | --plan-add <id,…> [--run <id>]` takes no ticket and no other flag');
+      const mode = p.vals['--plan'] !== undefined ? 'declare' : 'add';
+      const ids = (p.vals['--plan'] ?? p.vals['--plan-add'] as string).split(',').map((x) => x.trim()).filter(Boolean);
+      const pr = runOf(p, deps, 'write');
+      const pfile = stateFile(homeOf(deps.env), pr.run);
+      const pnext = updateState(pfile, (cur) => {
+        if (!cur) throw new FanoutStateError(`no state at ${pfile} — run \`orchestra fanout state init\` first`);
+        return setPlan(cur, ids, mode, deps.now());
+      });
+      return { code: 0, stdout: `plan (#587): ${pnext.plan!.tickets.join(', ')}\n`, stderr: pr.note };
     }
     if (p.vals['--harness'] !== undefined) {
       // #538 — run-level: the declared integration harness (no ticket); `-` clears it
@@ -359,6 +389,9 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (v === undefined) continue;
       patch[key] = key === 'pr' ? (/^[0-9]+$/.test(v) ? Number(v) : NaN) : key === 'dependsOn' || key === 'fixes' ? v.split(',').map((x) => x.trim()).filter(Boolean) : key === 'findings' ? findingsArg(v) : key === 'builtOn' ? builtOnArg(v) : v;
     }
+    if (p.vals['--interface'] !== undefined) patch.interface = readInterface(p.vals['--interface'], deps);
+    if (p.vals['--interface-reason'] !== undefined) patch.interfaceReason = p.vals['--interface-reason'];
+    if (p.vals['--follows'] !== undefined) patch.follows = followsArg(p.vals['--follows']);
     if (p.vals['--finding-json'] !== undefined) {
       const text = p.vals['--finding-json'] === '-' ? deps.readStdin() : p.vals['--finding-json'];
       let obj: unknown;
@@ -381,6 +414,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const before = readState(file);
     const repo = before?.repo ?? null;
+    if (before && seatRecordsOn(before) && p.vals['--depends-on']?.trim().toLowerCase() === 'none') patch.dependsOn = []; // #587: `--depends-on none` = declared empty (under off `none` stays a ticket id, as before)
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
       if (!derived.tree) notes.push(`note: the tree of head ${patch.head.slice(0, 8)} is unreadable (not fetched? gh?): its verdict stays keyed on the sha, not the content\n`);
@@ -417,7 +451,7 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (t.acceptance && t.spec && late.length) hostCalls.push({ route: '/fanoutAcceptance', body: { op: 'frozen', run: r.run, ticket, to: [...new Set(late)], ...(deps.env.ORCHESTRA_WS_ID ? { from: deps.env.ORCHESTRA_WS_ID } : {}) } });
     // an unspecified ticket will be refused by `deliver` (acceptance-pending): say so now, not at merge time (#515 review M3)
     const notice = accOn && acceptancePhase(t) === 'unspecified' && t.status !== 'merged' && t.status !== 'dropped' ? `note: ${ticket} has no --spec, nothing frozen and no waiver: \`fanout deliver\` will refuse it (acceptance-pending) — register --spec <ref> (Orchestra spawns its test writer), \`fanout acceptance waive ${ticket} --decision <ledger comment> --reason …\`, or deliver with --no-acceptance-gate\n` : '';
-    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t, effectiveSpec(next, t))}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
+    return { code: 0, stdout: `${ticket}: ${t.status} verdict=${t.verdict} branch=${t.branch ?? '-'} pr=${t.pr ?? '-'} head=${t.head?.slice(0, 8) ?? '-'}${t.tree ? ` tree=${t.tree.slice(0, 8)}` : ''}${t.followUpOf ? ` follow-up-of=${t.followUpOf} fixes=${t.fixes.join(',')}` : ''}${t.specText !== null ? ` spec-text=${t.specText.length}ch` : ''}${t.iface ? ` interface=v${t.iface.version}` : ''}${t.follows && Object.keys(t.follows).length ? ` follows=${Object.entries(t.follows).map(([u, v]) => `${u}@v${v}`).join(',')}` : ''}${Object.keys(t.findings).length ? ` findings=${Object.entries(t.findings).map(([k, v]) => `${k}:${v.severity}${findingTags(v, t, effectiveSpec(next, t))}`).join(',')}` : ''}\n`, stderr: `${r.note}${notes.join('')}${notice}`, ...(hostCalls.length ? { hostCalls } : {}) };
   }
   if (verb === 'show') {
     const p = parseArgs(rest, ['--run'], ['--json']);
@@ -434,9 +468,36 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     const acc = acceptanceOn(s) ? Object.entries(s.tickets).map(([id, t]) => acceptanceLine(id, t)).filter((l): l is string => l !== null) : [];
     const chk = switchesOf(s).preNominationChecks === 'on' ? Object.entries(s.tickets).filter(([, t]) => t.status !== 'merged' && t.status !== 'dropped').map(([id, t]) => checksLine(id, t)) : [];
     const dem = switchesOf(s).minorPolicy === 'demonstrated' ? demonstratedShow(s) : '';
-    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${dem}${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
+    return { code: 0, stdout: `run ${s.run} → ${s.repo ? `${s.repo} ` : ''}origin/${s.target}  (updated ${s.updatedAt}${s.reconciledAt ? `, reconciled ${s.reconciledAt}` : ''})\n${switchesLine(s)}\n${harnessLine}${[fmt(head), ...rows.map(fmt)].join('\n')}\n${seatRecordsOn(s) ? seatShow(s) : ''}${dem}${chk.length ? `pre-nomination checks (#564):\n${chk.map((l) => `  ${l}`).join('\n')}\n` : ''}${acc.length ? `acceptance (#515):\n${acc.map((l) => `  ${l}`).join('\n')}\n` : ''}`, stderr: r.note };
   }
   throw new FanoutStateError(`usage: orchestra fanout state init|set|show\n${FANOUT_USAGE}`);
+}
+
+/** `--follows up=2,other=1` → {up: 2, other: 1}. */
+function followsArg(v: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const part of v.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = /^([^=]+)=(\d+)$/.exec(part);
+    if (!m) throw new FanoutStateError(`--follows expects <upstream>=<interface version>[,…] (got ${JSON.stringify(part)})`);
+    out[m[1]] = Number(m[2]);
+  }
+  if (Object.keys(out).length === 0) throw new FanoutStateError('--follows expects <upstream>=<interface version>[,…]');
+  return out;
+}
+/** `--interface <text|file|->`: `-` = stdin, an existing regular file = its content, anything else = the text itself (blank stays blank: the state refuses it). */
+function readInterface(v: string, deps: FanoutDeps): string {
+  if (v === '-') return deps.readStdin();
+  if (v.trim() && !v.includes('\n')) {
+    try { const abs = path.resolve(deps.cwd, v); const st = fs.statSync(abs); if (st.isFile() && st.size <= 100_000) return fs.readFileSync(abs, 'utf8'); } catch { /* not a file: the text itself */ }
+  }
+  return v;
+}
+/** #587 — `state show` under seatRecords=on: the plan (declared / what is missing), each interface with its version, the tickets ready to start. */
+export function seatShow(s: FanoutState): string {
+  const missing = planMissing(s);
+  const ifs = Object.entries(s.tickets).filter(([, t]) => t.iface).map(([id, t]) => `${id} v${t.iface!.version}${t.iface!.history.length ? ` (${t.iface!.history.length} change${t.iface!.history.length > 1 ? 's' : ''})` : ''}`);
+  const ready = readyTickets(s);
+  return `plan (#587): ${s.plan ? `${s.plan.tickets.join(', ')} (declared ${s.plan.declaredAt})` : 'not declared'} — ${missing.length ? `INCOMPLETE, ${missing.length} missing: ${missing.join('; ')}` : 'complete'}\n${ifs.length ? `interfaces (#587): ${ifs.join(' · ')}\n` : ''}ready (todo, not started): ${ready.length ? ready.join(', ') : missing.length ? 'none — the plan is incomplete' : 'none'}\n`;
 }
 
 /** #572 — `state show` under minorPolicy=demonstrated: per ticket the OPEN demonstrated findings (they block gate + deliver), then the demonstrations code refused (recorded with the reason). Empty text = nothing to say. */
