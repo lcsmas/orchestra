@@ -1,0 +1,60 @@
+name: setup
+description: pnpm + Node 22 (the suite needs --experimental-strip-types) + frozen install + the runner prep the rigs assume (#568)
+inputs:
+  bus-abi:
+    description: run `pnpm run build:bus-abi` (the suite and every bus rig read build/bus-abi/*-abi127.node)
+    default: 'true'
+  bundles:
+    description: run `pnpm run build:bundles` (rigs read dist/ and dist-electron/* and refuse a stale or absent bundle)
+    default: 'false'
+  desktop:
+    description: 'The desktop stack the Electron / session rigs drive: headless sway, bubblewrap, nvim, the claude CLI (against the rigs LOCAL FAKE API, no token and no account), the pinned agent-browser'
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        cache: pnpm
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Runner prep (what a developer machine has and a hosted runner lacks)
+      shell: bash
+      run: |
+        # Rigs resolve `node` on /usr/local/bin:/usr/bin:/bin: the image's own node (ABI 137) is first, setup-node's 22 is not on that PATH at all.
+        for b in node npm npx pnpm; do p="$(command -v $b || true)"; [ -n "$p" ] && for d in /usr/local/bin /usr/bin; do sudo ln -sf "$p" $d/$b; done; done
+        git config --global user.name ci
+        git config --global user.email ci@example.invalid
+        git config --global init.defaultBranch master
+        # the "live" dirs/files a developer machine has: the rigs' scratch guards classify ~/.claude and ~/.local/bin as live only when they exist, and the
+        # "live config byte-equal" clause compares nothing (= red) when there is no file.
+        mkdir -p ~/.cache ~/.claude ~/.local/bin ~/.config ~/.orchestra ~/.cache/orchestra-test ~/.cache/pause-canary ~/.cache/pause-trap ~/.cache/session-budget
+        [ -f ~/.claude/settings.json ] || echo '{}' > ~/.claude/settings.json
+        [ -f ~/.claude.json ] || echo '{}' > ~/.claude.json
+        # Ubuntu 24.04 runners forbid unprivileged user namespaces (bwrap / unshare rigs report VOID otherwise).
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null || echo "::warning::could not relax apparmor_restrict_unprivileged_userns"
+    - name: Desktop stack (sway, bwrap, nvim, xwayland, keyring, Electron libs)
+      if: inputs.desktop != ''
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends sway grim bubblewrap xvfb dbus-x11 neovim xwayland gnome-keyring libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libxtst6 libatk-bridge2.0-0t64 libcups2t64 libxkbcommon0
+    - name: claude CLI + pinned agent-browser
+      if: inputs.desktop != ''
+      shell: bash
+      run: |
+        sudo npm install -g @anthropic-ai/claude-code@2.1.325
+        ln -sf "$(command -v claude)" ~/.local/bin/claude
+        claude --version
+        pnpm run fetch:agent-browser
+    - name: Build better-sqlite3 for node (abi 127) and Electron (abi 130)
+      if: inputs.bus-abi == 'true'
+      shell: bash
+      run: pnpm run build:bus-abi
+    - name: Build the bundles
+      if: inputs.bundles == 'true'
+      shell: bash
+      run: pnpm run build:bundles

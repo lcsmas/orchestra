@@ -100,16 +100,16 @@ test('verifier: the stamp names a non-default switch only (a default run keeps t
 
 // ── the skill ────────────────────────────────────────────────────────────────────────────────────────────
 
-/** What master rendered (sha256, computed from the master tree before this change): `on` must be byte-identical. */
-const MASTER_DEFAULT = { skill: '9292fc7a4561e3f501a024cc8330153da134a7a22ca3d81e4971c521abb6e8d3', refs: {
+/** What master rendered (sha256; re-pinned by #568, which changed the verifier-on CI sentence of SKILL.md + verifier-and-review.md only): `on` must be byte-identical. */
+const MASTER_DEFAULT = { skill: '3a47e6670dbb150eb06d5824bf6968a59b13a4a4d165174072adc0530d9ea600', refs: {
   'references/acceptance-tests.md': 'f8cdec046e92091d0cc3dc5dd7adcfd8640a8bb505eed68946fe024ce82efdd8',
   'references/budget-and-gates.md': 'f181c77bbc2c5e47b80982ec098cb9e4fb01d5b46cd8b8c66527a261bd97dbe7',
   'references/closeout-and-gates.md': 'f4d7f7a7b0c3013d36590a0364a84128757b0b5346b9fe64b1c1d5a2dcae45c7',
   'references/fleet-bus.md': 'bf6aa4ba306934656d9a88f30bc8b8ab149067e3bc612eeb1e2ba9ab60d2606a',
   'references/lead-ops-tiers.md': '268ff1e15fd4450415e764218ae37cac817f704bb193e2f89b776cce67df766b',
-  'references/verifier-and-review.md': 'd6f9e0fcd2b5f2e0ca244fbc31c38d2152a547d9ff29054b66938779c88efff0',
+  'references/verifier-and-review.md': '4d5535bf76b2f11f850c0caaf1c11232ab50a5c8d9f942a4ae2f6b7809d57d0c',
 } as Record<string, string> };
-const MASTER_ALL_ON = { skill: '2b7ed8dd33184ffbdbf939d00a3826f874986229eb9eb5ab615f7aa06e3253e6', verifierAndReview: '530fb0662a317327d11db370123bd9b327ec74defc1a846b8c35ad83af4d74ce' };
+const MASTER_ALL_ON = { skill: 'cc58eeb1cd446517d38e43e31ef161d2a65fee1bbab9d9a12e80106970149344', verifierAndReview: '249bd05cdd4636b34c5ee0034f647b8d56a6bbfeba5c009b099b03c17b5beff8' };
 
 test('verifier=on must-PASS: the default render and every reference are BYTE-IDENTICAL to master (and so is the all-features-on render)', () => {
   assert.equal(sha(renderVerifiedFanoutSkill({})), MASTER_DEFAULT.skill);
