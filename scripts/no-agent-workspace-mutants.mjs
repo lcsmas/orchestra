@@ -22,7 +22,7 @@ const MUTANTS = [
   { name: 'pause-not-read', why: 'deliver / open / gate stop reading the run\'s Pause (C5)', file: 'cli', from: '  if (!text) return null;\n  const r = pausedVerbResult', to: '  return null;\n  const r = pausedVerbResult', red: ['c5/paused/open-refused', 'c5/paused/gate-refused', 'c5/paused/deliver-refused'] },
   { name: 'merged-open-to-all', why: '`state set --status merged` loses its caller check', file: 'cli', from: '      if (refused) throw new SeatRefusal(refused.name, refused.detail);\n    }\n    const repo = before', to: '    }\n    const repo = before', red: ['caller/stranger-merged-refused-state-unchanged', 'caller/stranger-merged-via-json-refused'] },
   { name: 'live-command-re-keyed', why: 'a start of an already-live command mints a new key (it would supersede the running command)', file: 'chunk', from: /if\((\w+)&&(\w+)\(\1\)\)return\{ok:!0,pid:\1\.pid,reused:!0/, to: 'if(!1)return{ok:!0,pid:$1.pid,reused:!0', red: ['c3/term/start-again-is-idempotent-never-re-keys-a-live-command'] },
-  { name: 'not-detached', why: 'the command stays in the app\'s process group (no setsid) → dies with it', file: 'chunk', from: /(env:\w+,)detached:!0(,stdio:\["ignore",)/, to: '$1detached:!1$2', red: ['c3/kill9/command-survives'] },
+  { name: 'not-detached', why: 'the command stays in the app\'s process group (no setsid) → dies with it', file: 'chunk', from: /(env:\w+,)detached:!0(,stdio:\["ignore",)/, to: '$1detached:!1$2', red: ['c3/term/command-survives'] },
   { name: 'display-not-checked', why: 'the CLI stops naming a missing display', file: 'cli', from: 'const nd = noAgent ? noDisplayRefusal(process$1.env) : null;', to: 'const nd = null;', red: ['display/app-down-no-display-clear-refusal'] },
 ];
 

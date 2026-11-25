@@ -150,13 +150,13 @@ const identAfter = (tag, t) => jsonl(path.join(na[tag].out, 'ident.jsonl')).find
 const readSeqs = (tag) => jsonl(path.join(na[tag].out, 'reads.jsonl')).flatMap((e) => e.seqs ?? []);
 const sendMail = (to, body, { from = 'ws-sender', run = 'ws-sender' } = {}) => orch(['send', '--type', 'status', '--to', to, body], { ws: from, run });
 function rigPids() { const out = []; for (const p of fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n))) { try { if (+p !== process.pid && environOf(p).includes(`ORCHESTRA_HOME=${world.ohome}`)) out.push(+p); } catch { /* */ } } return out; }
-/** `group` = signal the app's WHOLE SESSION (every process whose session id is the app's — the rig spawned it detached, so it leads one): what a closed terminal / a service stop / `systemd` does, and what a command that is not setsid'd would not survive. */
+/** `group` = what a service stop does (systemd KillMode=control-group): signal the app, wait for it to exit, THEN SIGKILL every process still in the app's SESSION (the rig spawned it detached, so it leads one). A command that is not setsid'd dies here. */
 const sidOf = (pid) => { try { const s = fs.readFileSync(`/proc/${pid}/stat`, 'utf8'); return Number(s.slice(s.lastIndexOf(')') + 2).split(' ')[3]); } catch { return null; } };
 async function quitApp(sig, group = false) {
   const pid = app.pid; const t = Date.now();
-  if (group) { const members = fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)).map(Number).filter((p) => sidOf(p) === pid); for (const m of members) { try { process.kill(m, sig); } catch { /* gone */ } } console.log(`  (signalled ${members.length} process(es) of the app's session ${pid} with ${sig})`); }
-  else process.kill(pid, sig);
+  process.kill(pid, sig);
   await waitFor(() => !alive(pid), 30000, `app exit after ${sig}`, 200);
+  if (group) { const members = fs.readdirSync('/proc').filter((n) => /^\d+$/.test(n)).map(Number).filter((p) => sidOf(p) === pid); for (const m of members) { try { process.kill(m, 'SIGKILL'); } catch { /* gone */ } } console.log(`  (then SIGKILLed ${members.length} process(es) still in the app's session ${pid})`); await sleep(500); }
   return Date.now() - t;
 }
 
@@ -304,9 +304,9 @@ try {
     return { took, mails, lastBefore, quitAt: t0 };
   }
   const sig = SOAK_SEC ? 'SIGTERM' : 'SIGTERM';
-  const bn = await bounce(sig, ['DOWN-1 while the app is closed', 'DOWN-2 while the app is closed']);
+  const bn = await bounce(sig, ['DOWN-1 while the app is closed', 'DOWN-2 while the app is closed'], true); // SIGTERM, then SIGKILL of whatever is left in the app's SESSION (the one the command was spawned under): a command that is not setsid'd dies here
   clause('c3/term/app-exited', !alive(app.pid), `${sig}: app gone after ${bn.took} ms`);
-  clause('c3/term/command-survives', alive(cmdPid) && cmdAlive('owner'), `command pid ${cmdPid} (same start time ${rec('owner').startTicks}) alive after the app quit`);
+  clause('c3/term/command-survives', alive(cmdPid) && cmdAlive('owner'), `command pid ${cmdPid} (same start time ${rec('owner').startTicks}) alive after SIGTERM + a SIGKILL sweep of the app's session`);
   clause('c3/term/control-pty-child-dies', !alive(ptyPid), `Run-script PTY child ${ptyPid}: ${alive(ptyPid) ? 'ALIVE (control failed)' : 'dead — the old Run-script copy does not survive the app'}`);
   clause('c3/term/mail-while-down-accepted', bn.mails.every((m) => m.code === 0), `store-less send while the app is down: rc ${bn.mails.map((m) => m.code)}`);
   await sleep(4000);
@@ -334,8 +334,8 @@ try {
 
   if (!SOAK_SEC) {
     // kill -9
-    const kb = await bounce('SIGKILL', ['DOWN-3 after kill -9'], true);
-    clause('c3/kill9/command-survives', cmdAlive('owner'), `the app's whole SESSION SIGKILLed after ${kb.took} ms; command alive (its own session: not in that group)`);
+    const kb = await bounce('SIGKILL', ['DOWN-3 after kill -9']);
+    clause('c3/kill9/command-survives', cmdAlive('owner'), `the app SIGKILLed after ${kb.took} ms; command alive`);
     const rl2 = await launchApp();
     const hostUp2 = await waitFor(async () => { try { const r = await post('/identity', { id: 'ws-nobody', key: 'x' }); return r && r.code ? Date.now() : null; } catch { return null; } }, 30000, 'the host answering', 100);
     const v2 = await waitFor(() => identAfter('owner', rl2.t0), 30000, 'vouched after kill -9', 100);
