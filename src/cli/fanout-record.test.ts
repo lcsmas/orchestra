@@ -776,3 +776,61 @@ test('deliver [finding-unsettled]: under minorPolicy=spec a recorded MINOR quoti
   const good = await withEnv(home, () => deliver(dopts({ verifiedHead: B }), rig(B).dd));
   assert.equal(good.exit, 0, JSON.stringify(good.result));
 });
+
+// ── review round 1, m2: clauses that had no test ─────────────────────────────────────────────────────────────
+
+test('record-json: a finding id outside the id alphabet and a text over 2000 characters are refused ([record-json]); 2000 is accepted', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  for (const id of ['has space', '../x', '-lead', 'x'.repeat(65), '']) refused(rec(home, 'rev1', 'T1', A, 'changes-requested', { findings: { [id]: { severity: 'MAJOR', evidence: 'argued', text: 'a real problem' } } }), 'record-json');
+  refused(rec(home, 'rev1', 'T1', A, 'changes-requested', { fixed: ['bad id'] }), 'record-json');
+  refused(rec(home, 'rev1', 'T1', A, 'changes-requested', { findings: { F1: { severity: 'MAJOR', evidence: 'argued', text: 'x'.repeat(2001) } } }), 'record-json');
+  assert.equal(T(home).reviews, undefined, 'nothing recorded by the refusals');
+  assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', { findings: { F1: { severity: 'MAJOR', evidence: 'argued', text: 'x'.repeat(2000) } } }).code, 0);
+});
+
+test('deliver [no-verified-head]: under seatRecords=on the delivered head must be a FULL 40-hex sha (the merge is bound to it) — a short ticket head with no --verified-head is could-not-check', async (t) => {
+  const home = mkHome(t);
+  seed(home);
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: A.slice(0, 10), review: { ...s.tickets.T1.review!, head: A.slice(0, 10), briefs: [brief(1, 'spawn', A.slice(0, 10), 'rev1')] } } } });
+  assert.equal(rec(home, 'rev1', 'T1', A.slice(0, 10), 'approve', {}).code, 0);
+  const r = rig(A);
+  const out = await withEnv(home, () => deliver(dopts(), r.dd));
+  assert.equal(out.exit, 1, JSON.stringify(out.result));
+  assert.equal(out.result.reason, 'no-verified-head');
+  assert.ok(!r.merged());
+  const ok = await withEnv(home, () => deliver(dopts({ verifiedHead: A }), rig(A).dd));
+  assert.equal(ok.exit, 0, JSON.stringify(ok.result));
+});
+
+test('gate: a rebase that keeps the TREE keeps the recorded verdict at the gate too (the tree of --head is read); another tree is record-missing', async (t) => {
+  const gopts = (head: string): GateOpts => ({ branch: 't1', into: 'master', head, requireChecks: [], ticket: 'T1', run: 'r1', settleMs: 0 });
+  const gdeps = (r: ReturnType<typeof rig>) => ({ gh: r.gh, log: () => {}, sleep: async () => {}, recorded: realDeps().recorded, followUp: undefined, acceptance: undefined, stack: undefined });
+  const home = mkHome(t);
+  seed(home);
+  assert.equal(rec(home, 'rev1', 'T1', A, 'approve', {}, trees({ [A]: TREE_A })).code, 0);
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B } } });
+  const same = await withEnv(home, () => gatePr(gopts(B), gdeps(rig(B, 'green', { [A]: TREE_A, [B]: TREE_A }))));
+  assert.equal(same.exit, 0, JSON.stringify(same.result));
+  assert.equal(same.result.recorded?.reviewer, 'rev1');
+  const other = await withEnv(home, () => gatePr(gopts(B), gdeps(rig(B, 'green', { [A]: TREE_A, [B]: TREE_B }))));
+  assert.equal(other.exit, 2);
+  assert.equal(other.result.reason, 'record-missing');
+});
+
+test('resume / worker_done: a merged or dropped ticket has no reviewer owing a record (unrecordedReviewers skips it)', (t) => {
+  const home = mkHome(t);
+  const s = seed(home);
+  assert.equal(unrecordedReviewers(s).length, 2);
+  for (const status of ['merged', 'dropped'] as const) {
+    const done = { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, status } } };
+    assert.deepEqual(unrecordedReviewers(done).map((u) => u.ticket), ['T2'], status);
+  }
+});
+
+test('wiring pin: the `--as <other handle>` nudge — the caller\'s own workspace id is asked too, not only the handle it sends as', () => {
+  const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'index.ts'), 'utf8');
+  assert.ok(src.includes('?? (selfWorkspaceId() && selfWorkspaceId() !== sender ? fanoutCompletionRefusal(selfWorkspaceId()!, runId) : null)'), 'the own-workspace fallback');
+});
