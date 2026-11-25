@@ -83,17 +83,18 @@ const after = await until('re-run', async () => { const c = await forge.checks(p
 check('rerun: the red job re-ran green and its job id CHANGED', after.every((c) => c.status === 'green') && after.find((c) => c.name === 'test').jobId !== bad[0].jobId, `${bad[0].jobId} → ${after.find((c) => c.name === 'test')?.jobId}`);
 
 // the recorded approval + the run state `deliver` reads (scratch home), then the merge THROUGH deliver
-const RUN = 'scratch-run';
+const runOf = (id) => `scratch-run-${id}`; // one ticket per run: the plan of a run is frozen at its first nomination
 const treeOf = sh('gh', ['api', `repos/${REPO}/commits/${head}`, '--jq', '.commit.tree.sha']);
 const NOW = new Date().toISOString();
-const seed = (id, branch, h, n, tree) => st.updateState(st.stateFile(home, RUN), (cur) => {
-  let s = cur ?? st.setPlan(st.newState(RUN, { target: 'main', repo: REPO, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: NOW }), ['T1', 'T2'], 'declare', NOW);
+const seed = (id, branch, h, n, tree) => st.updateState(st.stateFile(home, runOf(id)), (cur) => {
+  let s = cur ?? st.setPlan(st.newState(runOf(id), { target: 'main', repo: REPO, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: NOW }), [id], 'declare', NOW);
   s = st.applyTicketPatch(s, id, { dependsOn: [], spec: 's', branch, head: h, pr: n, status: 'nominated' }, NOW, { tree });
   s = rv.settleReviewer(rv.claimReviewer(s, id, { kind: 'spawn', name: rv.reviewerName(id, 1), head: h, base: null, text: 'brief', now: NOW }), id, { id: `ws-rev-${id}` }, NOW);
   return rec.recordReview(s, id, { head: h, verdict: 'approve', input: { findings: {}, fixed: [] }, callerId: `ws-rev-${id}`, callerVouched: true, tree, now: NOW });
 });
 seed('T1', flaky, head, pr.n, treeOf);
-const viaDeliver = createLiveForge({ gh, repo: REPO, deliver: mergeThroughDeliver({ home, run: RUN, log: (l) => console.log(`  deliver: ${l}`) }) });
+const via = (id) => createLiveForge({ gh, repo: REPO, deliver: mergeThroughDeliver({ home, run: runOf(id), log: (l) => console.log(`  deliver: ${l}`) }) });
+const viaDeliver = via('T1');
 const merged = await viaDeliver.merge(pr.n, head);
 check('merge through deliver: ok', merged.ok === true, JSON.stringify(merged));
 const mc = JSON.parse(sh('gh', ['pr', 'view', String(pr.n), '--repo', REPO, '--json', 'state,mergeCommit'])) ;
@@ -108,7 +109,7 @@ const pr2 = await forge.openPr({ branch: moved, base: 'main', title: `T2: ${move
 await until('moved CI', async () => { const c = await forge.checks(pr2.n, h1); return c.length >= 3 && c.every((x) => x.status === 'green') ? c : null; });
 seed('T2', moved, h1, pr2.n, sh('gh', ['api', `repos/${REPO}/commits/${h1}`, '--jq', '.commit.tree.sha']));
 fs.writeFileSync(path.join(work, `${moved}.txt`), '2\n'); g('commit', '-q', '-am', 'moves'); g('push', '-q', 'origin', moved);
-const refused = await viaDeliver.merge(pr2.n, h1);
+const refused = await via('T2').merge(pr2.n, h1);
 check('merge: a head that moved after the approval is refused (nothing merged)', refused.ok === false && (await forge.prState(pr2.n)).state === 'open', JSON.stringify(refused));
 await forge.close(pr2.n);
 sh('git', ['push', '-q', 'origin', '--delete', moved, flaky]);
