@@ -11,7 +11,7 @@ import { createLiveForge } from '../shared/fanout-loop-live-forge.ts';
 import { FakeForge } from '../shared/fanout-loop-live-fake-gh.ts';
 import { claimReviewer, settleReviewer, reviewerName } from '../shared/fanout-review.ts';
 import { recordReview } from '../shared/fanout-record.ts';
-import { applyTicketPatch, newState, readState, stateFile, updateState } from '../shared/fanout-state.ts';
+import { applyTicketPatch, newState, readState, setPlan, stateFile, updateState } from '../shared/fanout-state.ts';
 import type { DeliverDeps } from './fanout-deliver.ts';
 
 const NOW = '2026-01-01T00:00:00.000Z';
@@ -28,6 +28,7 @@ async function rig(o: { approve: boolean; ci?: string[] }) {
   const tree = fake.treeOf(head);
   updateState(stateFile(home, RUN), () => {
     let s = newState(RUN, { target: 'main', repo: null, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: NOW });
+    s = setPlan(s, ['T1'], 'declare', NOW);
     s = applyTicketPatch(s, 'T1', { dependsOn: [], spec: 's', branch: 'T1', head, pr: n, status: 'nominated' }, NOW, { tree });
     if (o.approve) {
       s = settleReviewer(claimReviewer(s, 'T1', { kind: 'spawn', name: reviewerName('T1', 1), head, base: null, text: 'brief', now: NOW }), 'T1', { id: 'ws-rev' }, NOW);
