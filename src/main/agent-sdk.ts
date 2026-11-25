@@ -2010,6 +2010,8 @@ function transcriptDir(ws: Workspace): string {
   const base = workspaceAccountConfigDir(ws, undefined) || path.join(os.homedir(), '.claude');
   return path.join(base, 'projects', mangleProjectDir(ws.worktreePath));
 }
+/** #614 — the same directory for the host's `transcripts` op (the Boucle's cost per ticket). */
+export const transcriptDirOfWorkspace = transcriptDir;
 
 /** Does the on-disk transcript `.jsonl` for `sessionId` exist under `ws`'s
  *  transcript dir? The PROACTIVE resume discriminator (#178): the exact test

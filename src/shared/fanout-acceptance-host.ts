@@ -39,6 +39,8 @@ export interface AcceptanceHostDeps {
   /** #599 — see StartDeps.worktreeRepo / refExists: which repository the implementers' worktrees are in, and whether the run target resolves there. */
   worktreeRepo?: StartDeps['worktreeRepo'];
   refExists?: StartDeps['refExists'];
+  /** #614 — the on-disk Claude Code transcript directory of a workspace (its pinned account's config dir + the mangled worktree path), null = unknown workspace. Absent = op `transcripts` is not wired. */
+  transcriptDirOf?: (id: string) => string | null;
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -49,6 +51,8 @@ export type AcceptanceHostResult =
   | { ok: true; op: 'children'; children: string[] }
   | Extract<ReviewHostResult, { ok: true }> // #588: `fanout review`
   | { ok: true; op: 'start'; result: StartResult }
+  | { ok: true; op: 'live'; live: string[] } // #614: which of the asked workspaces are alive (exist, not archived)
+  | { ok: true; op: 'transcripts'; dirs: Record<string, string | null> } // #614: where each asked workspace's transcripts are
   | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
 
@@ -82,6 +86,16 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const vouched = !!caller && !!deps.vouches && deps.vouches(caller, str(input.key)); // the caller is the coordinator only on the HOST's word, not on an env id
       const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
       return { ok: true, op: 'start', result };
+    }
+    if (input.op === 'live' || input.op === 'transcripts') { // #614: the Boucle's two host-only facts. Read-only, but still the run's coordinator's: vouched by the host like `start`, and only for workspaces of THIS run's state
+      const caller = str(input.from);
+      if (!caller || caller !== run || !deps.vouches || !deps.vouches(caller, str(input.key))) return { ok: false, error: `[${input.op}-caller] the host could not vouch that the caller is the run's coordinator (${run})` };
+      const asked = Array.isArray(input.ids) ? (input.ids as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+      const ofRun = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).flatMap((t) => [t.implementer, t.review?.reviewer?.id, ...(t.review?.briefs ?? []).map((b) => b.reviewer)].filter((x): x is string => !!x)));
+      const ids = asked.filter((id) => ofRun.has(id));
+      if (input.op === 'live') { const live = deps.isLive ?? deps.isWorkspace; return { ok: true, op: 'live', live: ids.filter((id) => live(id)) }; }
+      if (!deps.transcriptDirOf) return { ok: false, error: 'this host does not report transcript directories' };
+      return { ok: true, op: 'transcripts', dirs: Object.fromEntries(ids.map((id) => [id, deps.transcriptDirOf!(id)])) };
     }
     const ticket = str(input.ticket);
     if (!ticket) return { ok: false, error: 'missing ticket' };
