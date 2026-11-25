@@ -281,6 +281,9 @@ export function setHarness(state: FanoutState, v: string, now: string): FanoutSt
 // ── #587 (I2): the plan + the interfaces, declared before the first spawn (switch seatRecords) ─────────────────────
 const IFACE_TEXT_MAX = 20_000;
 export const DECISION_TEXT_MAX = 4_000;
+/** Every brief of the run carries ALL the decisions: their number and total size are bounded (a refusal `[decisions-full]` names the bound). */
+export const DECISIONS_MAX = 20;
+export const DECISIONS_TOTAL_MAX = 16_000;
 const seatOff = (what: string): SeatRefusal => new SeatRefusal('seat-records-off', `${what} is a seatRecords rule and this run has seatRecords=off (choose it before the first spawn: state set --switch seatRecords=on)`);
 function ticketIdsOf(v: unknown, where: string): string[] {
   if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !SAFE_TICKET.test(d))) throw new FanoutStateError(`${where} must be a list of ticket ids`);
@@ -352,6 +355,9 @@ export function addDecision(state: FanoutState, text: string, by: string, now: s
   if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
   if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
   const list = st.decisions ?? [];
+  if (list.length >= DECISIONS_MAX) throw new SeatRefusal('decisions-full', `the run already holds ${list.length} decisions (at most ${DECISIONS_MAX}): every brief carries them all — merge them into fewer, or start a new run`);
+  const total = list.reduce((n, d) => n + d.text.length, 0);
+  if (total + t.length > DECISIONS_TOTAL_MAX) throw new SeatRefusal('decisions-full', `the decisions would reach ${total + t.length} characters (at most ${DECISIONS_TOTAL_MAX} in all): every brief carries them all`);
   return { ...st, decisions: [...list, { n: list.length + 1, text: t, by, at: now }], updatedAt: now };
 }
 /** #587 (I2) — what stands between the run and its first spawn / a `started|nominated|gated` ticket: the plan tickets absent from the state, the tickets (not dropped) whose dependencies are not declared, the depended-on tickets with no interface. [] = nothing missing. */

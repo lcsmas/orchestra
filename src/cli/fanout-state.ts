@@ -58,6 +58,8 @@ export interface FanoutDeps {
   /** #554 (review T3 m1) — the run owner's children as the HOST sees them, asked by index.ts before a `--switch` write (the bus-side first-spawn signal: an agent spawned by hand is not in the state yet).
    *  undefined = not asked · null = the host could not answer (the state-side detector alone then decides, said on stderr). */
   spawned?: string[] | null;
+  /** #587 — the workspace id the HOST vouched for this invocation (`/identity` answered `{id, key}` ok: ORCHESTRA_WS_ID + the session key), null/undefined = nobody vouched (no key, host down, superseded). A coordinator-only verb trusts THIS, never the bare env. */
+  vouchedCaller?: string | null;
   /** #564 — runs one shell command of `fanout check` (undefined = the real `sh -c`; tests hand a fake). */
   exec?: CheckExec;
 }
@@ -370,11 +372,11 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
       if (ticket || Object.keys(p.vals).some((k) => k !== '--run-decision' && k !== '--run')) throw new FanoutStateError('--run-decision is run-level: `orchestra fanout state set --run-decision <text|file|-> [--run <id>]` takes no ticket and no other flag');
       const text = readTextArg(p.vals['--run-decision'], deps);
       const dr = runOf(p, deps, 'write');
-      const caller = (deps.env.ORCHESTRA_WS_ID || deps.env.ORCHESTRA_WS_ID_IDENTITY || '').trim();
+      const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id: an env-asserted ORCHESTRA_WS_ID is not a coordinator (ledger #591 review r2 MAJOR-1)
       const dfile = stateFile(homeOf(deps.env), dr.run);
       const dnext = updateState(dfile, (cur) => {
         if (!cur) throw new FanoutStateError(`no state at ${dfile} — run \`orchestra fanout state init\` first`);
-        if (seatRecordsOn(cur) && caller !== dr.run) throw new SeatRefusal('decision-caller', `only the run's coordinator (${dr.run}) records a run decision${caller ? `, not ${caller}` : ' (no workspace identity: ORCHESTRA_WS_ID is empty)'}`);
+        if (seatRecordsOn(cur) && caller !== dr.run) throw new SeatRefusal('decision-caller', `only the run's coordinator (${dr.run}) records a run decision${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace? an ORCHESTRA_WS_ID in the env is not proof)'}`);
         return addDecision(cur, text, caller, deps.now());
       });
       return { code: 0, stdout: `decision ${dnext.decisions!.length} recorded (every brief of the run carries it)\n`, stderr: dr.note };
@@ -430,7 +432,10 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const before = readState(file);
     const repo = before?.repo ?? null;
-    if (before && seatRecordsOn(before) && p.vals['--depends-on']?.trim().toLowerCase() === 'none') patch.dependsOn = []; // #587: `--depends-on none` = declared empty (under off `none` stays a ticket id, as before)
+    if (before && seatRecordsOn(before) && p.vals['--depends-on'] !== undefined) { // #587: only an explicit `none` declares an empty list — an empty value declares nothing
+      if (p.vals['--depends-on'].trim().toLowerCase() === 'none') patch.dependsOn = [];
+      else if (!p.vals['--depends-on'].split(',').some((x) => x.trim())) throw new FanoutStateError('--depends-on needs ticket ids, or `none` for no dependencies (an empty value declares nothing)');
+    } // #587: `--depends-on none` = declared empty (under off `none` stays a ticket id, as before)
     if (typeof patch.head === 'string') {
       derived.tree = treeOfSha(deps.runner, patch.head, deps.cwd, repo);
       if (!derived.tree) notes.push(`note: the tree of head ${patch.head.slice(0, 8)} is unreadable (not fetched? gh?): its verdict stays keyed on the sha, not the content\n`);
