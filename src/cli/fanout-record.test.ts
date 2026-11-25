@@ -17,7 +17,7 @@ import { verbSend, type BusVerbCtx } from './bus-verbs.ts';
 import * as bus from '../main/bus.ts';
 import * as busRuns from '../main/bus-runs.ts';
 import { withReceipt } from '../main/bus-receipts.ts';
-import { applyTicketPatch, newState, readState, stateFile, writeStateAtomic, type FanoutState, type TicketState } from '../shared/fanout-state.ts';
+import { applyTicketPatch, newState, readState, setPlan, stateFile, switchesOf, writeStateAtomic, type FanoutState, type TicketState } from '../shared/fanout-state.ts';
 import { recordReview, reviewCounts, reviewerDoneRefusal, unrecordedReviewers } from '../shared/fanout-record.ts';
 
 const NOW = '2026-11-25T10:00:00.000Z';
@@ -43,7 +43,9 @@ const reviewOf = (id: string, name: string, head: string) => ({ reviewer: { id, 
 /** A run `r1` (coordinator ws r1) with seatRecords chosen, T1 nominated at A (reviewer rev1, implementer impl1), T2 nominated at C (reviewer rev2). */
 function seed(home: string, o: { switches?: Record<string, string>; reviewers?: boolean } = {}): FanoutState {
   let s = newState('r1', { now: NOW, switches: { seatRecords: 'on', ...(o.switches ?? {}) } as never });
-  s = applyTicketPatch(s, 'T1', { status: 'nominated', branch: 't1', head: A, implementer: 'impl1' }, NOW);
+  if (switchesOf(s).seatRecords === 'on') s = setPlan(s, ['T1', 'T2'], 'declare', NOW); // #587: a run that records declares its tickets before the first spawn
+  s = applyTicketPatch(s, 'T2', { dependsOn: [] }, NOW);
+  s = applyTicketPatch(s, 'T1', { dependsOn: [], status: 'nominated', branch: 't1', head: A, implementer: 'impl1' }, NOW);
   s = applyTicketPatch(s, 'T2', { status: 'nominated', branch: 't2', head: C }, NOW);
   if (o.reviewers !== false) {
     s = { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, review: reviewOf('rev1', 'review-T1', A) }, T2: { ...s.tickets.T2, review: reviewOf('rev2', 'review-T2', C) } } };
@@ -79,7 +81,10 @@ test('record must-PASS: the recorded reviewer records approve for the head it re
   assert.deepEqual({ by: t1.findings.F1.by, raisedOn: t1.findings.F1.raisedOn, text: t1.findings.F1.text, severity: t1.findings.F1.severity, evidence: t1.findings.F1.evidence }, { by: 'rev1', raisedOn: A, text: 'a comment is stale in the retry helper', severity: 'MINOR', evidence: 'argued' });
   assert.deepEqual(reviewCounts(t1, A), { blocking: 0, major: 0, minor: 1, open: ['F1'] });
   assert.equal(t1.verdict, 'approve', 'the ticket verdict follows a record on its own head');
-  assert.match(runFanout(['state', 'show', '--run', 'r1'], depsOf(home, 'r1')).stdout, /recorded reviews \(#589\):\n {2}T1 {2}round 1 by rev1 on aaaaaaaa: approve — 0 BLOCKING \/ 0 MAJOR \/ 1 MINOR open \(F1\)\n {2}T2 {2}reviewer review-T2 \(rev2\): NO verdict recorded yet/);
+  const shown = runFanout(['state', 'show', '--run', 'r1'], depsOf(home, 'r1')).stdout;
+  assert.match(shown, /recorded reviews \(#589\):\n/);
+  assert.match(shown, /\n {2}T1 {2}round 1 by rev1 on aaaaaaaa: approve — 0 BLOCKING \/ 0 MAJOR \/ 1 MINOR open \(F1\)\n/);
+  assert.match(shown, /\n {2}T2 {2}reviewer review-T2 \(rev2\): NO verdict recorded yet\n/);
   assert.equal(JSON.parse(JSON.stringify(t1)).reviews.length, 1, 'counts are not stored typed');
   assert.ok(!('blocking' in (t1.reviews![0] as object)));
 });
