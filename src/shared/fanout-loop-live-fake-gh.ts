@@ -22,6 +22,13 @@ export class FakeForge {
   readonly gh = async (args: string[]): Promise<ExecResult> => this.run(args);
 
   advance(ms: number): void { this.clock += ms; }
+  /** The author pushes: the branch head moves, and a CI run starts for it NOW when a pull request is open on the branch. */
+  push(branch: string, sha: string): string {
+    this.heads.set(branch, sha);
+    const pr = [...this.prs.values()].find((p) => p.branch === branch && p.state === 'OPEN');
+    if (pr) this.runOf(pr);
+    return sha;
+  }
   private iso(t: number): string { return new Date(t).toISOString(); }
   private ok(stdout: string): ExecResult { return { code: 0, stdout, stderr: '' }; }
   private no(stderr: string, code = 1): ExecResult { return { code, stdout: '', stderr }; }
@@ -59,7 +66,9 @@ export class FakeForge {
       if (!this.heads.has(branch)) return this.no(`pull request create failed: head branch "${branch}" not found`);
       if ([...this.prs.values()].some((p) => p.branch === branch && p.state === 'OPEN')) return this.no(`a pull request for branch "${branch}" into branch "${base}" already exists`);
       const n = this.prs.size + 1;
-      this.prs.set(n, { n, branch, base, title, state: 'OPEN' });
+      const pr: Pr = { n, branch, base, title, state: 'OPEN' };
+      this.prs.set(n, pr);
+      this.runOf(pr); // the CI starts when the PR opens
       return this.ok(`https://github.com/o/r/pull/${n}\n`);
     }
     if (a === 'pr' && b === 'view') {
