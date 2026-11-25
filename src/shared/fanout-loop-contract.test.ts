@@ -500,6 +500,24 @@ test('live forge (review 614 MAJOR): a SKIPPED job is neither green nor red — 
   assert.deepEqual(cs.map((c) => c.name).sort(), ['build', 'test']);
   assert.ok(cs.every((c) => c.status === 'green' && (c.steps ?? 0) >= 1));
 });
+test('live forge (review 614 r2 MINOR-1): a green job counts only the USER steps that SUCCEEDED — setup/complete alone, a failed or skipped user step: not counted; a job id `run view` does not hold throws', async () => {
+  const stepsOf = async (steps: Array<{ name: string; conclusion: string }>, hide = false): Promise<number | undefined> => {
+    const h = liveForge();
+    h.fake.jobSteps.set('build', steps);
+    if (hide) h.fake.hiddenJobs.add('build');
+    const head = h.branch('T1');
+    const { n } = await open(h, 'T1');
+    await h.settle();
+    return (await h.port.checks(n, head)).find((c) => c.name === 'build')!.steps;
+  };
+  const S = (name: string, conclusion = 'success') => ({ name, conclusion });
+  assert.equal(await stepsOf([S('Set up job'), S('Complete job')]), 0, 'a job that ran only its setup and completion proves nothing ran');
+  assert.equal(await stepsOf([S('Set up job'), S('Post Run actions/checkout'), S('Complete job')]), 0, 'Post … steps are not user steps either');
+  assert.equal(await stepsOf([S('Set up job'), S('Run it', 'failure'), S('Complete job')]), 0, 'a failed user step is not counted');
+  assert.equal(await stepsOf([S('Set up job'), S('Run it', 'skipped'), S('Complete job')]), 0, 'a skipped user step is not counted');
+  assert.equal(await stepsOf([S('Set up job'), S('One'), S('Two'), S('Three', 'failure'), S('Complete job')]), 2, 'two that succeeded, one that did not');
+  await assert.rejects(stepsOf([], true), /job \d+ not found/, 'an unknown job id fails closed (never "no steps to worry about")');
+});
 test('live forge: a check linked to a whole run (no job id) has no step count — refused, never the sum of the run\'s jobs; N jobs of a run cost ONE `gh run view`', async () => {
   const noJob = createLiveForge({ gh: async (a) => a[0] === 'pr' ? { code: 0, stdout: JSON.stringify({ state: 'OPEN', headRefOid: 'abc1234', statusCheckRollup: [{ __typename: 'CheckRun', name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: 'https://github.com/o/r/actions/runs/77', completedAt: '2026-01-01T00:00:00Z' }] }), stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' } });
   assert.equal((await noJob.checks(1, 'abc1234'))[0].steps, undefined);
@@ -535,3 +553,6 @@ test('live fleet: a reviewer is never spawned on a head the state does not hold 
   await assert.rejects(h.fleet.spawnReviewer('T1', sha40()), /the head moved/);
   assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 0, 'nothing was spawned');
 });
+
+// Review 614 r2 MINOR-2 — SETTLED as the stack's, not this ticket's: `costPerTicket` is filled where 608's `stepEnd` runs `collectCosts(state, deps.fleet.costOf)` (stack C connects 605's hooks to 608). The live `costOf` below is what it will call.
+test.todo('stack C: the loop\'s closing report fills costPerTicket from fleet.costOf (605 stepEnd/finish ← 608 collectCosts) — measured today: report.costPerTicket = {T1: null} on the composed run');

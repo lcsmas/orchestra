@@ -33,6 +33,11 @@ export class FakeForge {
   externalPending: string | null = null;
   /** The name of a job that is SKIPPED (an `if:` that evaluated false) on every run. */
   skipped: string | null = null;
+  /** The steps `gh run view --json jobs` reports for a job (default: setup + ONE user step that succeeded + complete). */
+  jobSteps = new Map<string, Array<{ name: string; conclusion: string }>>();
+  /** Jobs `run view` does not list (a job id the run does not hold). */
+  hiddenJobs = new Set<string>();
+  private stepsOf(job: string): Array<{ name: string; conclusion: string }> { return this.jobSteps.get(job) ?? [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run it', conclusion: 'success' }, { name: 'Complete job', conclusion: 'success' }]; }
   private ids = 1000;
   private served = new Map<string, number>(); // branch → CI runs created so far
   readonly gh = async (args: string[]): Promise<ExecResult> => this.run(args);
@@ -141,7 +146,7 @@ export class FakeForge {
     if (a === 'run' && b === 'view') {
       const run = this.runs.find((r) => String(r.id) === args[2]);
       if (!run) return this.no(`run ${args[2]} not found`);
-      if (args.includes('jobs')) return this.ok(JSON.stringify({ jobs: CHECKS.map((c) => ({ databaseId: Number(run.jobs[c]), steps: [{ name: 'Set up job', conclusion: 'success' }, { name: 'Run it', conclusion: 'success' }, { name: 'Complete job', conclusion: 'success' }] })) }));
+      if (args.includes('jobs')) return this.ok(JSON.stringify({ jobs: CHECKS.filter((c) => !this.hiddenJobs.has(c)).map((c) => ({ databaseId: Number(run.jobs[c]), steps: this.stepsOf(c) })) }));
       const job = this.flag(args, '--job');
       const name = CHECKS.find((c) => run.jobs[c] === job) ?? 'test';
       return this.ok(`${name}\tRun tests\tFAIL ${name}: expected 1 to equal 2\n`);
