@@ -234,6 +234,20 @@
    "group": 11
   },
   {
+   "id": "test:fanout-start",
+   "command": "pnpm run test:fanout-start",
+   "class": "RUNS_IN_CI",
+   "wallSec": 2,
+   "group": 12
+  },
+  {
+   "id": "test:fanout-start-mutants",
+   "command": "pnpm run test:fanout-start-mutants",
+   "class": "RUNS_IN_CI",
+   "wallSec": 45,
+   "group": 5
+  },
+  {
    "id": "test:acceptance-forced",
    "command": "pnpm run test:acceptance-forced",
    "class": "RUNS_IN_CI",

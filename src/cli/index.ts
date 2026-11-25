@@ -101,6 +101,7 @@ import {
 } from '../shared/browser-agent-tabs.ts';
 import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
+import { runStart } from './fanout-start.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
@@ -2477,6 +2478,16 @@ async function main(argv: string[]): Promise<void> {
       if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
         await settleHostIdentity();
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
+      }
+      if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)
+        await settleHostIdentity();
+        if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to start: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was started.');
+        const sr = await runStart(args.slice(1), fanoutDeps, (body) => request('/fanoutAcceptance', body, { timeoutMs: 600_000 }));
+        if (sr.stdout) process.stdout.write(sr.stdout);
+        if (sr.code === 1) fail(sr.stderr.trimEnd());
+        if (sr.stderr) process.stderr.write(sr.stderr);
+        if (sr.code !== 0) throw new CliExit(sr.code);
+        return;
       }
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
       const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);

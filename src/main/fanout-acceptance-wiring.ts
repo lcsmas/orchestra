@@ -22,6 +22,12 @@ const productionDeps: AcceptanceHostDeps = {
   },
   verifyCaller: (id, key) => sessionKeys().verify(id, key), // #588: `op: review` is re-proved here, not only by the CLI
   isLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; }, // #588: a deleted or archived reviewer is replaced, a live one woken
+  // #587 PR B: `fanout start` — the implementer spawn (the one `impl-` door of a seatRecords run), and liveness = the workspace exists and is not archived
+  implementerLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; },
+  spawnImplementer: async (i) => {
+    const r = await dispatchAgentSpawnRequest({ from: i.from, repoPath: i.repoPath, task: i.task, agent: 'claude', name: i.name, ...(i.baseBranch ? { baseBranch: i.baseBranch } : {}) }, { viaFanoutStart: true });
+    return { ok: r.ok, id: r.id, branch: r.branch, held: r.held, error: r.error };
+  },
   childrenOf: (run) => store.workspaces.filter((w) => w.parentId === run).map((w) => w.id), // #554 m1: the run owner's direct children
   // #554: the stamp carries the run's switches, so this rewrites the skill only when they changed
   refreshSkills: async (ids) => {

@@ -55,6 +55,7 @@ import { TMP_GUARD_MATCHER, TMP_GUARD_SCRIPT } from '../shared/tmp-guard.ts';
 import { BROWSER_SKILL, BROWSER_SKILL_NAME } from '../shared/browser-skill.ts';
 import { VERIFIED_FANOUT_SKILL, VERIFIED_FANOUT_SKILL_TEMPLATE } from '../shared/verified-fanout-skill.ts';
 import { DEFAULT_SWITCHES, switchesForRun, switchesStamp } from '../shared/fanout-state.ts';
+import { handSpawnRefusalFor } from '../shared/fanout-start.ts';
 import { VERIFIED_FANOUT_FILES, VERIFIED_FANOUT_V2_REFERENCES } from '../shared/verified-fanout-files.ts';
 import { installVerifiedFanoutSkill } from './verified-fanout-install.ts';
 import { blocHtmlInstructionScript } from '../shared/bloc-html-instruction.ts';
@@ -1623,9 +1624,13 @@ export async function dispatchSpawnRequest(
  *  `--detached` (no `parentId`). A `/spawn` with no `from` is a human at a terminal: a human-created workspace, not pinned. */
 export async function dispatchAgentSpawnRequest(
   input: Omit<Parameters<typeof dispatchSpawnRequest>[0], 'defaultKind' | 'branch' | 'namedBy' | 'exactName' | 'origin'> & { name?: string | null },
+  /** #587 PR B: set ONLY by `fanout start` (in-process, never from the socket body): its implementers are the one `impl-` spawn a seatRecords run allows. */
+  opts: { viaFanoutStart?: boolean } = {},
 ): Promise<SpawnResult> {
   const checked = checkSpawnName(input.name);
   if (!checked.ok) return { ok: false, error: `refusing to spawn: ${checked.error}. Nothing was created.` };
+  const handSpawn = handSpawnRefusalFor(orchestraHome(), input.from, checked.name, opts.viaFanoutStart === true); // #587 PR B: under seatRecords=on an `impl-` spawn by the run's coordinator goes through `fanout start`
+  if (handSpawn) return { ok: false, error: handSpawn };
   const { name: _name, ...rest } = input;
   // #465: no --model/--effort → the role's pin (name prefix + optional <ORCHESTRA_HOME>/fleet-roles.json); an explicit flag wins; a bad override file refuses the spawn.
   let roleDefaults: { model?: string; effort?: string };

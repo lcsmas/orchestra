@@ -1,0 +1,130 @@
+#!/usr/bin/env node
+// #587 PR B rig (ledger #591 I6) — `orchestra fanout start`, the implementer brief and the hand-spawn refusal: every clause MUTATED in a scratch copy of src/ and
+// src/cli/fanout-start.test.ts + src/main/fanout-start-wiring.test.ts (production paths: `runStart`, `startRun`, the host op, `handSpawnRefusalFor`, the main-process wiring pinned by source) must go RED.
+// Light: no Electron, no network, no tokens; the scratch copy lives under $TMPDIR; the repo is never written.
+//   node scripts/e2e-fanout-start.mjs            control: the unpatched copy must be GREEN (0 fail, 0 skipped)
+//   node scripts/e2e-fanout-start.mjs --mutants  each mutant (exact string, must occur ONCE in its file — else REFUSED as stale) must be KILLED (≥1 test FAILs)
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const tmpBase = process.env.TMPDIR || os.tmpdir();
+const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-start-rig-'));
+if (!path.resolve(scratch).startsWith(path.resolve(tmpBase) + path.sep)) throw new Error(`refusing scratch outside ${tmpBase}`);
+fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
+fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' })); // quiet the module-type reparse warning
+const TESTS = ['src/cli/fanout-start.test.ts', 'src/main/fanout-start-wiring.test.ts'].map((f) => path.join(scratch, f));
+
+function run() {
+  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
+  const out = `${r.stdout}\n${r.stderr}`;
+  const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN);
+  return { pass: n('pass'), fail: n('fail'), skipped: n('skipped'), tests: n('tests'), out };
+}
+
+// [name, file, from, to] — `from` must occur exactly once in `file`.
+const SS = 'src/shared/fanout-start.ts';
+const IB = 'src/shared/fanout-implementer-brief.ts';
+const H = 'src/shared/fanout-acceptance-host.ts';
+const C = 'src/cli/fanout-start.ts';
+const W = 'src/main/workspaces.ts';
+const FW = 'src/main/fanout-acceptance-wiring.ts';
+const X = 'src/cli/index.ts';
+const S = 'src/shared/fanout-state.ts';
+const mutants = [
+  // refusals
+  ['start under off is allowed', SS, "if (!seatRecordsOn(state)) return new SeatRefusal('start-off',", "if (false) return new SeatRefusal('start-off',"],
+  ['start by a non-coordinator is allowed', SS, "if (!caller || caller !== run) return new SeatRefusal('start-caller',", "if (false) return new SeatRefusal('start-caller',"],
+  ['start with no identity is allowed', SS, "if (!caller || caller !== run) return", "if (caller && caller !== run) return"],
+  ['start with an incomplete plan is allowed', SS, "  if (missing.length) return new SeatRefusal('plan-incomplete',", "  if (false) return new SeatRefusal('plan-incomplete',"],
+  ['the CLI does not check before asking the host', C, "    if (refusal) throw refusal;\n    const res = await host(", "    const res = await host("],
+  ['the host does not re-check (startRun trusts its caller)', SS, "    const refusal = startRefusal(state0, run, caller);\n    if (refusal) throw refusal;\n", ""],
+  ['a free-text flag is accepted', C, "const p = parseArgs(args, ['--run'], []);", "const p = parseArgs(args, ['--run', '--task', '--brief', '--name'], []);"],
+  ['a positional is accepted', C, "    if (p.pos.length) throw new FanoutStateError(`unexpected argument", "    if (false) throw new FanoutStateError(`unexpected argument"],
+  ['a host refusal loses its name (exit 1)', C, "      if (msg.startsWith('[')) throw new SeatRefusal(", "      if (false) throw new SeatRefusal("],
+  ['a failed ticket exits 0', C, "return { code: bad ? 2 : 0,", "return { code: 0,"],
+  // the launch
+  ['a ticket with a live implementer is started again', SS, "      if (t.implementer && deps.implementerLive(t.implementer)) {", "      if (false) {"],
+  ['a merged ticket is started again', SS, "      if (t.status !== 'todo' && t.status !== 'started') {", "      if (false) {"],
+  ['the plan is ignored: every state ticket is started', SS, "for (const ticket of state0.plan!.tickets) {", "for (const ticket of Object.keys(state0.tickets)) {"],
+  ['concurrent starts are not serialised', SS, "  const next = prev.then(fn, fn);", "  const next = fn();"],
+  ['a dead implementer is not respawned (it is skipped as live)', SS, "const kind: 'spawn' | 'respawn' = t.implementer || t.status === 'started' ? 'respawn' : 'spawn';", "const kind: 'spawn' | 'respawn' = 'spawn';"],
+  ['a respawn does not continue from the branch', SS, "...(kind === 'respawn' && t.branch ? { baseBranch: t.branch } : {}) });", "});"],
+  ['a respawn brief does not say it continues', SS, "...(kind === 'respawn' && t.branch ? { continueFrom: { branch: t.branch, head: t.head } } : {}) });", "});"],
+  ['the implementer is not recorded', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { branch, status: 'started' }, now)"],
+  ['the branch is not recorded', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { implementer: id, status: 'started' }, now)"],
+  ['the ticket is not set started', SS, "applyTicketPatch(s, ticket, { implementer: id, branch, status: 'started' }, now)", "applyTicketPatch(s, ticket, { implementer: id, branch }, now)"],
+  ['the start record is not written', SS, "{ ...tk, start: { at: now, kind, briefHash: hash, briefs: (t.start?.briefs ?? 0) + 1 } }", "tk"],
+  ['the brief hash is of something else', SS, "briefHash: hash,", "briefHash: briefHash(ticket),"],
+  ['the brief counter does not increase', SS, "briefs: (t.start?.briefs ?? 0) + 1", "briefs: 1"],
+  ['the spawn is not given the rendered brief', SS, "name: implementerName(ticket), task, repoPath", "name: implementerName(ticket), task: ticket, repoPath"],
+  ['a held start is listed as started only (not waiting)', SS, "      if (res.held) out.waiting.push(", "      if (false) out.waiting.push("],
+  ['a held start fails the call', SS, "      if (!res.ok) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}", "      if (!res.ok || res.held) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}"],
+  ['a failed spawn is thrown, not listed', SS, "} catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }", "} catch (e) { throw e; }"],
+  ['a spawn with no workspace is recorded anyway', SS, "if (!res.id || !res.branch) { out.failed.push", "if (false) { out.failed.push"],
+  ['a kept child is not recorded (a second call duplicates it)', SS, "      if (!res.id || !res.branch) {", "      if (!res.ok || !res.id || !res.branch) {"],
+  ['a kept child is reported as started', SS, "      if (!res.ok) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}", "      if (false) { out.failed.push({ ticket, error: `${res.error ?? 'the agent failed to start'}"],
+  ['a record failure is reported as started', SS, "      if (!recorded) continue;", ""],
+  ['the implementer name is not impl-', SS, "return `impl-${slug || 'ticket'}`;", "return `ops-${slug || 'ticket'}`;"],
+  // the brief
+  ['brief: the interfaces it builds on are missing', IB, "    renderInterfaces(state, t.dependsOn),", "    '',"],
+  ['brief: its own interface is missing', IB, "own ? `Interface you PROVIDE (frozen, v${own.version}):\\n${own.text}`", "own ? ''"],
+  ['brief: the run\'s decisions are missing', IB, "    renderDecisions(state),\n", ""],
+  ['brief: the switches are missing', IB, "    renderSwitchesLine(state),\n", ""],
+  ['brief: the rules are missing', IB, "    IMPLEMENTER_RULES,\n", ""],
+  ['brief: the branch base is missing', IB, "`Branch base: origin/${state.target}${state.repo ? ` of ${state.repo}` : ''}.`", "''"],
+  ['brief: the spec is missing', IB, "t.spec ? `Spec: ${t.spec}` : 'Spec: none registered.',", "''"],
+  ['brief: the rules let the agent change an interface', IB, "you never change an interface yourself", "you may change an interface yourself"],
+  ['brief: the rules drop the followed version', IB, "and the VERSION of each interface you built on (e.g. `follows A=2`)", "and nothing else"],
+  // the host + the main process
+  ['host: op start is unknown', H, "    if (input.op === 'start') {", "    if (input.op === 'start-off') {"],
+  ['host: start works with no wiring', H, "if (!deps.implementerLive || !deps.spawnImplementer) return", "if (false) return"],
+  ['host: start uses the acceptor spawn', H, "implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer", "implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: async (i) => ({ ok: false, error: 'no' })"],
+  ['hand spawn: an impl- spawn of a seatRecords run is allowed', SS, "if (i.viaStart || !i.state || !seatRecordsOn(i.state) || roleOfName(i.name) !== 'implementer') return null;", "return null; if (i.viaStart || !i.state || !seatRecordsOn(i.state) || roleOfName(i.name) !== 'implementer') return null;"],
+  ['hand spawn: fanout start itself is refused', SS, "if (i.viaStart || !i.state ||", "if (!i.state ||"],
+  ['hand spawn: refused under off', SS, "|| !seatRecordsOn(i.state) || roleOfName(i.name)", "|| roleOfName(i.name)"],
+  ['hand spawn: every role is refused', SS, "|| roleOfName(i.name) !== 'implementer') return null;", ") return null;"],
+  ['hand spawn: an unreadable state refuses', SS, "try { state = readState(stateFile(home, from)); } catch { return null; }", "state = readState(stateFile(home, from));"],
+  ['main: dispatchAgentSpawnRequest does not ask', W, "  if (handSpawn) return { ok: false, error: handSpawn };\n", ""],
+  ['main: the bypass is always on', W, "opts.viaFanoutStart === true); // #587 PR B", "true); // #587 PR B"],
+  ['main: the implementer spawn does not pass the bypass', FW, "}, { viaFanoutStart: true });", "});"],
+  ['main: an archived implementer counts as live', FW, "return !!w && !w.archived; },", "return !!w; },"],
+  ['main: the respawn does not pass the base branch', FW, "...(i.baseBranch ? { baseBranch: i.baseBranch } : {}) }, { viaFanoutStart: true });", "}, { viaFanoutStart: true });"],
+  ['cli: start is not vouched by the host', X, "        await settleHostIdentity();\n        if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to start:", "        if (false as boolean) fail('refusing to start:"],
+  ['cli: start is not routed', X, "if (args[0] === 'start') { // #587 PR B", "if (args[0] === 'start-off') { // #587 PR B"],
+  // the state
+  ['state: a start record of 0 briefs loads', S, "if (!Number.isInteger(v.briefs) || (v.briefs as number) < 1) throw", "if (false) throw"],
+  ['state: a start record with a bad kind loads', S, "if (v.kind !== 'spawn' && v.kind !== 'respawn') throw", "if (false) throw"],
+  ['state: a start record with an unknown field loads', S, "refuseUnknown(v, new Set(['at', 'kind', 'briefHash', 'briefs']), `${where} start`);", ""],
+  ['state: `start` is settable by state set', S, "refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');", "refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS, 'start']), 'patch');"],
+];
+
+const only = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null;
+const base = run();
+const baseOk = base.fail === 0 && base.skipped === 0 && base.pass >= 14 && base.pass === base.tests;
+console.log(`control (unpatched copy): ${base.pass} pass / ${base.fail} fail / ${base.skipped} skipped → ${baseOk ? 'GREEN' : 'RED'}`);
+if (!baseOk) { console.log(base.out.split('\n').filter((l) => /^not ok|error:/.test(l)).slice(0, 12).join('\n')); process.exit(1); }
+if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }
+
+let survived = 0, refused = 0;
+for (const [i, [name, file, from, to]] of mutants.entries()) {
+  if (only && !name.includes(only)) continue;
+  const f = path.join(scratch, file);
+  const orig = fs.readFileSync(f, 'utf8');
+  const n = orig.split(from).length - 1;
+  if (n !== 1) { console.log(`M${String(i + 1).padStart(2, '0')} REFUSED (stale: the string occurs ${n}×, need exactly 1) — ${name}`); refused++; continue; }
+  fs.writeFileSync(f, orig.replace(from, () => to));
+  const r = run();
+  fs.writeFileSync(f, orig);
+  const killed = r.fail > 0 || Number.isNaN(r.pass); // a mutant that breaks loading (no TAP summary) is dead too
+  if (!killed) survived++;
+  console.log(`M${String(i + 1).padStart(2, '0')} ${killed ? 'KILLED' : 'SURVIVED'} (${r.pass} pass / ${r.fail} fail) — ${name}`);
+}
+const after = run(); // the restore is real: the copy is green again
+const same = after.fail === 0 && after.pass === base.pass;
+console.log(`\n${mutants.length - survived - refused}/${mutants.length} mutants killed, ${survived} survived, ${refused} refused; scratch restored → ${same ? 'GREEN' : 'RED'}`);
+fs.rmSync(scratch, { recursive: true, force: true });
+process.exit(survived || refused || !same ? 1 : 0);

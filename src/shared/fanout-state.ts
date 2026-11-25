@@ -139,6 +139,8 @@ export interface TicketState {
   follows?: Record<string, number>;
   /** #588 (I3) — the reviewer Orchestra spawned for this ticket + every brief it was sent (written ONLY by `orchestra fanout review` / its host op; absent = none). */
   review?: ReviewRecord;
+  /** #587 PR B (ledger #591 I6) — written ONLY by `orchestra fanout start` (the host): when this ticket's implementer was launched, `spawn` or `respawn` (a dead one replaced), the sha256 of the brief it was given, how many briefs the ticket has had. Not settable by `state set`. */
+  start?: { at: string; kind: 'spawn' | 'respawn'; briefHash: string; briefs: number };
   updatedAt: string;
 }
 
@@ -225,7 +227,7 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
 }
 
 const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'updatedAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -326,6 +328,14 @@ function ifaceOfStored(v: unknown, where: string): Iface | null {
     return { version: h.version as number, text: h.text, reason: h.reason as string | null, at: isoOf(h.at, `${where} iface.history[${i}].at`) };
   });
   return { version: v.version as number, text: v.text, history };
+}
+function startOf(v: unknown, where: string): NonNullable<TicketState['start']> {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: start must be {at, kind, briefHash, briefs}`);
+  refuseUnknown(v, new Set(['at', 'kind', 'briefHash', 'briefs']), `${where} start`);
+  if (v.kind !== 'spawn' && v.kind !== 'respawn') throw new FanoutStateError(`${where}: start.kind must be spawn|respawn`);
+  if (typeof v.briefHash !== 'string' || !SHA256.test(v.briefHash)) throw new FanoutStateError(`${where}: start.briefHash must be a sha256`);
+  if (!Number.isInteger(v.briefs) || (v.briefs as number) < 1) throw new FanoutStateError(`${where}: start.briefs must be an integer ≥ 1`);
+  return { at: isoOf(v.at, `${where} start.at`), kind: v.kind, briefHash: v.briefHash, briefs: v.briefs as number };
 }
 function followsOf(v: unknown, where: string): Record<string, number> {
   if (!isObj(v)) throw new FanoutStateError(`${where}: follows must be {<upstream ticket>: <interface version>}`);
@@ -966,6 +976,7 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.depsDeclared === true ? { depsDeclared: true as const } : t.depsDeclared === undefined || t.depsDeclared === false ? {} : (() => { throw new FanoutStateError(`ticket ${id}: depsDeclared must be a boolean`); })()),
       ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),
       ...(t.follows !== undefined ? { follows: followsOf(t.follows, `ticket ${id}`) } : {}),
+      ...(t.start !== undefined ? { start: startOf(t.start, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
