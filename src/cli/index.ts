@@ -103,6 +103,7 @@ import { spawn as spawnChild } from 'node:child_process';
 import { defaultRunner as fanoutRunner, runFanout, switchVerbRun, type FanoutDeps } from './fanout-state.ts';
 import { runStart } from './fanout-start.ts';
 import { runPlan } from './fanout-plan.ts';
+import { runFanoutRun } from './fanout-run.ts';
 import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
@@ -2487,6 +2488,14 @@ async function main(argv: string[]): Promise<void> {
       if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
         await settleHostIdentity();
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
+      }
+      if (args[0] === 'run') { // #605 — the Boucle: `fanout run` (src/cli/fanout-run.ts); exit 0 merged · 3 parked ≥1 · 4 paused · 2 refusal · 1 could not run
+        const rr = await runFanoutRun(args.slice(1), fanoutDeps);
+        if (rr.stdout) process.stdout.write(rr.stdout);
+        if (rr.code === 1) fail(rr.stderr.trimEnd());
+        if (rr.stderr) process.stderr.write(rr.stderr);
+        if (rr.code !== 0) throw new CliExit(rr.code);
+        return;
       }
       if (args[0] === 'start') { // #587 PR B: launch the implementers of the plan — on the word of the HOST, like a freeze (a session it cannot vouch launches nothing)
         const helpOnly = args.includes('--help') || args.includes('-h'); // a `--help` start is not a start: usage, rc 0, host never asked

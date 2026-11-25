@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "run": "follows-missing",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [
+          "T1"
+        ],
+        "spec": "spec/T2.md"
+      },
+      {
+        "id": "T3",
+        "dependsOn": [],
+        "spec": "spec/T3.md"
+      }
+    ]
+  },
+  "faults": {
+    "noFollows": [
+      "T2"
+    ]
+  }
+}
