@@ -330,7 +330,10 @@ try {
   await waitFor(() => bn.mails.length === 0 || readSeqs('owner').length >= lotsBefore + bn.mails.length, 40000, 'the mail sent while down to be read').catch(() => null);
   const seqs = readSeqs('owner');
   clause('c3/term/mail-sent-while-down-is-read', seqs.length >= lotsBefore + bn.mails.length && new Set(seqs).size === seqs.length, `sequences read ${JSON.stringify(seqs)} (unique ${new Set(seqs).size}/${seqs.length})`);
-  saveShot('03-after-relaunch.png', await cdp.shot());
+  // a trusted click on a DIFFERENT row first, so this frame shows a state shot 01 / 02 do not (a no-op drive step must never pass as a new shot)
+  const lr = await cdp.eval(`(() => { const e = [...document.querySelectorAll('.ws-name')].find((x) => x.textContent.trim() === 'lead'); if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  if (lr) { for (const type of ['mousePressed', 'mouseReleased']) await cdp.send('Input.dispatchMouseEvent', { type, x: lr.x, y: lr.y, button: 'left', clickCount: 1 }); await sleep(1500); }
+  saveShot('03-after-relaunch-lead-selected.png', await cdp.shot());
 
   if (!SOAK_SEC) {
     // kill -9
@@ -373,7 +376,12 @@ try {
     clause('soak/no-lot-read-twice', seqsAll.length === uniq.size, `${seqsAll.length} reads, ${uniq.size} distinct`);
     clause('soak/command-lived-the-whole-run', cmdAlive('owner') && Date.now() - T0 >= SOAK_SEC * 1000, `command pid ${rec('owner').pid} alive after ${Math.round((Date.now() - T0) / 1000)} s`);
     clause('soak/vouched-except-while-the-host-was-down', okRatio > 0.95 && maxGap < 120000, `${idents.length} identity polls, ${(okRatio * 100).toFixed(2)}% ok; longest unvouched gap ${Math.round(maxGap / 1000)} s (the quit + reopen)`);
-    clause('soak/zero-agent-turns', modelReqs() === 0, `fake-API model requests over ${Math.round((Date.now() - T0) / 1000)} s: ${modelReqs()} (no normal agent was woken in this mode)`);
+    // The fake API cannot say WHICH workspace a turn belongs to, and the liveness switch is ON: the silent CONTROL agent ws-normal gets its coordinator ws-lead woken (a normal agent: legitimate turns). So the claim is attributed to the no-agent workspace through the host's own record, never a global count.
+    const log = appLog();
+    const ownerWoken = log.split('\n').filter((l) => l.includes(na.owner.id) && /\bwoke \S+ through|session (key )?registered for|session started|keeper (started|launched)/i.test(l) && !/not being woken/.test(l));
+    const ownerKeeperFiles = fs.existsSync(path.join(world.ohome, 'keepers')) ? fs.readdirSync(path.join(world.ohome, 'keepers')).filter((n) => n.startsWith(na.owner.id)) : [];
+    const ownerWoke = log.split('\n').filter((l) => /woke /.test(l) && l.includes(`woke ${na.owner.id}`));
+    clause('soak/zero-agent-turns-for-the-no-agent-workspace', ownerWoke.length === 0 && ownerKeeperFiles.length === 0 && !ownerWoken.some((l) => /session|keeper/i.test(l) && !/session key registered/.test(l)), `host log: ${ownerWoke.length} "woke <owner>" line(s), ${ownerKeeperFiles.length} keeper file(s) for it; model requests ${modelReqs()} in total (turns of the normal agents — ws-lead woken by liveness about the silent control ws-normal)`);
   }
 
   // ── no live contact ──
