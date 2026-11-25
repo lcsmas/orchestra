@@ -27,7 +27,7 @@ const MUTANTS = [
   { id: 'R06', name: 'resolveCaller treats an env-asserted id as host-vouched', edits: [[CALLER, ": resolution?.source === 'host' ? HOST_VOUCHED", ': id ? HOST_VOUCHED']] },
   { id: 'R07', name: 'the ticket\'s implementer may be its reviewer ([review-role])', edits: [[REV, "if (reviewerId === t.implementer) reviewRefuse(", "if (false as boolean) reviewRefuse("]] },
   { id: 'R08', name: 'the coordinator may be the reviewer ([review-role])', edits: [[REV, "if (reviewerId === state.run) reviewRefuse(", "if (false as boolean) reviewRefuse("]] },
-  { id: 'R09', name: 'a second call on the same head wakes the reviewer again (no noop)', edits: [[REV, 'if (t.review?.head && sameSha(t.review.head, head)) return', 'if (false as boolean) return']] },
+  { id: 'R09', name: 'a second call on the same head wakes the reviewer again (no noop)', edits: [[REV, 'if (t.review?.head && reviewSameSha(t.review.head, head)) return', 'if (false as boolean) return']] },
   { id: 'R10', name: 'a LIVE reviewer is replaced on a new head instead of woken', edits: [[REV, "return { action: 'wake', kind: 'wake' };", "return { action: 'replace', kind: 'replace' };"]] },
   { id: 'R11', name: 'a dead reviewer is not replaced', edits: [[REV, "if (!isLive(rv.id)) return { action: 'replace', kind: 'replace' };", '']] },
   { id: 'R12', name: 'the open findings are not in the wake / replacement brief', edits: [[REV, "openFindings: o.kind === 'spawn' ? [] : openFindingsOf(t),", 'openFindings: [],']] },

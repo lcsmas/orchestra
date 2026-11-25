@@ -20,7 +20,7 @@ export function reviewerName(ticket: string, n = 1): string {
 }
 
 const hadReviewer = (t: TicketState): boolean => !!t.review?.briefs.some((b) => b.reviewer !== null);
-const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+const reviewSameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 /** The refusals that need only the state (the caller proof is checked by {@link assertReviewCaller}, `--print` skips it). Returns the ticket. */
 export function assertReviewable(state: FanoutState, ticket: string): TicketState {
@@ -59,7 +59,7 @@ export function decideReview(t: TicketState, head: string, nowIso: string, isLiv
   if (!rv || rv.error) return again;
   if (rv.id === null) return claimIsStale(rv, nowIso) ? again : { action: 'noop', why: 'a reviewer spawn is already in flight', id: null };
   if (!isLive(rv.id)) return { action: 'replace', kind: 'replace' };
-  if (t.review?.head && sameSha(t.review.head, head)) return { action: 'noop', why: `${rv.name} (${rv.id}) is already briefed on this head`, id: rv.id };
+  if (t.review?.head && reviewSameSha(t.review.head, head)) return { action: 'noop', why: `${rv.name} (${rv.id}) is already briefed on this head`, id: rv.id };
   return { action: 'wake', kind: 'wake' };
 }
 

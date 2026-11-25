@@ -69,14 +69,14 @@ export const SWITCH_SENTENCES: Readonly<Record<string, string>> = {
 export const switchSentencesOf = (sw: Switches): string[] =>
   SWITCH_NAMES.map((n) => SWITCH_SENTENCES[`${n}=${sw[n]}`]).filter((x): x is string => !!x);
 
-const short = (s: string | null): string => (s ? s.slice(0, 12) : 'unknown');
-const indent = (s: string): string => s.trimEnd().split('\n').map((l) => `  ${l}`).join('\n'); // the ticket text only; interfaces / decisions use the shared renderers
+const briefShort = (s: string | null): string => (s ? s.slice(0, 12) : 'unknown');
+const briefIndent = (s: string): string => s.trimEnd().split('\n').map((l) => `  ${l}`).join('\n'); // the ticket text only; interfaces / decisions use the shared renderers
 
 /** The brief. Sections in a fixed order; an absent optional part prints nothing (never "none" for a switch). */
 export function renderReviewerBrief(i: BriefInput): string {
   const out: string[] = [];
   const kindLine = i.kind === 'spawn' ? 'You are a NEW reviewer for this ticket.'
-    : i.kind === 'wake' ? `You are the SAME reviewer, woken because the ticket has a new head: read the delta ${short(i.prevHead)}..${short(i.head)} first, then re-check your open findings below.`
+    : i.kind === 'wake' ? `You are the SAME reviewer, woken because the ticket has a new head: read the delta ${briefShort(i.prevHead)}..${briefShort(i.head)} first, then re-check your open findings below.`
     : 'You REPLACE the earlier reviewer of this ticket (it is gone): read the whole candidate; the findings it left open are below.';
   out.push(`# Review brief — ticket ${i.ticket} (run ${i.run})`, '', kindLine, '');
   out.push('## Candidate',
@@ -88,7 +88,7 @@ export function renderReviewerBrief(i: BriefInput): string {
     ...i.builtOn.map((b) => `built on: ${b.id}@${b.sha} (read only what is ABOVE it: its diff is the upstream's)`),
     ...(i.kind === 'wake' && i.prevHead ? [`previous head: ${i.prevHead}`] : []),
     `coordinator: ${i.coordinator} (report to it)`, '');
-  out.push('## Ticket text', i.ticketText ? indent(i.ticketText) : i.ticketRef ? `(no text captured; spec reference: ${i.ticketRef})` : '(no spec recorded for this ticket)', '');
+  out.push('## Ticket text', i.ticketText ? briefIndent(i.ticketText) : i.ticketRef ? `(no text captured; spec reference: ${i.ticketRef})` : '(no spec recorded for this ticket)', '');
   out.push('## Frozen interfaces', i.interfacesText);
   for (const f of i.follows) out.push(f.followed === null ? `- ${f.id}: this ticket records no followed version (current v${f.current})` : f.followed === f.current ? `- ${f.id}: followed v${f.followed} = current` : `- ${f.id}: this ticket follows v${f.followed} but the current is v${f.current}: STALE`);
   out.push('', '## Run decisions', i.decisionsText, '');
@@ -99,7 +99,7 @@ export function renderReviewerBrief(i: BriefInput): string {
   if (i.kind !== 'spawn') {
     out.push('## Open findings carried over');
     if (i.openFindings.length === 0) out.push('(none open)');
-    for (const f of i.openFindings) out.push(`- ${f.id} [${f.severity}]${f.raisedOn ? ` raised on ${short(f.raisedOn)}` : ''}${f.text ? `: ${f.text}` : ''}`);
+    for (const f of i.openFindings) out.push(`- ${f.id} [${f.severity}]${f.raisedOn ? ` raised on ${briefShort(f.raisedOn)}` : ''}${f.text ? `: ${f.text}` : ''}`);
     out.push('');
   }
   out.push('## Rules', REVIEWER_RULES, MERGE_RULES[i.switches.minorPolicy], '');
