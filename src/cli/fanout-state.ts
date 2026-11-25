@@ -43,7 +43,8 @@ import type { CheckExec } from '../shared/fanout-checks.ts';
 import type { IdentityResolution } from '../shared/session-identity.ts';
 import { DEMONSTRATION_LIMIT, DEMONSTRATION_WORD_FLOOR, citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { acceptanceOn, acceptancePhase, claimIsStale } from '../shared/fanout-acceptance.ts';
-import { countsThrough, unrecordedReviewers } from '../shared/fanout-record.ts';
+import { assertDecideCaller, countsThrough, unrecordedReviewers } from '../shared/fanout-record.ts';
+import { resolveCaller } from '../shared/fanout-caller.ts';
 
 /** `hostCalls` (#515): requests the verb leaves for the HOST (the app owns the spawn and the bus) — index.ts sends each to its socket route after the state is written. */
 export interface HostCall { route: '/fanoutAcceptance'; body: Record<string, unknown> }
@@ -165,6 +166,7 @@ export const SEAT_USAGE = `seatRecords (#585/#587) — switch \`state set --swit
   \`orchestra spawn --name impl-…\` by the coordinator of such a run is refused: [start] is the one door.
   \`state show\` then lists the plan, the interfaces and the tickets that are ready (todo, not started).`;
 
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const SHA_ARG = /^[0-9a-f]{7,40}$/;
 const TREE_OUT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 /** #512 — the git tree of `sha`: the local object first, else GitHub's commit. null = UNREADABLE — the verdict then stays sha-keyed (never looser, never "no tree"). */
@@ -443,6 +445,11 @@ function runState(args: string[], deps: FanoutDeps): RunResult {
     if (specRead && ((specRead.isFile && specRead.text !== null) || p.vals['--spec-text'] !== undefined)) derived.specText = specRead.text; // a spec file that reads to nothing (too big…) or a non-file reference (URL / ledger) leaves the stored text alone (a `--spec-text` excerpt survives a re-registration); a CHANGED reference clears it in applyTicketPatch
     const before = readState(file);
     if (blankDecide !== null && !seatRecordsOn(before)) decideArg(blankDecide); // seatRecords off: the old usage error, unchanged
+    if (before && seatRecordsOn(before) && isObj(patch.decide) && Object.keys(patch.decide).length) { // #589: a decision is the coordinator's, vouched by the host; `by` is the vouched id, never what a --json patch says
+      const caller = resolveCaller(before, deps.env, deps.identity);
+      assertDecideCaller(before, caller);
+      patch.decide = Object.fromEntries(Object.entries(patch.decide as Record<string, Record<string, unknown>>).map(([k, v]) => [k, { ...v, by: caller.id }]));
+    }
     const repo = before?.repo ?? null;
     if (before && seatRecordsOn(before) && p.vals['--depends-on'] !== undefined) { // #587: only an explicit `none` declares an empty list — an empty value declares nothing
       if (p.vals['--depends-on'].trim().toLowerCase() === 'none') patch.dependsOn = [];

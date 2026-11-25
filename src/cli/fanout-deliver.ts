@@ -261,7 +261,14 @@ export function recordedStateFor(opts: { ticket: string; run?: string }, env: No
   const home = env.ORCHESTRA_HOME && env.ORCHESTRA_HOME.trim() ? env.ORCHESTRA_HOME : path.join(os.homedir(), '.orchestra');
   for (const r of opts.run || !inherited ? [run] : [run, inherited]) {
     const state = readState(stateFile(home, r));
-    if (state?.tickets[opts.ticket]) return seatRecordsOn(state) ? state : null;
+    if (state?.tickets[opts.ticket]) {
+      if (!seatRecordsOn(state) && opts.run) { // a `--run` naming ANOTHER run that is off, while the caller's own run records: a decoy run would skip the switch
+        const own = resolveFanoutRun(undefined, env).run;
+        const ownState = own && own !== r ? readState(stateFile(home, own)) : null;
+        if (ownState && seatRecordsOn(ownState)) throw new FanoutStateError(`[run-switch] --run ${r} has seatRecords=off but your own run ${own} has seatRecords=on: a delivery under another run would skip the recorded-verdict rule — deliver under your own run (drop --run)`);
+      }
+      return seatRecordsOn(state) ? state : null;
+    }
   }
   return null;
 }

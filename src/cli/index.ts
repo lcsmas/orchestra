@@ -106,7 +106,7 @@ import { runAcceptance } from './fanout-acceptance.ts';
 import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
-import { fanoutCompletionRefusal, runRecord } from './fanout-record.ts';
+import { fanoutCompletionRefusal, runRecord, stateSetNeedsHost } from './fanout-record.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2482,6 +2482,7 @@ async function main(argv: string[]): Promise<void> {
         fanoutDeps.identity = hostIdentity;
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session (is Orchestra running, and is this the live session of the reviewer?). Nothing was recorded.');
       }
+      if (stateSetNeedsHost(args, process.env)) { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; } // #589: a `--decide` on a seatRecords=on run is the coordinator's, proven by the host
       if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
         await settleHostIdentity();
         fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;

@@ -2,7 +2,7 @@
 // and each finding of the exact head it read; counts are derived. `gate` / `deliver` read nothing else. Rule = `recordReview` (src/shared/fanout-record.ts); the caller = `resolveCaller` (#588).
 import fs from 'node:fs';
 import path from 'node:path';
-import { FanoutStateError, SeatRefusal, readState, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
+import { FanoutStateError, SeatRefusal, readState, resolveFanoutRun, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
 import { isVouched, resolveCaller } from '../shared/fanout-caller.ts';
 import { countsThrough, parseRecordJson, recordReview, reviewerDoneRefusal } from '../shared/fanout-record.ts';
 import { citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
@@ -74,4 +74,14 @@ export function fanoutCompletionRefusal(sender: string, runId: string, env: Node
     const state = readState(stateFile(homeOf(env), runId));
     return state ? reviewerDoneRefusal(state, sender) : null;
   } catch { return null; }
+}
+
+/** `state set … --decide|--json` on a run whose seatRecords is ON: index.ts then asks the host who the caller is (a decision is the coordinator's, vouched). Reads the state only; false for anything it cannot read. */
+export function stateSetNeedsHost(args: string[], env: NodeJS.ProcessEnv): boolean {
+  if (args[0] !== 'state' || args[1] !== 'set' || !(args.includes('--decide') || args.includes('--json'))) return false;
+  const i = args.indexOf('--run');
+  try {
+    const { run } = resolveFanoutRun(i >= 0 ? args[i + 1] : undefined, env);
+    return !!run && seatRecordsOn(readState(stateFile(homeOf(env), run)));
+  } catch { return false; }
 }

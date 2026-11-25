@@ -670,6 +670,7 @@ test('wiring pin: index.ts routes `fanout record` and hands the bus `send` its c
   assert.ok(src.includes("args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) :"), 'fanout record is routed');
   assert.ok(src.includes('completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId)'), 'verbSend gets the hook');
   assert.ok(src.includes("const needsCaller = args[0] === 'review' || args[0] === 'record' ||"), 'the host is asked who the recorder is, and its answer is handed to the verb (`...(needsCaller ? { identity: hostIdentity } : {})`)');
+  assert.ok(src.includes('|| stateSetNeedsHost(args, process.env)'), 'a `state set --decide|--json` on a recording run asks the host who the caller is');
   assert.ok(src.includes("if (args[0] === 'record' && process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session"), 'a keyed session the host cannot vouch records nothing');
 });
 
@@ -694,4 +695,84 @@ test('record must-FAIL [record-not-reviewer]: the reviewer\'s id asserted by the
   }
   assert.equal(T(home).reviews, undefined);
   assert.equal(forged(HOST).code, 0);
+});
+
+// ── review round 1 (pre-review subagent): who may decide, typed verdict word, decoy run, policy-blocking MINOR at deliver ──
+
+test('decide must-FAIL [decide-caller]: an implementer / another ticket\'s reviewer / an unvouched "coordinator" cannot lift a reviewer\'s finding; the recorded `by` is the vouched id, never what a --json patch says', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR()).code, 0);
+  const as = (who: string, identity: IdentityResolution | null, ...a: string[]) => runFanout(['state', 'set', '--run', 'r1', 'T1', ...a], depsOf(home, who, offline, '', identity));
+  for (const [who, id] of [['impl1', HOST], ['rev2', HOST], ['rev1', HOST], ['r1', null], ['r1', { source: 'env', why: 'unvouched' } as IdentityResolution]] as const) {
+    const r = as(who, id, '--decide', 'F1=trust me');
+    assert.equal(r.code, 2, `${who}: ${r.stderr}`);
+    assert.ok(r.stderr.startsWith('[decide-caller]'), r.stderr);
+  }
+  assert.match(as('impl1', HOST, '--decide', 'F1=x').stderr, /only the run's coordinator \(r1\)/);
+  assert.match(as('r1', null, '--decide', 'F1=x').stderr, /the host did not vouch for r1/);
+  assert.equal(T(home).findings.F1.decision, undefined, 'nothing was decided by anyone else');
+  const r = as('r1', HOST, '--json', JSON.stringify({ decide: { F1: { text: 'accepted: tracked in the next ticket', by: 'rev1' } } }));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(T(home).findings.F1.decision?.by, 'r1', 'by = the vouched coordinator, not the forged "rev1"');
+  // off: no host is asked, no caller is checked (an implementer\'s decide works as it always did)
+  const off = mkHome(t);
+  seed(off, { switches: { seatRecords: 'off' } });
+  assert.equal(setT(off, 'r1', 'T1', '--finding', 'F1=MAJOR').code, 0);
+  assert.equal(runFanout(['state', 'set', '--run', 'r1', 'T1', '--decide', 'F1=ok'], depsOf(off, 'impl1', offline, '', null)).code, 0);
+});
+
+test('state set must-FAIL [typed-verdict]: the coordinator cannot type the reviewer\'s word (approve / changes-requested); pass / fail / none stay its own; off unchanged', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  for (const v of ['approve', 'changes-requested']) {
+    const r = setT(home, 'r1', 'T1', '--verdict', v);
+    assert.equal(r.code, 2);
+    assert.ok(r.stderr.startsWith('[typed-verdict]'), r.stderr);
+  }
+  assert.equal(setT(home, 'r1', 'T1', '--verdict', 'pass').code, 0);
+  assert.equal(setT(home, 'r1', 'T1', '--verdict', 'none').code, 0);
+  assert.equal(rec(home, 'rev1', 'T1', A, 'approve', {}).code, 0);
+  assert.equal(T(home).verdict, 'approve', 'the record writes it');
+  const off = mkHome(t);
+  seed(off, { switches: { seatRecords: 'off' } });
+  assert.equal(setT(off, 'r1', 'T1', '--verdict', 'approve').code, 0);
+});
+
+test('deliver must-FAIL [run-switch]: a decoy run with seatRecords=off named by --run does not skip the recorded-verdict rule of the caller\'s own run', async (t) => {
+  const home = mkHome(t);
+  seed(home);
+  let shadow = newState('shadow', { now: NOW, switches: { seatRecords: 'off' } as never });
+  shadow = applyTicketPatch(shadow, 'T1', { status: 'nominated', branch: 't1', head: A }, NOW);
+  writeStateAtomic(stateFile(home, 'shadow'), shadow);
+  const r = rig(A);
+  const out = await withEnv(home, () => deliver(dopts({ run: 'shadow', reviewVerdict: verdictFile(home), verifiedHead: A }), r.dd));
+  assert.equal(out.exit, 1, JSON.stringify(out.result));
+  assert.equal(out.result.reason, 'bad-state');
+  assert.match(out.result.detail!, /\[run-switch\] --run shadow has seatRecords=off but your own run r1 has seatRecords=on/);
+  assert.ok(!r.merged());
+  // …while a run with NO recording own run is untouched (the off arm of the other tests): the decoy only matters when the caller's own run records
+  const plain = mkHome(t);
+  seed(plain, { switches: { seatRecords: 'off' } });
+  writeStateAtomic(stateFile(plain, 'shadow'), shadow);
+  const ok = await withEnv(plain, () => deliver(dopts({ run: 'shadow', reviewVerdict: verdictFile(plain), verifiedHead: A }), rig(A).dd));
+  assert.equal(ok.exit, 0, JSON.stringify(ok.result));
+});
+
+test('deliver [finding-unsettled]: under minorPolicy=spec a recorded MINOR quoting the spec holds the merge until the reviewer closes it on a later head', async (t) => {
+  const home = mkHome(t);
+  const s0 = seed(home, { switches: { minorPolicy: 'spec' } });
+  const spec = 'The retry loop must stop after five attempts and report the last error.';
+  writeStateAtomic(stateFile(home, 'r1'), { ...s0, tickets: { ...s0.tickets, T1: { ...s0.tickets.T1, spec: 'spec.md', specText: spec } } });
+  const sp = { findings: { S1: { severity: 'MINOR', evidence: 'argued', text: 'it never stops', specSentence: spec } } };
+  assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', sp).code, 0);
+  const out = await withEnv(home, () => deliver(dopts(), rig(A).dd));
+  assert.equal(out.exit, 2, JSON.stringify(out.result));
+  assert.equal(out.result.reason, 'finding-unsettled');
+  assert.match(out.result.detail!, /S1/);
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] } } } });
+  assert.equal(rec(home, 'rev1', 'T1', B, 'approve', { fixed: ['S1'] }).code, 0);
+  const good = await withEnv(home, () => deliver(dopts({ verifiedHead: B }), rig(B).dd));
+  assert.equal(good.exit, 0, JSON.stringify(good.result));
 });

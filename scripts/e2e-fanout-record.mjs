@@ -86,6 +86,13 @@ const mutants = [
   ['state file: `reviews` is an unknown ticket field', S, "TICKET_KEYS.add('reviews'); // #589 (I4)", ""],
   ['state file: a hand-edited review number is accepted', S, "(e.n as number) !== i + 1", F],
   ['state file: a hand-typed verdict word is accepted in reviews', S, "enumOf(e.verdict, ['approve', 'changes-requested'] as const", "enumOf(e.verdict, ['approve', 'changes-requested', 'pass'] as const"],
+  ['decide: any caller may record "not fixed" (the caller is not checked)', C, "      assertDecideCaller(before, caller);\n", ""],
+  ['decide: `by` is taken from the --json patch, not the vouched id', C, "[k, { ...v, by: caller.id }]", "[k, { by: caller.id, ...v }]"],
+  ['decide: an id the host did not vouch may decide', R, "if (caller.proof !== 'host-vouched') refuse('decide-caller'", `if (${F}) refuse('decide-caller'`],
+  ['decide: a non-coordinator may decide', R, "if (caller.role !== 'coordinator') refuse('decide-caller'", `if (${F}) refuse('decide-caller'`],
+  ['state set: the typed approve / changes-requested word is accepted from the coordinator', S, "if (patch.verdict === 'approve' || patch.verdict === 'changes-requested') throw", `if (${F}) throw`],
+  ['deliver: a decoy run with the switch off skips the recorded-verdict rule', D, "if (ownState && seatRecordsOn(ownState)) throw", `if (${F}) throw`],
+  ['wiring: a `state set --decide` never asks the host who the caller is', I, " || stateSetNeedsHost(args, process.env); // #589: + a `--decide` under seatRecords=on", "; // #589: + a `--decide` under seatRecords=on"],
   // deliver / gate
   ['deliver: a typed --review-verdict is accepted under the switch', D, "if (opts.reviewVerdict) return done({ verdict: 'refused', reason: 'typed-verdict'", `if (${F}) return done({ verdict: 'refused', reason: 'typed-verdict'`],
   ['deliver: --no-review-gate is accepted under the switch', D, "if (opts.noReviewGate) return done({ verdict: 'refused', reason: 'ungated-merge'", `if (${F}) return done({ verdict: 'refused', reason: 'ungated-merge'`],
