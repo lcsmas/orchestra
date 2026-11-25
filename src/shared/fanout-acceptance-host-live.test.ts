@@ -11,7 +11,7 @@ const NOW = '2026-01-01T00:00:00.000Z';
 function host(): { deps: AcceptanceHostDeps; alive: Set<string> } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'host-live-'));
   updateState(stateFile(home, 'run1'), () => {
-    let s = setPlan(newState('run1', { target: 'main', repo: null, switches: { seatRecords: 'on' }, now: NOW }), ['T1'], 'declare', NOW);
+    let s = setPlan(newState('run1', { target: 'main', repo: null, now: NOW }), ['T1'], 'declare', NOW);
     s = applyTicketPatch(s, 'T1', { implementer: 'ws-impl' }, NOW);
     return s;
   });
