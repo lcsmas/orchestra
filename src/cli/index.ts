@@ -2472,6 +2472,10 @@ async function main(argv: string[]): Promise<void> {
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to freeze: the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?). Nothing was frozen.');
       }
       const fanoutDeps: FanoutDeps = { env: process.env, cwd: process.cwd(), runner: fanoutRunner, now: () => new Date().toISOString(), readStdin: () => fs.readFileSync(0, 'utf8') };
+      if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
+        await settleHostIdentity();
+        fanoutDeps.vouchedCaller = hostIdentity?.source === 'host' ? (process.env.ORCHESTRA_WS_ID || process.env.ORCHESTRA_WS_ID_IDENTITY || '').trim() || null : null;
+      }
       // #554 (review T3 m1): a switch write asks the HOST whether the run owner already spawned — the state alone cannot see a hand-spawned agent not yet recorded.
       const switchRun = args[0] === 'acceptance' ? null : switchVerbRun(args, process.env);
       if (switchRun) {

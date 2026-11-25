@@ -2,11 +2,14 @@
 // deliver's receipt verdict. I/O (git, gh, fs, running the command) lives in src/cli/fanout-acceptance.ts; the state schema in fanout-state.ts.
 import {
   FanoutStateError,
+  SeatRefusal,
   acceptanceHash,
   assertAcceptancePath,
   blankTicket,
   assertConfigMatchesRun,
   freezeAtFirstSpawn,
+  planMissing,
+  seatRecordsOn,
   stampDefaults,
   switchesOf,
   parseRunArgv,
@@ -132,6 +135,10 @@ export function claimIsStale(a: { id: string | null; error?: string; at: string 
 export function claimAcceptor(state0: FanoutState, id: string, name: string, now: string, o: { replace?: boolean } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: before the claim — the writer spawn is the spawn that must not read as a legacy run
   assertAcceptanceOn(state, `claim a writer for ${id}`); // #554: the spawn is ABSENT with the switch off — the host's only door is this claim
+  if (seatRecordsOn(state)) { // #587: the writer spawn is a spawn — the plan and the interfaces hold first
+    const missing = planMissing(state);
+    if (missing.length) throw new SeatRefusal('plan-incomplete', `${id}: cannot spawn its acceptance writer — ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
+  }
   const t = state.tickets[id];
   if (!t) throw new FanoutStateError(`ticket ${id} is not in the fanout state`);
   if (!t.spec) throw new FanoutStateError(`${id}: no spec registered (\`state set ${id} --spec <file|url|ledger section>\`) — the writer's brief is the spec`);

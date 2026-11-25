@@ -131,8 +131,18 @@ export interface TicketState {
   accept: AcceptFlow | null;
   /** #564 — pre-nomination check records by git TREE of the head they ran on (DERIVED: only `orchestra fanout check` writes it; absent = none, never written empty). */
   checks?: Record<string, CheckRecord>;
+  /** #587 (seatRecords) — true once `--depends-on` was given (`none` = declared empty). Optional: never written under seatRecords=off, a v1 file without it loads (= false). */
+  depsDeclared?: boolean;
+  /** #587 — the interface other tickets build against (null / absent = none). Optional like the rest: written only by `--interface`. */
+  iface?: Iface | null;
+  /** #587 — upstream id → the `iface.version` of that upstream this ticket follows (`--follows`). Absent = follows nothing. */
+  follows?: Record<string, number>;
   updatedAt: string;
 }
+/** #587 — one superseded version of an interface: `reason` = WHY it was replaced (the reason given with the next version), `at` = when. */
+export interface IfaceVersion { version: number; text: string; reason: string | null; at: string }
+/** #587 — `version` ≥ 1 and `text` are the CURRENT version; `history` = the superseded ones, newest last. */
+export interface Iface { version: number; text: string; history: IfaceVersion[] }
 
 export interface FanoutState {
   version: typeof STATE_VERSION;
@@ -149,23 +159,28 @@ export interface FanoutState {
   switchDefaults?: DefaultsProfile;
   /** #554 — set at the run's FIRST SPAWN (first ticket past `todo`, first implementer/verifier/acceptor recorded — `firstSpawnSignal`): from then on no switch can change. */
   switchesFrozen?: { at: string; by: string };
+  /** #587 (seatRecords) — the run's ticket list, declared by `state set --plan` before the first spawn (`--plan-add` appends, also after it). Absent = not declared. */
+  plan?: { tickets: string[]; declaredAt: string };
+  /** #587 PR A (ledger #591 I3 v2) — the run's decisions: what the coordinator must tell every seat; EVERY brief carries them verbatim (`fanout-brief-common.ts`). Appended by `state set --run-decision`, never edited. */
+  decisions?: Array<{ n: number; text: string; by: string; at: string }>;
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
 }
 
 // ── #554: one switch per feature, frozen for the run ──────────────────────────────────────────────────────────
-export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;
+export const SWITCH_VALUES = { earlyGate: ['on', 'off'], acceptance: ['on', 'off'], minorPolicy: ['legacy', 'refuse', 'spec', 'demonstrated'], verifier: ['on', 'off'], preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;
 export type SwitchName = keyof typeof SWITCH_VALUES;
 export const SWITCH_NAMES = Object.keys(SWITCH_VALUES) as SwitchName[];
-export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' | 'demonstrated'; verifier: 'on' | 'off'; preNominationChecks: 'on' | 'off' }
+export interface Switches { earlyGate: 'on' | 'off'; acceptance: 'on' | 'off'; minorPolicy: 'legacy' | 'refuse' | 'spec' | 'demonstrated'; verifier: 'on' | 'off'; preNominationChecks: 'on' | 'off'; seatRecords: 'on' | 'off' }
 /** earlyGate (#506): off = a dependent waits for its upstream's MERGE · acceptance (#510/#515): off = no writer spawned, no frozen test asked ·
  *  minorPolicy: legacy = follow-ups unrestricted (before #514) · refuse = #514 (a MINOR-only follow-up is refused) · spec = #552 · demonstrated = #572 (a finding of ANY severity with an accepted demonstration blocks like a MAJOR; follow-ups unrestricted as under legacy) ·
  *  verifier (#563): off = no verifier seat; deliver on the reviewer's verdict + a green CI on the head (`--no-review-gate` refused, `state set --verifier` refused) ·
- *  preNominationChecks (#564): on = a nomination needs a passing `orchestra fanout check` record for the head's tree; off = none asked. */
-export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559: the v0.5.375 profile; #564 (ledger #565 D3): off in both profiles
+ *  preNominationChecks (#564): on = a nomination needs a passing `orchestra fanout check` record for the head's tree; off = none asked ·
+ *  seatRecords (#585/#587): on = the plan (every ticket + its dependencies) and the interface of each depended-on ticket are declared before the first spawn; off = none of it (every render and verb as before). */
+export const DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'off', minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off', seatRecords: 'off' }; // #559: the v0.5.375 profile; #564 (ledger #565 D3): off in both profiles
 /** #559 — the defaults of v0.5.378 (#554): kept for a run that had already spawned when the defaults changed (never re-read with other defaults mid-run). */
-export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' };
+export const V378_DEFAULT_SWITCHES: Readonly<Switches> = { earlyGate: 'on', acceptance: 'on', minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off', seatRecords: 'off' };
 export type DefaultsProfile = 'v0.5.375' | 'v0.5.378';
 export const DEFAULTS_PROFILES: Readonly<Record<DefaultsProfile, Readonly<Switches>>> = { 'v0.5.375': DEFAULT_SWITCHES, 'v0.5.378': V378_DEFAULT_SWITCHES };
 type SwitchHolder = { switches?: Partial<Switches>; switchDefaults?: DefaultsProfile; switchesFrozen?: unknown; tickets?: FanoutState['tickets'] };
@@ -182,6 +197,8 @@ export function stampDefaults(state: FanoutState): FanoutState {
 export function switchesOf(state: SwitchHolder | null | undefined): Switches {
   return { ...DEFAULTS_PROFILES[defaultsProfileOf(state)], ...(state?.switches ?? {}) };
 }
+/** #587 (I1) — is the `seatRecords` switch on for this run (plan + interfaces declared before the first spawn, #585)? */
+export const seatRecordsOn = (s: SwitchHolder | null | undefined): boolean => switchesOf(s).seatRecords === 'on';
 /** #559 (ledger D2) — where `name`'s value comes from: `explicit` (stored, and — for a v0.5.378 run — different from that profile's default), `default`, or `default-kept-v0.5.378` (a run that had spawned when the defaults changed). */
 export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit' | 'default' | 'default-kept-v0.5.378' {
   const profile = defaultsProfileOf(state);
@@ -193,11 +210,13 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
   return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'tickets', 'updatedAt', 'reconciledAt']);
-const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'updatedAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
+const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'updatedAt']);
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
+/** #587 — the patch keys of the seatRecords rules (kept out of SETTABLE_KEYS so a `nothing to set` message stays as before): refused under seatRecords=off. */
+export const SEAT_PATCH_KEYS = ['interface', 'interfaceReason', 'follows'] as const;
 export type TicketPatch = Partial<Pick<TicketState, Exclude<(typeof SETTABLE_KEYS)[number], 'forgetMerge' | 'settle' | 'decide' | 'findings'> | (typeof DERIVED_KEYS)[number]>> & { forgetMerge?: string; findings?: Record<string, StoredFinding>; settle?: Record<string, { how: string; ref: string }>; decide?: Record<string, { text: string; by?: string }> };
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -207,6 +226,11 @@ export const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
 export class FanoutStateError extends Error {}
+/** #587 (I1) — a refusal of the `seatRecords` rules: the message STARTS with its name in brackets (`[plan-incomplete] …`), the CLI exits 2 on it (a plain FanoutStateError exits 1). */
+export class SeatRefusal extends FanoutStateError {
+  readonly refusal: string;
+  constructor(refusal: string, detail: string) { super(`[${refusal}] ${detail}`); this.refusal = refusal; }
+}
 
 /** A ticket as `state set` creates it. */
 export function blankTicket(now: string): TicketState {
@@ -252,6 +276,112 @@ const withHarness = (h: string | null): { harness?: string } => (h === null ? {}
 export function setHarness(state: FanoutState, v: string, now: string): FanoutState {
   const { harness: _prev, ...rest } = state;
   return { ...rest, ...withHarness(harnessOf(v)), updatedAt: now };
+}
+
+// ── #587 (I2): the plan + the interfaces, declared before the first spawn (switch seatRecords) ─────────────────────
+const IFACE_TEXT_MAX = 20_000;
+export const DECISION_TEXT_MAX = 4_000;
+/** Every brief of the run carries ALL the decisions: their number and total size are bounded (a refusal `[decisions-full]` names the bound). */
+export const DECISIONS_MAX = 20;
+export const DECISIONS_TOTAL_MAX = 16_000;
+const seatOff = (what: string): SeatRefusal => new SeatRefusal('seat-records-off', `${what} is a seatRecords rule and this run has seatRecords=off (choose it before the first spawn: state set --switch seatRecords=on)`);
+function ticketIdsOf(v: unknown, where: string): string[] {
+  if (!Array.isArray(v) || v.some((d) => typeof d !== 'string' || !SAFE_TICKET.test(d))) throw new FanoutStateError(`${where} must be a list of ticket ids`);
+  return [...new Set(v as string[])];
+}
+function planOf(v: unknown): NonNullable<FanoutState['plan']> {
+  if (!isObj(v)) throw new FanoutStateError('plan must be {tickets, declaredAt}');
+  refuseUnknown(v, new Set(['tickets', 'declaredAt']), 'plan');
+  const tickets = ticketIdsOf(v.tickets, 'plan.tickets');
+  if (tickets.length === 0) throw new FanoutStateError('plan.tickets is empty');
+  return { tickets, declaredAt: isoOf(v.declaredAt, 'plan.declaredAt') };
+}
+function ifaceOfStored(v: unknown, where: string): Iface | null {
+  if (v === null) return null;
+  if (!isObj(v)) throw new FanoutStateError(`${where}: iface must be {version, text, history}`);
+  refuseUnknown(v, new Set(['version', 'text', 'history']), `${where} iface`);
+  if (!Number.isInteger(v.version) || (v.version as number) < 1) throw new FanoutStateError(`${where}: iface.version must be an integer ≥ 1`);
+  if (typeof v.text !== 'string' || !v.text.trim()) throw new FanoutStateError(`${where}: iface.text must be non-blank`);
+  if (!Array.isArray(v.history) || v.history.length !== (v.version as number) - 1) throw new FanoutStateError(`${where}: iface.history must hold the ${(v.version as number) - 1} superseded version(s)`);
+  const history = v.history.map((h, i): IfaceVersion => {
+    if (!isObj(h)) throw new FanoutStateError(`${where}: iface.history[${i}] must be an object`);
+    refuseUnknown(h, new Set(['version', 'text', 'reason', 'at']), `${where} iface.history[${i}]`);
+    if (h.version !== i + 1) throw new FanoutStateError(`${where}: iface.history[${i}].version must be ${i + 1}`);
+    if (typeof h.text !== 'string' || !h.text.trim()) throw new FanoutStateError(`${where}: iface.history[${i}].text must be non-blank`);
+    if (h.reason !== null && (typeof h.reason !== 'string' || !h.reason.trim())) throw new FanoutStateError(`${where}: iface.history[${i}].reason must be a non-blank text or null`);
+    return { version: h.version as number, text: h.text, reason: h.reason as string | null, at: isoOf(h.at, `${where} iface.history[${i}].at`) };
+  });
+  return { version: v.version as number, text: v.text, history };
+}
+function followsOf(v: unknown, where: string): Record<string, number> {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: follows must be {<upstream ticket>: <interface version>}`);
+  const out: Record<string, number> = {};
+  for (const [k, n] of Object.entries(v)) {
+    if (!SAFE_TICKET.test(k)) throw new FanoutStateError(`${where}: follows: unsafe ticket id ${JSON.stringify(k)}`);
+    if (!Number.isInteger(n) || (n as number) < 1) throw new FanoutStateError(`${where}: follows[${k}] must be an interface version (integer ≥ 1)`);
+    out[k] = n as number;
+  }
+  return out;
+}
+/** `state set --plan <ids>` (declare: before the first spawn, replaces) / `--plan-add <ids>` (append: also after it). Pure; refused under seatRecords=off. */
+export function setPlan(state: FanoutState, ids: string[], mode: 'declare' | 'add', now: string): FanoutState {
+  const st = stampDefaults(state);
+  if (!seatRecordsOn(st)) throw seatOff(mode === 'add' ? '--plan-add' : '--plan');
+  const list = ticketIdsOf(ids, mode === 'add' ? '--plan-add' : '--plan');
+  if (list.length === 0) throw new FanoutStateError(`${mode === 'add' ? '--plan-add' : '--plan'} needs at least one ticket id`);
+  if (mode === 'declare') {
+    const locked = st.plan ? switchesLockedWhy(st) : null;
+    if (locked) throw new SeatRefusal('plan-frozen', `the plan of run ${st.run} is declared and the run already spawned (${locked}) — a ticket added later: state set --plan-add <id,…>`);
+    return { ...st, plan: { tickets: list, declaredAt: now }, updatedAt: now };
+  }
+  return { ...st, plan: { tickets: [...new Set([...(st.plan?.tickets ?? []), ...list])], declaredAt: st.plan?.declaredAt ?? now }, updatedAt: now };
+}
+function decisionsOf(v: unknown): NonNullable<FanoutState['decisions']> {
+  if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('decisions must be a non-empty list of {n, text, by, at}');
+  return v.map((d, i) => {
+    if (!isObj(d)) throw new FanoutStateError(`decisions[${i}] must be an object`);
+    refuseUnknown(d, new Set(['n', 'text', 'by', 'at']), `decisions[${i}]`);
+    if (d.n !== i + 1) throw new FanoutStateError(`decisions[${i}].n must be ${i + 1}`);
+    if (typeof d.text !== 'string' || !d.text.trim()) throw new FanoutStateError(`decisions[${i}].text must be non-blank`);
+    if (typeof d.by !== 'string' || !d.by.trim()) throw new FanoutStateError(`decisions[${i}].by must be non-empty`);
+    return { n: i + 1, text: d.text, by: d.by, at: isoOf(d.at, `decisions[${i}].at`) };
+  });
+}
+/** `state set --run-decision <text|file|->`: append one decision (numbered from 1, never edited). Pure; refused under seatRecords=off; a blank text → `[decision-blank]`. `by` = the recording workspace (the CLI proves it is the coordinator). */
+export function addDecision(state: FanoutState, text: string, by: string, now: string): FanoutState {
+  const st = stampDefaults(state);
+  if (!seatRecordsOn(st)) throw seatOff('--run-decision');
+  const t = text.replace(/\r\n/g, '\n').trim();
+  if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
+  if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
+  const list = st.decisions ?? [];
+  if (list.length >= DECISIONS_MAX) throw new SeatRefusal('decisions-full', `the run already holds ${list.length} decisions (at most ${DECISIONS_MAX}): every brief carries them all — merge them into fewer, or start a new run`);
+  const total = list.reduce((n, d) => n + d.text.length, 0);
+  if (total + t.length > DECISIONS_TOTAL_MAX) throw new SeatRefusal('decisions-full', `the decisions would reach ${total + t.length} characters (at most ${DECISIONS_TOTAL_MAX} in all): every brief carries them all`);
+  return { ...st, decisions: [...list, { n: list.length + 1, text: t, by, at: now }], updatedAt: now };
+}
+/** #587 (I2) — what stands between the run and its first spawn / a `started|nominated|gated` ticket: the plan tickets absent from the state, the tickets (not dropped) whose dependencies are not declared, the depended-on tickets with no interface. [] = nothing missing. */
+export function planMissing(state: FanoutState): string[] {
+  const out: string[] = [];
+  if (!state.plan) out.push('no plan declared — state set --plan <id,id,…> (every ticket of the run)');
+  else for (const id of state.plan.tickets) if (!state.tickets[id]) out.push(`${id}: in the plan but not in the state — state set ${id} --depends-on <a,b|none>`);
+  const live = Object.entries(state.tickets).filter(([, t]) => t.status !== 'dropped');
+  for (const [id, t] of live) if (t.depsDeclared !== true) out.push(`${id}: dependencies not declared — state set ${id} --depends-on <a,b|none>`);
+  const needed = new Map<string, string[]>();
+  for (const [id, t] of live) for (const d of t.dependsOn) if (!state.tickets[d]?.iface) needed.set(d, [...(needed.get(d) ?? []), id]);
+  for (const [d, by] of needed) out.push(`${d}: ${by.join(', ')} depend${by.length === 1 ? 's' : ''} on it but it has no interface — state set ${d} --interface <text|file|->`);
+  return out;
+}
+/** #587 (I2) — the current interface of ticket `id` (null = none, or no such ticket). */
+export const interfaceOf = (state: FanoutState, id: string): TicketState['iface'] => state.tickets[id]?.iface ?? null;
+/** #587 — the tickets that can be started now: todo, with the plan complete (which means their dependencies are declared and each dependency holds an interface — a held interface is what a dependent starts against). */
+export function readyTickets(state: FanoutState): string[] {
+  if (planMissing(state).length) return [];
+  return Object.entries(state.tickets).filter(([, t]) => t.status === 'todo').map(([id]) => id);
+}
+/** The reasons of the changes a dependent that follows `v` of an interface has not seen: `v1→v2: <reason>; v2→v3: …`. */
+function ifaceChanges(f: Iface, v: number): string {
+  return f.history.filter((h) => h.version >= v).map((h) => `v${h.version}→v${h.version + 1}: ${h.reason ?? '(no reason recorded)'}`).join('; ');
 }
 
 /** #554 — a switch value: the NAME and the VALUE are each checked against the closed table; anything else is refused naming what is allowed. */
@@ -341,7 +471,8 @@ export function switchesLine(state: FanoutState): string {
   const sw = switchesOf(state);
   const locked = switchesLockedWhy(state);
   const label = (n: SwitchName): string => { const src = switchSourceOf(state, n); return src === 'default-kept-v0.5.378' ? 'default kept from v0.5.378 (run started before the defaults change)' : src; };
-  return `switches (#554, #559, #563): ${SWITCH_NAMES.map((n) => `${n}=${sw[n]} (${label(n)})`).join(' · ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
+  const shown = SWITCH_NAMES.filter((n) => n !== 'seatRecords' || sw[n] !== 'off' || switchSourceOf(state, n) !== 'default'); // #587: seatRecords is listed once it is on or chosen — a default run's line stays byte-identical to master
+  return `switches (#554, #559, #563): ${shown.map((n) => `${n}=${sw[n]} (${label(n)})`).join(' · ')} — ${locked ? locked : 'not frozen yet: changeable until the first spawn (state set --switch <name>=<value>)'}`;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -790,6 +921,9 @@ export function parseState(raw: unknown): FanoutState {
       implementer: wsIdOf(t.implementer, 'implementer'),
       verifier: wsIdOf(t.verifier, 'verifier'),
       accept: acceptFlowOf(t.accept, `ticket ${id}`),
+      ...(t.depsDeclared === true ? { depsDeclared: true as const } : t.depsDeclared === undefined || t.depsDeclared === false ? {} : (() => { throw new FanoutStateError(`ticket ${id}: depsDeclared must be a boolean`); })()),
+      ...(t.iface !== undefined ? { iface: ifaceOfStored(t.iface, `ticket ${id}`) } : {}),
+      ...(t.follows !== undefined ? { follows: followsOf(t.follows, `ticket ${id}`) } : {}),
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
@@ -803,6 +937,8 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.switches !== undefined ? { switches: switchesParse(raw.switches) } : {}),
     ...(raw.switchDefaults !== undefined ? { switchDefaults: switchDefaultsOf(raw.switchDefaults) } : {}),
     ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
+    ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),
+    ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,
@@ -1001,14 +1137,37 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
 export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
-  refuseUnknown(patch, new Set<string>(SETTABLE_KEYS), 'patch');
+  refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');
+  const seat = seatRecordsOn(state);
+  for (const k of SEAT_PATCH_KEYS) if (k in patch && !seat) throw seatOff(`--${k === 'interfaceReason' ? 'interface-reason' : k}`);
   const prev: TicketState = state.tickets[id] ?? blankTicket(now);
   const next: TicketState = { ...prev, updatedAt: now };
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
   if ('pr' in patch) next.pr = prOrNull(patch.pr);
   if ('head' in patch) next.head = checked(strOrNull(patch.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)');
   if ('verdict' in patch) next.verdict = enumOf(patch.verdict, VERDICTS, 'verdict');
-  if ('dependsOn' in patch) next.dependsOn = depsOf(patch.dependsOn);
+  if ('dependsOn' in patch) {
+    next.dependsOn = depsOf(patch.dependsOn);
+    if (seat && next.dependsOn.includes('none')) throw new FanoutStateError(`${id}: "none" is not a ticket id under seatRecords — \`--depends-on none\` alone means "no dependencies"`);
+    if (seat) { // #587: giving the dependencies (even none) declares them; a follow on an upstream no longer depended on goes
+      next.depsDeclared = true;
+      if (next.follows) { const kept = Object.entries(next.follows).filter(([k]) => next.dependsOn.includes(k)); if (kept.length) next.follows = Object.fromEntries(kept); else delete next.follows; }
+    }
+  }
+  if ('interfaceReason' in patch && !('interface' in patch)) throw new FanoutStateError(`${id}: --interface-reason needs --interface <text|file|->`);
+  if ('interface' in patch) { // #587 (I2): v1 needs no reason; a CHANGE is a new version and needs one; blank refused
+    const text = typeof patch.interface === 'string' ? patch.interface.replace(/\r\n/g, '\n') : '';
+    if (!text.trim()) throw new SeatRefusal('interface-blank', `${id}: the interface is blank — write the names the other tickets use (columns, queries, mutations, events)`);
+    if (text.length > IFACE_TEXT_MAX || CTRL.test(text)) throw new FanoutStateError(`${id}: the interface must be printable text of at most ${IFACE_TEXT_MAX} characters`);
+    const cur = prev.iface ?? null;
+    if (!cur) next.iface = { version: 1, text, history: [] };
+    else if (cur.text !== text) {
+      const reason = patch.interfaceReason;
+      if (typeof reason !== 'string' || !reason.trim()) throw new SeatRefusal('interface-reason-missing', `${id}: interface v${cur.version + 1} replaces v${cur.version} — say why (--interface-reason <text>): a dependent that followed v${cur.version} is told the reason`);
+      next.iface = { version: cur.version + 1, text, history: [...cur.history, { version: cur.version, text: cur.text, reason: lineOf(reason, `${id}: --interface-reason`, 1000).trim(), at: now }] };
+    }
+  }
+  if ('follows' in patch) next.follows = { ...(prev.follows ?? {}), ...followsOf(patch.follows, id) };
   if ('builtOn' in patch) next.builtOn = builtOnOf(patch.builtOn);
   if ('frozenInterface' in patch) next.frozenInterface = strOrNull(patch.frozenInterface, 'frozenInterface');
   if ('mergedAccepted' in patch) next.mergedAccepted = strOrNull(patch.mergedAccepted, 'mergedAccepted');
@@ -1114,12 +1273,37 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
   if (!legacyMinor && prev.status === 'merged' && (next.status === 'nominated' || next.status === 'gated')) { // (merged → started|todo|dropped is the explicit un-merge, not a candidate)
     throw new FanoutStateError(`${id} is already merged: a further candidate on it is a follow-up. ${FOLLOWUP_RULE} Register it as its own ticket: state set <new id> --follow-up-of ${id} --fixes <finding id>[,…] (the findings are recorded with --finding <id>=BLOCKING|MAJOR|MINOR)`);
   }
+  if (seat) { // #587 (I2): the plan + the interfaces are declared before a ticket starts / is nominated / is gated, and a dependent names the interface version it follows
+    const starts = 'status' in patch && (next.status === 'started' || next.status === 'nominated' || next.status === 'gated');
+    const spawns = (!!next.implementer && next.implementer !== prev.implementer) || (!!next.verifier && next.verifier !== prev.verifier); // a seat recorded on the ticket IS a spawn (the first one, and a follow-up's later one)
+    if (starts || spawns) {
+      const missing = planMissing(out);
+      if (missing.length) throw new SeatRefusal('plan-incomplete', `${id}: cannot ${starts ? `be ${next.status}` : 'record the first spawn'} — ${missing.length} thing(s) missing from the plan: ${missing.join('; ')}`);
+    }
+    for (const [up, v] of Object.entries(next.follows ?? {})) {
+      const f = out.tickets[up]?.iface;
+      if (!next.dependsOn.includes(up)) throw new SeatRefusal('follows-invalid', `${id}: --follows ${up}=${v}: ${up} is not in dependsOn (${next.dependsOn.join(', ') || 'none'})`);
+      if (!f) throw new SeatRefusal('follows-invalid', `${id}: --follows ${up}=${v}: ${up} has no interface to follow (state set ${up} --interface <text|file|->)`);
+      if (v > f.version) throw new SeatRefusal('follows-invalid', `${id}: --follows ${up}=${v}: ${up}'s interface is at v${f.version}, there is no v${v}`);
+    }
+    const merging = next.status === 'merged' && prev.status !== 'merged' && 'status' in patch; // a recorded follow that went stale does not merge either (an unfollowed one is the nomination's rule)
+    if (((next.status === 'nominated' || next.status === 'gated') && ('status' in patch || 'head' in patch || 'verdict' in patch || 'follows' in patch)) || merging) {
+      for (const up of next.dependsOn) {
+        const f = out.tickets[up]?.iface;
+        if (!f) continue;
+        const v = next.follows?.[up];
+        if (v === undefined && merging) continue;
+        if (v === undefined) throw new SeatRefusal('interface-unfollowed', `${id} cannot be ${next.status}: it names no version of ${up}'s interface (now v${f.version}) — build on it and record --follows ${up}=${f.version}`);
+        if (v !== f.version) throw new SeatRefusal('interface-stale', `${id} cannot be ${next.status}: it follows ${up} v${v} but ${up}'s interface is now v${f.version} (${ifaceChanges(f, v)}) — rebuild on v${f.version} and record --follows ${up}=${f.version}`);
+      }
+    }
+  }
   const open = unmergedUpstreams(out, id);
   if (open.length > 0) {
     if (switchesOf(state).earlyGate === 'off' && (next.status === 'nominated' || next.status === 'gated')) { // #554: before #506 — nominated|gated|merged all wait for the upstream's merge
       throw new FanoutStateError(`${id} cannot be ${next.status}: upstream ${open.join(', ')} not merged yet — earlyGate is off for this run: a dependent may START against a frozen interface but is not nominated or gated before its upstream is MERGED`);
     }
-    if (next.status === 'started' && !next.frozenInterface) {
+    if (next.status === 'started' && !next.frozenInterface && !(seat && open.every((u) => out.tickets[u]?.iface))) { // #587: under seatRecords a held interface IS the frozen interface a dependent starts against
       throw new FanoutStateError(`${id} cannot start: upstream ${open.join(', ')} not merged and no frozen interface to build against (set --frozen-interface)`);
     }
     if (next.status === 'merged') {

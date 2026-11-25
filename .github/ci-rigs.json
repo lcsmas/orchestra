@@ -214,6 +214,20 @@
    "group": 11
   },
   {
+   "id": "test:fanout-seat-records",
+   "command": "pnpm run test:fanout-seat-records",
+   "class": "RUNS_IN_CI",
+   "wallSec": 2,
+   "group": 12
+  },
+  {
+   "id": "test:fanout-seat-records-mutants",
+   "command": "pnpm run test:fanout-seat-records-mutants",
+   "class": "RUNS_IN_CI",
+   "wallSec": 40,
+   "group": 11
+  },
+  {
    "id": "test:acceptance-forced",
    "command": "pnpm run test:acceptance-forced",
    "class": "RUNS_IN_CI",

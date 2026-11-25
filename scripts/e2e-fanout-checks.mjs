@@ -32,9 +32,9 @@ const K = 'src/shared/fanout-checks.ts';
 const V = 'src/shared/verified-fanout-skill.ts';
 const F = 'false as boolean';
 const mutants = [
-  ['default preNominationChecks flipped on (v0.5.375 profile)', S, "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off' }; // #559", "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'on' }; // #559"],
-  ['default preNominationChecks flipped on (v0.5.378 profile)', S, "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off' };", "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'on' };"],
-  ['the switch is not in the table (unknown name)', S, "verifier: ['on', 'off'], preNominationChecks: ['on', 'off'] } as const;", "verifier: ['on', 'off'] } as const;"],
+  ['default preNominationChecks flipped on (v0.5.375 profile)', S, "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'off', seatRecords: 'off' }; // #559", "minorPolicy: 'legacy', verifier: 'on', preNominationChecks: 'on', seatRecords: 'off' }; // #559"],
+  ['default preNominationChecks flipped on (v0.5.378 profile)', S, "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'off', seatRecords: 'off' };", "minorPolicy: 'spec', verifier: 'on', preNominationChecks: 'on', seatRecords: 'off' };"],
+  ['the switch is not in the table (unknown name)', S, "verifier: ['on', 'off'], preNominationChecks: ['on', 'off'], seatRecords: ['on', 'off'] } as const;", "verifier: ['on', 'off'], seatRecords: ['on', 'off'] } as const;"],
   ['state set never asks for a record', S, "if (switchesOf(state).preNominationChecks === 'on' && (next.status === 'nominated'", "if (false as boolean && (next.status === 'nominated'"],
   ['a direct gated status bypasses the record', S, "=== 'on' && (next.status === 'nominated' || next.status === 'gated' || next.verdict === 'pass'", "=== 'on' && (next.status === 'nominated' || next.verdict === 'pass'"],
   ['a failing record admits the nomination', K, "  if (rec.ok) return null;\n", "  return null;\n"],
