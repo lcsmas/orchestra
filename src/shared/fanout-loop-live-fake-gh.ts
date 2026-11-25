@@ -7,13 +7,24 @@ import type { ExecResult } from './fanout-loop-live-git.ts';
 export const CHECKS = ['build', 'test', 'lint'];
 const EPOCH = Date.parse('2026-01-01T00:00:00Z');
 
-interface Pr { n: number; branch: string; base: string; title: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergeParents?: number; mergedHead?: string }
+interface Pr { n: number; branch: string; base: string; title: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergeParents?: number; mergedHead?: string; mergeCommit?: string }
 interface Run { /** a job of the run that is still going until `until` while the others are done (a re-run is refused until the whole run is completed) */ sibling?: { name: string; until: number }; id: number; n: number; head: string; startedAt: number; doneAt: number; result: string; attempt: number; jobs: Record<string, string> }
 
+export interface FakeForgeOpts {
+  /** Share the branch heads with another world (the dummy's `branches`): a commit there is a push here. */
+  heads?: Map<string, string>;
+  /** A merge happened (a merge COMMIT of `head` into the base): the world moves its base, and answers the merge commit's sha. */
+  onMerge?: (i: { n: number; branch: string; base: string; head: string }) => string;
+  /** Is `base` an ancestor of (or equal to) `head`? (`gh api compare/<base>...<head>`.) Absent = the compare endpoint is unsupported. */
+  contains?: (base: string, head: string) => boolean;
+}
+
 export class FakeForge {
+  private readonly opts: FakeForgeOpts;
+  constructor(opts: FakeForgeOpts = {}) { this.opts = opts; if (opts.heads) this.heads = opts.heads; }
   clock = EPOCH;
   ciMs = 240_000;
-  readonly heads = new Map<string, string>();
+  readonly heads: Map<string, string> = new Map<string, string>();
   readonly script = new Map<string, string[]>();
   readonly prs = new Map<number, Pr>();
   readonly runs: Run[] = [];
@@ -54,7 +65,7 @@ export class FakeForge {
       case 'number': return pr.n;
       case 'url': return `https://github.com/o/r/pull/${pr.n}`;
       case 'mergeable': return 'MERGEABLE';
-      case 'mergeCommit': return pr.state === 'MERGED' ? { oid: this.treeOf(`merge:${pr.n}`) } : null;
+      case 'mergeCommit': return pr.state === 'MERGED' ? { oid: pr.mergeCommit ?? this.treeOf(`merge:${pr.n}`) } : null;
       default: return undefined;
     }
   }
@@ -113,9 +124,12 @@ export class FakeForge {
       pr.state = 'MERGED';
       pr.mergedHead = head;
       pr.mergeParents = 2; // a merge commit
+      if (this.opts.onMerge) pr.mergeCommit = this.opts.onMerge({ n: pr.n, branch: pr.branch, base: pr.base, head });
       return this.ok('');
     }
     if (a === 'api') {
+      const cmp = /\/compare\/([0-9a-f]{7,40})\.\.\.([0-9a-f]{7,40})$/.exec(args[1] ?? '');
+      if (cmp && this.opts.contains) return this.ok(JSON.stringify({ status: cmp[1] === cmp[2] ? 'identical' : this.opts.contains(cmp[1], cmp[2]) ? 'ahead' : 'diverged' }));
       const m = /\/commits\/([0-9a-f]{7,40})$/.exec(args[1] ?? '');
       return m ? this.ok(JSON.stringify({ commit: { tree: { sha: this.treeOf(m[1]) } } })) : this.no(`fake gh: unsupported api call ${args[1]}`);
     }
