@@ -5,15 +5,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from './fanout-acceptance-host.ts';
-import { applyTicketPatch, newState, setPlan, stateFile, updateState } from './fanout-state.ts';
+import { applyTicketPatch, newState, stateFile, updateState } from './fanout-state.ts';
 
 const NOW = '2026-01-01T00:00:00.000Z';
 function host(): { deps: AcceptanceHostDeps; alive: Set<string> } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'host-live-'));
   updateState(stateFile(home, 'run1'), () => {
-    let s = setPlan(newState('run1', { target: 'main', repo: null, now: NOW }), ['T1'], 'declare', NOW);
-    s = applyTicketPatch(s, 'T1', { implementer: 'ws-impl' }, NOW);
-    return s;
+    return applyTicketPatch(newState('run1', { target: 'main', repo: null, now: NOW }), 'T1', { implementer: 'ws-impl' }, NOW);
   });
   const alive = new Set(['ws-impl', 'ws-stranger']);
   const deps = { home, now: () => NOW, isWorkspace: (id: string) => alive.has(id), repoPath: () => undefined, spawn: async () => ({ ok: false }), post: () => undefined, vouches: (id: string, key?: string) => id === 'run1' && key === 'k-run1', isLive: (id: string) => alive.has(id), transcriptDirOf: (id: string) => `/t/${id}` } as unknown as AcceptanceHostDeps;
