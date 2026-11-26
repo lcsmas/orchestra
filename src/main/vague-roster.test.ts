@@ -154,3 +154,13 @@ test('coordinatorWakeable comes from the wake roster; a member\'s lastTurnStartA
   assert.equal(f.coordinatorWakeable, false);
   assert.deepEqual([f.members[0].lastTurnStartAt, f.members[0].backgroundTask, f.coordinator.backgroundTask], [777, true, false]);
 });
+
+test('#612 coordinatorCommandAlive: true only for a noAgent coordinator whose command the host says is alive; a normal coordinator is never asked', () => {
+  const na = ws('na1', { noAgent: true });
+  const w = ws('mm', { parentId: 'na1', ...task });
+  assert.equal(factsOf(deps([na, w], { commandAlive: (x) => x.id === 'na1' }), 'na1')!.coordinatorCommandAlive, true);
+  assert.equal(factsOf(deps([na, w], { commandAlive: () => false }), 'na1')!.coordinatorCommandAlive, false, 'command dead');
+  assert.equal(factsOf(deps([na, w]), 'na1')!.coordinatorCommandAlive, false, 'dep absent');
+  const normal = deps([ops, ws('m9', { parentId: 'ops', ...task })], { commandAlive: () => true });
+  assert.equal(factsOf(normal)!.coordinatorCommandAlive, false, 'a normal coordinator is never judged by a command');
+});

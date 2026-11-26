@@ -439,3 +439,23 @@ test('the restart grace also holds a LAPSED process (live-process branch): not d
   const r = stepVague(prev, f, c, launch + 10 * MIN);
   assert.equal(r.verdict.kind === 'asleep' && r.verdict.since, T0 + VAGUE_PROCESS_BOUND_MS);
 });
+
+// ── #612: the coordinator is a no-agent workspace whose command is ALIVE ───────────────────────────────────────────────────────────
+test('#612 a run whose coordinator is a LIVE no-agent command is awake however long its members have been idle (a loop waiting on CI); the control — the same run without the live command — IS declared asleep', () => {
+  const idle = { runId: 'na', coordinator: person('na'), coordinatorHasParent: false, coordinatorWakeable: false };
+  const alive = run(facts({ ...idle, coordinatorCommandAlive: true }), census({}), [T0 + 60 * MIN, T0 + 120 * MIN]);
+  assert.deepEqual([alive.verdict.kind, (alive.verdict as { why?: string }).why], ['awake', 'coordinator-command']);
+  assert.equal(blockerOf(facts({ ...idle, coordinatorCommandAlive: true })), 'coordinator-command');
+  const dead = run(facts({ ...idle, coordinatorCommandAlive: false }), census({}), [T0 + 60 * MIN, T0 + 120 * MIN]);
+  assert.equal(dead.verdict.kind, 'asleep', 'control: no live command ⇒ the vague IS asleep (the clause is not a constant)');
+  const absent = run(facts({ ...idle }), census({}), [T0 + 60 * MIN, T0 + 120 * MIN]);
+  assert.equal(absent.verdict.kind, 'asleep', 'control: the fact absent (every normal coordinator) changes nothing');
+});
+
+test('#612 an OPEN asleep episode ends when the no-agent command is (or comes back) alive', () => {
+  const idle = { coordinatorHasParent: false, coordinatorWakeable: false };
+  const declared = run(facts(idle), census({}), [T0 + 11 * MIN, T0 + 12 * MIN]);
+  assert.equal(declared.verdict.kind, 'asleep');
+  const after = stepVague(declared.state, facts({ ...idle, coordinatorCommandAlive: true }), census({}), T0 + 13 * MIN);
+  assert.deepEqual([after.verdict.kind, (after.verdict as { why?: string }).why], ['awake', 'coordinator-command']);
+});

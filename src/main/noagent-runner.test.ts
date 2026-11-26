@@ -89,12 +89,7 @@ test('a command that exits is not "running" (and the pid of a dead one is never 
   assert.ok(b.ok && !b.reused, 'a dead record is replaced');
 });
 
-test('refusals create nothing and register no key: no display, not a no-agent workspace, no command, unknown id', async () => {
-  const noDisp = rig({}, { PATH: process.env.PATH });
-  const a = await noDisp.runner.start('ws-na');
-  assert.ok(!a.ok && /^\[noagent-no-display\]/.test(a.error));
-  assert.equal(noDisp.keys.length, 0);
-  assert.equal(fs.existsSync(path.join(noDisp.home, 'noagent', 'ws-na.json')), false);
+test('refusals create nothing and register no key: not a no-agent workspace, no command, unknown id', async () => {
   const plain = rig({ noAgent: undefined });
   const b = await plain.runner.start('ws-na');
   assert.ok(!b.ok && /^\[noagent-not-noagent\]/.test(b.error));
@@ -105,6 +100,14 @@ test('refusals create nothing and register no key: no display, not a no-agent wo
   const d = await nocmd.runner.start('nope');
   assert.ok(!d.ok && /unknown workspace/.test(d.error));
   assert.equal(nocmd.keys.length, 0);
+});
+
+test('#612 m2: a RUNNING host whose env exports neither DISPLAY nor WAYLAND_DISPLAY (Wayland falls back to wayland-0) still starts the command — only the CLI preflight names a missing display', async () => {
+  const r = rig({}, { PATH: process.env.PATH });
+  const a = await r.runner.start('ws-na');
+  assert.ok(a.ok, JSON.stringify(a));
+  assert.equal(r.keys.length, 1);
+  await r.runner.stop('ws-na');
 });
 
 test('a spawn that fails forgets the key it just registered (it vouched nobody)', async () => {

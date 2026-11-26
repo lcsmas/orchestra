@@ -84,7 +84,7 @@ import {
 import { decideMessageChannel } from '../shared/message-channel-gate.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { dispatchNoAgentStart, stopNoAgentCommand } from './noagent.ts';
-import { noDisplayRefusal, runCommandRefusal } from '../shared/noagent.ts';
+import { runCommandRefusal } from '../shared/noagent.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { activePauseFor } from './bus-pause.ts';
 import { admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind } from './admission.ts';
@@ -1523,7 +1523,7 @@ export async function dispatchSpawnRequest(
 ): Promise<SpawnResult> {
   const task = input.task.trim();
   if (input.noAgent) {
-    const bad = runCommandRefusal(input.noAgent.runCommand) ?? noDisplayRefusal(process.env);
+    const bad = runCommandRefusal(input.noAgent.runCommand); // a RUNNING app has a display (Electron cannot run without one): only the CLI preflight names a missing display, when the app does not answer
     if (bad) return { ok: false, error: bad };
   } else if (!task) return { ok: false, error: 'empty task' };
   // #252 fleet PAUSE (ledger #261 row 20/21): a caller inside a paused run (or under a paused ancestor run) cannot spawn —
