@@ -173,7 +173,7 @@ export async function stepEnd(ctx: EndCtx): Promise<EndOutcome> {
   let state = ctx.state.read();
   const blocked = Object.entries(state.tickets).some(([, t]) => !TERMINAL.has(t.status) && !isParked(t) && t.dependsOn.some((u) => state.tickets[u]?.status === 'dropped'));
   if (blocked) state = ctx.state.update((cur) => parkBehindDropped(cur, ctx));
-  const paused = (state as { pause?: unknown }).pause;
+  const paused = state.pause;
   const unfinished = Object.values(state.tickets).some((t) => !TERMINAL.has(t.status) && !isParked(t));
   if (!paused && unfinished) return { done: false, exit: null, report: null };
   const report = buildReport(state, await collectCosts(state, ctx.costOf));

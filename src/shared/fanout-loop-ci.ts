@@ -7,11 +7,12 @@
 //   red again ─ the author gets the check name + the log extract (once per head) ─ the same failure after its fix → ticket parked (cause `ci`)
 //   the same check red on ≥2 pull requests of the run → the run pauses (`pauseRun`), NO message to an author, no re-run.
 import crypto from 'node:crypto';
-import type { CiRecord } from './fanout-state.ts';
-import {
-  parkTicket, pausedOf, pauseRun, situationFingerprint,
-  type CheckInfo, type CiState, type CiTicket, type FleetPort, type ForgePort, type GitPort,
-} from './fanout-loop-ci-stubs.ts';
+import { parkTicket, pausedOf, pauseRun, situationFingerprint, type CiRecord, type FanoutState, type TicketState } from './fanout-state.ts';
+import type { FleetPort, ForgeCheck, ForgePort, GitPort } from './fanout-loop-ports.ts';
+
+type CheckInfo = ForgeCheck;
+type CiState = FanoutState;
+type CiTicket = TicketState;
 
 export interface CiOptions {
   /** `--start-check` (decision 9). Off by default. */
@@ -56,7 +57,7 @@ export const CI_LOG_MAX = 1500;
 export interface CiResult { paused: boolean; reran: string[]; told: string[]; parked: string[]; flaky: string[] }
 
 const OPEN_STATUSES = new Set(['started', 'nominated', 'gated']);
-const ciTicketIds = (s: CiState): string[] => Object.keys(s.tickets).sort().filter((id) => { const t = s.tickets[id]; return t.pr !== null && t.head !== null && OPEN_STATUSES.has(t.status) && !(t as CiTicket).parked; });
+const ciTicketIds = (s: CiState): string[] => Object.keys(s.tickets).sort().filter((id) => { const t = s.tickets[id]; return t.pr !== null && t.head !== null && OPEN_STATUSES.has(t.status) && !t.parked; });
 
 /** `green` = ≥1 check and all green; `red` = a red; `pending` otherwise (no checks yet, or one still running). */
 export function ciStatus(checks: CheckInfo[]): 'green' | 'pending' | 'red' {
@@ -244,7 +245,7 @@ export async function stepStartCheck(ctx: CiCtx): Promise<StartCheckResult> {
   let pr: number | null = null;
   try {
     const { head } = await emptyBranch.call(deps.git, branch, base);
-    pr = (await deps.forge.openPr({ branch, base, title: `[orchestra] start check, run ${deps.run} — empty, do not merge` })).n;
+    pr = (await deps.forge.openPr({ branch, base, title: `start-check: empty pull request of run ${deps.run} — do not merge` })).n;
     deps.log(`start-check: #${pr} (${branch} → ${base}) opened, waiting for its checks`);
     let waited = 0;
     let lastError: string | null = null;

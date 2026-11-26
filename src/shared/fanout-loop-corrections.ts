@@ -1,45 +1,12 @@
 // #606 (spec #601 stories 12–15, decisions 6–7) — `stepCorrections` of the Boucle (`orchestra fanout run`): findings to the SAME author in ONE batch, the SAME reviewer on the new head,
 // a fresh author only when the author is dead, and the situation (open findings + candidate tree) seen twice parks the ticket. No counters, nothing in memory between passes: the state file is the memory.
 // Built on the FROZEN NAMES v1 of ledger #613 (LoopDeps / FleetPort / GitPort, #603's rounds + parkTicket): the narrow `CorrectionsDeps` below is a structural SUBSET of LoopDeps, so the real LoopCtx assigns to it.
-import crypto from 'node:crypto';
 import { countsThrough } from './fanout-record.ts';
 import {
-  applyTicketPatch, blockingMinors, readState, sameContent, stateFile, switchesOf, updateState,
+  applyTicketPatch, blockingMinors, parkTicket, readState, recordRound, sameContent, situationFingerprint, stateFile, switchesOf, updateState,
   type FanoutState, type FindingRecord, type ReviewEntry, type TicketState,
 } from './fanout-state.ts';
 
-// ── #603 names (frozen v1). STUBS with the frozen semantics, local until #603 merges: then DELETE this block and import them from ./fanout-state.ts. ────────────────────────────────────
-type Round = { n: number; fingerprint: string; at: string };
-type ParkCause = 'question' | 'situation' | 'ci' | 'upstream';
-type T3 = TicketState & { rounds?: Round[]; parked?: { cause: ParkCause; reason: string; at: string; blockedBy?: string } };
-/** sha256 hex of `"findings:" + sorted ids joined "," + "\ntree:" + tree` (frozen). */
-export function situationFingerprint(i: { openFindings: string[]; tree: string }): string {
-  return crypto.createHash('sha256').update(`findings:${[...i.openFindings].sort().join(',')}\ntree:${i.tree}`).digest('hex');
-}
-/** `repeat` = the SAME fingerprint is already in `rounds` (second sighting). */
-export function recordRound(state: FanoutState, id: string, fp: string, now: string): { state: FanoutState; repeat: boolean } {
-  const t = state.tickets[id] as T3;
-  const rounds = t.rounds ?? [];
-  const repeat = rounds.some((r) => r.fingerprint === fp);
-  const nt: T3 = { ...t, rounds: [...rounds, { n: rounds.length + 1, fingerprint: fp, at: now }], updatedAt: now };
-  return { state: { ...state, tickets: { ...state.tickets, [id]: nt }, updatedAt: now }, repeat };
-}
-/** Parks `id` and, transitively, its dependents (`cause: 'upstream'`, `blockedBy`). */
-export function parkTicket(state: FanoutState, id: string, p: { cause: ParkCause; reason: string }, now: string): FanoutState {
-  const tickets = { ...state.tickets };
-  const park = (k: string, parked: NonNullable<T3['parked']>): void => { tickets[k] = { ...tickets[k], status: 'parked' as TicketState['status'], parked, updatedAt: now } as T3; };
-  park(id, { ...p, at: now });
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const [k, t] of Object.entries(tickets)) {
-      if (t.status === 'merged' || (t as T3).parked) continue;
-      const up = t.dependsOn.find((d) => (tickets[d] as T3 | undefined)?.parked);
-      if (up) { park(k, { cause: 'upstream', reason: `blocked by ${up}`, blockedBy: up, at: now }); grew = true; }
-    }
-  }
-  return { ...state, tickets, updatedAt: now };
-}
-// ── end of the #603 block ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** The subset of LoopDeps (ledger #613 FROZEN NAMES v1) this step reads; `home`/`run` locate the state file. */
 export interface CorrectionsDeps {
@@ -69,7 +36,7 @@ export type CorrectionsOutcome =
   | { ticket: string; action: 'blocked'; why: string };
 
 const short = (s: string): string => s.slice(0, 12);
-const isDone = (t: TicketState): boolean => t.status === 'merged' || t.status === 'dropped' || (t.status as string) === 'parked' || !!(t as T3).parked;
+const isDone = (t: TicketState): boolean => t.status === 'merged' || t.status === 'dropped' || t.status === 'parked' || !!t.parked;
 
 export function diskStore(deps: Pick<CorrectionsDeps, 'home' | 'run'>): CorrectionsStore {
   const file = stateFile(deps.home, deps.run);
@@ -113,7 +80,7 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
   if (!first) return out;
   for (const id of Object.keys(first.tickets)) {
     const state = store.read()!;
-    const t = state.tickets[id] as T3 | undefined;
+    const t = state.tickets[id] as TicketState | undefined;
     if (!t || isDone(t) || !t.branch || !(t.reviews ?? []).length) continue;
     const head = await deps.git.head(t.branch);
     if (!head) continue;
@@ -121,20 +88,16 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
     const changing = changingReviews(state, id);
     const fpOf = (x: (typeof changing)[number]): string => situationFingerprint({ openFindings: x.fix, tree: x.r.tree ?? x.r.head });
     // the round of review n is recorded under n = the review's number (n shared with #607's CI rounds: asked in the report); read from the CURRENT state each time
-    const done = (s: FanoutState, x: (typeof changing)[number]): boolean => ((s.tickets[id] as T3).rounds ?? []).some((q) => q.n === x.r.n); // by number ONLY: a later settle / decision changes `fix`, never un-does a round
+    const done = (s: FanoutState, x: (typeof changing)[number]): boolean => (s.tickets[id].rounds ?? []).some((q) => q.n === x.r.n); // by number ONLY: a later settle / decision changes `fix`, never un-does a round
     let cur = state;
     let stop = false;
     for (const x of changing.filter((c) => !done(state, c))) {
       const fp = fpOf(x);
-      const seenFp = (cur.tickets[id] as T3).rounds?.some((q) => q.fingerprint === fp) ?? false;
+      const seenFp = cur.tickets[id].rounds?.some((q) => q.fingerprint === fp) ?? false;
       // a finding id is never reused (`finding-exists`), so an undo cycle shows up as the same CONTENT rejected again: the earlier changing review that read this tree
       // (an ADJACENT same-tree review is the author doing nothing: `seenFp` parks it when the findings are the same, a reviewer who changed its mind about unchanged content gets a round)
       const seenTree = !!x.r.tree && changing.some((o, i) => o.r.n < x.r.n && o.r.tree === x.r.tree && changing.slice(i + 1).some((m) => m.r.n < x.r.n && m.r.tree !== x.r.tree));
-      const keep = (s: FanoutState): FanoutState => {
-        const rr = recordRound(s, id, fp, deps.now());
-        const rs = (rr.state.tickets[id] as T3).rounds!;
-        return { ...rr.state, tickets: { ...rr.state.tickets, [id]: { ...rr.state.tickets[id], rounds: [...rs.slice(0, -1), { ...rs[rs.length - 1], n: x.r.n }] } as T3 } };
-      };
+      const keep = (s: FanoutState): FanoutState => recordRound(s, id, fp, deps.now(), x.r.n).state; // n = the review's number (#603's recordRound takes it)
       if (seenFp || seenTree) {
         const why = seenFp ? 'same-situation' : 'same-tree';
         cur = store.update((s) => parkTicket(keep(s), id, { cause: 'situation', reason: `${why === 'same-situation' ? 'the same open findings on the same tree' : 'the same tree again'} (${x.fix.join(', ')} on ${short(x.r.tree ?? x.r.head)}) — seen twice` }, deps.now()));
@@ -145,14 +108,14 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
       }
       const onCurrent = sameContent(x.r.head, x.r.tree, head, tree);
       if (!onCurrent || x !== changing[changing.length - 1]) { cur = store.update(keep); continue; } // a round already overtaken by a newer head / review: recorded, nothing to send
-      const a = await sendBatch(ctx, cur, id, x, ((cur.tickets[id] as T3).rounds?.length ?? 0) + 1);
+      const a = await sendBatch(ctx, cur, id, x, (cur.tickets[id].rounds?.length ?? 0) + 1);
       if (a.kind === 'blocked') { out.push({ ticket: id, action: 'blocked', why: a.why }); stop = true; break; }
       cur = store.update(keep);
       out.push({ ticket: id, action: 'sent', to: a.to, round: a.round, findings: x.fix, noted: x.noted, replaced: a.replaced });
     }
     if (stop) continue;
     // (2) the author pushed: the recorded reviewer reads the fix (host op: same live reviewer, a replacement only for a dead one, noop when already briefed on this head)
-    const t2 = store.read()!.tickets[id] as T3;
+    const t2 = store.read()!.tickets[id] as TicketState;
     const last = changing[changing.length - 1];
     const reviewed = (h: string): boolean => (t2.reviews ?? []).some((r) => r.head.startsWith(h) || h.startsWith(r.head));
     const want = t2.review?.reviewer?.id ?? null;

@@ -3,7 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyTicketPatch, newState, parseState, type FanoutState } from './fanout-state.ts';
 import { renderCiMessage, startCheckBranch, stepCi, stepStartCheck, type CiCtx, type CiOptions } from './fanout-loop-ci.ts';
-import { pausedOf, resumeRun, type CheckInfo, type CiState } from './fanout-loop-ci-stubs.ts';
+import { pausedOf, resumeRun } from './fanout-state.ts';
+import type { ForgeCheck as CheckInfo } from './fanout-loop-ports.ts';
+type CiState = FanoutState;
 
 const T = '2026-11-25T10:00:00.000Z';
 const sha = (c: string): string => c.repeat(40);

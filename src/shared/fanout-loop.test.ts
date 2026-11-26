@@ -101,13 +101,67 @@ test('decision 10: two independent tickets that are ready in the same pass merge
   assert.deepEqual(r.violations, []);
 });
 
-test('decision 10: a red CI is never merged (no #607 yet: the ticket ends parked, its dependent with it)', async () => {
+test('decision 8 (#607, composed): red CI → one re-run → the author is told the check → the same failure after its fix parks the ticket, its dependent with it; a red CI is never merged', async () => {
   const r = await go('red-ci');
   assert.equal(r.result.exit, 3);
   assert.deepEqual(r.result.report.merged, ['T2']);
-  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T1', 'situation'], ['T3', 'upstream']]);
+  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T1', 'ci'], ['T3', 'upstream']]);
+  assert.equal(r.world.events.filter((e) => e.ev === 'ci-start' && e.ticket === 'T1').length, 3, 'run 1, the ONE re-run, the run of the fix');
+  const told = r.world.events.filter((e) => e.ev === 'ci-told');
+  assert.equal(told.length, 1, 'the author hears once');
+  assert.match(String(told[0].text), /Check: test/);
   assert.ok(r.world.events.every((e) => e.ev !== 'merge' || e.ci === 'green'));
   assert.deepEqual(r.violations, []);
+});
+
+test('decision 8 (#607, composed): a flaky red goes green on the re-run → merged, listed as flaky in the report, nobody was told', async () => {
+  const r = await go('ci-flaky');
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(r.result.report.merged, ['T1', 'T2', 'T3']);
+  assert.deepEqual(r.result.report.flaky, ['T1/test']);
+  assert.equal(r.world.events.filter((e) => e.ev === 'ci-told').length, 0);
+  assert.deepEqual(r.violations, []);
+});
+
+test('decision 8 (#607, composed): the same check red on two pull requests → the run PAUSES (exit 4): no message, no re-run, no merge, the reason in the report', async () => {
+  const r = await go('ci-env');
+  assert.equal(r.result.exit, 4);
+  assert.equal(r.result.report.paused?.check, 'build');
+  assert.equal(r.result.report.paused?.prs.length, 2);
+  assert.equal(r.world.events.filter((e) => e.ev === 'ci-told').length, 0);
+  assert.equal(r.world.events.filter((e) => e.ev === 'ci-start').length, 2, 'one run per red PR (T1, T2), no re-run');
+  assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0, 'a paused run merges nothing');
+  assert.deepEqual(r.violations, []);
+});
+
+const withStartCheck = (startCheck: string): Scenario => ({ ...load('readiness'), startCheck });
+test('decision 9 (#607, composed): --start-check green → an empty PR into the target, awaited, closed, its branch deleted → then the run goes on and merges', async () => {
+  const r = await runDummyLoop({ home: tmp(), scenario: withStartCheck('green'), options: { startCheck: true, stallMs: 30 * 60_000, maxPasses: 1500 } });
+  assert.equal(r.result.exit, 0);
+  const opened = r.world.events.filter((e) => e.ev === 'pr-open' && /^orchestra-start-check-/.test(String(e.branch)));
+  assert.equal(opened.length, 1);
+  assert.equal(r.world.events.filter((e) => e.ev === 'pr-close').length, 1);
+  assert.equal(r.world.events.filter((e) => e.ev === 'branch-delete').length, 1);
+  assert.ok(r.world.events.findIndex((e) => e.ev === 'pr-close') < r.world.events.findIndex((e) => e.ev === 'spawn'), 'the check came BEFORE the first implementer');
+});
+
+for (const [startCheck, code] of [['red:ci', 'start-check-red'], ['missing', 'start-check-missing']] as const) {
+  test(`decision 9 (#607, composed): --start-check with a ${startCheck} probe → [run-${code}], exit 2, NOTHING launched, the probe PR closed and its branch deleted`, async () => {
+    const r = await runDummyLoop({ home: tmp(), scenario: withStartCheck(startCheck), options: { startCheck: true, stallMs: 30 * 60_000, maxPasses: 1500, startCheckMissingMs: 120_000 } });
+    assert.equal(r.result.exit, 2);
+    assert.match(r.result.reason ?? '', new RegExp(`^\\[run-${code}\\]`));
+    assert.equal(r.world.events.filter((e) => e.ev === 'spawn').length, 0);
+    assert.equal(r.world.events.filter((e) => e.ev === 'pr-close').length, 1);
+    assert.equal(r.world.events.filter((e) => e.ev === 'branch-delete').length, 1);
+  });
+}
+
+test('story 21 (#608 + #605, composed): the report of a run carries the cost per ticket, READ from the fleet — none is null', async () => {
+  const r = await go('rts7');
+  assert.equal(r.result.exit, 0);
+  const costs = r.result.report.costPerTicket;
+  assert.deepEqual(Object.keys(costs), r.result.report.merged);
+  assert.ok(Object.values(costs).every((c) => c !== null && c.tokens > 0), JSON.stringify(costs));
 });
 
 test('decision 10: a ticket whose reviewer asked for changes is never merged (no recorded approval)', async () => {

@@ -25,6 +25,8 @@ export interface Scenario {
   repo: { tickets: Array<{ id: string; dependsOn: string[]; spec: string }>; plan?: Plan };
   agents?: Record<string, { implementer?: Step[]; /** the script of the 2nd+ implementer of the ticket (a respawn); default = `implementer` */ respawn?: Step[]; reviewer?: Step[] }>;
   ci?: Record<string, string[]>;
+  /** #607's start check: what the checks of the EMPTY probe PR say — `green` (default) | `red:<check>` | `missing` (no check at all) */
+  startCheck?: string;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
   /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
@@ -56,6 +58,7 @@ export function parseScenario(raw: unknown): Scenario {
     steps(a.respawn, STEP_KINDS_IMPLEMENTER, `agents.${tk}.respawn`);
     steps(a.reviewer, STEP_KINDS_REVIEWER, `agents.${tk}.reviewer`);
   }
+  if (raw.startCheck !== undefined && !(typeof raw.startCheck === 'string' && /^(green|missing|red:\S+)$/.test(raw.startCheck))) return bad('startCheck is "green" | "missing" | "red:<check>"');
   for (const [tk, list] of Object.entries(isObj(raw.ci) ? raw.ci : {})) {
     if (tk !== '*' && !ids.has(tk)) return bad(`ci.${tk} is not a ticket`);
     if (!Array.isArray(list) || list.some((x) => x !== 'green' && !(typeof x === 'string' && /^red:\S+$/.test(x)))) return bad(`ci.${tk} is a list of "green" | "red:<check>"`);
@@ -233,6 +236,7 @@ export class DummyWorld {
   wakeImpl(ws: string, text: string): void {
     const a = this.impls.get(ws);
     if (!a) return;
+    if (/^CI is red on your pull request/.test(text)) { this.ev('ci-told', a.ticket, { ws, text }); return; } // #607: the author is told which check is red (the dummy author does not react: its script says what it does next)
     const m = /^CONNECT (\S+) ([0-9a-f]{40})/.exec(text);
     if (!m) return;
     this.ev('connect-ask', a.ticket, { up: m[1], head: m[2], to: ws });
@@ -304,6 +308,7 @@ export class DummyWorld {
     return n;
   }
   private ciResult(p: Pr): string {
+    if (p.branch.startsWith('orchestra-start-check-')) return this.sc.startCheck ?? 'green';
     const list = this.sc.ci?.[p.ticket] ?? this.sc.ci?.['*'] ?? [];
     return list[p.created++] ?? 'green';
   }
@@ -320,7 +325,7 @@ export class DummyWorld {
     const p = this.prs.get(n)!;
     const run = this.runFor(p, head);
     const steps = this.sc.faults?.zeroStepCi?.includes(p.ticket) ? 0 : 3;
-    if (this.sc.faults?.noChecks?.includes(p.ticket)) return []; // the forge shows no check at all
+    if (this.sc.faults?.noChecks?.includes(p.ticket) || (p.branch.startsWith('orchestra-start-check-') && this.sc.startCheck === 'missing')) return []; // the forge shows no check at all
     const late = this.sc.faults?.lateCheck?.[p.ticket];
     const lint: ForgeCheck = { name: 'lint', jobId: `job-${p.n}-${p.runs.indexOf(run)}-lint`, status: 'green', steps, at: this.iso(run.startedAt) };
     if (late !== undefined && this.t < run.startedAt + late) return [lint]; // the workflow has not registered its other checks yet
@@ -394,7 +399,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async tree(s) { return w.commits.get(w.resolve(s) ?? '')?.tree ?? null; },
     async isMerged(branch, base) { return w.contains(branch, base); },
     async emptyBranch(branch, base) { const h = w.resolve(base)!; w.branches.set(branch, h); return { head: h }; },
-    async deleteBranch(branch) { w.branches.delete(branch); },
+    async deleteBranch(branch) { w.branches.delete(branch); w.ev('branch-delete', undefined, { branch }); },
   };
   return { world: w, fleet, forge, git, now: () => w.iso(), plan, async sleep(ms) { w.tickHolds(); w.advance(ms); } };
 }

@@ -1,23 +1,23 @@
 // #608 (spec #601 decision 11) — the closing report of `orchestra fanout run`: what merged, what was parked and why, the choices the agents took, the findings left, the cost per ticket.
 // PURE and DERIVED: every line comes from the state (+ the per-ticket token counts the host read from the transcripts) — no model types a line, so the report equals the state.
-// The `parked` / `choices` / `pause` / `flaky` fields are written by #603 / #607 (frozen names, ledger #613); they are read through the narrow views below so this file builds before they land.
+// The `parked` / `choices` / `pause` / `flaky` fields are written by #603 / #607 (stack C connect: read straight from the state, no casts).
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FanoutState, FindingRecord, TicketState } from './fanout-state.ts';
 
-// ── the frozen-name views (#603): delete the casts at connect, keep the shapes ──
+// ── the views of #603's records (shapes kept; the casts are gone since the connect) ──
 export type ParkCauseView = 'question' | 'situation' | 'ci' | 'upstream';
 export interface ParkedView { cause: ParkCauseView; reason: string; at?: string; blockedBy?: string }
 export interface ChoiceView { n: number; ticket: string; question: string; rule: 'reversible-default' | 'no-safe-option'; answer: string; at: string }
 export interface PauseInfo { at: string; reason: string; check: string | null; prs: number[] }
 
-export const parkedOf = (t: TicketState | undefined): ParkedView | null => (t as { parked?: ParkedView } | undefined)?.parked ?? null;
-export const choicesOf = (s: FanoutState): ChoiceView[] => (s as { choices?: ChoiceView[] }).choices ?? [];
-export const pauseOf = (s: FanoutState): PauseInfo | null => (s as { pause?: PauseInfo }).pause ?? null;
+export const parkedOf = (t: TicketState | undefined): ParkedView | null => t?.parked ?? null;
+export const choicesOf = (s: FanoutState): ChoiceView[] => s.choices ?? [];
+export const pauseOf = (s: FanoutState): PauseInfo | null => s.pause ?? null;
 /** #607 (ledger v1.2): `TicketState.ci.flaky` = the check names that went red, then green on the one re-run — read per ticket (delete the cast when #607 is merged). */
-const flakyOf = (t: TicketState): string[] => (t as { ci?: { flaky?: string[] } }).ci?.flaky ?? [];
-/** `status === 'parked'` (#603) — a string compare so this file reads a state of either vintage. */
-export const isParked = (t: TicketState | undefined): boolean => (t?.status as string) === 'parked' || !!parkedOf(t);
+const flakyOf = (t: TicketState): string[] => t.ci?.flaky ?? [];
+/** `status === 'parked'` (#603). */
+export const isParked = (t: TicketState | undefined): boolean => t?.status === 'parked' || !!t?.parked;
 
 export interface TokenCost { tokens: number; input?: number; output?: number; cacheRead?: number; cacheCreate?: number }
 

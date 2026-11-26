@@ -166,7 +166,7 @@ test('a PARKED ticket whose branch is trivially "contained" in the target is NOT
   w.merged.add('b1');
   const parked = parkShim(stateOf({ A: gated(1, 'a', { status: 'started' }) }), 'A', { cause: 'question', reason: 'NO SAFE OPTION: x' }, T0);
   const reality = { A: { branchHead: sha('a'), branchTree: sha('a'), mergedIntoTarget: true, pr: { state: 'OPEN' as const, headRefOid: sha('a'), baseRefName: 'master' } } };
-  assert.ok(reconcile(parked, reality).writeBack.some((x) => x.patch.status === 'merged'), 'the unfixed rule WOULD adopt it');
+  assert.ok(!reconcile(parked, reality).writeBack.some((x) => x.patch.status === 'merged'), 'since #603 (realityMerged takes the status) reconcile itself does not adopt a parked ticket by ancestry; writeBackFor below stays as the guard of the covered-merge case');
   assert.deepEqual(writeBackFor(parked, reality, reconcile(parked, reality).writeBack), []);
   const out = await stepReconcile(rctx(w, memPort(parked)));
   assert.deepEqual(out.adopted, []);
