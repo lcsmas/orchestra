@@ -199,7 +199,7 @@ export class DummyWorld {
     const evt = this.sc.events?.[a.ticket]?.find((e) => e.at === step.do && !a.fired.has(`${e.at}:${e.kind}`));
     if (evt) {
       a.fired.add(`${evt.at}:${evt.kind}`);
-      if (evt.kind === 'no-safe-option') { this.post('ask', a.ws, a.ticket, evt.body ?? `${'NO SAFE OPTION: '}the spec of ${a.ticket} contradicts itself`); this.ev('ask', a.ticket, { kind: 'no-safe-option', ws: a.ws }); a.mode = 'stuck'; return; }
+      if (evt.kind === 'no-safe-option') { this.post('ask', a.ws, a.ticket, evt.body ?? `${'NO SAFE OPTION: '}the spec of ${a.ticket} contradicts itself`); this.ev('ask', a.ticket, { kind: 'no-safe-option', ws: a.ws }); a.mode = 'asking'; return; } // #645: the loop no longer reads the marker — the agent gets the fixed answer and goes on
       this.post('ask', a.ws, a.ticket, evt.body ?? `Which of the two names should ${a.ticket} use?`); this.ev('ask', a.ticket, { kind: 'question', ws: a.ws }); a.mode = 'asking'; return;
     }
     switch (step.do) {

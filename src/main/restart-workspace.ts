@@ -30,6 +30,8 @@ import { clearBusRunStale, startWorkspaceAgentHeadless } from './workspaces';
 import { sdkRestart, sdkWakeRestart } from './agent-sdk';
 import { sdkSessionLive, sdkFirstTurnFailed } from './sdk-delivery.ts';
 import { resolveRestart, type RestartResult } from '../shared/restart-mode.ts';
+import { dispatchNoAgentStart } from './noagent.ts';
+import { restartNoAgent } from '../shared/noagent.ts';
 import { sandboxPausedMessage } from '../shared/sandbox-pause.ts';
 import { pauseRefusal } from './pause-gate.ts';
 import { admissionGate } from './admission.ts';
@@ -64,6 +66,8 @@ export async function dispatchRestartRequest(input: {
   const ws = id ? (store.getWorkspace(id) ?? null) : null;
   const fresh = input.fresh === true;
   const trigger: RestartTrigger = input.trigger ?? 'cli';
+  // #640: a no-agent workspace has no session to restart — `restart` (CLI, toolbar, sidebar row) starts ITS command through /noagent/start, idempotent while it is alive.
+  if (ws?.noAgent === true) return restartNoAgent(ws, fresh, (wid) => dispatchNoAgentStart({ id: wid }));
   // #226: sandbox agents are paused — refuse BEFORE the classifier so `--fresh` (sdkClear), a legacy hasInput/no-session ws (wake route) and recordRestart's state write are all covered.
   const paused = sandboxPausedMessage(ws);
   if (paused) return { ok: false, error: paused };

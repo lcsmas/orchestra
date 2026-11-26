@@ -28,7 +28,7 @@ export function judgeRun(i: JudgeInput): Violation[] {
   }
   for (const tk of i.tickets) for (const up of i.deps[tk] ?? []) {
     const m = mergeOf(up);
-    if (!m || i.events.some((e) => e.ev === 'ask' && e.ticket === tk && e.kind === 'no-safe-option')) continue; // a ticket that declared "no safe option" is parked, not waiting
+    if (!m) continue;
     const coded = i.events.some((e) => e.ev === 'code' && e.ticket === tk && idx(e) < idx(m) && e.t <= m.t);
     if (!coded) v('implementer-waited', `${tk} wrote no code before its upstream ${up} merged`, tk);
   }

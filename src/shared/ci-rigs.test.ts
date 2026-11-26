@@ -168,8 +168,13 @@ test('#594 ci-rigs.json: suiteShards + groups fit the job limit, rigs are balanc
   const groups = assignGroups(file);
   const w = (id: string): number => file.rigs.find((r) => r.id === id)?.wallSec ?? 300;
   const loads = groups.map((g) => g.reduce((n, id) => n + w(id), 0));
+  // #644: a pull_request skips the mutant rigs (#623), so ITS wall is the non-mutant load of each group: balanced within 8% (or one rig) and ≤ 610 s of rigs (acces-mobile alone) (+~50 s job overhead ≈ 9 min). The full run (mutants included) is bound by the 3 big mutant rigs: ≤ 25% over the mean.
+  const pr = groups.map((g) => g.filter((id) => !isMutantRig(id)).reduce((n, id) => n + w(id), 0));
+  const prMean = pr.reduce((a, b) => a + b, 0) / pr.length;
+  const heaviest = Math.max(...file.rigs.filter((r) => r.class === 'RUNS_IN_CI' && !isMutantRig(r.id)).map((r) => r.wallSec ?? 300));
+  assert.ok(Math.max(...pr) <= Math.max(prMean * 1.08, heaviest) && Math.max(...pr) <= 610, `PR groups unbalanced: ${pr.join(', ')}`);
   const mean = loads.reduce((a, b) => a + b, 0) / loads.length;
-  assert.ok(Math.max(...loads) <= mean * 1.08, `groups unbalanced: ${loads.join(', ')}`);
+  assert.ok(Math.max(...loads) <= mean * 1.25, `groups unbalanced: ${loads.join(', ')}`);
 });
 
 test('must-FAIL: more jobs than the account runs, a bad suiteShards / groups, an empty group are validation problems', () => {

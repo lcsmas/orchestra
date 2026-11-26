@@ -6,13 +6,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
-import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, NO_SAFE_OPTION, parseNoSafeOption, renderConnectAsk, runLoop, DEFAULT_OPTIONS, sortReady, transitiveDependents } from './fanout-loop.ts';
+import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, renderConnectAsk, runLoop, DEFAULT_OPTIONS, sortReady, transitiveDependents } from './fanout-loop.ts';
 import { renderReport } from './fanout-report.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
 import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
 import { applyPlan } from './fanout-plan.ts';
 import { startRun } from './fanout-start.ts';
 import { applyTicketPatch, CHOICES_MAX, newState, parkTicket, pauseRun, recordChoice, resumeRun, sha256Hex, TICKET_STATUSES } from './fanout-state.ts';
+import { buildReport, renderReport } from './fanout-report.ts';
 import { LOOP_BRIEF, renderImplementerBrief } from './fanout-implementer-brief.ts';
 
 const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fanout-loop-scenarios');
@@ -74,16 +75,30 @@ test('decision 5: a question gets the fixed answer and is listed; the run is not
   assert.deepEqual(r.violations, []);
 });
 
-test('decision 5: "NO SAFE OPTION: …" parks the ticket (cause question) and its dependents (cause upstream); the others go on, exit 3', async () => {
+test('decision 5 (#645): a "NO SAFE OPTION: …" body no longer parks — it gets the fixed answer, is listed as a reversible-default choice, and every ticket merges, exit 0', async () => {
   const r = await go('nosafe');
-  assert.equal(r.result.exit, 3);
-  assert.deepEqual(r.result.report.merged, ['T1', 'T2', 'T4', 'T6']);
-  const byTicket = Object.fromEntries(r.result.report.parked.map((p) => [p.ticket, p]));
-  assert.equal(byTicket.T3.cause, 'question');
-  assert.match(byTicket.T3.reason, /contradicts itself/);
-  for (const d of ['T5', 'T7']) assert.deepEqual([byTicket[d].cause, byTicket[d].reason], ['upstream', 'blocked by T3']);
-  assert.deepEqual(r.result.report.choices.map((c) => [c.ticket, c.rule]), [['T3', 'no-safe-option']]);
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(r.result.report.merged, ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']);
+  assert.deepEqual(r.result.report.parked, []);
+  assert.deepEqual(r.result.report.choices.map((c) => [c.ticket, c.rule, c.answer]), [['T3', 'reversible-default', FIXED_ANSWER]]);
+  assert.ok(r.world.events.some((e) => e.ev === 'answered' && e.ticket === 'T3'), 'T3 got its answer');
   assert.deepEqual(r.violations, []);
+});
+
+test('#645: the closing report lists the choices recorded `irreversible: …` FIRST (JSON: `irreversible` + choices ordered first; text: its own heading above merged)', () => {
+  let st = applyPlan(newState('x', { target: 'main', switches: { seatRecords: 'on' }, now: N }), planOf(load('rts7')), N);
+  st = recordChoice(st, { ticket: 'T2', question: 'name?', rule: 'reversible-default', answer: 'the short one' }, N);
+  st = recordChoice(st, { ticket: 'T3', question: 'purge the stale rows?', rule: 'reversible-default', answer: 'irreversible: scripts/purge-stale.sql, run by hand after deploy' }, N);
+  const r = buildReport(st);
+  assert.deepEqual(r.irreversible.map((c) => c.ticket), ['T3']);
+  assert.deepEqual(r.choices.map((c) => c.ticket), ['T3', 'T2'], 'irreversible first in the JSON choices too');
+  const text = renderReport(r).split('\n');
+  const iHead = text.findIndex((l) => /^IRREVERSIBLE/.test(l));
+  assert.ok(iHead >= 0 && iHead < text.findIndex((l) => l.startsWith('merged:')), 'its own heading, before merged');
+  assert.match(text[iHead + 1], /T3 purge the stale rows\? → irreversible: scripts\/purge-stale\.sql/);
+  assert.equal(text.filter((l) => /^ {2}#\d+ T3/.test(l)).length, 1, 'not repeated under the plain choices');
+  assert.deepEqual(buildReport(recordChoice(st, { ticket: 'T4', question: 'q', rule: 'reversible-default', answer: 'Irreversible : x' }, N)).irreversible.map((c) => c.ticket), ['T3', 'T4'], 'case and spacing tolerant');
+  assert.equal(buildReport(recordChoice(newState('y', { target: 'main', switches: { seatRecords: 'on' }, now: N }), { ticket: 'T1', question: 'q', rule: 'reversible-default', answer: 'not irreversible: no' }, N)).irreversible.length, 0, 'the prefix, not a substring');
 });
 
 test('a start held by Admission is a wait, not a fault: nothing parked, everything merged', async () => {
@@ -271,23 +286,22 @@ test('judge MUST-FAIL: each rule fires on a log that breaks it', () => {
 });
 
 // ── frozen names ────────────────────────────────────────────────────────────────────────────────────────────────────
-test('frozen names: the steps, the fixed answer, the no-safe-option marker', () => {
+test('frozen names: the steps, the fixed answer', () => {
   assert.deepEqual([...LOOP_STEPS], ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end']);
-  assert.equal(FIXED_ANSWER, 'Take the reversible option, record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"`, continue. Do not wait for anyone.');
-  assert.equal(NO_SAFE_OPTION, 'NO SAFE OPTION: ');
+  assert.equal(FIXED_ANSWER, 'Take the reversible option unless the spec imposes the action; an irreversible need is code or a script in your PR that you never run. Record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"` (for an irreversible need: `--taken "irreversible: <what, run by hand>"`), continue. Do not wait for anyone.');
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), new RegExp(`^CONNECT T1 ${H('a')}\\n`));
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), /MERGE COMMIT/);
 });
-test('the loop writes the REAL #603 records: parked is a status (cause, blockedBy), choices and the pause live in state.json — the sidecar holds the loop-only fields', async () => {
+test('the loop writes the REAL #603 records: choices and the pause live in state.json — the sidecar holds the loop-only fields', async () => {
   const home = tmp();
   const r = await runDummyLoop({ home, scenario: load('nosafe'), options: { stallMs: 30 * 60_000 } });
   const st = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'state.json'), 'utf8'));
-  assert.deepEqual(['T3', 'T5', 'T7'].map((id) => [st.tickets[id].status, st.tickets[id].parked.cause, st.tickets[id].parked.blockedBy ?? null]), [['parked', 'question', null], ['parked', 'upstream', 'T3'], ['parked', 'upstream', 'T3']]);
-  assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'no-safe-option']]);
+  assert.deepEqual(['T3', 'T5', 'T7'].map((id) => [st.tickets[id].status, st.tickets[id].parked ?? null]), [['merged', null], ['merged', null], ['merged', null]]);
+  assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'reversible-default']]);
   const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
   for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
   assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'reconnects', 'replaced', 'signalled']);
-  assert.deepEqual(r.result.report.parked.map((p) => p.ticket), ['T3', 'T5', 'T7']);
+  assert.deepEqual(r.result.report.parked, []);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {
   const home = tmp();
@@ -424,16 +438,17 @@ test('MAJOR-1: killed between the choice and the answer, the restart answers and
   assert.equal(again.report.merged.length, 7);
   assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'T2 got its answer');
 });
-test('MAJOR-1: a NO SAFE OPTION in a batch killed before its ack is parked once on restart (not lost, not listed twice)', async () => {
+test('MAJOR-1: a NO SAFE OPTION ask in a batch killed before its ack is answered and listed once on restart (#645: it no longer parks)', async () => {
   const home = tmp();
   const d = buildDummy({ home, run: 'nosafe', scenario: load('nosafe') });
   let killed = false;
   const fleet = { ...d.fleet, async ack(n: number) { if (!killed && d.world.events.some((e) => e.ev === 'ask' && e.kind === 'no-safe-option')) { killed = true; throw new LoopKilled('killed before the ack'); } return d.fleet.ack(n); } };
   await assert.rejects(runLoop(depsOf(home, d, { fleet })), /killed before the ack/);
   const again = await runLoop(depsOf(home, d));
-  assert.equal(again.exit, 3);
-  assert.deepEqual(again.report.parked.map((p) => [p.ticket, p.cause]), [['T3', 'question'], ['T5', 'upstream'], ['T7', 'upstream']]);
+  assert.equal(again.exit, 0);
+  assert.deepEqual(again.report.parked, []);
   assert.equal(again.report.choices.length, 1);
+  assert.equal(d.world.events.filter((e) => e.ev === 'send' && e.kind === 'answer' && e.ticket === 'T3').length, 1, 'the handled ask is not answered a second time');
 });
 test('MAJOR-2: a check set that is not identical on two polls is not green — a late-registering workflow does not let a lone `lint` merge', async () => {
   const r = await go('late-check');
@@ -458,19 +473,14 @@ test('MAJOR-2: the dummy forge merges by MERGE COMMIT only — a squash is refus
   assert.equal(w.merge(n, 'a'.repeat(40), 'merge').ok, true);
   assert.equal(w.commits.get(w.branches.get('main')!)!.parents.length, 2, 'a two-parent merge commit');
 });
-test('MINOR-1: NO SAFE OPTION is parsed fail-CLOSED (case, spacing, colon, not first line); only a body without the marker is a question', async () => {
-  assert.equal(parseNoSafeOption('There is no safe option name collision here? Which of the two names should I use?'), null, 'a question that merely contains the words is a question');
-  assert.equal(parseNoSafeOption('Do we have no safe option for the rollback?'), null);
-  for (const body of ['NO SAFE OPTION:\nthe reason', 'NO SAFE OPTION:the reason', 'NO SAFE OPTION:', 'no safe option: x', '  NO SAFE OPTION: x', 'Hello\nNO SAFE OPTION: x', 'No-Safe_Option - x']) {
-    assert.ok(parseNoSafeOption(body), body);
+test('MINOR-1 (#645): whatever the spelling of NO SAFE OPTION, the ticket is answered with the fixed answer and goes on — nothing parks', async () => {
+  for (const body of ['NO SAFE OPTION: x', 'NO SAFE OPTION:\nthe reason', 'no safe option: x', '  NO SAFE OPTION: x', 'Hello\nNO SAFE OPTION: x', 'No-Safe_Option - x']) {
     const s = sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body } as never] } });
     const r = await runDummyLoop({ home: tmp(), scenario: s, options: { stallMs: 30 * 60_000 } });
-    assert.equal(r.result.report.parked.find((p) => p.ticket === 'T3')?.cause, 'question', body);
-    assert.equal(r.result.report.choices.filter((c) => c.rule === 'reversible-default').length, 0, `${body} was not answered with the fixed answer`);
+    assert.deepEqual(r.result.report.parked, [], body);
+    assert.equal(r.result.exit, 0, body);
+    assert.equal(r.result.report.choices.filter((c) => c.rule === 'reversible-default').length, 1, `${body} was answered with the fixed answer`);
   }
-  assert.equal(parseNoSafeOption('Which of the two names should T3 use?'), null);
-  assert.equal(parseNoSafeOption('NO SAFE OPTION:')!.reason, '(no reason given)');
-  assert.equal(parseNoSafeOption('NO SAFE OPTION: a\nb')!.reason, 'a');
 });
 test('MINOR-2: a held start, a CI and a reviewer that take 5 h are waits (bounded: they feed the 4 h clock for up to its length), not a stall', async () => {
   const long = { stallMs: 4 * 3_600_000 };
@@ -489,7 +499,8 @@ test('MINOR-2: a real stall still ends the run — the reason says "stalled" (ca
 test('MINOR-3: the loop section of the implementer brief — present for a loop-led run (`state.loopPlan`, set by the #604 applyPlan, turns it on), byte-identical to before otherwise', async () => {
   const r = await go('rts7');
   assert.ok(r.world.events.filter((e) => e.ev === 'spawn').every((e) => e.briefHasLoop === true), 'every brief the loop launched carries the loop section');
-  for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', 'orchestra fanout choice', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
+  assert.ok(!LOOP_BRIEF.includes('NO SAFE OPTION'), '#645: the marker is gone from the brief');
+  for (const needle of ['--taken "irreversible: <what>"', 'a script in the PR that you never run', 'unless the spec imposes the action', 'CONNECT <upstream> <head>', 'orchestra fanout choice', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
   const planned = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
   const { loopPlan: _lp, ...st } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');
@@ -644,12 +655,13 @@ test('r3 MINOR (OPS): a replacement that FAILS to spawn is not charged to the ca
   assert.ok(fails < 0 && calls >= 6, 'the replacement was tried 4 times: 3 failures + 1 success');
   assert.equal(readLoopState(home, 'changes-requested')!.loop.replaced[`rev:T1:${d.world.events.find((e) => e.ev === 'review-record' && e.ticket === 'T1')!.head}`], 1, 'one replacement charged');
 });
-test('swap: an ask with control characters is cleaned before it is listed ([choice-bad] would retry the message for ever); the NO SAFE OPTION reason too', async () => {
+test('swap: an ask with control characters is cleaned before it is listed ([choice-bad] would retry the message for ever); a NO SAFE OPTION body too', async () => {
   const q = await runDummyLoop({ home: tmp(), scenario: sc('question', { events: { T2: [{ at: 'code', kind: 'question', body: 'Which name?\u0007 \u0001beep' } as never] } }), options: { stallMs: 30 * 60_000 } });
   assert.equal(q.result.exit, 0, q.result.reason);
   assert.equal(q.result.report.choices[0].question, 'Which name?   beep');
   const n = await runDummyLoop({ home: tmp(), scenario: sc('nosafe', { events: { T3: [{ at: 'code', kind: 'no-safe-option', body: 'NO SAFE OPTION: bad\u0000spec' } as never] } }), options: { stallMs: 30 * 60_000 } });
-  assert.equal(n.result.report.parked.find((p) => p.ticket === 'T3')?.reason, 'bad spec');
+  assert.equal(n.result.exit, 0, n.result.reason);
+  assert.equal(n.result.report.choices[0].question, 'NO SAFE OPTION: bad spec');
 });
 
 // ── swap review: the loop section follows the LOOP; a full choices list never poisons a restart ────────────────────
@@ -661,7 +673,7 @@ test('swap MAJOR: a HAND-planned run (a complete plan, no loopPlan marker) still
   assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.briefHasLoop === true).length, 7, 'all 7 briefs carry LOOP_BRIEF');
   assert.deepEqual(r.violations, []);
 });
-test('swap MINOR: past CHOICES_MAX the loop still ANSWERS a question and still PARKS on NO SAFE OPTION — the listing is skipped (logged), no [choice-bad] on every restart', async () => {
+test('swap MINOR: past CHOICES_MAX the loop still ANSWERS a question (NO SAFE OPTION included) — the listing is skipped (logged), no [choice-bad] on every restart', async () => {
   for (const name of ['question', 'nosafe']) {
     const home = tmp();
     const d = buildDummy({ home, run: name, scenario: load(name) });
@@ -670,8 +682,7 @@ test('swap MINOR: past CHOICES_MAX the loop still ANSWERS a question and still P
     const r = await runLoop({ ...depsOf(home, d), log: (l) => log.push(l) });
     assert.equal(readLoopState(home, name)!.choices!.length, CHOICES_MAX, 'nothing was added past the cap');
     assert.ok(log.some((l) => /choices are full/.test(l)), 'said in the log');
-    if (name === 'question') { assert.equal(r.exit, 0, r.reason); assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'the question was answered'); }
-    else assert.deepEqual(r.report.parked.map((p) => [p.ticket, p.cause]), [['T3', 'question'], ['T5', 'upstream'], ['T7', 'upstream']]);
+    assert.equal(r.exit, 0, r.reason); assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'the question was answered');
   }
 });
 
