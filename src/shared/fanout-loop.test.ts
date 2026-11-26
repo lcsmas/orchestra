@@ -231,7 +231,7 @@ test('judge MUST-FAIL: each rule fires on a log that breaks it', () => {
 // ── frozen names ────────────────────────────────────────────────────────────────────────────────────────────────────
 test('frozen names: the steps, the fixed answer, the no-safe-option marker', () => {
   assert.deepEqual([...LOOP_STEPS], ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end']);
-  assert.equal(FIXED_ANSWER, 'Take the reversible option, record it under `## Choices` in your PR body, continue. Do not wait for anyone.');
+  assert.equal(FIXED_ANSWER, 'Take the reversible option, record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"`, continue. Do not wait for anyone.');
   assert.equal(NO_SAFE_OPTION, 'NO SAFE OPTION: ');
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), new RegExp(`^CONNECT T1 ${H('a')}\\n`));
   assert.match(renderConnectAsk({ ticket: 'T3', upstream: 'T1', branch: 'impl-T1', head: H('a') }), /MERGE COMMIT/);
@@ -447,7 +447,7 @@ test('MINOR-2: a real stall still ends the run — the reason says "stalled" (ca
 test('MINOR-3: the loop section of the implementer brief — present for a loop-led run (`state.loopPlan`, set by the #604 applyPlan, turns it on), byte-identical to before otherwise', async () => {
   const r = await go('rts7');
   assert.ok(r.world.events.filter((e) => e.ev === 'spawn').every((e) => e.briefHasLoop === true), 'every brief the loop launched carries the loop section');
-  for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', '`## Choices`', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
+  for (const needle of ['NO SAFE OPTION: <reason>', 'CONNECT <upstream> <head>', 'orchestra fanout choice', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
   const planned = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
   const { loopPlan: _lp, ...st } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');

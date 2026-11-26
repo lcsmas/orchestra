@@ -2,7 +2,7 @@
 // The CLI half is src/cli/fanout-review.ts; the host half (spawn / wake) is src/shared/fanout-review-host.ts. Every refusal message STARTS with its bracketed name.
 import { FANOUT_REVIEWER_SKILL_PATH } from './fanout-reviewer-skill.ts';
 import { briefHash, renderReviewerBrief, type BriefFinding, type BriefInput, type BriefKind } from './fanout-review-brief.ts';
-import { renderDecisions, renderInterfaces, renderSwitchesLine } from './fanout-brief-common.ts';
+import { renderDecisions, renderInterfaces, renderSwitchesLine, renderTicketChoices } from './fanout-brief-common.ts';
 import { isVouched, type Caller } from './fanout-caller.ts';
 import { claimIsStale } from './fanout-acceptance.ts';
 import {
@@ -65,7 +65,7 @@ export function decideReview(t: TicketState, head: string, nowIso: string, isLiv
 }
 
 const openFindingsOf = (t: TicketState): BriefFinding[] =>
-  Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision).map(([id, f]) => {
+  Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision && f.onChoice === undefined).map(([id, f]) => {
     const x = f as { text?: string; raisedOn?: string }; // I4 (#589) adds text / raisedOn
     return { id, severity: f.severity, text: x.text ?? null, raisedOn: x.raisedOn ?? null };
   });
@@ -90,6 +90,7 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     prevHead: o.kind === 'wake' ? t.review?.head ?? null : null, branch: t.branch, pr: t.pr,
     interfacesText: renderInterfaces(state, [...(own ? [ticket] : []), ...t.dependsOn]),
     decisionsText: renderDecisions(state),
+    choicesText: renderTicketChoices(state, ticket),
     switchesLine: renderSwitchesLine(state),
     follows: t.dependsOn.flatMap((id) => { const i = interfaceOf(state, id); return i ? [{ id, current: i.version, followed: follows[id] ?? null }] : []; }),
     switches: switchesOf(state),

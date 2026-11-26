@@ -18,4 +18,4 @@ export const LOOP_USAGE = `The Boucle (#601, slice 1) — no model leads a vague
   orchestra fanout state set --pause <reason> [--pause-check <name>]   pause the run (the loop does it when one check is red on several pull requests)
   orchestra fanout state set --run <id> --resume-run            lift the pause
   Refused: park-no-reason · park-bad-cause · park-merged · park-unknown-ticket · pause-no-reason · choice-bad. \`state show\` and \`closeout\` print the parked tickets (cause, reason), the choices and the pause.
-  An agent's question gets a fixed answer (take the reversible option, record it under "## Choices" in your PR body, continue); a body starting with the line "NO SAFE OPTION: <reason>" parks its ticket.`;
+  An agent's question gets a fixed answer (take the reversible option, record it with orchestra fanout choice <ticket> --question "<q>" --taken "<option>", continue); a body starting with the line "NO SAFE OPTION: <reason>" parks its ticket.`;

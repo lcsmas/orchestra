@@ -22,10 +22,10 @@ export const isParked = (t: TicketState | undefined): boolean => t?.status === '
 export interface TokenCost { tokens: number; input?: number; output?: number; cacheRead?: number; cacheCreate?: number }
 
 export interface ReportParked { ticket: string; cause: ParkCauseView; reason: string; blockedBy?: string }
-/** `question` + a pointer to where the agent's own pick is written (its PR body, `## Choices`). */
+/** `question` + the option the implementer recorded (`answer`, `orchestra fanout choice`, #641) + where its work is. */
 export interface ReportChoice { n: number; ticket: string; question: string; rule: ChoiceView['rule']; answer: string; pr: number | null; branch: string | null }
 /** A finding that did NOT end fixed: `open` (nobody closed it), `decided` (the coordinator wrote a reason), `pr-body` (settled in the PR body, no code change). */
-export interface ReportFinding { ticket: string; finding: string; severity: FindingRecord['severity']; end: 'open' | 'decided' | 'pr-body'; note?: string }
+export interface ReportFinding { ticket: string; finding: string; severity: FindingRecord['severity']; end: 'open' | 'decided' | 'pr-body' | 'on-choice'; note?: string }
 
 export interface Report {
   run: string;
@@ -55,7 +55,8 @@ export function findingsLeftOf(ticket: string, t: TicketState): ReportFinding[] 
   const out: ReportFinding[] = [];
   for (const [finding, f] of Object.entries(t.findings)) {
     if (f.settled?.how === 'fixed') continue;
-    if (f.decision) out.push({ ticket, finding, severity: f.severity, end: 'decided', note: oneLine(f.decision.text) });
+    if (f.onChoice !== undefined) out.push({ ticket, finding, severity: f.severity, end: 'on-choice', note: `about choice ${f.onChoice} — never blocks` });
+    else if (f.decision) out.push({ ticket, finding, severity: f.severity, end: 'decided', note: oneLine(f.decision.text) });
     else if (f.settled) out.push({ ticket, finding, severity: f.severity, end: 'pr-body', note: f.settled.ref });
     else out.push({ ticket, finding, severity: f.severity, end: 'open' });
   }
@@ -106,8 +107,8 @@ export function renderReport(r: Report): string {
   if (r.unfinished.length) L.push(`unfinished: ${r.unfinished.join(', ')}`);
   if (r.dropped.length) L.push(`dropped: ${r.dropped.join(', ')}`);
   if (r.choices.length) {
-    L.push(`choices taken by the agents (${r.choices.length}) — the agent's own pick is under \`## Choices\` in its PR body:`);
-    for (const c of r.choices) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+    L.push(`choices taken by the agents (${r.choices.length}) — each the reversible option the implementer recorded (\`orchestra fanout choice\`):`);
+    for (const c of r.choices) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)} → TAKEN: ${oneLine(c.answer, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
   }
   if (r.findingsLeft.length) {
     L.push(`findings left (${r.findingsLeft.length}):`);

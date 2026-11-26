@@ -68,6 +68,8 @@ export interface FindingRecord {
   text?: string;
   raisedOn?: string;
   fixedBy?: { by: string; head: string; at: string };
+  /** #641 — written ONLY by `fanout record --on-choice`: the finding's subject is the run's recorded choice n of this ticket; it never blocks the merge, the report lists it. */
+  onChoice?: number;
 }
 /** #553 (T2) — the four parts a measured MINOR on product code carries: T1's `findingOf` validates each when `report` is present; this is the rule that it IS present. */
 export const REPORT_PARTS = ['input', 'happens', 'where', 'proof'] as const;
@@ -646,7 +648,7 @@ function isoOf(v: unknown, where: string): string {
   return v;
 }
 const FINDING_KEYS = new Set(['severity', 'evidence', 'kind', 'specSentence', 'demonstration', 'report', 'decision', 'settled']);
-for (const k of ['by', 'text', 'raisedOn', 'fixedBy']) FINDING_KEYS.add(k); // #589 (I4)
+for (const k of ['by', 'text', 'raisedOn', 'fixedBy', 'onChoice']) FINDING_KEYS.add(k); // #589 (I4), #641
 /** #572 — a stored / patched demonstration: SHAPE only (strings, printable, bounded). A blank / short / missing field is NOT an error here: it is recorded with its refusal reason (`classifyDemonstration`). */
 function demonstrationOf(v: unknown, where: string): Demonstration {
   if (!isObj(v)) throw new FanoutStateError(`${where}.demonstration must be {${DEMONSTRATION_FIELDS.join(', ')}}`);
@@ -697,6 +699,7 @@ export function findingOf(v: unknown, where: string): FindingRecord {
     if (typeof v.fixedBy.head !== 'string' || !HEX_SHA.test(v.fixedBy.head)) throw new FanoutStateError(`${where}.fixedBy.head must be a 7-40 lowercase hex sha`);
     out.fixedBy = { by: lineOf(v.fixedBy.by, `${where}.fixedBy.by`, 200), head: v.fixedBy.head, at: isoOf(v.fixedBy.at, `${where}.fixedBy.at`) };
   }
+  if (v.onChoice !== undefined) { if (typeof v.onChoice !== 'number' || !Number.isInteger(v.onChoice) || v.onChoice < 1) throw new FanoutStateError(`${where}.onChoice must be a choice number (1, 2, …)`); out.onChoice = v.onChoice; }
   return out;
 }
 /** #589 (I4) — the stored `reviews`: every field shape-checked, `n` strictly increasing from 1. */
@@ -1234,8 +1237,8 @@ export function effectiveSpec(state: FanoutState, t: Pick<TicketState, 'specText
   for (let depth = 0; text === null && up && depth < 8; depth++) { const b: TicketState | undefined = state.tickets[up]; text = b?.specText ?? null; up = b?.followUpOf ?? null; } // a follow-up of a follow-up inherits through the chain
   return { specText: text };
 }
-/** Is the finding closed: settled (fixed / pr-body) or decided by the coordinator. */
-export const findingClosed = (f: FindingRecord): boolean => !!f.settled || !!f.decision;
+/** Is the finding closed: settled (fixed / pr-body), decided by the coordinator, or about a recorded choice (#641). */
+export const findingClosed = (f: FindingRecord): boolean => !!f.settled || !!f.decision || f.onChoice !== undefined; // #641: a finding on a recorded choice never blocks
 /** #572 — the finding's demonstration is ACCEPTED (re-checked wherever it is acted on: a hand-edited state cannot smuggle one in). */
 export const findingDemonstrated = (f: FindingRecord): boolean => demonstrationAccepted(f.demonstration);
 /**
@@ -1339,7 +1342,7 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
 function assertPatchSource(state: FanoutState, id: string, patch: Record<string, unknown>): void {
   const findings = isObj(patch.findings) ? Object.entries(patch.findings) : [];
   if (!seatRecordsOn(state)) {
-    for (const [k, f] of findings) if (isObj(f)) for (const bad of ['by', 'text', 'raisedOn', 'fixedBy']) if (bad in f) throw new FanoutStateError(`unknown field "${bad}" in findings[${k}]`);
+    for (const [k, f] of findings) if (isObj(f)) for (const bad of ['by', 'text', 'raisedOn', 'fixedBy', 'onChoice']) if (bad in f) throw new FanoutStateError(`unknown field "${bad}" in findings[${k}]`);
     return;
   }
   if (findings.length || ('findings' in patch && patch.findings !== undefined && !isObj(patch.findings))) throw new SeatRefusal('finding-source', `${id}: seatRecords=on — a finding is recorded by the ticket's reviewer (\`orchestra fanout record ${id} --head <sha> --verdict approve|changes-requested --json <file|->\`), never typed by the coordinator (--finding / --finding-json refused)`);

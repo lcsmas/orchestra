@@ -1,6 +1,6 @@
 // #589 (I4, switch seatRecords=on) — the reviewer RECORDS its verdict and findings; `gate` and `deliver` read nothing else. Pure; the verb is src/cli/fanout-record.ts.
 // Every refusal is a FanoutStateError whose message STARTS with its name in brackets. Who the caller is = `resolveCaller` (#588, src/shared/fanout-caller.ts) — this file never judges identity itself.
-import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, findingClosed, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
+import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, findingClosed, recordChoice, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
 import type { FileOnHead } from './fanout-demonstration.ts';
 
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
@@ -58,7 +58,7 @@ export function countsThrough(t: TicketState, n: number): ReviewCounts {
   const raised: string[] = [];
   const closed = new Set<string>();
   for (const r of (t.reviews ?? []).filter((x) => x.n <= n)) { for (const id of r.findings) if (!raised.includes(id)) raised.push(id); for (const id of r.closed) closed.add(id); }
-  const open = raised.filter((id) => t.findings[id] && !closed.has(id) && !t.findings[id].decision); // as of review n: only a reviewer's "fixed" up to it closes (a later one must not rewrite what an earlier verdict said); a decision always closes
+  const open = raised.filter((id) => t.findings[id] && !closed.has(id) && !t.findings[id].decision && t.findings[id].onChoice === undefined); // #641 on-choice never blocks; as of review n: only a reviewer's "fixed" up to it closes (a later one must not rewrite what an earlier verdict said); a decision always closes
   const sev = (s: string): number => open.filter((id) => t.findings[id].severity === s).length;
   return { blocking: sev('BLOCKING'), major: sev('MAJOR'), minor: sev('MINOR'), open };
 }
@@ -90,6 +90,8 @@ export interface RecordArgs {
   tree: string | null;
   now: string;
   fileOnHead?: FileOnHead;
+  /** #641 — `--on-choice <finding>=<n>`: findings raised in THIS record whose subject is the ticket's recorded choice n (they never block the merge). */
+  onChoice?: Record<string, number>;
 }
 
 /** `orchestra fanout record <ticket>`: the recorded reviewer's verdict + findings on the exact head it read. Pure: returns the new state or throws a named refusal. */
@@ -127,6 +129,11 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   // the reviewer's findings go through the state's own transition (severity / report / specSentence / demonstration rules), as the head THEY read
   const patch: Record<string, unknown> = {};
   if (ids.length) patch.findings = Object.fromEntries(ids.map((id) => [id, { ...a.input.findings[id], by: a.callerId, raisedOn: head }]));
+  for (const [id, n] of Object.entries(a.onChoice ?? {})) {
+    if (!ids.includes(id)) recordRefuse('on-choice-finding', `--on-choice names ${id}, which is not a finding of this record (raised now: ${ids.join(', ') || 'none'})`);
+    if (!(state.choices ?? []).some((c) => c.n === n && c.ticket === ticketId)) recordRefuse('on-choice-unknown', `--on-choice ${id}=${n}: ${ticketId} has no recorded choice ${n} (its choices: ${choicesOfTicket(state, ticketId).map((c) => c.n).join(', ') || 'none'})`);
+    (patch.findings as Record<string, Record<string, unknown>>)[id].onChoice = n;
+  }
   if (a.input.fixed.length) patch.settle = Object.fromEntries(a.input.fixed.map((id) => [id, t.findings[id].kind === 'process' ? { how: 'pr-body', ref: `read by the reviewer on ${head}` } : { how: 'fixed', ref: head }]));
   let next = state;
   if (ids.length || a.input.fixed.length) {
@@ -147,6 +154,22 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   if (a.verdict === 'approve' && heldIds.length) recordRefuse('approve-open-finding', `approve with ${heldIds.length} open finding(s) that block the merge (${heldIds.map((id) => `${id} ${nt.findings[id].severity}`).join(', ')}) — record changes-requested, or close them with "fixed" if you read their fix on this head (policy: minorPolicy=${switchesOf(state).minorPolicy})`);
   if (a.verdict === 'changes-requested' && heldIds.length === 0) recordRefuse('changes-no-finding', 'changes-requested with no open BLOCKING / MAJOR finding (nor a blocking MINOR under this run\'s minorPolicy): list the finding that stops the merge in "findings", or record approve');
   return out;
+}
+
+// ── #641 — the implementer's choice: a run decision of ITS ticket, recorded before it pushes ─────────────────────
+export const choicesOfTicket = (state: FanoutState, ticket: string) => (state.choices ?? []).filter((c) => c.ticket === ticket);
+
+/** `orchestra fanout choice <ticket> --question <q> --taken <option>`: the ticket's implementer records the reversible option it took. The rule is fixed (reversible-default): no coordinator, no ruling afterwards.
+ *  Under seatRecords=on only the ticket's own implementer, vouched by the host, may; the choice is numbered run-wide (`--on-choice` cites that number). */
+export function recordImplementerChoice(state: FanoutState, ticketId: string, a: { question: string; taken: string; callerId: string | null; callerVouched?: boolean; now: string }): FanoutState {
+  const t = state.tickets[ticketId];
+  if (!t) return recordRefuse('choice-unknown-ticket', `${ticketId} is not in the state of run ${state.run} (tickets: ${Object.keys(state.tickets).join(', ') || 'none'})`);
+  if (t.status === 'merged' || t.status === 'dropped') return recordRefuse('choice-closed', `${ticketId} is ${t.status}: a choice is recorded before the push, while the ticket is open`);
+  if (seatRecordsOn(state)) {
+    if (a.callerVouched !== true) return recordRefuse('choice-caller', `the host could not vouch for ${a.callerId ?? 'this session'}: only ${ticketId}'s implementer, from its live session, records its choice`);
+    if (!t.implementer || a.callerId !== t.implementer) return recordRefuse('choice-caller', `only ${ticketId}'s implementer (${t.implementer ?? 'none recorded'}) records its choice; you are ${a.callerId ?? 'not identified'}`);
+  }
+  return recordChoice(state, { ticket: ticketId, question: a.question, rule: 'reversible-default', answer: a.taken }, a.now);
 }
 
 // ── what gate and deliver read ─────────────────────────────────────────────────────────────────────────────────

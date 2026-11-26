@@ -14,7 +14,7 @@ export const IMPLEMENTER_RULES = [
 export const LOOP_BRIEF = [
   '## The loop leads this run (this overrides anything else you were told)',
   '- Start NOW on the frozen interface names above and write code at once: never wait for an upstream to merge. Merges in this run are MERGE COMMITS.',
-  '- A question that would wait for a person gets a fixed answer from the loop: take the reversible option, record it under `## Choices` in your PR body, continue.',
+  '- A question that would wait for a person gets a fixed answer from the loop: take the reversible option, record it BEFORE you push with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option you took>"` (your reviewer is shown it; a finding about the choice itself never blocks), continue.',
   '- If you have NO SAFE OPTION (a contradictory spec, an irreversible act): send ONE `orchestra send --type ask` whose FIRST line is exactly `NO SAFE OPTION: <reason>`, then stop. Your ticket is set aside and the others go on.',
   '- When the loop sends `CONNECT <upstream> <head>`: merge that exact head into your branch with a MERGE COMMIT (`git merge --no-ff <head>`; never rebase, never squash), rebuild on its real names, push, then send a `status`.',
   '- After you push a candidate, send a `status`: the loop reads git for the head, not your words.',
