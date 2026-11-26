@@ -93,6 +93,7 @@
     "test:freeze-check-mutants": "node scripts/e2e-fanout-freeze-check.mjs --mutants",
     "test:harness-amend": "node scripts/e2e-fanout-harness-amend.mjs",
     "test:harness-amend-mutants": "node scripts/e2e-fanout-harness-amend.mjs --mutants",
+    "test:role-guard-matrix": "node --test --experimental-strip-types src/shared/role-guard.matrix.ts src/shared/role-guard-vf2.matrix.ts",
     "test:role-guard-cli": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/role-guard/e2e-role-guard-cli.mjs",
     "test:session-identity": "node scripts/session-identity/run.mjs",
     "test:pause-ui-render": "node scripts/pause-ui-render-smoke.mjs",

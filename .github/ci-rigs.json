@@ -1,6 +1,6 @@
 {
  "_doc": "Every rig is RUNS_IN_CI or LOCAL_ONLY + reason (#568). Guard: src/shared/ci-rigs.test.ts. Read by the matrix + summary of .github/workflows/ci.yml.",
- "groups": 16,
+ "groups": 17,
  "suiteShards": 2,
  "sharedPaths": [
   "package.json",
@@ -734,7 +734,7 @@
     "scripts/disk-guard.cjs",
     "scripts/verify-disk-guard.mjs"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:disk-guard-ui",
@@ -1409,13 +1409,13 @@
     "src/shared/workspace-name.ts",
     "src/shared/worktree-sizes.ts"
    ],
-   "group": 9
+   "group": 6
   },
   {
    "id": "test:hung-cli",
    "command": "pnpm run test:hung-cli",
    "class": "RUNS_IN_CI",
-   "wallSec": 118,
+   "wallSec": 115,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-hung-cli-teardown.mjs",
@@ -1425,13 +1425,13 @@
     "src/main/session-watchdog.ts",
     "src/main/store.ts"
    ],
-   "group": 6
+   "group": 15
   },
   {
    "id": "test:claude-code-update",
    "command": "pnpm run build:bundles && bash scripts/e2e-claude-code-update.sh .",
    "class": "RUNS_IN_CI",
-   "wallSec": 89,
+   "wallSec": 90,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -1444,13 +1444,13 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 14
+   "group": 5
   },
   {
    "id": "test:liveness-failed-call",
    "command": "pnpm run test:liveness-failed-call",
    "class": "RUNS_IN_CI",
-   "wallSec": 9,
+   "wallSec": 6,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-liveness-failed-call.mjs",
@@ -1462,7 +1462,7 @@
     "src/main/workspaces.ts",
     "src/shared/bus-liveness.ts"
    ],
-   "group": 5
+   "group": 9
   },
   {
    "id": "test:session-debug-log",
@@ -1478,7 +1478,7 @@
     "src/main/session-debug-log-fs.ts",
     "src/main/store.ts"
    ],
-   "group": 2
+   "group": 16
   },
   {
    "id": "test:context-seed",
@@ -1493,13 +1493,13 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 5
+   "group": 16
   },
   {
    "id": "test:session-budget",
    "command": "pnpm run test:session-budget",
    "class": "RUNS_IN_CI",
-   "wallSec": 56,
+   "wallSec": 53,
    "paths": [
     "@bundle:keeper",
     "scripts/session-budget/**",
@@ -1536,41 +1536,41 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 2
+   "group": 16
   },
   {
    "id": "test:fanout-open",
    "command": "pnpm run test:fanout-open",
    "class": "RUNS_IN_CI",
-   "wallSec": 9,
+   "wallSec": 8,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-open.mjs"
    ],
-   "group": 4
+   "group": 1
   },
   {
    "id": "test:fanout-open-mutants",
    "command": "pnpm run test:fanout-open-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 31,
+   "wallSec": 34,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-open.mjs"
    ],
-   "group": 15
+   "group": 2
   },
   {
    "id": "test:fanout-followup",
    "command": "pnpm run test:fanout-followup",
    "class": "RUNS_IN_CI",
-   "wallSec": 16,
+   "wallSec": 18,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-followup.mjs"
    ],
-   "group": 3
+   "group": 13
   },
   {
    "id": "test:fanout-followup-mutants",
@@ -1591,7 +1591,7 @@
     "@bundle:cli",
     "scripts/e2e-spec-sentence.mjs"
    ],
-   "group": 6
+   "group": 3
   },
   {
    "id": "test:spec-sentence-mutants",
@@ -1607,24 +1607,24 @@
    "id": "test:fanout-closeout",
    "command": "pnpm run test:fanout-closeout",
    "class": "RUNS_IN_CI",
-   "wallSec": 5,
+   "wallSec": 6,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-closeout.mjs"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:fanout-closeout-mutants",
    "command": "pnpm run test:fanout-closeout-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 129,
+   "wallSec": 168,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-closeout.mjs"
    ],
-   "group": 7
+   "group": 9
   },
   {
    "id": "test:fanout-acceptance",
@@ -1650,7 +1650,7 @@
    "id": "test:fanout-jest-config",
    "command": "pnpm run test:fanout-jest-config",
    "class": "RUNS_IN_CI",
-   "wallSec": 7,
+   "wallSec": 9,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-jest-config.mjs"
@@ -1662,7 +1662,7 @@
    "command": "pnpm run test:fanout-jest-config-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 118,
+   "wallSec": 144,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-jest-config.mjs"
@@ -1676,27 +1676,29 @@
    "wallSec": 21,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-tree-verdict.mjs"
+    "scripts/e2e-fanout-tree-verdict.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 7
+   "group": 14
   },
   {
    "id": "test:fanout-tree-verdict-mutants",
    "command": "pnpm run test:fanout-tree-verdict-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 444,
+   "wallSec": 200,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-tree-verdict.mjs"
+    "scripts/e2e-fanout-tree-verdict.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 11
+   "group": 7
   },
   {
    "id": "test:fanout-switches",
    "command": "pnpm run test:fanout-switches",
    "class": "RUNS_IN_CI",
-   "wallSec": 8,
+   "wallSec": 7,
    "paths": [
     "scripts/e2e-fanout-switches.mjs",
     "src/cli/fanout-acceptance.ts",
@@ -1761,13 +1763,13 @@
     "src/shared/fanout-demonstration.test.ts",
     "src/shared/fanout-role-texts.test.ts"
    ],
-   "group": 10
+   "group": 6
   },
   {
    "id": "test:fanout-loop-skill-mutants",
    "command": "pnpm run test:fanout-loop-skill-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 170,
+   "wallSec": 84,
    "timeoutMin": 15,
    "paths": [
     "scripts/fanout-loop-skill-mutants.mjs",
@@ -1820,7 +1822,7 @@
     "src/shared/fanout-loop-skill.test.ts",
     "src/shared/fanout-role-texts.test.ts"
    ],
-   "group": 6
+   "group": 7
   },
   {
    "id": "test:fanout-review-mutants",
@@ -1869,7 +1871,7 @@
     "src/shared/types.ts",
     "src/cli/fanout-review.test.ts"
    ],
-   "group": 1
+   "group": 14
   },
   {
    "id": "test:fanout-park-mutants",
@@ -1882,13 +1884,31 @@
     "src/cli/fanout-park.test.ts",
     "src/shared/fanout-park.test.ts"
    ],
-   "group": 12
+   "wallSec": 255,
+   "group": 15
   },
   {
    "id": "test:fanout-plan",
    "command": "pnpm run test:fanout-plan",
    "class": "RUNS_IN_CI",
-   "wallSec": 12,
+   "wallSec": 10,
+   "paths": [
+    "@bundle:cli",
+    "scripts/e2e-fanout-plan.mjs",
+    "src/shared/fanout-acceptance-host.ts",
+    "src/shared/fanout-harness-facts.ts",
+    "src/shared/fanout-review-host.ts",
+    "src/cli/fanout-plan-cli.test.ts",
+    "src/cli/fanout-plan.test.ts",
+    "src/shared/fanout-plan.test.ts"
+   ],
+   "group": 4
+  },
+  {
+   "id": "test:fanout-plan-mutants",
+   "command": "pnpm run test:fanout-plan-mutants",
+   "class": "RUNS_IN_CI",
+   "wallSec": 207,
    "paths": [
     "@bundle:cli",
     "scripts/e2e-fanout-plan.mjs",
@@ -1900,23 +1920,6 @@
     "src/shared/fanout-plan.test.ts"
    ],
    "group": 11
-  },
-  {
-   "id": "test:fanout-plan-mutants",
-   "command": "pnpm run test:fanout-plan-mutants",
-   "class": "RUNS_IN_CI",
-   "wallSec": 210,
-   "paths": [
-    "@bundle:cli",
-    "scripts/e2e-fanout-plan.mjs",
-    "src/shared/fanout-acceptance-host.ts",
-    "src/shared/fanout-harness-facts.ts",
-    "src/shared/fanout-review-host.ts",
-    "src/cli/fanout-plan-cli.test.ts",
-    "src/cli/fanout-plan.test.ts",
-    "src/shared/fanout-plan.test.ts"
-   ],
-   "group": 7
   },
   {
    "id": "test:fanout-switches-mutants",
@@ -2082,14 +2085,14 @@
     "src/shared/watcher-status.ts",
     "src/cli/fanout-record.test.ts"
    ],
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:fanout-record-mutants",
    "command": "pnpm run test:fanout-record-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 40,
+   "wallSec": 39,
    "paths": [
     "scripts/e2e-fanout-record.mjs",
     "src/cli/bus-verbs.ts",
@@ -2179,16 +2182,17 @@
     "src/shared/watcher-status.ts",
     "src/cli/fanout-record.test.ts"
    ],
-   "group": 9
+   "group": 16
   },
   {
    "id": "test:fanout-checks",
    "command": "pnpm run test:fanout-checks",
    "class": "RUNS_IN_CI",
-   "wallSec": 7,
+   "wallSec": 6,
    "paths": [
     ".orchestra/pre-nomination-checks.json",
     "scripts/e2e-fanout-checks.mjs",
+    "scripts/lib/mutant-pool.mjs",
     "src/cli/fanout-check.ts",
     "src/cli/fanout-loop-help.ts",
     "src/cli/fanout-state.ts",
@@ -2207,17 +2211,18 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-check.test.ts"
    ],
-   "group": 14
+   "group": 4
   },
   {
    "id": "test:fanout-checks-mutants",
    "command": "pnpm run test:fanout-checks-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 366,
+   "wallSec": 200,
    "paths": [
     ".orchestra/pre-nomination-checks.json",
     "scripts/e2e-fanout-checks.mjs",
+    "scripts/lib/mutant-pool.mjs",
     "src/cli/fanout-check.ts",
     "src/cli/fanout-loop-help.ts",
     "src/cli/fanout-state.ts",
@@ -2236,7 +2241,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-check.test.ts"
    ],
-   "group": 13
+   "group": 10
   },
   {
    "id": "test:fanout-seat-records",
@@ -2264,13 +2269,13 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-seat-records.test.ts"
    ],
-   "group": 2
+   "group": 3
   },
   {
    "id": "test:fanout-seat-records-mutants",
    "command": "pnpm run test:fanout-seat-records-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 42,
+   "wallSec": 52,
    "paths": [
     "scripts/e2e-fanout-seat-records.mjs",
     "src/cli/fanout-loop-help.ts",
@@ -2292,7 +2297,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-seat-records.test.ts"
    ],
-   "group": 7
+   "group": 17
   },
   {
    "id": "test:fanout-start",
@@ -2350,13 +2355,13 @@
     "src/main/fanout-start-wiring.test.ts",
     "src/main/git-reuse-branch.test.ts"
    ],
-   "group": 11
+   "group": 5
   },
   {
    "id": "test:fanout-start-mutants",
    "command": "pnpm run test:fanout-start-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 132,
+   "wallSec": 172,
    "paths": [
     "scripts/e2e-fanout-start.mjs",
     "src/cli/fanout-loop-help.ts",
@@ -2414,11 +2419,12 @@
    "id": "test:fanout-run",
    "command": "pnpm run test:fanout-run",
    "class": "RUNS_IN_CI",
-   "wallSec": 15,
+   "wallSec": 10,
    "paths": [
     "@bundle:cli",
     "src/shared/fanout-loop-scenarios/**",
     "scripts/e2e-fanout-run.mjs",
+    "scripts/lib/mutant-pool.mjs",
     "!**/*.test.ts",
     "!**/*.test.tsx",
     "!**/*.test.mjs",
@@ -2427,18 +2433,19 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 10
+   "group": 13
   },
   {
    "id": "test:fanout-run-mutants",
    "command": "pnpm run test:fanout-run-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 20,
-   "wallSec": 300,
+   "wallSec": 400,
    "paths": [
     "@bundle:cli",
     "src/shared/fanout-loop-scenarios/**",
     "scripts/e2e-fanout-run.mjs",
+    "scripts/lib/mutant-pool.mjs",
     "!**/*.test.ts",
     "!**/*.test.tsx",
     "!**/*.test.mjs",
@@ -2447,18 +2454,19 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 11
+   "group": 8
   },
   {
    "id": "test:fanout-run-mutants-2",
    "command": "pnpm run test:fanout-run-mutants-2",
    "class": "RUNS_IN_CI",
    "timeoutMin": 20,
-   "wallSec": 300,
+   "wallSec": 400,
    "paths": [
     "@bundle:cli",
     "src/shared/fanout-loop-scenarios/**",
     "scripts/e2e-fanout-run.mjs",
+    "scripts/lib/mutant-pool.mjs",
     "!**/*.test.ts",
     "!**/*.test.tsx",
     "!**/*.test.mjs",
@@ -2467,120 +2475,126 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 10
+   "group": 9
   },
   {
    "id": "test:acceptance-forced",
    "command": "pnpm run test:acceptance-forced",
    "class": "RUNS_IN_CI",
-   "wallSec": 57,
+   "wallSec": 22,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-acceptance-forced.mjs"
+    "scripts/e2e-fanout-acceptance-forced.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 10
+   "group": 4
   },
   {
    "id": "test:acceptance-forced-mutants",
    "command": "pnpm run test:acceptance-forced-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 810,
+   "wallSec": 350,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-acceptance-forced.mjs"
+    "scripts/e2e-fanout-acceptance-forced.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 3
+   "group": 12
   },
   {
    "id": "test:harness-brief",
    "command": "pnpm run test:harness-brief",
    "class": "RUNS_IN_CI",
-   "wallSec": 1,
+   "wallSec": 2,
    "paths": [
     "@bundle:cli",
     "pnpm-lock.yaml",
     "scripts/e2e-fanout-harness-brief.mjs"
    ],
-   "group": 3
+   "group": 7
   },
   {
    "id": "test:harness-brief-mutants",
    "command": "pnpm run test:harness-brief-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 46,
+   "wallSec": 38,
    "paths": [
     "@bundle:cli",
     "pnpm-lock.yaml",
     "scripts/e2e-fanout-harness-brief.mjs"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:freeze-check",
    "command": "pnpm run test:freeze-check",
    "class": "RUNS_IN_CI",
-   "wallSec": 20,
+   "wallSec": 18,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-freeze-check.mjs"
+    "scripts/e2e-fanout-freeze-check.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 6
+   "group": 15
   },
   {
    "id": "test:freeze-check-mutants",
    "command": "pnpm run test:freeze-check-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 531,
+   "wallSec": 250,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-freeze-check.mjs"
+    "scripts/e2e-fanout-freeze-check.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 7
+   "group": 14
   },
   {
    "id": "test:harness-amend",
    "command": "pnpm run test:harness-amend",
    "class": "RUNS_IN_CI",
-   "wallSec": 7,
+   "wallSec": 10,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-harness-amend.mjs"
+    "scripts/e2e-fanout-harness-amend.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 11
+   "group": 15
   },
   {
    "id": "test:harness-amend-mutants",
    "command": "pnpm run test:harness-amend-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 331,
+   "wallSec": 150,
    "paths": [
     "@bundle:cli",
-    "scripts/e2e-fanout-harness-amend.mjs"
+    "scripts/e2e-fanout-harness-amend.mjs",
+    "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 16
+   "group": 10
   },
   {
    "id": "test:role-guard-cli",
    "command": "pnpm run test:role-guard-cli",
    "class": "RUNS_IN_CI",
-   "wallSec": 10,
+   "wallSec": 9,
    "paths": [
     "scripts/role-guard/e2e-role-guard-cli.mjs",
     "scripts/session-budget/fake-anthropic-api.mjs",
     "scripts/session-budget/scratch-guard.mjs",
     "src/shared/role-guard.ts"
    ],
-   "group": 2
+   "group": 16
   },
   {
    "id": "test:session-identity",
    "command": "pnpm run test:session-identity",
    "class": "RUNS_IN_CI",
-   "wallSec": 20,
+   "wallSec": 19,
    "paths": [
     "@bundle:cli",
     "@bundle:keeper",
@@ -2623,13 +2637,13 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 12
+   "group": 8
   },
   {
    "id": "test:pause-ui-render",
    "command": "pnpm run test:pause-ui-render",
    "class": "RUNS_IN_CI",
-   "wallSec": 1,
+   "wallSec": 0,
    "paths": [
     "scripts/pause-ui-render-smoke.mjs",
     "src/renderer/active-fallback.ts",
@@ -2674,13 +2688,13 @@
     "src/shared/watcher-status.ts",
     "src/renderer/components/pause/**"
    ],
-   "group": 5
+   "group": 8
   },
   {
    "id": "test:memcap-render",
    "command": "pnpm run test:memcap-render",
    "class": "RUNS_IN_CI",
-   "wallSec": 1,
+   "wallSec": 0,
    "paths": [
     "scripts/memcap-settings-render-smoke.mjs",
     "src/renderer/active-fallback.ts",
@@ -2739,7 +2753,7 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 4
+   "group": 8
   },
   {
    "id": "test:memcap-shot",
@@ -2768,7 +2782,7 @@
    "id": "test:memory-cap-row-render",
    "command": "pnpm run test:memory-cap-row-render",
    "class": "RUNS_IN_CI",
-   "wallSec": 0,
+   "wallSec": 1,
    "paths": [
     "scripts/memory-cap-row-render-smoke.mjs",
     "scripts/memory-cap/swarm.py",
@@ -2835,13 +2849,13 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 10
+   "group": 4
   },
   {
    "id": "test:memory-cap-row-shot",
    "command": "pnpm run test:memory-cap-row-shot",
    "class": "RUNS_IN_CI",
-   "wallSec": 4,
+   "wallSec": 5,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -2906,7 +2920,7 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:pause-ui-mutants",
@@ -3031,7 +3045,7 @@
    "id": "test:pause-ui-g3",
    "command": "pnpm run build:bundles && bash scripts/pause-ui/e2e-pause-ui.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 30,
+   "wallSec": 21,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -3047,13 +3061,13 @@
     "scripts/pause-ui/seed-bus.mjs",
     "scripts/pause-ui/ui-arm.mjs"
    ],
-   "group": 5
+   "group": 1
   },
   {
    "id": "test:migrate-transcripts",
    "command": "pnpm run test:migrate-transcripts",
    "class": "RUNS_IN_CI",
-   "wallSec": 5,
+   "wallSec": 7,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-migrate-transcripts.mjs",
@@ -3062,14 +3076,14 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 12
+   "group": 10
   },
   {
    "id": "test:migrate-transcripts-mutants",
    "command": "pnpm run test:migrate-transcripts-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 15,
+   "wallSec": 23,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-migrate-transcripts.mjs",
@@ -3082,7 +3096,7 @@
     "src/main/migrate-account-wiring.test.ts",
     "src/main/transcript-move.test.ts"
    ],
-   "group": 13
+   "group": 17
   },
   {
    "id": "test:pause-trap",
@@ -3172,7 +3186,7 @@
    "id": "test:pause-reliquats",
    "command": "pnpm run test:pause-reliquats",
    "class": "RUNS_IN_CI",
-   "wallSec": 44,
+   "wallSec": 42,
    "paths": [
     "@bundle:cli",
     "@bundle:keeper",
@@ -3251,7 +3265,7 @@
     "src/shared/session-budget.test.ts",
     "src/shared/tool-input-summary.test.ts"
    ],
-   "group": 15
+   "group": 17
   },
   {
    "id": "test:browser-reliquats",
@@ -3278,7 +3292,7 @@
    "id": "test:browser-reliquats-shot",
    "command": "pnpm run test:browser-reliquats-shot",
    "class": "RUNS_IN_CI",
-   "wallSec": 6,
+   "wallSec": 5,
    "paths": [
     "src/renderer/**",
     "index.html",
@@ -3413,7 +3427,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:browser-reliquats-mutants",
@@ -3925,7 +3939,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 5
+   "group": 7
   },
   {
    "id": "test:admission-wake",
@@ -3961,14 +3975,14 @@
     "src/shared/bus-wake.ts",
     "src/shared/keeper-protocol.ts"
    ],
-   "group": 2
+   "group": 5
   },
   {
    "id": "test:top-level-run-mutants",
    "command": "pnpm run test:top-level-run-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 20,
+   "wallSec": 28,
    "paths": [
     "src/cli/**",
     "scripts/top-level-run-mutants.mjs",
@@ -4290,14 +4304,14 @@
     "src/main/wave-run-anchor-wiring.test.ts",
     "src/shared/bus-switches.test.ts"
    ],
-   "group": 14
+   "group": 16
   },
   {
    "id": "test:mail-strangers-mutants",
    "command": "pnpm run test:mail-strangers-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 56,
+   "wallSec": 37,
    "paths": [
     "src/cli/**",
     "scripts/mail-strangers-mutants.mjs",
@@ -4423,7 +4437,7 @@
     "src/main/bus-asks-gates.test.ts",
     "src/main/mail-between-strangers.test.ts"
    ],
-   "group": 5
+   "group": 6
   },
   {
    "id": "test:old-channel-closed",
@@ -4441,14 +4455,14 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 15
+   "group": 1
   },
   {
    "id": "test:old-channel-closed-mutants",
    "command": "pnpm run test:old-channel-closed-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 83,
+   "wallSec": 94,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-old-channel-closed.mjs",
@@ -4528,14 +4542,14 @@
     "src/shared/bus-switches.test.ts",
     "src/shared/peer-messages.test.ts"
    ],
-   "group": 13
+   "group": 17
   },
   {
    "id": "test:run-close-mutants",
    "command": "pnpm run test:run-close-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 135,
+   "wallSec": 99,
    "paths": [
     "src/cli/**",
     "scripts/run-close-mutants.mjs",
@@ -4669,7 +4683,7 @@
     "!**/*.test.mjs",
     "src/main/bus-run-close.test.ts"
    ],
-   "group": 16
+   "group": 13
   },
   {
    "id": "test:git-identity-mutants",
@@ -4888,7 +4902,7 @@
    "id": "test:reliquats-memory",
    "command": "pnpm run test:reliquats-memory",
    "class": "RUNS_IN_CI",
-   "wallSec": 31,
+   "wallSec": 32,
    "paths": [
     "@bundle:keeper",
     "scripts/.r2-register.mjs",
@@ -4915,14 +4929,14 @@
     "src/shared/member-memory.ts",
     "src/shared/resources.ts"
    ],
-   "group": 3
+   "group": 5
   },
   {
    "id": "test:reliquats-memory-mutants",
    "command": "pnpm run test:reliquats-memory-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 598,
+   "wallSec": 545,
    "paths": [
     "@bundle:keeper",
     "src/renderer/**",
@@ -5079,13 +5093,13 @@
     "src/shared/resource-monitor.test.ts",
     "src/shared/resources.test.ts"
    ],
-   "group": 6
+   "group": 3
   },
   {
    "id": "test:container-memory",
    "command": "pnpm run test:container-memory",
    "class": "RUNS_IN_CI",
-   "wallSec": 58,
+   "wallSec": 56,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-container-memory.mjs",
@@ -5105,7 +5119,7 @@
     "src/shared/container-accounting.ts",
     "src/shared/resources.ts"
    ],
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:container-memory-mutants",
@@ -5200,7 +5214,7 @@
    "id": "test:container-memory-shot",
    "command": "pnpm run test:container-memory-shot",
    "class": "RUNS_IN_CI",
-   "wallSec": 4,
+   "wallSec": 5,
    "paths": [
     "src/renderer/**",
     "index.html",
@@ -5335,14 +5349,14 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 4
+   "group": 13
   },
   {
    "id": "test:composed-night",
    "command": "pnpm run test:composed-night",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 53,
+   "wallSec": 51,
    "paths": [
     "@bundle:cli",
     "README.md",
@@ -5373,14 +5387,14 @@
     "src/main/workspaces.ts",
     "src/shared/bus-wake.ts"
    ],
-   "group": 16
+   "group": 9
   },
   {
    "id": "test:plain-parent-mutants",
    "command": "pnpm run test:plain-parent-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 87,
+   "wallSec": 74,
    "paths": [
     "src/cli/**",
     "scripts/check-run-position-single-reader.mjs",
@@ -5534,7 +5548,7 @@
     "src/shared/run-position.test.ts",
     "src/**"
    ],
-   "group": 15
+   "group": 8
   },
   {
    "id": "test:spawn-account-inherit",
@@ -5558,7 +5572,7 @@
     "src/shared/spawn-account.ts",
     "src/**"
    ],
-   "group": 7
+   "group": 13
   },
   {
    "id": "test:roles-position",
@@ -5988,7 +6002,7 @@
    "command": "pnpm run test:spawn-dispatch-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 98,
+   "wallSec": 110,
    "paths": [
     "src/cli/**",
     "scripts/spawn-dispatch-mutants.mjs",
@@ -6115,14 +6129,14 @@
     "!**/*.test.mjs",
     "src/main/spawn-dispatch.test.ts"
    ],
-   "group": 3
+   "group": 2
   },
   {
    "id": "test:attach-any-agent-mutants",
    "command": "pnpm run test:attach-any-agent-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 310,
+   "wallSec": 346,
    "paths": [
     "src/cli/**",
     "scripts/attach-any-agent-mutants.mjs",
@@ -6490,11 +6504,12 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "pre": "mkdir -p ~/.cache/pause-canary",
-   "wallSec": 17,
+   "wallSec": 14,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
     "@bundle:keeper",
+    "scripts/lib/**",
     "scripts/memory-cap/**",
     "scripts/pause-canary/**",
     "README.md",
@@ -6504,13 +6519,6 @@
     "scripts/agent-browser-pins.json",
     "scripts/disk-guard.cjs",
     "scripts/e2e-contained-rig.sh",
-    "scripts/lib/bloc-rig.mjs",
-    "scripts/lib/docker-rig.mjs",
-    "scripts/lib/flip-cookie-fuse.cjs",
-    "scripts/lib/fuse-wire.cjs",
-    "scripts/lib/rig-paths.mjs",
-    "scripts/lib/rig-procs.mjs",
-    "scripts/lib/rig-runtime.mjs",
     "scripts/pinned-node/lib.cjs",
     "scripts/pinned-node/pack-check.cjs",
     "scripts/pinned-node/pins.json",
@@ -6536,7 +6544,7 @@
     "src/keeper/release-lease.test.ts",
     "src/main/liveness-small-run.test.ts"
    ],
-   "group": 15
+   "group": 3
   },
   {
    "id": "canary:memhog",
@@ -6882,11 +6890,12 @@
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
    "pre": "mkdir -p ~/.cache/pause-canary",
-   "wallSec": 820,
+   "wallSec": 400,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
     "@bundle:keeper",
+    "scripts/lib/**",
     "scripts/memory-cap/**",
     "scripts/pause-canary/**",
     "README.md",
@@ -6896,13 +6905,6 @@
     "scripts/agent-browser-pins.json",
     "scripts/disk-guard.cjs",
     "scripts/e2e-contained-rig.sh",
-    "scripts/lib/bloc-rig.mjs",
-    "scripts/lib/docker-rig.mjs",
-    "scripts/lib/flip-cookie-fuse.cjs",
-    "scripts/lib/fuse-wire.cjs",
-    "scripts/lib/rig-paths.mjs",
-    "scripts/lib/rig-procs.mjs",
-    "scripts/lib/rig-runtime.mjs",
     "scripts/pinned-node/lib.cjs",
     "scripts/pinned-node/pack-check.cjs",
     "scripts/pinned-node/pins.json",
@@ -6928,7 +6930,7 @@
     "src/keeper/release-lease.test.ts",
     "src/main/liveness-small-run.test.ts"
    ],
-   "group": 1
+   "group": 7
   },
   {
    "id": "test:turn-boundary",
@@ -6975,7 +6977,7 @@
    "id": "test:rewind",
    "command": "pnpm run test:rewind",
    "class": "RUNS_IN_CI",
-   "wallSec": 30,
+   "wallSec": 29,
    "paths": [
     "@bundle:keeper",
     "scripts/session-budget/**",
@@ -7011,13 +7013,13 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 10
+   "group": 7
   },
   {
    "id": "test:bloc-html-setting",
    "command": "pnpm run test:bloc-html-setting",
    "class": "RUNS_IN_CI",
-   "wallSec": 107,
+   "wallSec": 82,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -7031,13 +7033,13 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 5
+   "group": 3
   },
   {
    "id": "test:bloc-html-instruction",
    "command": "pnpm run test:bloc-html-instruction",
    "class": "RUNS_IN_CI",
-   "wallSec": 44,
+   "wallSec": 41,
    "paths": [
     "@bundle:keeper",
     "scripts/session-budget/**",
@@ -7073,55 +7075,13 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 14
+   "group": 12
   },
   {
    "id": "test:relance",
    "command": "pnpm run test:relance",
    "class": "RUNS_IN_CI",
-   "wallSec": 167,
-   "paths": [
-    "@bundle:keeper",
-    "scripts/session-budget/**",
-    "CLAUDE.md",
-    "README.md",
-    "scripts/.r2-register.mjs",
-    "src/main/activity.ts",
-    "src/main/agent-sdk.ts",
-    "src/main/bloc-html-setting.ts",
-    "src/main/bus-runs.ts",
-    "src/main/bus.ts",
-    "src/main/handoff-controller.ts",
-    "src/main/handoff-host.ts",
-    "src/main/hibernation-activity.ts",
-    "src/main/keeper-client.ts",
-    "src/main/platform/index.ts",
-    "src/main/relance-host.ts",
-    "src/main/sdk-delivery.ts",
-    "src/main/session-identity-host.ts",
-    "src/main/store.ts",
-    "src/main/vague-endormie-host.ts",
-    "src/main/vague-endormie.ts",
-    "src/main/vague-roster.ts",
-    "src/main/workspaces.ts",
-    "src/shared/agent-transcript.ts",
-    "src/shared/bloc-html-instruction.ts",
-    "src/shared/bus-switches.ts",
-    "src/shared/relance.ts",
-    "src/shared/session-budget.ts",
-    "src/shared/vague-endormie.ts",
-    "!**/*.test.ts",
-    "!**/*.test.tsx",
-    "!**/*.test.mjs",
-    "src/shared/session-budget.test.ts"
-   ],
-   "group": 5
-  },
-  {
-   "id": "test:handoff-cache",
-   "command": "pnpm run test:handoff-cache",
-   "class": "RUNS_IN_CI",
-   "wallSec": 165,
+   "wallSec": 162,
    "paths": [
     "@bundle:keeper",
     "scripts/session-budget/**",
@@ -7160,10 +7120,52 @@
    "group": 4
   },
   {
+   "id": "test:handoff-cache",
+   "command": "pnpm run test:handoff-cache",
+   "class": "RUNS_IN_CI",
+   "wallSec": 163,
+   "paths": [
+    "@bundle:keeper",
+    "scripts/session-budget/**",
+    "CLAUDE.md",
+    "README.md",
+    "scripts/.r2-register.mjs",
+    "src/main/activity.ts",
+    "src/main/agent-sdk.ts",
+    "src/main/bloc-html-setting.ts",
+    "src/main/bus-runs.ts",
+    "src/main/bus.ts",
+    "src/main/handoff-controller.ts",
+    "src/main/handoff-host.ts",
+    "src/main/hibernation-activity.ts",
+    "src/main/keeper-client.ts",
+    "src/main/platform/index.ts",
+    "src/main/relance-host.ts",
+    "src/main/sdk-delivery.ts",
+    "src/main/session-identity-host.ts",
+    "src/main/store.ts",
+    "src/main/vague-endormie-host.ts",
+    "src/main/vague-endormie.ts",
+    "src/main/vague-roster.ts",
+    "src/main/workspaces.ts",
+    "src/shared/agent-transcript.ts",
+    "src/shared/bloc-html-instruction.ts",
+    "src/shared/bus-switches.ts",
+    "src/shared/relance.ts",
+    "src/shared/session-budget.ts",
+    "src/shared/vague-endormie.ts",
+    "!**/*.test.ts",
+    "!**/*.test.tsx",
+    "!**/*.test.mjs",
+    "src/shared/session-budget.test.ts"
+   ],
+   "group": 5
+  },
+  {
    "id": "test:handoff-role",
    "command": "pnpm run test:handoff-role",
    "class": "RUNS_IN_CI",
-   "wallSec": 483,
+   "wallSec": 480,
    "timeoutMin": 15,
    "paths": [
     "@bundle:keeper",
@@ -7200,7 +7202,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 10
+   "group": 5
   },
   {
    "id": "test:vague",
@@ -7247,7 +7249,7 @@
    "id": "test:vague-human",
    "command": "pnpm run test:vague-human",
    "class": "RUNS_IN_CI",
-   "wallSec": 374,
+   "wallSec": 362,
    "timeoutMin": 15,
    "paths": [
     "@bundle:app",
@@ -7266,13 +7268,13 @@
     "scripts/pause-ui/seed-bus.mjs",
     "scripts/pause-ui/ui-arm.mjs"
    ],
-   "group": 12
+   "group": 10
   },
   {
    "id": "test:inbox-redrive",
    "command": "pnpm run test:inbox-redrive",
    "class": "RUNS_IN_CI",
-   "wallSec": 10,
+   "wallSec": 9,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-inbox-redrive.mjs",
@@ -7283,13 +7285,13 @@
     "src/main/sdk-delivery.ts",
     "src/main/store.ts"
    ],
-   "group": 16
+   "group": 12
   },
   {
    "id": "test:keeper-stop-semantics",
    "command": "pnpm run test:keeper-stop-semantics",
    "class": "RUNS_IN_CI",
-   "wallSec": 10,
+   "wallSec": 11,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-keeper-stop-semantics.mjs",
@@ -7298,7 +7300,7 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 1
+   "group": 17
   },
   {
    "id": "test:keeper-facade-restart",
@@ -7313,7 +7315,7 @@
     "src/main/keeper-client.ts",
     "src/main/platform/index.ts"
    ],
-   "group": 1
+   "group": 15
   },
   {
    "id": "test:pinned-node",
@@ -7332,7 +7334,7 @@
     "src/main/keeper-runtime-install.ts",
     "src/main/platform/index.ts"
    ],
-   "group": 13
+   "group": 3
   },
   {
    "id": "test:pinned-node-mutants",
@@ -7498,7 +7500,7 @@
     "scripts/session-budget/scratch-guard.mjs",
     "src/shared/memory-scope.ts"
    ],
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:memory-cap-mutants",
@@ -7598,7 +7600,7 @@
    "command": "pnpm run test:scope-net-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 21,
+   "wallSec": 23,
    "paths": [
     "@bundle:keeper",
     "scripts/memory-cap/**",
@@ -7660,13 +7662,13 @@
     "src/shared/memory-scope.test.ts",
     "src/shared/scope-net.test.ts"
    ],
-   "group": 11
+   "group": 6
   },
   {
    "id": "test:pause-containers",
    "command": "pnpm run test:pause-containers",
    "class": "RUNS_IN_CI",
-   "wallSec": 84,
+   "wallSec": 87,
    "paths": [
     "@bundle:keeper",
     "scripts/.r2-register.mjs",
@@ -7691,7 +7693,7 @@
    "id": "test:hook-cost",
    "command": "pnpm run test:hook-cost",
    "class": "RUNS_IN_CI",
-   "wallSec": 14,
+   "wallSec": 15,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-hook-cost.mjs",
@@ -7703,13 +7705,13 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 9
+   "group": 2
   },
   {
    "id": "test:tool-lines",
    "command": "pnpm run test:tool-lines",
    "class": "RUNS_IN_CI",
-   "wallSec": 25,
+   "wallSec": 26,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -7721,14 +7723,14 @@
     "scripts/e2e-tool-lines.mjs",
     "scripts/e2e-tool-lines.sh"
    ],
-   "group": 2
+   "group": 12
   },
   {
    "id": "test:bloc-html-chrome",
    "command": "pnpm run test:bloc-html-chrome",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 813,
+   "wallSec": 780,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -7740,13 +7742,13 @@
     "scripts/e2e-bloc-html-chrome.sh",
     "scripts/e2e-contained-rig.sh"
    ],
-   "group": 2
+   "group": 1
   },
   {
    "id": "test:bloc-budget",
    "command": "pnpm run test:bloc-budget",
    "class": "RUNS_IN_CI",
-   "wallSec": 626,
+   "wallSec": 595,
    "timeoutMin": 20,
    "paths": [
     "@bundle:app",
@@ -7760,13 +7762,13 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/bloc-rig.mjs"
    ],
-   "group": 5
+   "group": 2
   },
   {
    "id": "test:bloc-html",
    "command": "pnpm run test:bloc-html",
    "class": "RUNS_IN_CI",
-   "wallSec": 328,
+   "wallSec": 314,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -7779,7 +7781,7 @@
     "scripts/e2e-contained-rig.sh",
     "src/renderer/assets/fonts/orchestra-symbols.woff2"
    ],
-   "group": 15
+   "group": 17
   },
   {
    "id": "test:agent-view-removal",
@@ -7802,7 +7804,7 @@
     "scripts/fixtures/real-cli-badmodel-2.1.284.jsonl",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 14
+   "group": 11
   },
   {
    "id": "test:sidebar-orca",
@@ -7823,7 +7825,7 @@
     "scripts/e2e-sidebar-orca-drive.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 16
+   "group": 9
   },
   {
    "id": "test:network-visibility-shot",
@@ -7867,14 +7869,14 @@
     "src/shared/context-breakdown.ts",
     "src/shared/context-usage.ts"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:command-output-mutants",
    "command": "pnpm run test:command-output-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 7,
+   "wallSec": 8,
    "paths": [
     "scripts/fixtures/payloads/**",
     "scripts/command-output-mutants.mjs",
@@ -7897,7 +7899,7 @@
     "!**/*.test.mjs",
     "src/shared/builtin-command-output.test.ts"
    ],
-   "group": 12
+   "group": 14
   },
   {
    "id": "test:command-output-e2e",
@@ -7941,7 +7943,7 @@
    "id": "test:bus-wake-e2e",
    "command": "pnpm run test:bus-wake-e2e",
    "class": "RUNS_IN_CI",
-   "wallSec": 11,
+   "wallSec": 10,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-bus-wake.mjs",
@@ -7958,29 +7960,29 @@
     "src/main/store.ts",
     "src/shared/bus-wake.ts"
    ],
-   "group": 8
+   "group": 2
   },
   {
    "id": "test:bus-contention",
    "command": "pnpm run test:bus-contention",
    "class": "RUNS_IN_CI",
-   "wallSec": 3,
+   "wallSec": 2,
    "paths": [
     "scripts/verify-bus-contention.mjs",
     "src/main/bus.ts"
    ],
-   "group": 16
+   "group": 1
   },
   {
    "id": "test:bus-status",
    "command": "pnpm run test:bus-status",
    "class": "RUNS_IN_CI",
-   "wallSec": 2,
+   "wallSec": 3,
    "paths": [
     "@bundle:cli",
     "scripts/verify-bus-status-cli.mjs"
    ],
-   "group": 9
+   "group": 7
   },
   {
    "id": "test:bus-pane",
@@ -7998,7 +8000,7 @@
    "id": "test:bus-notice",
    "command": "pnpm run test:bus-notice",
    "class": "RUNS_IN_CI",
-   "wallSec": 1,
+   "wallSec": 0,
    "paths": [
     "scripts/verify-bus-startup-notice.mjs",
     "src/keeper/kernel-oom-log.ts",
@@ -8286,13 +8288,13 @@
     "src/shared/workspace-name.ts",
     "src/shared/worktree-sizes.ts"
    ],
-   "group": 16
+   "group": 8
   },
   {
    "id": "test:reparent-notice",
    "command": "pnpm run test:reparent-notice",
    "class": "RUNS_IN_CI",
-   "wallSec": 1,
+   "wallSec": 0,
    "paths": [
     "scripts/verify-reparent-run-notice.mjs",
     "src/keeper/kernel-oom-log.ts",
@@ -8595,14 +8597,14 @@
     "src/main/platform/index.ts",
     "src/main/session-identity.ts"
    ],
-   "group": 7
+   "group": 11
   },
   {
    "id": "test:session-identity-mutants",
    "command": "pnpm run test:session-identity-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 133,
+   "wallSec": 137,
    "paths": [
     "@bundle:cli",
     "@bundle:keeper",
@@ -8810,7 +8812,7 @@
     "src/shared/reparent-run.test.ts",
     "src/shared/session-identity.test.ts"
    ],
-   "group": 15
+   "group": 11
   },
   {
    "id": "test:restart-row-shot",
@@ -8853,20 +8855,20 @@
     "scripts/pinned-node/smoke.cjs",
     "scripts/verify-native-manifest.mjs"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:rig-selftest",
    "command": "pnpm run test:rig-selftest",
    "class": "RUNS_IN_CI",
-   "wallSec": 48,
+   "wallSec": 45,
    "paths": [
     "scripts/disk-guard.cjs",
     "scripts/e2e-contained-rig-selftest.sh",
     "scripts/e2e-contained-rig.sh",
     "scripts/run-rig-selftest.sh"
    ],
-   "group": 1
+   "group": 10
   },
   {
    "id": "test:fork-control",
@@ -8932,7 +8934,7 @@
    "id": "test:release-gate",
    "command": "pnpm run test:release-gate",
    "class": "RUNS_IN_CI",
-   "wallSec": 122,
+   "wallSec": 165,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -8961,13 +8963,13 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 11
+   "group": 6
   },
   {
    "id": "test:release-receipt",
    "command": "pnpm run test:release-receipt",
    "class": "RUNS_IN_CI",
-   "wallSec": 59,
+   "wallSec": 69,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -8995,14 +8997,14 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 9
+   "group": 11
   },
   {
    "id": "test:release-receipt-mutants",
    "command": "pnpm run test:release-receipt-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 659,
+   "wallSec": 250,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9030,13 +9032,13 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 4
+   "group": 13
   },
   {
    "id": "scripts/e2e-acces-mobile.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-acces-mobile.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 324,
+   "wallSec": 328,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9072,13 +9074,13 @@
     "src/acces-mobile/server-refusal-drain.test.ts",
     "src/acces-mobile/server.test.ts"
    ],
-   "group": 14
+   "group": 15
   },
   {
    "id": "scripts/e2e-attach-any-agent.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-attach-any-agent.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 30,
+   "wallSec": 29,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9091,13 +9093,13 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 4
+   "group": 1
   },
   {
    "id": "scripts/e2e-boot-heal-bound.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-boot-heal-bound.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 5,
+   "wallSec": 6,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/ci/each-arm.mjs",
@@ -9111,7 +9113,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/session-wedge.ts"
    ],
-   "group": 13
+   "group": 17
   },
   {
    "id": "scripts/e2e-browser-cli-mutants.sh",
@@ -9170,7 +9172,7 @@
    "id": "scripts/e2e-browser-cli-parity.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli-parity.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 91,
+   "wallSec": 86,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9190,13 +9192,13 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 16
+   "group": 13
   },
   {
    "id": "scripts/e2e-browser-cli.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-cli.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 67,
+   "wallSec": 73,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9217,14 +9219,14 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 11
+   "group": 2
   },
   {
    "id": "scripts/e2e-browser-design-proxy-mutants.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-design-proxy-mutants.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 519,
+   "wallSec": 511,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9245,13 +9247,13 @@
     "scripts/lib/rig-runtime.mjs",
     "src/main/**"
    ],
-   "group": 8
+   "group": 4
   },
   {
    "id": "scripts/e2e-browser-design-proxy.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-design-proxy.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 51,
+   "wallSec": 48,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9271,13 +9273,13 @@
     "scripts/lib/rig-runtime.mjs",
     "src/main/**"
    ],
-   "group": 13
+   "group": 10
   },
   {
    "id": "scripts/e2e-browser-design-source.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-design-source.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 33,
+   "wallSec": 34,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9297,7 +9299,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 8
+   "group": 11
   },
   {
    "id": "scripts/e2e-browser-hidden-drive.sh",
@@ -9335,7 +9337,7 @@
    "id": "scripts/e2e-browser-popups.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-popups.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 360,
+   "wallSec": 340,
    "timeoutMin": 15,
    "paths": [
     "@bundle:app",
@@ -9357,13 +9359,13 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 15
+   "group": 14
   },
   {
    "id": "scripts/e2e-browser-profiles.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-profiles.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 349,
+   "wallSec": 324,
    "timeoutMin": 15,
    "paths": [
     "@bundle:app",
@@ -9391,7 +9393,7 @@
    "id": "scripts/e2e-browser-tab-memory.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tab-memory.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 76,
+   "wallSec": 82,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9409,7 +9411,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 8
+   "group": 15
   },
   {
    "id": "scripts/e2e-browser-tabs-registry.sh",
@@ -9430,13 +9432,13 @@
     "scripts/e2e-browser-tabs-registry.sh",
     "scripts/e2e-contained-rig.sh"
    ],
-   "group": 12
+   "group": 8
   },
   {
    "id": "scripts/e2e-browser-tabs.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-tabs.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 78,
+   "wallSec": 75,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9455,13 +9457,13 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 12
+   "group": 14
   },
   {
    "id": "scripts/e2e-browser-whole-flow.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-whole-flow.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 42,
+   "wallSec": 45,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9482,7 +9484,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 12
+   "group": 5
   },
   {
    "id": "scripts/e2e-bus-page-header.sh",
@@ -9514,7 +9516,7 @@
     "src/main/docker-api.ts",
     "src/main/resource-monitor.ts"
    ],
-   "group": 13
+   "group": 14
   },
   {
    "id": "scripts/e2e-cookie-fuse.sh",
@@ -9544,7 +9546,7 @@
    "id": "scripts/e2e-delete-resurrect.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-delete-resurrect.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 7,
+   "wallSec": 8,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/ci/each-arm.mjs",
@@ -9559,7 +9561,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 13
+   "group": 11
   },
   {
    "id": "scripts/e2e-former-branch-drive.sh",
@@ -9596,13 +9598,13 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 3
+   "group": 15
   },
   {
    "id": "scripts/e2e-hibernate-wake.sh",
    "command": "bash scripts/e2e-hibernate-wake.sh",
    "class": "RUNS_IN_CI",
-   "wallSec": 39,
+   "wallSec": 47,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-hibernate-wake.mjs",
@@ -9629,7 +9631,7 @@
     "src/shared/hibernation.ts",
     "src/shared/inbox-blocks.ts"
    ],
-   "group": 11
+   "group": 6
   },
   {
    "id": "scripts/e2e-inherit-empty-boot.sh",
@@ -9654,7 +9656,7 @@
    "id": "scripts/e2e-inherit-empty-no-prune.mjs",
    "command": "node scripts/e2e-inherit-empty-no-prune.mjs all",
    "class": "RUNS_IN_CI",
-   "wallSec": 14,
+   "wallSec": 10,
    "paths": [
     "CLAUDE.md",
     "scripts/.r2-register.mjs",
@@ -9666,13 +9668,13 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 16
+   "group": 6
   },
   {
    "id": "scripts/e2e-keeper-lifecycle.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-keeper-lifecycle.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 134,
+   "wallSec": 130,
    "paths": [
     "@bundle:keeper",
     "scripts/.r2-register.mjs",
@@ -9688,7 +9690,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/resources.ts"
    ],
-   "group": 14
+   "group": 12
   },
   {
    "id": "scripts/e2e-keyring-mutants.mjs",
@@ -9753,7 +9755,7 @@
     "src/shared/bus-switches.ts",
     "src/shared/pause-memory.ts"
    ],
-   "group": 9
+   "group": 16
   },
   {
    "id": "scripts/e2e-memory-guard-modal.mjs",
@@ -9794,7 +9796,7 @@
    "id": "scripts/e2e-migrate-parent-names.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-migrate-parent-names.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 32,
+   "wallSec": 28,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -9809,13 +9811,13 @@
     "scripts/migrate-parent-names.mjs",
     "src/shared/naming-migration.ts"
    ],
-   "group": 6
+   "group": 13
   },
   {
    "id": "scripts/e2e-opening-task.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-opening-task.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 46,
+   "wallSec": 45,
    "paths": [
     "README.md",
     "scripts/.r2-register.mjs",
@@ -9832,7 +9834,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/opening-task.ts"
    ],
-   "group": 3
+   "group": 4
   },
   {
    "id": "scripts/e2e-packaged-run-proof.sh",
@@ -9986,7 +9988,7 @@
    "id": "scripts/e2e-pause-auto.mjs",
    "command": "node scripts/ci/each-arm.mjs --expect-abort hang_selftest=\"deadline: the arm hung\" node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-pause-auto.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 116,
+   "wallSec": 113,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/ci/each-arm.mjs",
@@ -10012,13 +10014,13 @@
     "src/shared/bus-switches.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 10
+   "group": 14
   },
   {
    "id": "scripts/e2e-pause-gates.mjs",
    "command": "node scripts/ci/each-arm.mjs --expect-abort hang_selftest=\"deadline: the arm hung\" node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-pause-gates.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 93,
+   "wallSec": 97,
    "paths": [
     "@bundle:cli",
     "README.md",
@@ -10042,7 +10044,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/session-wedge.ts"
    ],
-   "group": 2
+   "group": 7
   },
   {
    "id": "scripts/e2e-r1-repro.mjs",
@@ -10072,7 +10074,7 @@
     "src/main/store.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 15
+   "group": 10
   },
   {
    "id": "scripts/e2e-rename-authority.sh",
@@ -10097,7 +10099,7 @@
    "id": "scripts/e2e-resilient-watchers.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-resilient-watchers.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 60,
+   "wallSec": 128,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-resilient-watchers.mjs",
@@ -10124,7 +10126,7 @@
     "src/shared/human-gates.ts",
     "src/shared/inbox-blocks.ts"
    ],
-   "group": 7
+   "group": 16
   },
   {
    "id": "scripts/e2e-rss-page-size.mjs",
@@ -10144,13 +10146,13 @@
     "src/main/resource-monitor.ts",
     "src/main/resources.ts"
    ],
-   "group": 9
+   "group": 10
   },
   {
    "id": "scripts/e2e-session-wedge.sh",
    "command": "bash scripts/e2e-session-wedge.sh",
    "class": "RUNS_IN_CI",
-   "wallSec": 31,
+   "wallSec": 29,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-session-wedge-redelivery.mjs",
@@ -10162,13 +10164,13 @@
     "src/main/session-watchdog.ts",
     "src/main/store.ts"
    ],
-   "group": 14
+   "group": 15
   },
   {
    "id": "scripts/e2e-spawn-name-human-paths.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-spawn-name-human-paths.mjs \"$PWD\" ci",
    "class": "RUNS_IN_CI",
-   "wallSec": 2,
+   "wallSec": 3,
    "paths": [
     "README.md",
     "scripts/.r2-register.mjs",
@@ -10182,7 +10184,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 8
+   "group": 5
   },
   {
    "id": "scripts/e2e-spawn-name-race.mjs",
@@ -10204,13 +10206,13 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 1
+   "group": 5
   },
   {
    "id": "scripts/e2e-spawn-name.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-spawn-name.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 88,
+   "wallSec": 91,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -10224,13 +10226,13 @@
     "scripts/e2e-spawn-name.sh",
     "scripts/session-budget/fake-anthropic-api.mjs"
    ],
-   "group": 1
+   "group": 6
   },
   {
    "id": "scripts/e2e-spawn-profile.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-spawn-profile.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
-   "wallSec": 215,
+   "wallSec": 225,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -10247,7 +10249,7 @@
     "scripts/lib/rig-runtime.mjs",
     "scripts/session-budget/fake-anthropic-api.mjs"
    ],
-   "group": 8
+   "group": 12
   },
   {
    "id": "scripts/e2e-spawn-prompt-duplication.mjs",
@@ -10266,13 +10268,13 @@
     "src/shared/ci-rigs.ts",
     "src/shared/pending-prompts.ts"
    ],
-   "group": 8
+   "group": 2
   },
   {
    "id": "scripts/e2e-stop-before-move.mjs",
    "command": "node scripts/ci/each-arm.mjs node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-stop-before-move.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 17,
+   "wallSec": 6,
    "paths": [
     "README.md",
     "scripts/.r2-register.mjs",
@@ -10288,7 +10290,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 4
+   "group": 3
   },
   {
    "id": "scripts/e2e-usage-resume-rig.sh",
@@ -10309,7 +10311,7 @@
    "id": "scripts/e2e-verified-fanout-skill-install.mjs",
    "command": "node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-verified-fanout-skill-install.mjs",
    "class": "RUNS_IN_CI",
-   "wallSec": 0,
+   "wallSec": 1,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-verified-fanout-skill-install.mjs",
@@ -10320,14 +10322,14 @@
     "src/shared/verified-fanout-files.ts",
     "src/shared/verified-fanout-skill.ts"
    ],
-   "group": 10
+   "group": 17
   },
   {
    "id": "scripts/e2e-browser-agent-tabs.sh",
    "command": "pnpm run build:bundles && bash scripts/e2e-browser-agent-tabs.sh \"$PWD\"",
    "class": "RUNS_IN_CI",
    "timeoutMin": 15,
-   "wallSec": 148,
+   "wallSec": 132,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -10351,7 +10353,7 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 13
+   "group": 8
   },
   {
    "id": "scripts/e2e-browser-popups-mutants.mjs",
@@ -10412,7 +10414,7 @@
    "command": "pnpm run build:bundles && node scripts/e2e-browser-tabs-mutants.mjs",
    "class": "RUNS_IN_CI",
    "timeoutMin": 15,
-   "wallSec": 497,
+   "wallSec": 463,
    "paths": [
     "@bundle:app",
     "@bundle:cli",
@@ -10432,7 +10434,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 9
+   "group": 6
   },
   {
    "id": "scripts/e2e-composed-drive.sh",
@@ -10471,7 +10473,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/run-rig-selftest.sh"
    ],
-   "group": 12
+   "group": 3
   },
   {
    "id": "scripts/e2e-memory-banner.sh",
@@ -10533,7 +10535,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 3
+   "group": 8
   },
   {
    "id": "scripts/e2e-usage-resume-chain.mjs",
@@ -10572,7 +10574,7 @@
    "command": "pnpm run test:fanout-relaunch-mutants",
    "class": "RUNS_IN_CI",
    "timeoutMin": 30,
-   "wallSec": 20,
+   "wallSec": 21,
    "paths": [
     "scripts/fanout-relaunch-mutants.mjs",
     "src/shared/fanout-checks.ts",
@@ -10583,7 +10585,7 @@
     "src/shared/fanout-relaunch.test.ts",
     "src/shared/fanout-report.test.ts"
    ],
-   "group": 8
+   "group": 11
   },
   {
    "id": "scripts/e2e-live-ports-scratch.mjs",
@@ -10612,6 +10614,28 @@
     "scripts/e2e-fanout-run-live-scratch.mjs",
     "src/shared/fanout-acceptance-host.ts"
    ]
+  },
+  {
+   "id": "test:role-guard-matrix",
+   "command": "pnpm run test:role-guard-matrix",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 15,
+   "wallSec": 300,
+   "paths": [
+    "src/shared/role-guard-vf2.matrix.ts",
+    "src/shared/role-guard.matrix.ts",
+    "src/shared/role-guard.ts",
+    "src/shared/role-guard-writes.ts",
+    "src/shared/home-scratch.ts",
+    "scripts/role-guard/**"
+   ],
+   "pathsExtra": [
+    "src/shared/role-guard.ts",
+    "src/shared/role-guard-writes.ts",
+    "src/shared/home-scratch.ts",
+    "scripts/role-guard/**"
+   ],
+   "group": 17
   }
  ]
 }

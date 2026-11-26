@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXIT_SURVIVED, runMutantChildren } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'dist-electron', 'cli.js');
@@ -398,15 +399,23 @@ if (!fs.existsSync(CLI)) { console.error(`${CLI} missing — run \`pnpm run buil
 const orig = fs.readFileSync(CLI, 'utf8');
 if (!orig.includes('harness-only')) { console.error('dist-electron/cli.js has no `amend --harness-only` — it is stale: rebuild (pnpm run build:cli)'); process.exit(1); }
 
-const baselineBad = await run('baseline (built bundle + src/shared)', CLI, SHARED);
+const CHILD = process.env.MUT_CHILD; // #623: set by the parent — run this ONE mutant (b<i> / h<i>) only; the baseline was checked by the parent
+const baselineBad = CHILD !== undefined ? 0 : await run('baseline (built bundle + src/shared)', CLI, SHARED);
 if (!process.argv.includes('--mutants')) process.exit(baselineBad ? 1 : 0);
 if (baselineBad) { console.error('baseline is not clean: the mutant verdicts below would be meaningless'); process.exit(1); }
 
+const only = process.env.MUT_ONLY?.split(',');
+if (CHILD === undefined) { // #623: the mutants run in parallel, each in its own child process (own scratch + own temp dirs); output printed in mutant order
+  const ids = [...BUNDLE_MUTANTS.map((_, i) => `b${i}`), ...HOST_MUTANTS.map((_, i) => `h${i}`)].filter((id) => !only || only.includes(id));
+  const { survived, broken } = await runMutantChildren(ids);
+  if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
+  console.log(`\n${BUNDLE_MUTANTS.length + HOST_MUTANTS.length - survived - broken}/${BUNDLE_MUTANTS.length + HOST_MUTANTS.length} mutants killed; real bundle byte-identical`);
+  process.exit(survived || broken ? 1 : 0);
+}
 let survived = 0;
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-harness-mut-'));
-const only = process.env.MUT_ONLY?.split(',');
 for (const [i, m] of BUNDLE_MUTANTS.entries()) {
-  if (only && !only.includes(`b${i}`)) continue;
+  if (CHILD !== `b${i}`) continue;
   let src = orig;
   for (const step of [m, ...(m.extra ?? [])]) {
     const n = src.split(step.find).length - 1;
@@ -420,7 +429,7 @@ for (const [i, m] of BUNDLE_MUTANTS.entries()) {
   if (bad === 0) survived++;
 }
 for (const [i, m] of HOST_MUTANTS.entries()) {
-  if (only && !only.includes(`h${i}`)) continue;
+  if (CHILD !== `h${i}`) continue;
   const dst = path.join(scratch, `shared-h${i}`);
   fs.cpSync(SHARED, dst, { recursive: true, filter: (s) => !/\.test\.ts$/.test(s) });
   const f = path.join(dst, m.file);
@@ -433,6 +442,4 @@ for (const [i, m] of HOST_MUTANTS.entries()) {
   if (bad === 0) survived++;
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
-console.log(`\n${BUNDLE_MUTANTS.length + HOST_MUTANTS.length - survived}/${BUNDLE_MUTANTS.length + HOST_MUTANTS.length} mutants killed; real bundle byte-identical`);
-process.exit(survived ? 1 : 0);
+process.exit(survived ? EXIT_SURVIVED : 0);

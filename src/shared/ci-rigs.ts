@@ -124,7 +124,7 @@ export function validateRigs(file: RigFile, required: string[]): string[] {
   const shards = file.suiteShards ?? DEFAULT_SUITE_SHARDS;
   if (!Number.isInteger(shards) || shards < 1) problems.push(`suiteShards must be an integer >= 1, got ${JSON.stringify(file.suiteShards)}`);
   if (file.groups !== undefined && !(Number.isInteger(file.groups) && file.groups >= 1)) problems.push(`groups must be an integer >= 1, got ${JSON.stringify(file.groups)}`);
-  else if (Number.isInteger(shards) && shards >= 1 && jobCount(file) > MAX_JOBS) problems.push(`one PR runs ${jobCount(file)} jobs (typecheck + ${shards} suite shard(s) + ${groupsOf(file)} rig group(s) + the \`suite\` verdict job) — the account runs at most ${MAX_JOBS} at a time (#594)`);
+  else if (Number.isInteger(shards) && shards >= 1 && jobCount(file) > MAX_JOBS) problems.push(`one PR runs ${jobCount(file)} jobs (typecheck + ${shards} suite shard(s) + ${groupsOf(file)} rig group(s); the \`suite\` verdict job runs after them) — the account runs at most ${MAX_JOBS} at a time (#594)`);
   if (file.groups !== undefined && Number.isInteger(file.groups) && file.groups >= 1) {
     const empty = assignGroups(file).flatMap((g, i) => (g.length === 0 ? [i + 1] : []));
     if (empty.length) problems.push(`rig group(s) ${empty.join(', ')} hold no rig: a job that runs no rig is red`);
@@ -141,8 +141,8 @@ export const DEFAULT_SUITE_SHARDS = 1;
 export const MAX_JOBS = 20;
 export const groupsOf = (file: Pick<RigFile, 'groups'>): number => file.groups ?? DEFAULT_GROUPS;
 export const suiteShardsOf = (file: Pick<RigFile, 'suiteShards'>): number => file.suiteShards ?? DEFAULT_SUITE_SHARDS;
-/** The jobs of one PR run: `typecheck` + the suite shards + the rig groups + the `suite` verdict job (no inventory job: the matrices are static, pinned by ci-rigs.test.ts). */
-export const jobCount = (file: Pick<RigFile, 'groups' | 'suiteShards'>): number => 1 + suiteShardsOf(file) + groupsOf(file) + 1;
+/** The jobs of one PR run that can run AT THE SAME TIME: `typecheck` + the suite shards + the rig groups (no inventory job: the matrices are static, pinned by ci-rigs.test.ts). The `suite` verdict job `needs` all of them, so it never overlaps them (#623: it does not count against the limit). */
+export const jobCount = (file: Pick<RigFile, 'groups' | 'suiteShards'>): number => 1 + suiteShardsOf(file) + groupsOf(file);
 const DEFAULT_WEIGHT_SEC = 300;
 
 /** RUNS_IN_CI rig ids per group (1-based, index 0 = group 1): an explicit `group` is honoured, the rest go longest-first (by `wallSec`) onto the lightest group. Deterministic. */

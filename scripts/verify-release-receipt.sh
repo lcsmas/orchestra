@@ -69,11 +69,10 @@ elif [ "$SKIP_GATE" = 1 ]; then
   printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite|||elif false; then
   printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite
 X
-  bad=0
-  for n in $(ls "$M"); do
-    if RG_SCRIPTS_DIR="$M/$n" bash "$SELF" >"$M/$n.log" 2>&1; then echo "MUTANT SURVIVED  $n (rig stayed green)"; bad=1
-    else echo "mutant killed    $n ($(grep -c '^  FAIL' "$M/$n.log") FAIL lines)"; fi
-  done
+  # #623: the mutants run 4 at a time (each in its own copy $M/<name>, its own log); one line per mutant, in completion order
+  export M SELF
+  ls "$M" | xargs -P "${MUTANT_JOBS:-4}" -I{} bash -c 'n="$1"; if RG_SCRIPTS_DIR="$M/$n" bash "$SELF" >"$M/$n.log" 2>&1; then echo "MUTANT SURVIVED  $n (rig stayed green)"; else echo "mutant killed    $n ($(grep -c "^  FAIL" "$M/$n.log") FAIL lines)"; fi' _ {} > "$M.out"
+  cat "$M.out"; bad=0; grep -q '^MUTANT SURVIVED' "$M.out" && bad=1; rm -f "$M.out"
   [ "$bad" = 0 ] && echo "#484 receipt mutants: ALL KILLED" || { echo "#484 receipt mutants: SURVIVOR"; exit 1; }
   exit 0
 fi
