@@ -13,6 +13,8 @@ export interface PauseInfo { at: string; reason: string; check: string | null; p
 
 export const parkedOf = (t: TicketState | undefined): ParkedView | null => t?.parked ?? null;
 export const choicesOf = (s: FanoutState): ChoiceView[] => s.choices ?? [];
+/** #645: a choice recorded with `--taken "irreversible: <what>"` (case-insensitive, leading space ignored). */
+export const isIrreversibleChoice = (c: { answer: string }): boolean => /^\s*irreversible\s*:/i.test(c.answer);
 export const pauseOf = (s: FanoutState): PauseInfo | null => s.pause ?? null;
 /** #607 (ledger v1.2): `TicketState.ci.flaky` = the check names that went red, then green on the one re-run — read per ticket (delete the cast when #607 is merged). */
 const flakyOf = (t: TicketState): string[] => t.ci?.flaky ?? [];
@@ -34,6 +36,8 @@ export interface Report {
   dropped: string[];
   /** neither merged, parked nor dropped: only non-empty when the run stopped early (a pause, or `fanout run` killed). */
   unfinished: string[];
+  /** #645: the choices whose `taken` starts `irreversible:` — a script the PR carries and a human runs by hand; listed FIRST. A subset of `choices` (which holds them first too). */
+  irreversible: ReportChoice[];
   choices: ReportChoice[];
   findingsLeft: ReportFinding[];
   /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607: `TicketState.ci.flaky`). */
@@ -76,9 +80,11 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
       parked.push({ ticket: id, cause: p?.cause ?? 'situation', reason: p?.reason ?? '(no reason recorded)', ...(p?.blockedBy ? { blockedBy: p.blockedBy } : {}) });
     } else unfinished.push(id);
   }
-  const choices = choicesOf(state).map((c): ReportChoice => ({ n: c.n, ticket: c.ticket, question: c.question, rule: c.rule, answer: c.answer, pr: state.tickets[c.ticket]?.pr ?? null, branch: state.tickets[c.ticket]?.branch ?? null }));
+  const all = choicesOf(state).map((c): ReportChoice => ({ n: c.n, ticket: c.ticket, question: c.question, rule: c.rule, answer: c.answer, pr: state.tickets[c.ticket]?.pr ?? null, branch: state.tickets[c.ticket]?.branch ?? null }));
+  const irreversible = all.filter(isIrreversibleChoice);
+  const choices = [...irreversible, ...all.filter((c) => !isIrreversibleChoice(c))];
   return {
-    run: state.run, merged, parked, dropped, unfinished, choices,
+    run: state.run, irreversible, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
     flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
@@ -102,13 +108,18 @@ export function renderReport(r: Report): string {
   const total = Object.values(r.costPerTicket).reduce((n, c) => n + (c?.tokens ?? 0), 0);
   L.push(`fanout run ${r.run}: ${r.merged.length} merged, ${r.parked.length} parked${r.dropped.length ? `, ${r.dropped.length} dropped` : ''}${r.unfinished.length ? `, ${r.unfinished.length} unfinished` : ''}${r.paused ? ' — PAUSED' : ''}`);
   if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — lift the pause with \`orchestra fanout state set --run ${r.run} --resume-run\`, then run \`orchestra fanout run --run ${r.run}\` again`);
+  if (r.irreversible.length) {
+    L.push(`IRREVERSIBLE — the PR carries a script nobody has run; run it by hand (${r.irreversible.length}):`);
+    for (const c of r.irreversible) L.push(`  #${c.n} ${c.ticket} ${oneLine(c.question, 200)} → ${oneLine(c.answer, 300)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+  }
   L.push(`merged: ${r.merged.length ? r.merged.join(', ') : '(none)'}`);
   if (r.parked.length) { L.push('parked:'); for (const p of r.parked) L.push(`  ${p.ticket}  [${p.cause}]  ${oneLine(p.reason)}`); }
   if (r.unfinished.length) L.push(`unfinished: ${r.unfinished.join(', ')}`);
   if (r.dropped.length) L.push(`dropped: ${r.dropped.join(', ')}`);
-  if (r.choices.length) {
-    L.push(`choices taken by the agents (${r.choices.length}) — each the reversible option the implementer recorded (\`orchestra fanout choice\`):`);
-    for (const c of r.choices) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)} → TAKEN: ${oneLine(c.answer, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+  const plain = r.choices.filter((c) => !isIrreversibleChoice(c));
+  if (plain.length) {
+    L.push(`choices taken by the agents (${plain.length}) — each the reversible option the implementer recorded (\`orchestra fanout choice\`):`);
+    for (const c of plain) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)} → TAKEN: ${oneLine(c.answer, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
   }
   if (r.findingsLeft.length) {
     L.push(`findings left (${r.findingsLeft.length}):`);

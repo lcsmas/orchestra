@@ -53,10 +53,12 @@ test('exit 0: the 7-ticket scenario prints the closing report as JSON on stdout 
   assert.deepEqual(j.dummy.violations, []);
   assert.match(r.stderr, /JUDGE: clean/);
 });
-test('exit 3: a parked ticket ends the run with the report naming it', async () => {
+test('#645: a NO SAFE OPTION ask parks nothing — exit 0, the report carries an (empty) irreversible list', async () => {
   const r = await runFanoutRun(['--scenario', scen('nosafe'), '--run', 'ns'], deps(DUMMY));
-  assert.equal(r.code, 3);
-  assert.deepEqual(JSON.parse(r.stdout).report.parked.map((p: { ticket: string }) => p.ticket), ['T3', 'T5', 'T7']);
+  assert.equal(r.code, 0);
+  const rep = JSON.parse(r.stdout).report;
+  assert.deepEqual(rep.parked, []);
+  assert.deepEqual(rep.irreversible, []);
 });
 test('a run that already has a state is refused (the dummy world is rebuilt from the scenario)', async () => {
   const d = deps(DUMMY);
