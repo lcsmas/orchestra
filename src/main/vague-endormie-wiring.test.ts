@@ -134,3 +134,13 @@ test('#429 the renderer: marks loaded at boot (survives a restart / a reload), r
   assert.match(note, /role="status" aria-live="polite"/, 'the answer is a live region that stays mounted');
   assert.match(note, /e\.stopPropagation\(\)/, 'a click on the button is not a click on the row (it must not select the sleeping workspace)');
 });
+
+test('#612 the production roster feeds the no-agent command\'s liveness to the vague roster: without `commandAlive` a live no-agent coordinator is declared asleep', () => {
+  const host = read('vague-endormie-host.ts');
+  assert.ok(live(host, '  commandAlive: (ws) => noAgentRunner().running(ws.id), // #612'), 'the production VagueRosterDeps carries commandAlive over the real runner');
+  assert.ok(live(host, "import { noAgentRunner } from './noagent.ts';"));
+  // and it sits INSIDE the `roster` literal the sweep reads (not a dead declaration elsewhere in the file)
+  const roster = host.slice(host.indexOf('const roster: VagueRosterDeps = {'), host.indexOf('export const productionVagueDeps'));
+  assert.ok(roster.includes('commandAlive: (ws) => noAgentRunner().running(ws.id)'), 'inside the roster literal');
+  assert.match(host, /vagues: \(\) => vagueFacts\(roster\)/, 'control: the sweep reads THAT roster');
+});
