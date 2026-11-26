@@ -346,13 +346,13 @@ test('the report EQUALS the state: every merged / parked / choice / finding line
     A: { status: 'merged', branch: 'b1', pr: 11, ci: { flaky: ['e2e'] } as never, findings: { m1: { severity: 'MINOR', evidence: 'measured' } as never, f2: { severity: 'MAJOR', settled: { how: 'fixed', at: T0, ref: sha('a') } } as never } },
     B: { status: 'started', branch: 'b2', pr: 12, findings: { f3: { severity: 'MAJOR', decision: { by: 'run1', text: 'accepted: out of scope', at: T0 } } as never, f4: { severity: 'BLOCKING', settled: { how: 'pr-body', at: T0, ref: 'PR #12 body' } } as never } },
     C: { status: 'started', branch: 'b3', dependsOn: ['B'] },
-  }, { choices: [{ n: 1, ticket: 'A', question: 'which index?', rule: 'reversible-default', answer: 'take the reversible option', at: T0 }] }), 'B', { cause: 'ci', reason: 'same failure after the fix: test/foo' }, T0);
+  }, { startFlaky: ['lint'], choices: [{ n: 1, ticket: 'A', question: 'which index?', rule: 'reversible-default', answer: 'take the reversible option', at: T0 }] }), 'B', { cause: 'ci', reason: 'same failure after the fix: test/foo' }, T0);
   const r = buildReport(s, { A: { tokens: 10 }, B: { tokens: 20 }, C: null });
   assert.deepEqual(r.merged, ['A']);
   assert.deepEqual(r.parked.map((p) => [p.ticket, p.cause, p.reason]), [['B', 'ci', 'same failure after the fix: test/foo'], ['C', 'upstream', 'blocked by B']]);
   assert.deepEqual(r.choices, [{ n: 1, ticket: 'A', question: 'which index?', rule: 'reversible-default', answer: 'take the reversible option', pr: 11, branch: 'b1' }]);
   assert.deepEqual(r.findingsLeft.map((f) => `${f.ticket}/${f.finding}:${f.end}`), ['A/m1:open', 'B/f3:decided', 'B/f4:pr-body']); // f2 was fixed: not "left"
-  assert.deepEqual(r.flaky, ['A/e2e']);
+  assert.deepEqual(r.flaky, ['start-check/lint', 'A/e2e']); // #654: the start-check flake is reported too
   const text = renderReport(r);
   for (const needle of ['merged: A', 'B  [ci]  same failure after the fix: test/foo', 'C  [upstream]  blocked by B', 'which index?', 'PR #11', 'A/m1', 'B/f3', 'accepted: out of scope', 'A/e2e', 'A 10 tokens', 'total 30 tokens']) assert.ok(text.includes(needle), needle);
   assert.equal(renderReport(buildReport(s, { A: { tokens: 10 }, B: { tokens: 20 }, C: null })), text, 'the same state renders the same report');
