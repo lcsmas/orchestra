@@ -369,7 +369,7 @@ test('#623 mutantParts: longest-first onto the lightest part, deterministic, eve
 test('#623 a pull_request selection skips the mutant rigs (even on a shared-file change that selects every rig); ci-full and a dispatch keep them', () => {
   const run = (env: Record<string, string>) => {
     const f = path.join(os.tmpdir(), `sel-${process.pid}-${Math.random().toString(36).slice(2)}.txt`);
-    fs.writeFileSync(f, '.github/ci-rigs.json\n');
+    fs.writeFileSync(f, 'pnpm-lock.yaml\n');
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/rigs.mjs'), 'select', '--changed-file', f], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
     fs.rmSync(f, { force: true });
     return JSON.parse(r.stdout) as { ids: string[]; skipped: { id: string; why: string }[] };
