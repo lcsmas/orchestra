@@ -1,6 +1,6 @@
 {
   "name": "orchestra",
-  "version": "0.5.384",
+  "version": "0.5.385",
   "description": "Run parallel Claude Code agents in isolated git worktrees",
   "license": "Apache-2.0",
   "author": "Lucas Mas",
@@ -74,7 +74,8 @@
     "test:fanout-start": "node scripts/e2e-fanout-start.mjs",
     "test:fanout-start-mutants": "node scripts/e2e-fanout-start.mjs --mutants",
     "test:fanout-run": "pnpm run build:cli && node scripts/e2e-fanout-run.mjs",
-    "test:fanout-run-mutants": "node scripts/e2e-fanout-run.mjs --mutants",
+    "test:fanout-run-mutants": "node scripts/e2e-fanout-run.mjs --mutants --part 1/2",
+    "test:fanout-run-mutants-2": "node scripts/e2e-fanout-run.mjs --mutants --part 2/2",
     "test:fanout-seat-records": "node scripts/e2e-fanout-seat-records.mjs",
     "test:fanout-seat-records-mutants": "node scripts/e2e-fanout-seat-records.mjs --mutants",
     "test:fanout-review-mutants": "node scripts/fanout-review-mutants.mjs",

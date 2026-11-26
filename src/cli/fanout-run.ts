@@ -17,7 +17,7 @@ export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,
   --scenario <file> runs the DUMMY fleet (scripted agents, git, PR host and CI on a virtual clock) and judges its event log; refused unless ORCHESTRA_FANOUT_DUMMY=1 ([run-scenario-gated]).
   Limit (this build): the live fleet / forge ports are not wired — without --scenario the verb exits 1 ([run-live-ports]).`;
 
-const reportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
+const runReportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
   `merged ${r.merged.length}${r.merged.length ? ` (${r.merged.join(', ')})` : ''} · parked ${r.parked.length}${r.parked.map((p) => ` ${p.ticket} [${p.cause}] ${p.reason}`).join(';')} · choices ${r.choices.length}\n`;
 
 export async function runFanoutRun(args: string[], deps: FanoutDeps): Promise<RunResult> {
@@ -45,7 +45,7 @@ export async function runFanoutRun(args: string[], deps: FanoutDeps): Promise<Ru
     const d = await runDummyLoop({ home, run, scenario, options });
     const { result } = d;
     const out = { exit: result.exit, passes: result.passes, ...(result.reason ? { reason: result.reason } : {}), report: result.report, dummy: { run, events: d.world.events.length, violations: d.violations } };
-    return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: `${d.log.join('\n')}\n${reportText(result.report)}${d.violations.length ? `JUDGE: ${d.violations.length} violation(s): ${d.violations.map((v) => v.rule).join(', ')}\n` : 'JUDGE: clean\n'}` };
+    return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: `${d.log.join('\n')}\n${runReportText(result.report)}${d.violations.length ? `JUDGE: ${d.violations.length} violation(s): ${d.violations.map((v) => v.rule).join(', ')}\n` : 'JUDGE: clean\n'}` };
   } catch (e) {
     if (e instanceof SeatRefusal) return { code: 2, stdout: '', stderr: `${e.message}\n` };
     if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };

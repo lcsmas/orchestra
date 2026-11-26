@@ -15,6 +15,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
 const SCEN = path.join(ROOT, 'src', 'shared', 'fanout-loop-scenarios');
 const MUTANTS = process.argv.includes('--mutants');
+const PART = process.argv.includes('--part') ? process.argv[process.argv.indexOf('--part') + 1] : null; // --part i/n: every n-th mutant starting at i (the rig is split in two CI slots: each fits the 10-min limit)
+const [PART_I, PART_N] = PART ? PART.split('/').map(Number) : [1, 1];
+if (PART && !(Number.isInteger(PART_I) && Number.isInteger(PART_N) && PART_I >= 1 && PART_I <= PART_N)) { console.error('--part must be i/n with 1 <= i <= n'); process.exit(2); }
 const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf('--only') + 1] : null; // iterate on one mutant: --mutants --only <substring of its name>
 
 // ── arms through the built CLI ───────────────────────────────────────────────────────────────────────────────
@@ -77,8 +80,8 @@ fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true }
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
 const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts'].map((f) => path.join(scratch, f));
-function run() {
-  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
+function run(timeout = 90_000) { // a mutant that runs away (an infinite loop) is KILLED by the timeout: keep it short so the rig fits its CI slot; the control gets the long one
+  const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
   const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN);
   return { pass: n('pass'), fail: n('fail'), skipped: n('skipped'), tests: n('tests') };
@@ -88,9 +91,9 @@ const L = 'src/shared/fanout-loop.ts', J = 'src/shared/fanout-loop-judge.ts', S 
 // [name, [[file, from, to], …]] — every `from` must occur exactly once in its file
 const mutants = [
   ['decision 3 (the fleet): every dependent\'s implementer waits for its upstream to merge before it codes', [[DM, "return [{ do: 'code' }, { do: 'nominate' }, ...deps.map", "return [...(deps.length ? [{ do: 'wait' } as Step] : []), { do: 'code' }, { do: 'nominate' }, ...deps.map"]]],
-  ['decision 4: connect at NOMINATION (the upstream head, before any approval)', [[L, "const a = ctx.approved.get(up);\n      if (!u || isMerged(s, up) || !a) continue;", "const a = ctx.approved.get(up) ?? (u?.head ? { head: u.head, at: '', round: 0 } : undefined);\n      if (!u || isMerged(s, up) || !a) continue;"]]],
+  ['decision 4: connect at NOMINATION (the upstream head, before any approval)', [[L, "const a = ctx.approved.get(up);\n      if (!u || ticketMerged(s, up) || !a) continue;", "const a = ctx.approved.get(up) ?? (u?.head ? { head: u.head, at: '', round: 0 } : undefined);\n      if (!u || ticketMerged(s, up) || !a) continue;"]]],
   ['decision 4: connect AFTER the merge (the step runs after deliver)', [[L, "'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const", "'approvals', 'ci', 'corrections', 'deliver', 'connect', 'end'] as const"]]],
-  ['decision 4: the ask is repeated every pass', [[L, "if (asked && sameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue;", "/* ask every pass */"], [L, "      if (t.builtOn[up] && sameSha(t.builtOn[up], a.head)) continue;\n", ""]]],
+  ['decision 4: the ask is repeated every pass', [[L, "if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue;", "/* ask every pass */"], [L, "      if (t.builtOn[up] && loopSameSha(t.builtOn[up], a.head)) continue;\n", ""]]],
   ['decision 4: the ask carries no exact head', [[L, "`CONNECT ${i.upstream} ${i.head}`,", "`CONNECT ${i.upstream} ${i.head.slice(0, 7)}`,"]]],
   ['decision 5: a question gets no answer', [[L, "        await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');\n", ""]]],
   ['decision 5: a question is not listed (no choice recorded)', [[L, "        if (!h) ctx.update((x) => { const y = listChoice(x,", "        if (false as boolean) ctx.update((x) => { const y = recordChoice(x,"]]],
@@ -113,24 +116,24 @@ const mutants = [
   ['MINOR-2: a held start is a stall', [[L, "for (const x of r.waiting) { ctx.waitOn(`held:${x.ticket}`, holdMs); ctx.note(", "for (const x of r.waiting) { ctx.note("], [L, "for (const id of heldNow) ctx.waitOn(`held:${id}`, holdMs);", ""]]],
   ['MINOR-2: a CI still running is a stall', [[L, "if (dec.action === 'wait') { ctx.waitOn(`ci:${id}:${t.head}`, deps.options.stallMs); return; }", "if (dec.action === 'wait') return;"]]],
   ['MINOR-2: a reviewer reading is a stall', [[L, "{ ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs); return; } // briefed", "return; // briefed"]]],
-  ['r2 MAJOR-1: a wait is unbounded (it counts as progress for ever)', [[L, "if (ms(deps.now()) - ms(since) <= boundMs) {", "if (true as boolean) {"]]],
+  ['r2 MAJOR-1: a wait is unbounded (it counts as progress for ever)', [[L, "if (loopMs(deps.now()) - loopMs(since) <= boundMs) {", "if (true as boolean) {"]]],
   ['r2 MAJOR-1: a dead reviewer is not replaced (waited on like a live one)', [[L, "&& (!rv || deps.fleet.live(rv))) {", ") {"]]],
   ['MINOR-3: the loop section is never added to the implementer brief', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...[]"]]],
   ['MINOR-3: the loop section is always added (a non-loop brief changes)', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...['', LOOP_BRIEF]"]]],
   ['MINOR-3: the #604 marker (state.loopPlan) does not turn the loop section on', [[BR, "input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan", "input.loop ?? false"]]],
-  ['round 2: an ask is listed uncut (recordChoice refuses it, the run ends)', [[L, "clean(m.body.split('\\n')[0]).slice(0, ASK_MAX);", "clean(m.body.split('\\n')[0]);"]]],
+  ['round 2: an ask is listed uncut (recordChoice refuses it, the run ends)', [[L, "loopClean(m.body.split('\\n')[0]).slice(0, ASK_MAX);", "loopClean(m.body.split('\\n')[0]);"]]],
   ['round 2: a respawned author is not asked again (the ask is keyed by head alone)', [[L, " && s.loop.askedTo[id]?.[up] === t.implementer) continue;", ") continue;"]]],
   ['round 2: the dummy forge close() closes nothing', [[DM, "async close(n) { w.closePr(n); },", "async close(_n) { /* nothing */ },"]]],
   ['round 2: the dummy forge merges a closed PR', [[DM, "if (p.state !== 'open') return { ok: false,", "if (p.state === 'merged') return { ok: false,"]]],
   ['r3: a dead reviewer is replaced for ever (no cap)', [[L, "      if (died >= cap) {", "      if (false as boolean) {"]]],
-  ['r3 OPS: the replacement is charged BEFORE the spawn (a failed spawn burns the cap)', [[L, "    const r = await deps.fleet.spawnReviewer(id, t.head);\n    if (last && sameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));", "    if (last && sameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));\n    const r = await deps.fleet.spawnReviewer(id, t.head);"]]],
+  ['r3 OPS: the replacement is charged BEFORE the spawn (a failed spawn burns the cap)', [[L, "    const r = await deps.fleet.spawnReviewer(id, t.head);\n    if (last && loopSameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));", "    if (last && loopSameSha(last.head, t.head)) ctx.update((x) => ({ ...x, loop: { ...x.loop, replaced: { ...x.loop.replaced, [key]: died + 1 } } }));\n    const r = await deps.fleet.spawnReviewer(id, t.head);"]]],
   ['r3: the reviewer replacements are not counted', [[L, "[key]: died + 1 } } }));", "[key]: died } } }));"]]],
   ['r3: a dead implementer is respawned for ever (no cap)', [[L, "    if (n >= cap) {", "    if (false as boolean) {"]]],
   ['r3: the implementer respawns are not counted', [[L, "replaced: { ...y.loop.replaced, [key]: (y.loop.replaced[key] ?? 0) + 1 } } }));\n    ctx.did(`restarted", "replaced: y.loop.replaced } }));\n    ctx.did(`restarted"]]],
   ['r3: a second hold inherits the first hold\'s age', [[L, "busySince: Object.fromEntries(Object.entries(y.loop.busySince).filter(([k]) => !fresh.some((x) => k === `held:${x.ticket}`))) } }));", "busySince: y.loop.busySince } }));"]]],
   ['swap: a parked ticket still counts as active (the loop reads no status)', [[L, "t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'parked';", "t.status !== 'merged' && t.status !== 'dropped';"]]],
-  ['swap: the loop does not park through the state (no status change: startRun would respawn it)', [[L, "ctx.update((x) => (isParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));\n        ctx.did(`parked ${id}: ${reason}`);\n        return;", "ctx.did(`parked ${id}: ${reason}`);\n        return;"]]],
-  ['swap: an ask is listed with its control characters (the state refuses it, the message is retried for ever)', [[L, "const clean = (t: string): string => t.replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f]/g, ' ').trim() || '(empty)';", "const clean = (t: string): string => t.trim() || '(empty)';"]]],
+  ['swap: the loop does not park through the state (no status change: startRun would respawn it)', [[L, "ctx.update((x) => (ticketParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));\n        ctx.did(`parked ${id}: ${reason}`);\n        return;", "ctx.did(`parked ${id}: ${reason}`);\n        return;"]]],
+  ['swap: an ask is listed with its control characters (the state refuses it, the message is retried for ever)', [[L, "const loopClean = (t: string): string => t.replace(/[\\x00-\\x08\\x0b-\\x1f\\x7f]/g, ' ').trim() || '(empty)';", "const loopClean = (t: string): string => t.trim() || '(empty)';"]]],
   ['swap: startRun does not pass the loop flag (a hand-planned run gets no loop section)', [[ST, "...(deps.loop !== undefined ? { loop: deps.loop } : {}), ", ""]]],
   ['swap: a full choices list is still written to (the state refuses: [choice-bad] on every restart)', [[L, "if ((x.choices?.length ?? 0) >= CHOICES_MAX) {", "if (false as boolean) {"]]],
   ['decision 12: the nomination signal is not durable (a kill between the mail and the nomination loses it)', [[L, "if (ctx.signals.has(id) || s.loop.signalled[id]) {", "if (ctx.signals.has(id)) {"]]],
@@ -139,7 +142,7 @@ const mutants = [
   ['decision 10: the approval of an OLD head merges a new head', [[L, "const r = recordedVerdictOf(s, id, t.head, t.tree);\n    if (!r.ok ||", "const r = recordedVerdictOf(s, id, s.tickets[id].reviews?.at(-1)?.head ?? t.head, null);\n    if (!r.ok ||"], [L, "const entry = reviewOn(t, t.head, t.tree);", "const entry = t.reviews?.at(-1);"], [L, "    const verdict = recordedVerdictOf(s0, id, t.head, t.tree);", "    const verdict = recordedVerdictOf(s0, id, s0.tickets[id].reviews?.at(-1)?.head ?? t.head, null);"], [L, "      waitedMs: 0, noChecksGraceMs:", "      verdictSameTree: true, waitedMs: 0, noChecksGraceMs:"]]],
   ['decision 10: a red CI is merged', [[L, "state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending'", "state: c.status === 'pending' ? 'pending' : 'success'"]]],
   ['decision 10: a CI still running is merged', [[L, "state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending'", "state: c.status === 'red' ? 'failure' : 'success'"]]],
-  ['decision 10: a ticket merges before its upstream', [[L, "    if (t.dependsOn.some((u) => !isMerged(s0, u))) return; // an unmerged upstream: never first\n", ""], [L, "if (!upDecision.ok) {", "if (false as boolean && !upDecision.ok) {"]]],
+  ['decision 10: a ticket merges before its upstream', [[L, "    if (t.dependsOn.some((u) => !ticketMerged(s0, u))) return; // an unmerged upstream: never first\n", ""], [L, "if (!upDecision.ok) {", "if (false as boolean && !upDecision.ok) {"]]],
   ['decision 10: merges in DECLARATION order', [[L, "ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);", "ready.sort((x, y) => x.order - y.order);"]]],
   ['exit codes: a run with parked tickets exits 0', [[L, "return await finish(parkedTickets(s).length ? 3 : 0);", "return await finish(0);"]]],
   ['exit codes: a pause is ignored', [[L, "if (pausedOf(s)) return await finish(4,", "if (false as boolean && pausedOf(s)) return await finish(4,"]]],
@@ -160,7 +163,7 @@ const mutants = [
   ['stack C connect (#606): stepCorrections does nothing', [[L, "const out = await runCorrections({ deps: ctx.deps, guard: ctx.guard });", "const out = [] as Awaited<ReturnType<typeof runCorrections>>;"]]],
   ['connect fix (#606 MAJOR-1): a dead author with an unanswered batch is never replaced', [['src/shared/fanout-loop-corrections.ts', "      if (!author || !deps.fleet.live(author) || startedAfter) {\n        const a2", "      if (false as boolean) {\n        const a2"]]],
   ['connect fix (#606 MAJOR-2): the corrections step is not guarded (one port error ends the run)', [[L, "runCorrections({ deps: ctx.deps, guard: ctx.guard })", "runCorrections({ deps: ctx.deps })"]]],
-  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested' && (sameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "if (false as boolean) return"]]],
+  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested' && (loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "if (false as boolean) return"]]],
   ['connect fix (#606 m2): a kill at the batch wake is swallowed as a failed wake', [['src/shared/fanout-loop-corrections.ts', "if (e instanceof LoopKilled) throw e; deps.log(", "deps.log("]]],
   ['connect fix (#608 m1-A): reconcile does not re-throw a kill that its reads swallowed', [[L, "  if (killed) throw killed;", ""]]],
   ['connect fix (#608 m1-B): reconcile\'s port trap does not see the kill', [[L, "if (e instanceof LoopKilled) killed = e; throw e;", "throw e;"]]],
@@ -169,14 +172,15 @@ const mutants = [
   ['connect fix (#607 c2): the environment mark skips a dependent whose red was carried', [['src/shared/fanout-loop-ci.ts', "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c) continue;", "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c || !shared.find(([n]) => n === cn)?.[1].some((h) => h.id === r.id)) continue;"]]],
   ['connect fix (#607 c1): the pause break is only checked after reconcile (a ready ticket merges in the pausing pass)', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (step === 'reconcile') { const cur"]]],
   ['connect fix 2 (#606 MAJOR-3): an author respawned by the start step never gets the batch', [['src/shared/fanout-loop-corrections.ts', "if (!author || !deps.fleet.live(author) || startedAfter) {", "if (!author || !deps.fleet.live(author)) {"]]],
-  ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(sameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
+  ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
   ['connect fix 2: a silent reviewer feeds the stall clock for ever (the wake outcome counts as progress)', [[L, "else if (o.action === 'reviewer-woken') ctx.note(", "else if (o.action === 'reviewer-woken') ctx.did("]]],
 ];
-const control = run();
+const control = run(240_000);
 console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);
 if (control.fail !== 0 || control.skipped !== 0 || !(control.pass > 0)) { console.error('the unpatched copy is not green: refusing to mutate'); process.exit(1); }
 let survived = 0, refused = 0, ran = 0;
-for (const [name, edits] of mutants) {
+for (const [mi, [name, edits]] of mutants.entries()) {
+  if (mi % PART_N !== PART_I - 1) continue; // another part's mutant
   if (ONLY && !name.includes(ONLY)) continue;
   ran++;
   const saved = new Map();
@@ -193,11 +197,11 @@ for (const [name, edits] of mutants) {
   else {
     const r = run();
     const killed = r.fail > 0 || !(r.pass > 0) || Number.isNaN(r.fail);
-    console.log(`${killed ? 'killed  ' : 'SURVIVED'} ${name}${killed ? (Number.isNaN(r.fail) ? ' (the test run crashed or timed out: no TAP summary)' : ` (${r.fail} fail)`) : ` (${r.pass} pass / ${r.fail} fail)`}`);
+    console.log(`${killed ? 'KILLED  ' : 'SURVIVED'} ${name}${killed ? (Number.isNaN(r.fail) ? ' (the test run crashed or timed out: no TAP summary)' : ` (${r.fail} fail)`) : ` (${r.pass} pass / ${r.fail} fail)`}`);
     if (!killed) survived++;
   }
   for (const [fp, text] of saved) fs.writeFileSync(fp, text);
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-console.log(`\n${ran - survived - refused}/${ran} killed, ${survived} survived, ${refused} refused`);
+console.log(`\n${PART ? `part ${PART}: ` : ''}${ran - survived - refused}/${ran} killed, ${survived} survived, ${refused} refused`);
 process.exit(survived || refused ? 1 : 0);
