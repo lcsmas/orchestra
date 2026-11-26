@@ -67,7 +67,7 @@ const mutants = [
   ['approve ignores a blocking MINOR of minorPolicy', R, ", ...blockingMinors(out, ticketId).filter((id) => c.open.includes(id))", ""],
   // derived counts
   ['counts: a "fixed" by the reviewer does not close the finding', R, "for (const id of r.closed) closed.add(id);", ""],
-  ['counts: a decided finding still counts', R, " && !t.findings[id].decision); //", "); //"],
+  ['counts: a decided finding still counts', R, " && !t.findings[id].decision && t.findings[id].onChoice === undefined); //", " && t.findings[id].onChoice === undefined); //"],
   ['counts: not as of review n (a later fix rewrites an earlier verdict)', R, ".filter((x) => x.n <= n)", ""],
   ['deliver: the verdict of the latest review on the head is the FIRST one', R, "return [...(t.reviews ?? [])].reverse().find((r) => sameContent(r.head, r.tree, head, tree)) ?? null;", "return (t.reviews ?? []).find((r) => sameContent(r.head, r.tree, head, tree)) ?? null;"],
   ['deliver: a rebase that keeps the tree loses the verdict (sha only)', R, "sameContent(r.head, r.tree, head, tree))", "sameSha(r.head, head))"],
@@ -89,7 +89,7 @@ const mutants = [
   ['state set: the patch source is not asserted at all', S, "  assertPatchSource(stampDefaults(state0), id, patch); // #589\n", ""],
   ['state set: the switch-off branch is skipped (off behaves as on)', S, "  if (!seatRecordsOn(state)) {\n    for (const [k, f] of findings)", `  if (${F}) {\n    for (const [k, f] of findings)`],
   ['state set: a blank --decide reason gets the new refusal off the switch', C, "if (blankDecide !== null && !seatRecordsOn(before)) decideArg(blankDecide);", ""],
-  ['state file: the record-only finding fields are unknown on read', S, "for (const k of ['by', 'text', 'raisedOn', 'fixedBy']) FINDING_KEYS.add(k); // #589 (I4)", ""],
+  ['state file: the record-only finding fields are unknown on read', S, "for (const k of ['by', 'text', 'raisedOn', 'fixedBy', 'onChoice']) FINDING_KEYS.add(k); // #589 (I4), #641", "for (const k of ['onChoice']) FINDING_KEYS.add(k); // #641"],
   ['state file: `reviews` is an unknown ticket field', S, "TICKET_KEYS.add('reviews'); // #589 (I4)", ""],
   ['state file: a hand-edited review number is accepted', S, "(e.n as number) !== i + 1", F],
   ['state file: a hand-typed verdict word is accepted in reviews', S, "enumOf(e.verdict, ['approve', 'changes-requested'] as const", "enumOf(e.verdict, ['approve', 'changes-requested', 'pass'] as const"],
