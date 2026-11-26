@@ -18,6 +18,7 @@ import {
 } from '../shared/fanout-state.ts';
 import {
   classifyMergeFailure,
+  isMergeConflict,
   combinedSuiteCommand,
   detectPackageManager,
   suiteCommandFor,
@@ -462,7 +463,8 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     return { exit, result: full };
   };
   const repoArgs = opts.repo ? ['--repo', opts.repo] : [];
-  const gh = async (args: string[]): Promise<GhResult> => deps.gh([...args, ...repoArgs]);
+  // #630: `gh api` has no `--repo` flag (its paths carry `repos/<repo>/…` already): never append it there
+  const gh = async (args: string[]): Promise<GhResult> => deps.gh(args[0] === 'api' ? args : [...args, ...repoArgs]);
   const ghOk = async (args: string[]): Promise<string> => {
     const r = await gh(args);
     if (r.code !== 0) throw new GhError(`gh ${args.slice(0, 2).join(' ')} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 400)}`);
@@ -662,6 +664,7 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
           if (classifyMergeFailure(m.stderr) === 'head-moved') {
             return done({ verdict: 'refused', reason: 'head-moved', detail: `the head moved during the merge call: ${m.stderr.trim().slice(0, 300)}`, ...prInfo, head: d.head }, reviewGated);
           }
+          if (isMergeConflict(m.stderr)) return done({ verdict: 'refused', reason: 'merge-conflict', detail: `the PR no longer merges cleanly: ${m.stderr.trim().slice(0, 300)}`, ...prInfo, head: d.head }, reviewGated);
           return done({ verdict: 'unchecked', reason: 'merge-failed', detail: `gh pr merge failed (exit ${m.code}): ${m.stderr.trim().slice(0, 400)}`, ...prInfo, head: d.head }, reviewGated);
         }
         // Read it back: exit 0 can mean "queued" (merge queue / auto-merge), which is not merged. Unknown state ⇒ could-not-check, never "merged".

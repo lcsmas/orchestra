@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TICKET_ID, applyPlan, parsePlan, planHash, validatePlan, PlanError, type PlanReason } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
-import { FanoutStateError, SeatRefusal, assertRunId, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
+import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
 
 export const PLAN_MAX_SUBMISSIONS = 2;
 /** The agent may be (re)spawned at most this many times for one run (a dead one is replaced once). */
@@ -110,9 +110,12 @@ export interface PlanHostDeps {
   spawn: (i: { from?: string; name: string; task: string; repoPath?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
   /** Did the host vouch `id` with this session key (the live session of that workspace)? Absent = nobody is vouched and the op is refused. */
   vouches?: (id: string, key: string | undefined) => boolean;
+  /** #629 — archive a workspace (the app's `archiveWorkspace`): the plan agent is released once its plan is accepted. Absent = `plan-release` is not wired. */
+  archive?: (id: string) => Promise<void>;
 }
 export type PlanHostResult =
   | { ok: true; op: 'plan'; action: 'spawn' | 'respawn' | 'adopt' | 'in-flight' | 'accepted'; id: string | null; name: string }
+  | { ok: true; op: 'plan-release'; released: string | null }
   | { ok: false; error: string };
 
 export type PlanAgentDecision = { action: 'spawn' | 'respawn' | 'adopt' | 'in-flight'; id?: string } | { action: 'refuse'; refusal: string; detail: string };
@@ -196,6 +199,27 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
     if (!res.ok || !res.id) { const error = res.error ?? 'spawn failed'; settle(null); return { ok: false, error: `could not spawn the plan agent: ${error}` }; }
     if (!settle(res.id)) return refusal('plan-claim-lost', `${res.id} was spawned but another call took over the claim: it is not the recorded plan agent of run ${run}`);
     return { ok: true, op: 'plan', action, id: res.id, name };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Op `plan-release` of the `/fanoutAcceptance` route (#629): once the plan is ACCEPTED, the single-use plan agent is archived (it would sit idle and raise `no session activity` escalations). Vouched like `live` — the run's coordinator on the host's word.
+ *  Idempotent (a second call finds it gone: `released: null`); refused until a plan was accepted, so a plan agent still writing is never cut. */
+export async function dispatchPlanRelease(input: Record<string, unknown>, deps: PlanHostDeps): Promise<PlanHostResult> {
+  try {
+    const run = assertRunId(str(input.run) ?? '');
+    const caller = str(input.from);
+    const vouched = !!caller && caller === run && !!deps.vouches && deps.vouches(caller, str(input.key));
+    if (!vouched) return refusal('plan-release-caller', `the host could not vouch that the caller is the run's coordinator (${run})`);
+    if (!deps.archive) return { ok: false, error: 'this host does not archive agents (plan-release is not wired)' };
+    const st = readState(stateFile(deps.home, run));
+    if (!st?.loopPlan) return refusal('plan-release-open', `run ${run} has no accepted plan yet: the plan agent is not released`);
+    const id = readPlanSidecar(deps.home, run)?.agent?.id ?? null;
+    const live = deps.isLive ?? deps.isWorkspace;
+    if (!id || !live(id)) return { ok: true, op: 'plan-release', released: null };
+    await deps.archive(id);
+    return { ok: true, op: 'plan-release', released: id };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

@@ -31,6 +31,10 @@ export class FakeForge {
   readonly calls: string[][] = [];
   /** A required EXTERNAL status (no Actions run behind it) stuck pending on every PR — a sibling of nothing. */
   externalPending: string | null = null;
+  /** #628 — pull requests the forge reports CONFLICTING (`mergeable`); a `pr merge` of one is refused as GitHub does. */
+  readonly conflicting = new Set<number>();
+  /** #628 — pull requests that read MERGEABLE until the merge call, which then refuses them (mergeable UNKNOWN → CONFLICTING between the two). */
+  readonly conflictsAtMerge = new Set<number>();
   /** The name of a job that is SKIPPED (an `if:` that evaluated false) on every run. */
   skipped: string | null = null;
   /** The steps `gh run view --json jobs` reports for a job (default: setup + ONE user step that succeeded + complete). */
@@ -73,7 +77,7 @@ export class FakeForge {
       case 'baseRefName': return pr.base;
       case 'number': return pr.n;
       case 'url': return `https://github.com/o/r/pull/${pr.n}`;
-      case 'mergeable': return 'MERGEABLE';
+      case 'mergeable': return this.conflicting.has(pr.n) ? 'CONFLICTING' : 'MERGEABLE';
       case 'mergeCommit': return pr.state === 'MERGED' ? { oid: pr.mergeCommit ?? this.treeOf(`merge:${pr.n}`) } : null;
       default: return undefined;
     }
@@ -128,6 +132,7 @@ export class FakeForge {
       const pr = this.prs.get(Number(args[2]));
       const sha = this.flag(args, '--match-head-commit');
       if (!pr || pr.state !== 'OPEN') return this.no('pull request is not mergeable: it is not open');
+      if (this.conflicting.has(pr.n) || this.conflictsAtMerge.has(pr.n)) return this.no('X Pull request is not mergeable: the merge commit cannot be cleanly created.');
       if (!args.includes('--merge')) return this.no('only --merge is supported by this fake (the loop never squashes or rebases)');
       const head = this.heads.get(pr.branch)!;
       if (sha && !(head.startsWith(sha) || sha.startsWith(head))) return this.no('X Pull request is not mergeable: Head branch was modified. Review and try the merge again.');

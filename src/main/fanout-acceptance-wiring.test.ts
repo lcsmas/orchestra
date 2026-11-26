@@ -26,3 +26,8 @@ test('#614 wiring: the host reports a workspace\'s transcript directory through 
   assert.match(read('fanout-acceptance-wiring.ts'), /transcriptDirOf: \(id\) => \{ const w = store\.getWorkspace\(id\); return w \? transcriptDirOfWorkspace\(w\) : null; \}/);
   assert.match(read('agent-sdk.ts'), /export const transcriptDirOfWorkspace = transcriptDir;/);
 });
+
+test('#629 / #628 wiring: the host archives through the app\'s own archiveWorkspace (plan-release: the accepted plan\'s agent; release: a replaced implementer)', () => {
+  assert.match(read('fanout-acceptance-wiring.ts'), /import \{ archiveWorkspace, dispatchAgentSpawnRequest,/);
+  assert.match(read('fanout-acceptance-wiring.ts'), /archive: \(id\) => archiveWorkspace\(id\)/);
+});

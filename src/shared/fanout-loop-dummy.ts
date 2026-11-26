@@ -16,7 +16,7 @@ import { applyTicketPatch, FanoutStateError, newState, stateFile } from './fanou
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
-export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
+export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
 export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
 export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string }
 export interface Scenario {
@@ -31,7 +31,7 @@ export interface Scenario {
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
   /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
   prePlanned?: boolean;
-  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[]; /** #628: tickets whose merge the forge refuses with `merge-conflict` while their branch lacks the target's tip (until their `sync` step merges it in) */ conflictOnStale?: string[]; /** #625: the plan is NOT handed to the loop — the planner port (the plan agent) writes it */ viaPlanner?: boolean };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -85,7 +85,7 @@ const dummySameSha = (a: string, b: string): boolean => a.startsWith(b) || b.sta
 
 interface Commit { parents: string[]; tree: string; at: number }
 interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
-interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; fired: Set<string>; heldTicks: number }
+interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; syncs: number; fired: Set<string>; heldTicks: number }
 interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
 
 export class DummyWorld {
@@ -173,7 +173,7 @@ export class DummyWorld {
     const ws = `ws-${branch}`;
     if (!this.branches.has(branch)) this.branches.set(branch, this.branches.get(this.target)!);
     const hold = this.sc.admissionHold?.[ticket] ?? 0;
-    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], fired: new Set(), heldTicks: hold };
+    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], syncs: 0, fired: new Set(), heldTicks: hold };
     this.impls.set(ws, a);
     this.ev('spawn', ticket, { ws, branch, held: hold > 0, briefHasLoop });
     if (!hold) this.begin(a);
@@ -183,7 +183,7 @@ export class DummyWorld {
   private arm(a: Impl): void {
     const step = a.steps[a.idx];
     if (!step) { a.mode = 'done'; return; }
-    const dflt = step.do === 'code' || step.do === 'fix' ? this.timing.codeMs : step.do === 'connect' ? this.timing.connectMs : this.timing.nominateMs;
+    const dflt = step.do === 'code' || step.do === 'fix' ? this.timing.codeMs : step.do === 'connect' || step.do === 'sync' ? this.timing.connectMs : this.timing.nominateMs;
     this.after(step.afterMs ?? dflt, () => this.runStep(a));
   }
   private commitOn(a: Impl, label: string): string {
@@ -226,6 +226,16 @@ export class DummyWorld {
         this.post('status', a.ws, a.ticket, `connected to ${ask.up} — head ${c}`);
         break;
       }
+      case 'sync': { // #628: the SYNC order — the target merged into the branch with a MERGE COMMIT, pushed, the new head reported
+        if (a.syncs <= 0) { a.mode = 'connect'; return; }
+        a.syncs--;
+        const head = this.branches.get(a.branch)!;
+        const c = this.commit([head, this.branches.get(this.target)!], `${a.branch}:sync`, `${a.ticket}+${this.target}`);
+        this.branches.set(a.branch, c);
+        this.ev('sync-done', a.ticket, { head: c });
+        this.post('status', a.ws, a.ticket, `synced with ${this.target} — head ${c}`);
+        break;
+      }
       default: break; // reviewer steps in an implementer script are refused by parseScenario
     }
     a.idx++;
@@ -238,6 +248,12 @@ export class DummyWorld {
     if (!a) return;
     if (/^Corrections for /.test(text)) { this.ev('corrections-batch', a.ticket, { ws, text }); return; } // #606: ONE batch to the author (the dummy author's script says what it does next)
     if (/^CI is red on your pull request/.test(text)) { this.ev('ci-told', a.ticket, { ws, text }); return; } // #607: the author is told which check is red (the dummy author does not react: its script says what it does next)
+    if (/^(SYNC|FIX) /.test(text)) { // #628: a delivery refusal order — the author acts on it only when its script has a `sync` step left
+      this.ev('sync-order', a.ticket, { ws, text: text.split('\n')[0] });
+      a.syncs++;
+      if (a.mode === 'connect') { a.mode = 'running'; this.after(1_000, () => this.runStep(a)); }
+      return;
+    }
     const m = /^CONNECT (\S+) ([0-9a-f]{40})/.exec(text);
     if (!m) return;
     this.ev('connect-ask', a.ticket, { up: m[1], head: m[2], to: ws });
@@ -336,11 +352,12 @@ export class DummyWorld {
   }
   closePr(n: number): void { const p = this.prs.get(n); if (p && p.state === 'open') { p.state = 'closed'; this.ev('pr-close', p.ticket, { n }); } }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
-  merge(n: number, matchHead: string, method: string): { ok: boolean; reason?: string } {
+  merge(n: number, matchHead: string, method: string): { ok: boolean; reason?: string; detail?: string } {
     const p = this.prs.get(n)!;
     if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
     if (p.state !== 'open') return { ok: false, reason: `the PR is ${p.state}` };
+    if (this.sc.faults?.conflictOnStale?.includes(p.ticket) && !this.contains(this.branches.get(this.target)!, head)) { this.ev('merge-refused', p.ticket, { n, reason: 'merge-conflict' }); return { ok: false, reason: 'merge-conflict', detail: 'the branch lacks the target tip' }; }
     if (!dummySameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
     const run = [...p.runs].reverse().find((r) => r.head === head);
     const ci = !run ? 'none' : this.t < run.doneAt ? 'pending' : run.result;
@@ -386,6 +403,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async ack(upTo) { w.ackMail(upTo); },
     async spawnReviewer(ticket, head) { return w.spawnReviewer(ticket, head); },
     async costOf(ticket) { return { tokens: 1000 * w.events.filter((e) => e.ticket === ticket).length }; },
+    async replace(ticket) { for (const [ws, a] of w.impls) if (a.ticket === ticket) { w.impls.delete(ws); w.ev('impl-replaced', ticket, { ws }); } },
   };
   const forge: ForgePort = {
     async openPr({ branch, title }) { const t = ticketOfBranch(branch) ?? title.split(':')[0]; return { n: w.openPr(branch, t) }; },
@@ -415,8 +433,17 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
     updateLoopState(i.home, run, () => { const { loopPlan: _m, ...hand } = applyPlan(newState(run, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now()); return withLoop(hand); });
   }
   const log: string[] = [];
-  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 2500, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
-  const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options });
+  const viaPlanner = !!i.scenario.faults?.viaPlanner;
+  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 2500, plan: viaPlanner ? null : d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
+  // #625: what `orchestra fanout plan` does for the loop — the plan agent writes the plan (virtual time passes), the state records it, the agent is released (#629)
+  const planner = viaPlanner ? async (tickets: string[]): Promise<void> => {
+    d.world.ev('plan-agent-spawn', undefined, { tickets });
+    await d.sleep(60_000);
+    updateLoopState(i.home, run, (cur) => withLoop(applyPlan(cur!, d.plan, d.now(), 1), cur!.loop));
+    d.world.ev('plan-accepted', undefined, {});
+    d.world.ev('plan-agent-released', undefined, {});
+  } : undefined;
+  const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options, ...(planner ? { planner } : {}) });
   d.world.dump();
   const s = readLoopState(i.home, run);
   const startAt: Record<string, number | null> = {};

@@ -40,6 +40,7 @@ function rig(t: { after: (fn: () => void) => void }) {
     const [a, b] = args;
     const val = (f: string) => args[args.indexOf(f) + 1];
     if (a === 'api') {
+      if (args.includes('--repo')) return { code: 1, stdout: '', stderr: 'unknown flag: --repo' }; // the real `gh api` has none (#630)
       const url = args[1];
       let m = /\/commits\/([0-9a-f]+)$/.exec(url);
       if (m) { try { return ok({ sha: sh(origin)('rev-parse', m[1]), commit: { tree: { sha: sh(origin)('rev-parse', `${m[1]}^{tree}`) } } }); } catch { return { code: 1, stdout: '', stderr: 'HTTP 404' }; } }
@@ -131,6 +132,19 @@ for (const strategy of ['merge', 'rebase'] as const) {
     if (strategy === 'rebase') assert.notEqual(r.tip('master'), D, 'a rebase-merge rewrote the shas (the case this arm exists for)');
   });
 }
+
+test('#630 a dependent delivers when the run has a repo: `gh api` never gets --repo (the compare/commits paths carry the repo)', async (t) => {
+  const r = rig(t);
+  const U = r.branchWith('up', 'master', 'up.txt', 'u1\n');
+  const D = r.branchWith('dep', 'up', 'dep.txt', 'd1\n');
+  r.writeState(stateFor(U, D));
+  assert.equal((await deliver(opts('up', 'UP', U, { repo: 'o/r' }), r.mkdeps())).result.verdict, 'merged');
+  const out = await deliver(opts('dep', 'DEP', D, { repo: 'o/r' }), r.mkdeps());
+  assert.deepEqual([out.exit, out.result.verdict], [0, 'merged'], JSON.stringify(out.result));
+  assert.ok(r.calls.some((c) => c[0] === 'api'), 'the api calls were made');
+  assert.ok(r.calls.filter((c) => c[0] === 'api').every((c) => !c.includes('--repo')), 'no gh api call carries --repo');
+  assert.ok(r.calls.filter((c) => c[0] === 'pr').every((c) => c.includes('--repo')), 'the pr calls still do');
+});
 
 test('#506 must-FAIL: the dependent delivered BEFORE its upstream is refused upstream-not-merged (exit 2) — no PR opened, no merge call', async (t) => {
   const r = rig(t);

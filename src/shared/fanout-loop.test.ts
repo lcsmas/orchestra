@@ -244,7 +244,7 @@ test('the loop writes the REAL #603 records: parked is a status (cause, blockedB
   assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'no-safe-option']]);
   const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
   for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
-  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'replaced', 'signalled']);
+  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'replaced', 'signalled']);
   assert.deepEqual(r.result.report.parked.map((p) => p.ticket), ['T3', 'T5', 'T7']);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {
@@ -316,13 +316,13 @@ test('an upstream that moves after it was approved: the dependent connected to t
   assert.equal(r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status').length, 0, 'the loop handled it itself: no refusal was relayed to an author');
   assert.deepEqual(r.violations, []);
 });
-test('one ticket that never records --follows is refused its nomination and told so — the run goes on without it (pre-review MAJOR)', async () => {
+test('#629: a dependent whose agent never records --follows is nominated and merged — the loop records the follows itself and the log says what was written', async () => {
   const r = await go('follows-missing');
-  assert.equal(r.result.exit, 3);
-  assert.deepEqual(r.result.report.merged, ['T1', 'T3']);
-  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T2', 'situation']]);
-  const told = r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status' && /could not nominate T2: .*interface-unfollowed/.test(String(e.text)));
-  assert.ok(told.length >= 1, 'the author got the refusal');
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual([...r.result.report.merged].sort(), ['T1', 'T2', 'T3']);
+  assert.deepEqual(r.result.report.parked, []);
+  assert.ok(r.log.some((l) => /T2: recorded follows T1=\d+/.test(l)), 'the loop says it recorded the follows');
+  assert.ok(!r.log.some((l) => /T2 nominated/.test(l) && /refused|cannot/.test(l)));
   assert.deepEqual(r.violations, []);
 });
 
@@ -800,4 +800,107 @@ test('606 m3 (stall reason): once the author PUSHED its fix the reason no longer
   assert.ok(p, 'T1 is parked by the stall');
   assert.doesNotMatch(p.reason, /no fix yet/);
   assert.match(p.reason, /no recorded review on its head/);
+});
+
+// ── #628 / #625 / #629 / log: the correctifs of the local trial (#601) ──
+import { newCtx, NOTE_REPEAT_PASSES, renderSyncOrder, stepNominations, type LoopDeps } from './fanout-loop.ts';
+const syncOpts = { stallMs: 4 * 3_600_000, maxPasses: 3000 };
+test('#628: a merge-conflict at delivery sends the implementer ONE SYNC order (merge the target in by merge commit, push, report); the reviewer reads the new head, delivery retries and merges — no park', async () => {
+  const r = await go('merge-conflict-sync', syncOpts);
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
+  const orders = r.world.events.filter((e) => e.ev === 'sync-order');
+  assert.equal(orders.length, 1, 'one order was enough');
+  assert.match(String(orders[0].text), /^SYNC main/);
+  assert.equal(r.world.events.filter((e) => e.ev === 'sync-done').length, 1);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T2').length, 1, 'the same implementer did it: nobody was replaced');
+  assert.ok(r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T2').length >= 2, 'the reviewer read the synced head');
+  assert.deepEqual(r.violations, []);
+});
+test('#628: the order text says merge commit, push, report — never rebase, never squash', () => {
+  const t = renderSyncOrder({ ticket: 'T2', target: 'main', pr: 3, reason: 'merge-conflict', detail: 'the PR conflicts with its base' });
+  assert.match(t, /^SYNC main\n/);
+  assert.match(t, /MERGE COMMIT/);
+  assert.match(t, /never rebase, never squash/);
+  assert.match(t, /send a status with the new head sha/);
+});
+test('#628: 2 orders and the head never moved → the implementer is replaced by a fresh one on the same branch (not counted as a death, nothing parked), the order is sent again, the run merges', async () => {
+  const r = await go('merge-conflict-replace', { ...syncOpts, maxReplacements: 0 }); // a replacement on purpose is no death: the cap of deaths (0 here) never parks it
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
+  const orders = r.world.events.filter((e) => e.ev === 'sync-order');
+  assert.equal(orders.length, 3, 'two to the first implementer, one to its successor');
+  const at = (pred: (e: Ev) => boolean): number[] => r.world.events.flatMap((e, i) => (pred(e) ? [i] : []));
+  const [sp1, sp2] = at((e) => e.ev === 'spawn' && e.ticket === 'T2');
+  const [o1, o2, o3] = at((e) => e.ev === 'sync-order');
+  assert.ok(sp1 < o1 && o1 < o2 && o2 < at((e) => e.ev === 'impl-replaced')[0] && at((e) => e.ev === 'impl-replaced')[0] < sp2 && sp2 < o3, 'order, order, replace, fresh spawn, order again');
+  assert.equal(r.world.events.filter((e) => e.ev === 'impl-replaced' && e.ticket === 'T2').length, 1);
+  const spawns = r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T2');
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[1].branch, spawns[0].branch, 'the same branch');
+  assert.deepEqual(r.result.report.parked, []);
+  assert.ok(r.log.filter((l) => /T2: merge refused by the forge — merge-conflict/.test(l)).length >= 2, 'the repeated refusal stays visible in the log');
+});
+test('#628: a refusal the loop has no rule for goes to the implementer with the RAW reason (a ruled one — head-moved, ci-red — does not)', async () => {
+  const base = load('merge-conflict-sync');
+  const scn: Scenario = { ...base, faults: {} };
+  const wrap = (reason: string) => (d: ReturnType<typeof buildDummy>) => ({ ...d, forge: { ...d.forge, async merge(n: number, h: string, m: 'merge' | 'squash' | 'rebase') { const t = [...d.world.prs.values()].find((p) => p.n === n)!.ticket; return t === 'T2' && !d.world.events.some((e) => e.ev === 'sync-done') ? { ok: false, reason, detail: `raw detail of ${reason}` } : d.forge.merge(n, h, m); } } });
+  const raw = await runDummyLoop({ home: tmp(), scenario: scn, options: syncOpts, wrap: wrap('base-not-allowed') });
+  assert.equal(raw.result.exit, 0);
+  const o = raw.world.events.find((e) => e.ev === 'sync-order')!;
+  assert.ok(o, 'T2 was told');
+  assert.match(String(o.text), /^FIX base-not-allowed/);
+  assert.ok(raw.log.some((l) => /order 1 sent to/.test(l)));
+  const ruled = await runDummyLoop({ home: tmp(), scenario: scn, options: { ...syncOpts, stallMs: 60 * 60_000 }, wrap: wrap('head-moved') });
+  assert.equal(ruled.world.events.filter((e) => e.ev === 'sync-order').length, 0, 'head-moved has a rule (the nominations step reads the new head): nobody is ordered');
+});
+test('loop log: a refusal note that repeats is printed again on a later pass — at most once per NOTE_REPEAT_PASSES', () => {
+  const lines: string[] = [];
+  const seen = new Map<string, number>();
+  const deps = { log: (l: string) => lines.push(l) } as unknown as LoopDeps;
+  for (let pass = 1; pass <= 25; pass++) newCtx(deps, pass, seen).note('T2: merge refused by the forge — merge-conflict');
+  assert.deepEqual(lines.map((l) => /\[pass (\d+)\]/.exec(l)![1]), ['1', String(1 + NOTE_REPEAT_PASSES), String(1 + 2 * NOTE_REPEAT_PASSES)]);
+  const other = newCtx(deps, 26, seen);
+  other.note('another line');
+  assert.equal(lines.length, 4, 'a different line prints at once');
+});
+test('#625: --tickets and no plan → the loop asks the planner (the plan agent), waits for the accepted plan, then leads the run; the plan agent is released (#629)', async () => {
+  const r = await go('plan-agent');
+  assert.equal(r.result.exit, 0, r.result.reason);
+  assert.deepEqual([...r.result.report.merged].sort(), ['T1', 'T2']);
+  const evs = r.world.events.map((e) => e.ev);
+  assert.ok(evs.indexOf('plan-agent-spawn') >= 0 && evs.indexOf('plan-accepted') > evs.indexOf('plan-agent-spawn') && evs.indexOf('plan-agent-released') > evs.indexOf('plan-accepted'));
+  assert.ok(evs.indexOf('spawn') > evs.indexOf('plan-accepted'), 'no implementer before the plan');
+  assert.ok(r.log.some((l) => /asking for a plan of T1, T2/.test(l)));
+});
+test('#625: --tickets with NO planner and no plan is still refused [run-plan-needed], naming both ways', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'no-planner', scenario: load('plan-agent') });
+  const r = await runLoop({ home, run: 'no-planner', caller: 'no-planner', fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: null, tickets: ['T1', 'T2'] } });
+  assert.equal(r.exit, 2);
+  assert.match(String(r.reason), /run-plan-needed|--tickets/);
+});
+test('#629: a nomination the state REFUSES is logged "has a head", never "nominated" (ctx.did prints what was written)', async () => {
+  const home = tmp();
+  const run = 'refused-nom';
+  const d = buildDummy({ home, run, scenario: load('follows-missing') });
+  const now = d.now();
+  updateLoopState(home, run, () => {
+    let s = applyPlan(newState(run, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now }), d.plan, now);
+    s = applyTicketPatch(s, 'T2', { follows: { T1: 1 } }, now);
+    s = applyTicketPatch(s, 'T1', { interface: '`T1.api2` — changed', interfaceReason: 'rename' }, now); // T1's interface is now v2: T2 follows the stale v1
+    s = applyTicketPatch(s, 'T1', { status: 'merged' }, now); // no unmerged upstream: the loop tries to nominate T2
+    s = applyTicketPatch(s, 'T2', { branch: 'impl-T2', implementer: 'ws-impl-T2', status: 'started' }, now);
+    return withLoop(s);
+  });
+  const sha = 'a'.repeat(40);
+  const lines: string[] = [];
+  const deps = { home, run, caller: run, fleet: d.fleet, forge: d.forge, git: { ...d.git, head: async () => sha, tree: async () => 'b'.repeat(40), isMerged: async () => true }, now: d.now, sleep: d.sleep, log: (l: string) => lines.push(l), options: { ...DEFAULT_OPTIONS } } as unknown as LoopDeps;
+  const ctx = newCtx(deps, 1, new Map());
+  ctx.signals.add('T2');
+  await stepNominations(ctx);
+  assert.equal(readLoopState(home, run)!.tickets.T2.status, 'started', 'the state refused the nomination');
+  assert.ok(lines.some((l) => /T2 has a head at aaaaaaaaaaaa/.test(l)), lines.join('\n'));
+  assert.ok(!lines.some((l) => /T2 nominated/.test(l)), lines.join('\n'));
+  assert.ok(lines.some((l) => /cannot be nominated yet — .*follows T1 v1/.test(l)), lines.join("\n"));
 });

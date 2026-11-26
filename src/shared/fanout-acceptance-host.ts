@@ -6,7 +6,7 @@ import {
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
 import { dispatchReview, type ReviewHostDeps, type ReviewHostResult } from './fanout-review-host.ts';
-import { dispatchPlan, type PlanHostResult } from './fanout-plan-host.ts';
+import { dispatchPlan, dispatchPlanRelease, type PlanHostResult } from './fanout-plan-host.ts';
 import { startRun, type StartDeps, type StartResult } from './fanout-start.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
@@ -42,6 +42,8 @@ export interface AcceptanceHostDeps {
   refExists?: StartDeps['refExists'];
   /** #614 — the on-disk Claude Code transcript directory of a workspace (its pinned account's config dir + the mangled worktree path), null = unknown workspace. Absent = op `transcripts` is not wired. */
   transcriptDirOf?: (id: string) => string | null;
+  /** #629 / #628 — archive a workspace (the app's `archiveWorkspace`): ops `plan-release` (the plan agent once its plan is accepted) and `release` (a ticket's implementer the Boucle replaces). Absent = those ops are not wired. */
+  archive?: (id: string) => Promise<void>;
   /** Post a bus status to `to` (in ITS run); throws when it cannot. */
   post: (i: { to: string; sender: string; body: string }) => void;
 }
@@ -54,6 +56,7 @@ export type AcceptanceHostResult =
   | { ok: true; op: 'start'; result: StartResult }
   | { ok: true; op: 'live'; live: string[] } // #614: which of the asked workspaces are alive (exist, not archived)
   | { ok: true; op: 'transcripts'; dirs: Record<string, string | null> } // #614: where each asked workspace's transcripts are
+  | { ok: true; op: 'release'; released: string[] } // #628: the implementers archived (the Boucle replaces them)
   | Extract<PlanHostResult, { ok: true }> // #604: `fanout plan`
   | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
@@ -82,6 +85,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
     }
     if (input.op === 'review') return await dispatchReview(input, deps); // #588: spawn / wake / replace the ticket's reviewer (src/shared/fanout-review-host.ts)
     if (input.op === 'plan') return await dispatchPlan(input, deps); // #604: spawn (or adopt) the single-use plan agent (src/shared/fanout-plan-host.ts)
+    if (input.op === 'plan-release') return await dispatchPlanRelease(input, deps); // #629: archive the plan agent once its plan is accepted
     if (input.op === 'start') { // #587 PR B: launch the implementers of the plan (every refusal is a SeatRefusal: its message starts with [name])
       if (!deps.implementerLive || !deps.spawnImplementer) return { ok: false, error: 'this host does not launch implementers (fanout start is not wired)' };
       const spawnImplementer = deps.spawnImplementer;
@@ -90,12 +94,20 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
       return { ok: true, op: 'start', result };
     }
-    if (input.op === 'live' || input.op === 'transcripts') { // #614: the Boucle's two host-only facts. Read-only, but still the run's coordinator's: vouched by the host like `start`, and only for workspaces of THIS run's state
+    if (input.op === 'live' || input.op === 'transcripts' || input.op === 'release') { // #614: the Boucle's two host-only facts. Read-only, but still the run's coordinator's: vouched by the host like `start`, and only for workspaces of THIS run's state
       const caller = str(input.from);
       if (!caller || caller !== run || !deps.vouches || !deps.vouches(caller, str(input.key))) return { ok: false, error: `[${input.op}-caller] the host could not vouch that the caller is the run's coordinator (${run})` };
       const asked = Array.isArray(input.ids) ? (input.ids as unknown[]).filter((x): x is string => typeof x === 'string') : [];
       const ofRun = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).flatMap((t) => [t.implementer, t.review?.reviewer?.id, ...(t.review?.briefs ?? []).map((b) => b.reviewer)].filter((x): x is string => !!x)));
       const ids = asked.filter((id) => ofRun.has(id));
+      if (input.op === 'release') { // #628: only an IMPLEMENTER of this run's state, only a live one: its branch stays, `fanout start` puts a fresh agent on it
+        if (!deps.archive) return { ok: false, error: 'this host does not archive agents (release is not wired)' };
+        const impls = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).map((t) => t.implementer).filter((x): x is string => !!x));
+        const live = deps.isLive ?? deps.isWorkspace;
+        const released: string[] = [];
+        for (const id of ids.filter((x) => impls.has(x) && live(x))) { await deps.archive(id); released.push(id); }
+        return { ok: true, op: 'release', released };
+      }
       if (input.op === 'live') { const live = deps.isLive ?? deps.isWorkspace; return { ok: true, op: 'live', live: ids.filter((id) => live(id)) }; }
       if (!deps.transcriptDirOf) return { ok: false, error: 'this host does not report transcript directories' };
       return { ok: true, op: 'transcripts', dirs: Object.fromEntries(ids.map((id) => [id, deps.transcriptDirOf!(id)])) };

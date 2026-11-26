@@ -123,6 +123,13 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
       return { id };
     },
     async costOf(ticket) { return deps.costOf ? deps.costOf(ticket) : null; },
+    async replace(ticket) { // #628: the host archives the ticket's implementer (its branch stays); `fanout start` then puts a fresh one on it
+      const id = deps.readState()?.tickets[ticket]?.implementer;
+      if (!id) return;
+      const r = await deps.host({ op: 'release', run: deps.run, from: deps.caller, key: deps.key, ids: [id] });
+      if (!r.ok) throw new FanoutStateError(`the host could not release ${id}: ${String(r.error ?? 'no answer')}`);
+      await refresh();
+    },
     refresh,
   };
   await refresh();
