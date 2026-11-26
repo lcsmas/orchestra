@@ -1,5 +1,5 @@
 // #605 (spec #601, ledger #613) — `orchestra fanout run`: the Boucle. Leads a vague from its plan to its closing report (src/shared/fanout-loop.ts); `--scenario` swaps in the dummy fleet (src/shared/fanout-loop-dummy.ts).
-// Exit codes (FROZEN): 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (resumable: run again) · 2 refusal ([run-…]) · 1 could not run.
+// Exit codes (FROZEN): 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (lift it with `orchestra fanout state set --run <id> --resume-run`, then run again) · 2 refusal ([run-…]) · 1 could not run.
 import fs from 'node:fs';
 import { FanoutStateError, SeatRefusal, assertRunId, stateFile, readState } from '../shared/fanout-state.ts';
 import type { LoopOptions } from '../shared/fanout-loop.ts';
@@ -13,7 +13,7 @@ export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,
   seatRecords=on, verifier=off, minorPolicy=demonstrated (the loop's default; \`state init\` is done for its own run when none exists). The loop never types a verdict and never waits for a person: a parked ticket parks its dependents.
   An agent's question gets the fixed answer ("take the reversible option, record it under ## Choices in your PR body, continue") and is listed in the report; a first line "NO SAFE OPTION: <reason>" parks the ticket.
   Prints the closing report as JSON on stdout (merged, parked {ticket,cause,reason}, choices, findingsLeft, flaky, costPerTicket, paused) and a text summary on stderr.
-  Exit: 0 every ticket merged · 3 the run ended with at least one parked ticket · 4 paused (resumable: run again) · 2 refusal ([run-…]) · 1 could not run.
+  Exit: 0 every ticket merged · 3 the run ended with at least one parked ticket · 4 paused (lift it with \`orchestra fanout state set --run <id> --resume-run\`, then run again) · 2 refusal ([run-…]) · 1 could not run.
   --scenario <file> runs the DUMMY fleet (scripted agents, git, PR host and CI on a virtual clock) and judges its event log; refused unless ORCHESTRA_FANOUT_DUMMY=1 ([run-scenario-gated]).
   Limit (this build): the live fleet / forge ports are not wired — without --scenario the verb exits 1 ([run-live-ports]).`;
 

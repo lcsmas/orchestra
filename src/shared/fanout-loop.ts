@@ -4,10 +4,14 @@
 import type { FleetPort, ForgePort, GitPort } from './fanout-loop-ports.ts';
 import { readLoopState, updateLoopState, withLoop, type LoopState } from './fanout-loop-side.ts';
 import { applyPlan, type Plan } from './fanout-plan.ts';
-import { buildReport, type Report } from './fanout-report.ts';
+import { buildReport, collectCosts, reportExit, type Report } from './fanout-report.ts';
+import { LoopKilled } from './fanout-loop-kill.ts';
+import { stepCi as runCi, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
+import { runCorrections } from './fanout-loop-corrections.ts';
+import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
 import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, CHOICES_MAX, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
-import { recordedVerdictOf, reviewOn } from './fanout-record.ts';
+import { countsThrough, recordedVerdictOf, reviewOn } from './fanout-record.ts';
 
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
 export type LoopStep = (typeof LOOP_STEPS)[number];
@@ -37,6 +41,12 @@ export interface LoopOptions {
   holdMs?: number;
   /** how many times a dead reviewer / implementer is replaced per (ticket, head) before the ticket is parked (default 2): a replacement is progress, so an agent that dies every time must not feed the stall clock for ever */
   maxReplacements?: number;
+  /** #607 — the start check (`--start-check`): checks still pending after this long refuse the start (default 30 min) / no check at all after this long = a missing check (default 2 min) */
+  startCheckTimeoutMs?: number;
+  startCheckMissingMs?: number;
+  /** #607 — a re-run's red whose job id did not change and carries no id: wait this long before trusting it (default 0) / a re-run still showing the old run after this long is given up (default 10 min) */
+  rerunSettleMs?: number;
+  rerunExpireMs?: number;
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -52,11 +62,11 @@ export interface LoopDeps {
   log(line: string): void;
   options: LoopOptions;
 }
-export interface LoopResult { exit: 0 | 2 | 3 | 4; report: Report; passes: number; reason?: string }
+export interface LoopResult { exit: 0 | 1 | 2 | 3 | 4; report: Report; passes: number; reason?: string }
 
 export class LoopRefusal extends SeatRefusal {}
 /** A process death (a test's seam): never swallowed by `ctx.guard`. */
-export class LoopKilled extends Error {}
+export { LoopKilled };
 
 export interface Approval { head: string; at: string; round: number }
 export interface LoopCtx {
@@ -100,14 +110,51 @@ export function renderConnectAsk(i: { ticket: string; upstream: string; branch: 
 }
 
 // ── steps ────────────────────────────────────────────────────────────────────────────────────────────────────
-/** #608 fills this (git + the forge overrule the state at each start: a merge made by hand is adopted). */
-export async function stepReconcile(_ctx: LoopCtx): Promise<void> { /* #608 */ }
-/** #607 fills this: the start check (an empty PR, its checks awaited, closed). A red check there = the run does not start. */
-export async function stepStartCheck(_ctx: LoopCtx): Promise<void> { /* #607 */ }
-/** #607 fills this: the red-CI rules (one re-run, the check name + log extract to the author, the pause on the same check red on several PRs). */
-export async function stepCi(_ctx: LoopCtx): Promise<void> { /* #607 */ }
-/** #606 fills this: findings in ONE batch to the same author, the same reviewer reads the fix, the same situation twice parks. */
-export async function stepCorrections(_ctx: LoopCtx): Promise<void> { /* #606 */ }
+/** #608 — git and the forge overrule the state at each start: a merge made by hand is adopted, a closed PR parks its ticket, a parked ticket whose blocker merged is released. Nothing before the state exists (the plan step creates it). */
+export async function stepReconcile(ctx: LoopCtx): Promise<void> {
+  const { deps } = ctx;
+  if (!readLoopState(deps.home, deps.run)) return;
+  // `readReality` turns a failed read into "unknown" (never "gone"); a process death (LoopKilled, the tests' seam) must still end the pass
+  let killed: LoopKilled | null = null;
+  const trap = <A extends unknown[], R>(f: (...a: A) => Promise<R>) => async (...a: A): Promise<R> => { try { return await f(...a); } catch (e) { if (e instanceof LoopKilled) killed = e; throw e; } };
+  const o = await runReconcile({ now: deps.now, log: (l) => ctx.note(l), git: { head: trap((b) => deps.git.head(b)), tree: trap((x) => deps.git.tree(x)), isMerged: trap((b, base) => deps.git.isMerged(b, base)) }, forge: { prState: trap((n) => deps.forge.prState(n)) }, state: fileStatePort(deps.home, deps.run), park: parkTicket });
+  if (killed) throw killed;
+  for (const id of o.adopted) ctx.did(`adopted ${id}: merged outside the loop`);
+  for (const id of o.released) ctx.did(`released ${id}: its parked upstream was merged`);
+  for (const p of o.parked) ctx.did(`parked ${p.ticket} [${p.cause}]: ${p.reason}`);
+}
+/** #607 — what a CI step reads from the loop: the deps, the state (read now) and the atomic write (the loop's own side file rides along untouched). */
+const ciCtxOf = (ctx: LoopCtx): Parameters<typeof runCi>[0] => ({
+  deps: { run: ctx.deps.run, now: ctx.deps.now, sleep: ctx.deps.sleep, log: (l) => ctx.note(l), fleet: ctx.deps.fleet, forge: ctx.deps.forge, git: ctx.deps.git, options: ctx.deps.options },
+  state: ctx.st(),
+  update: (m) => ctx.update((x) => m(x)),
+});
+/** #607 (decision 9) — the optional start check: an empty PR into the target, its checks awaited, closed. A red or missing check refuses the start (`[run-start-check-<red|missing|timeout|unsupported>]`, exit 2): nothing was launched. */
+export async function stepStartCheck(ctx: LoopCtx): Promise<void> {
+  const r = await runStartCheck(ciCtxOf(ctx));
+  if (!r.ok) throw new LoopRefusal(`run-${r.code}`, r.detail);
+  if (!r.skipped) ctx.did('start check passed (an empty pull request, its checks green, closed)');
+}
+/** #607 (decision 8) — red CI: one re-run of the red jobs, then the author gets the check name and the log extract, the same failure after its fix parks the ticket; the same check red on several PRs pauses the run (the loop stops after this step). */
+export async function stepCi(ctx: LoopCtx): Promise<void> {
+  const r = await runCi(ciCtxOf(ctx));
+  for (const id of r.reran) ctx.did(`re-ran the red CI jobs of ${id}`);
+  for (const id of r.told) ctx.did(`told the author of ${id} which check is red`);
+  for (const id of r.parked) ctx.did(`parked ${id}: the same CI failure after its fix`);
+  for (const f of r.flaky) ctx.did(`flaky: ${f}`);
+  const pause = pausedOf(ctx.st());
+  if (pause && r.paused) ctx.did(`PAUSED: ${pause.reason}`);
+}
+/** #606 — findings in ONE batch to the same author, the same reviewer reads the fix, the same situation (open findings + tree) twice parks the ticket. */
+export async function stepCorrections(ctx: LoopCtx): Promise<void> {
+  const out = await runCorrections({ deps: ctx.deps, guard: ctx.guard });
+  for (const o of out) {
+    if (o.action === 'sent') ctx.did(`${o.ticket}: round ${o.round} sent to ${o.to} (${o.findings.join(', ')})`);
+    else if (o.action === 'parked') ctx.did(`parked ${o.ticket}: ${o.why} (${o.findings.join(', ')})`);
+    else if (o.action === 'reviewer-woken') ctx.note(`${o.ticket}: reviewer ${o.reviewer} reads ${o.head.slice(0, 12)}`); // NOT progress: the host op is a no-op on a head the reviewer already holds, so a silent reviewer would feed the stall clock every pass for ever
+    else if (o.action === 'blocked') ctx.note(`${o.ticket}: corrections blocked — ${o.why}`);
+  }
+}
 
 /** The state exists with its switches, the plan is declared and complete. */
 export async function stepPlan(ctx: LoopCtx): Promise<void> {
@@ -411,10 +458,11 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
   });
 }
 
-/** The run is finished when every plan ticket is merged, dropped or parked (a parked ticket parks its dependents). */
+/** #608 — a ticket waiting behind a DROPPED upstream is parked (it can never be ready); the run is finished when every plan ticket is merged, dropped or parked (a parked ticket parks its dependents). The report itself is built at the exit (`finish`), with the per-ticket token costs. */
 export async function stepEnd(ctx: LoopCtx): Promise<void> {
-  const s = ctx.st();
-  ctx.finished = activeTickets(s).length === 0;
+  const { deps } = ctx;
+  await runEnd({ now: deps.now, log: (l) => ctx.note(l), state: fileStatePort(deps.home, deps.run), park: parkTicket, costOf: (t) => deps.fleet.costOf(t) });
+  ctx.finished = activeTickets(ctx.st()).length === 0;
 }
 
 const LOOP_STEP_FNS: Record<LoopStep, (ctx: LoopCtx) => Promise<void>> = {
@@ -453,6 +501,8 @@ function stuckWhy(s: LoopState, id: string): string {
   if (!t.implementer) return 'has no implementer';
   if (!t.head) return 'has no candidate (no head recorded)';
   if (!t.pr) return 'is not nominated (no PR)';
+  const lastRev = (t.reviews ?? [])[(t.reviews ?? []).length - 1];
+  if (lastRev?.verdict === 'changes-requested' && (loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return `has changes requested by its reviewer (open: ${countsThrough(t, lastRev.n).open.join(', ') || 'none recorded'}) and no fix yet`;
   if (!reviewOn(t, t.head, t.tree)) return 'has no recorded review on its head';
   const open = t.dependsOn.filter((u) => !ticketMerged(s, u));
   return open.length ? `waits for ${open.join(', ')}` : 'is approved but not mergeable (CI or the forge)';
@@ -462,29 +512,35 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
   let lastProgress = loopMs(deps.now());
   let passes = 0;
   const seen = new Set<string>();
-  const finish = (exit: LoopResult['exit'], reason?: string): LoopResult => {
-    const s = readLoopState(deps.home, deps.run);
-    return { exit, report: s ? buildReport(s, deps) : buildReport(withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null }), deps), passes, ...(reason ? { reason } : {}) };
+  const finish = async (exit: LoopResult['exit'], reason?: string): Promise<LoopResult> => {
+    const s = readLoopState(deps.home, deps.run) ?? withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null });
+    const report = buildReport(s, await collectCosts(s, (t) => deps.fleet.costOf(t))); // story 21: the cost per ticket is READ from the transcripts, not left null
+    // a finished run with nothing parked exits through the report's own rule (0, or 1 when nothing merged at all)
+    return { exit: exit === 0 ? reportExit(report) === 1 ? 1 : 0 : exit, report, passes, ...(reason ? { reason } : {}) };
   };
   for (;;) {
     passes++;
     const ctx = newCtx(deps, passes, seen);
     try {
-      for (const step of LOOP_STEPS) await LOOP_STEP_FNS[step](ctx);
+      for (const step of LOOP_STEPS) {
+        await LOOP_STEP_FNS[step](ctx);
+        // a paused run (decision 8: the same check red on several PRs, or a pause set by hand) starts, merges and answers nothing more until it is resumed
+        if (step === 'reconcile' || step === 'ci') { const cur = readLoopState(deps.home, deps.run); if (cur && pausedOf(cur)) break; }
+      }
     } catch (e) {
-      if (e instanceof SeatRefusal) { deps.log(`refused ${e.message}`); return finish(2, e.message); }
+      if (e instanceof SeatRefusal) { deps.log(`refused ${e.message}`); return await finish(2, e.message); }
       throw e;
     }
     if (ctx.progress.length || ctx.busy) lastProgress = loopMs(deps.now());
     const s = ctx.st();
-    if (pausedOf(s)) return finish(4, `paused: ${pausedOf(s)!.reason}`);
-    if (ctx.finished) return finish(parkedTickets(s).length ? 3 : 0);
+    if (pausedOf(s)) return await finish(4, `paused: ${pausedOf(s)!.reason}`);
+    if (ctx.finished) return await finish(parkedTickets(s).length ? 3 : 0);
     const stalled = loopMs(deps.now()) - lastProgress > deps.options.stallMs;
     if (stalled || passes >= deps.options.maxPasses) {
       const reason = stalled ? `stalled ${Math.round(deps.options.stallMs / 60_000)} min: ${activeTickets(s).map((id) => `${id} ${stuckWhy(s, id)}`).join('; ')}` : `pass limit ${deps.options.maxPasses}`;
       for (const id of activeTickets(s)) ctx.update((x) => (ticketParked(x, id) ? x : parkTicket(x, id, { cause: 'situation', reason }, deps.now())));
       deps.log(`ending: ${reason}; the unfinished tickets are parked`);
-      return finish(3, reason);
+      return await finish(3, reason);
     }
     await deps.sleep(deps.options.pollMs);
   }

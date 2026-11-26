@@ -79,7 +79,7 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-run-mut-'));
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
-const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts'].map((f) => path.join(scratch, f));
+const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts'].map((f) => path.join(scratch, f));
 function run(timeout = 90_000) { // a mutant that runs away (an infinite loop) is KILLED by the timeout: keep it short so the rig fits its CI slot; the control gets the long one
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
@@ -144,8 +144,8 @@ const mutants = [
   ['decision 10: a CI still running is merged', [[L, "state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending'", "state: c.status === 'red' ? 'failure' : 'success'"]]],
   ['decision 10: a ticket merges before its upstream', [[L, "    if (t.dependsOn.some((u) => !ticketMerged(s0, u))) return; // an unmerged upstream: never first\n", ""], [L, "if (!upDecision.ok) {", "if (false as boolean && !upDecision.ok) {"]]],
   ['decision 10: merges in DECLARATION order', [[L, "ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);", "ready.sort((x, y) => x.order - y.order);"]]],
-  ['exit codes: a run with parked tickets exits 0', [[L, "return finish(parkedTickets(s).length ? 3 : 0);", "return finish(0);"]]],
-  ['exit codes: a pause is ignored', [[L, "if (pausedOf(s)) return finish(4,", "if (false as boolean && pausedOf(s)) return finish(4,"]]],
+  ['exit codes: a run with parked tickets exits 0', [[L, "return await finish(parkedTickets(s).length ? 3 : 0);", "return await finish(0);"]]],
+  ['exit codes: a pause is ignored', [[L, "if (pausedOf(s)) return await finish(4,", "if (false as boolean && pausedOf(s)) return await finish(4,"]]],
   ['the judge: a merge on a red CI is not a violation', [[J, "if (m.ci !== 'green') v(", "if (false as boolean) v("]]],
   ['the judge: a merge with no approval is not a violation', [[J, "if (!approvals.length) v(", "if (false as boolean) v("]]],
   ['the judge: readiness order is not checked', [[J, "if (readiness[b].at < readiness[a].at) v(", "if (false as boolean) v("]]],
@@ -155,6 +155,25 @@ const mutants = [
   ['the dummy: a second openPr for the same branch opens a second PR', [[DM, "for (const p of this.prs.values()) if (p.branch === branch) return p.n;\n", ""]]],
   ['the dummy: a re-run creates no new run (the jobId does not change)', [[DM, "rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }", "rerun(_n: number): void { /* nothing re-runs */ }"]]],
   ['the dummy: the world answers the question with anything (the fixed answer is not what unblocks)', [[DM, "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text });", "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text: 'whatever' });"]]],
+  ['stack C connect (#607): stepCi does nothing (red CI is never re-run, told, parked or paused)', [[L, "const r = await runCi(ciCtxOf(ctx));", "const r = { reran: [], told: [], parked: [], flaky: [], paused: false } as Awaited<ReturnType<typeof runCi>>;"]]],
+  ['stack C connect (#607): a red or missing start check does not refuse the start', [[L, "if (!r.ok) throw new LoopRefusal(`run-${r.code}`, r.detail);", "if (false as boolean) throw new LoopRefusal(`run-${r.code}`, r.detail);"]]],
+  ['stack C connect (#608): a paused run goes on through the steps', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (false as boolean) { const cur"]]],
+  ['stack C connect (#608): reconcile adopts nothing (git does not overrule the state)', [[L, "  if (!readLoopState(deps.home, deps.run)) return;\n  // `readReality`", "  return;\n  // `readReality`"]]],
+  ['stack C connect (#608, story 21): the report costs are not read from the fleet', [[L, "await collectCosts(s, (t) => deps.fleet.costOf(t))", "{}"]]],
+  ['stack C connect (#606): stepCorrections does nothing', [[L, "const out = await runCorrections({ deps: ctx.deps, guard: ctx.guard });", "const out = [] as Awaited<ReturnType<typeof runCorrections>>;"]]],
+  ['connect fix (#606 MAJOR-1): a dead author with an unanswered batch is never replaced', [['src/shared/fanout-loop-corrections.ts', "      if (!author || !deps.fleet.live(author) || startedAfter) {\n        const a2", "      if (false as boolean) {\n        const a2"]]],
+  ['connect fix (#606 MAJOR-2): the corrections step is not guarded (one port error ends the run)', [[L, "runCorrections({ deps: ctx.deps, guard: ctx.guard })", "runCorrections({ deps: ctx.deps })"]]],
+  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested' && (loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "if (false as boolean) return"]]],
+  ['connect fix (#606 m2): a kill at the batch wake is swallowed as a failed wake', [['src/shared/fanout-loop-corrections.ts', "if (e instanceof LoopKilled) throw e; deps.log(", "deps.log("]]],
+  ['connect fix (#608 m1-A): reconcile does not re-throw a kill that its reads swallowed', [[L, "  if (killed) throw killed;", ""]]],
+  ['connect fix (#608 m1-B): reconcile\'s port trap does not see the kill', [[L, "if (e instanceof LoopKilled) killed = e; throw e;", "throw e;"]]],
+  ['connect fix (#608 m2): a finished run with nothing merged exits 0', [[L, "exit: exit === 0 ? reportExit(report) === 1 ? 1 : 0 : exit,", "exit,"]]],
+  ['connect fix (#608 m2): the end step does not park behind a dropped upstream', [[L, "  await runEnd({ now: deps.now,", "  void ({ now: deps.now,"]]],
+  ['connect fix (#607 c2): the environment mark skips a dependent whose red was carried', [['src/shared/fanout-loop-ci.ts', "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c) continue;", "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c || !shared.find(([n]) => n === cn)?.[1].some((h) => h.id === r.id)) continue;"]]],
+  ['connect fix (#607 c1): the pause break is only checked after reconcile (a ready ticket merges in the pausing pass)', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (step === 'reconcile') { const cur"]]],
+  ['connect fix 2 (#606 MAJOR-3): an author respawned by the start step never gets the batch', [['src/shared/fanout-loop-corrections.ts', "if (!author || !deps.fleet.live(author) || startedAfter) {", "if (!author || !deps.fleet.live(author)) {"]]],
+  ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
+  ['connect fix 2: a silent reviewer feeds the stall clock for ever (the wake outcome counts as progress)', [[L, "else if (o.action === 'reviewer-woken') ctx.note(", "else if (o.action === 'reviewer-woken') ctx.did("]]],
 ];
 const control = run(240_000);
 console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);
