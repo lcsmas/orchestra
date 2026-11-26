@@ -296,25 +296,32 @@ export async function stepNominations(ctx: LoopCtx): Promise<void> {
       connected = true;
     }
     const headChanged = !t.head || !loopSameSha(head, t.head);
+    // #629: the implementer cannot record `--follows` (role guard: one writer) — the loop does, for every upstream with an interface this ticket is connected to (it sent the CONNECT) or whose merge it builds on
+    const followsNew: Record<string, number> = {};
+    for (const up of t.dependsOn) { const f = s.tickets[up]?.iface; if (f && t.follows?.[up] === undefined && (builtOn[up] || ticketMerged(s, up))) followsNew[up] = f.version; }
+    const followed = Object.keys(followsNew).length > 0;
     // the state's early-gate rule decides: nominated needs, for every unmerged upstream, a candidate (nominated|gated) whose CURRENT content is what `builtOn` says this head was built on
     const view: LoopState = { ...s, tickets: { ...s.tickets, [id]: { ...t, head, builtOn, builtOnTree } } };
     const clear = unmergedUpstreams(s, id).every((u) => upstreamBlocker(view, view.tickets[id], u) === null);
     const want = clear ? (t.status === 'started' || t.status === 'nominated' ? 'nominated' : t.status) : (t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status); // an upstream that moved under a nominated dependent: back to started until it is connected again
-    if (!headChanged && !connected && want === t.status) { spend(); return; }
+    if (!headChanged && !connected && !followed && want === t.status) { spend(); return; }
     const tree = headChanged ? await deps.git.tree(head) : t.tree;
-    const patch = (status: string): Record<string, unknown> => ({ head, ...(connected ? { builtOn } : {}), status });
+    const patch = (status: string): Record<string, unknown> => ({ head, ...(connected ? { builtOn } : {}), ...(followed ? { follows: { ...t.follows, ...followsNew } } : {}), status });
     const derived = { tree, ...(connected ? { builtOnTree } : {}) };
+    let written: string = want; // what the state HOLDS afterwards: the log says this, never what was wanted
     try {
       ctx.update((x) => withLoop(applyTicketPatch(x, id, patch(want), deps.now(), derived), x.loop));
     } catch (e) {
       if (!(e instanceof FanoutStateError)) throw e;
       // the state refuses this nomination (e.g. `--follows` not recorded): the head is kept, the ticket stays as it was, the author is told what to fix — one ticket's omission never ends the run
       ctx.note(`${id}: cannot be ${want} yet — ${e.message}`);
-      ctx.update((x) => withLoop(applyTicketPatch(x, id, { head, ...(connected ? { builtOn } : {}), status: t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status }, deps.now(), derived), x.loop));
+      written = t.status === 'nominated' || t.status === 'gated' ? 'started' : t.status;
+      ctx.update((x) => withLoop(applyTicketPatch(x, id, { head, ...(connected ? { builtOn } : {}), status: written }, deps.now(), derived), x.loop));
       if ((headChanged || connected) && t.implementer && deps.fleet.live(t.implementer)) await deps.fleet.send(t.implementer, `orchestra could not nominate ${id}: ${e.message}`, 'status');
     }
     spend();
-    if (headChanged) ctx.did(`${id} ${want === 'nominated' ? 'nominated' : 'has a head'} at ${head.slice(0, 12)}`);
+    if (followed && written === want) ctx.did(`${id}: recorded follows ${Object.entries(followsNew).map(([u, v]) => `${u}=${v}`).join(',')}`);
+    if (headChanged) ctx.did(`${id} ${written === 'nominated' ? 'nominated' : 'has a head'} at ${head.slice(0, 12)}`);
     if (connected) ctx.did(`${id} is connected to ${Object.keys(s.loop.asked[id] ?? {}).filter((u) => builtOn[u]).join(', ')}`);
   });
 }

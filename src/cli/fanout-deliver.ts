@@ -462,7 +462,8 @@ async function deliverGated(opts: DeliverOpts, deps: DeliverDeps): Promise<Deliv
     return { exit, result: full };
   };
   const repoArgs = opts.repo ? ['--repo', opts.repo] : [];
-  const gh = async (args: string[]): Promise<GhResult> => deps.gh([...args, ...repoArgs]);
+  // #630: `gh api` has no `--repo` flag (its paths carry `repos/<repo>/…` already): never append it there
+  const gh = async (args: string[]): Promise<GhResult> => deps.gh(args[0] === 'api' ? args : [...args, ...repoArgs]);
   const ghOk = async (args: string[]): Promise<string> => {
     const r = await gh(args);
     if (r.code !== 0) throw new GhError(`gh ${args.slice(0, 2).join(' ')} failed (exit ${r.code}): ${r.stderr.trim().slice(0, 400)}`);

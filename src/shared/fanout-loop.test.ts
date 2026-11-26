@@ -316,13 +316,13 @@ test('an upstream that moves after it was approved: the dependent connected to t
   assert.equal(r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status').length, 0, 'the loop handled it itself: no refusal was relayed to an author');
   assert.deepEqual(r.violations, []);
 });
-test('one ticket that never records --follows is refused its nomination and told so — the run goes on without it (pre-review MAJOR)', async () => {
+test('#629: a dependent whose agent never records --follows is nominated and merged — the loop records the follows itself and the log says what was written', async () => {
   const r = await go('follows-missing');
-  assert.equal(r.result.exit, 3);
-  assert.deepEqual(r.result.report.merged, ['T1', 'T3']);
-  assert.deepEqual(r.result.report.parked.map((p) => [p.ticket, p.cause]), [['T2', 'situation']]);
-  const told = r.world.events.filter((e) => e.ev === 'send' && e.kind === 'status' && /could not nominate T2: .*interface-unfollowed/.test(String(e.text)));
-  assert.ok(told.length >= 1, 'the author got the refusal');
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual([...r.result.report.merged].sort(), ['T1', 'T2', 'T3']);
+  assert.deepEqual(r.result.report.parked, []);
+  assert.ok(r.log.some((l) => /T2: recorded follows T1=\d+/.test(l)), 'the loop says it recorded the follows');
+  assert.ok(!r.log.some((l) => /T2 nominated/.test(l) && /refused|cannot/.test(l)));
   assert.deepEqual(r.violations, []);
 });
 
