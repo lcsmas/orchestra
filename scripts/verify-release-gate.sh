@@ -386,6 +386,7 @@ mk_fixture ci_dry err pass; run_release 0.5.271 --dry-run
 if [ "$RC" = 0 ] && [[ "$OUT" == *"[dry-run] full rig run:"* ]] && [ ! -s "$LOG.ci.args" ]; then pass "ci_dry prints the plan, asks nothing" "rc=0"; else fail "ci_dry prints the plan, asks nothing" "rc=$RC"; fi
 
 
+push_head() { git -C "$W" push -q origin master; ORIGIN0="$(git -C "$ORIGIN" rev-parse master)"; }   # HEAD must be a remote branch tip to be dispatchable
 # ── release-gate-rapide: tree reuse (green dispatch / green push set / missing rig -> dispatch) ─────────────────
 mk_fixture ci_pr_only ok pass; RG_FX_CI=pr run_release 0.5.271
 if [ "$RC" != 0 ] && [[ "$OUT" == *"REFUSED"*"full-ci"* ]]; then pass "ci_pr_only refused" "a pull_request run never counts"; else fail "ci_pr_only refused" "rc=$RC"; fi
@@ -400,15 +401,15 @@ mkdir -p "$W/.github/workflows"; echo 'name: mutants' > "$W/.github/workflows/mu
 RG_FX_CI=push RG_FX_MUT=none run_release 0.5.271
 if [ "$RC" != 0 ] && [[ "$OUT" == *"REFUSED"*"full-ci"* ]] && [[ "$OUT" == *"mutant rigs are not covered"* ]] && [ ! -e "$LOG.disp.run" ]; then pass "ci_push_nomut not enough (missing rig), dispatch off -> refused" "mutants.yml missing"
 else fail "ci_push_nomut not enough" "rc=$RC"; fi
-mk_fixture ci_dispatch ok pass; git -C "$W" push -q origin master 2>/dev/null
+mk_fixture ci_dispatch ok pass; push_head
 RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 run_release 0.5.271
 if [ "$RC" = 0 ] && grep -q 'workflow run ci.yml --ref master' "$LOG.disp.run" 2>/dev/null && [[ "$OUT" == *"dispatched by the release"* ]]; then pass "ci_dispatch: none on the tree -> dispatches ci.yml on the branch tip, waits, proceeds" "$(cat "$LOG.disp.run")"
 else fail "ci_dispatch" "rc=$RC run=[$(cat "$LOG.disp.run" 2>/dev/null)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
 # a dispatch run already in flight on this tree is joined, not duplicated
-mk_fixture ci_join ok pass
+mk_fixture ci_join ok pass; push_head
 RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 RG_FX_INFLIGHT=1 run_release 0.5.271
-if [ "$RC" = 0 ] && [ ! -e "$LOG.disp.run" ] && [[ "$OUT" == *"dispatched by the release"* ]]; then pass "ci_join: in-flight dispatch joined, none started" "rc=0"; else fail "ci_join" "rc=$RC run=[$(cat "$LOG.disp.run" 2>/dev/null)]"; fi
-mk_fixture ci_dispatch_red ok pass; git -C "$W" push -q origin master 2>/dev/null
+if [ "$RC" = 0 ] && [ ! -e "$LOG.disp.run" ] && [[ "$OUT" == *"dispatched by the release"* ]]; then pass "ci_join: in-flight dispatch joined, none started" "rc=0"; else fail "ci_join" "rc=$RC run=[$(cat "$LOG.disp.run" 2>/dev/null)] tail=[$(printf '%s' "$OUT" | grep -i 'full\|REFUSED' | tail -3 | cut -c1-300 | tr '\n' '|')]"; fi
+mk_fixture ci_dispatch_red ok pass; push_head
 RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 RG_FX_DISP=failure run_release 0.5.271
 if [ "$RC" != 0 ] && [[ "$OUT" == *"ended 'failure'"* ]]; then pass "ci_dispatch_red refused" "the dispatched run failed"; else fail "ci_dispatch_red refused" "rc=$RC"; fi
 nothing_shipped ci_dispatch_red
