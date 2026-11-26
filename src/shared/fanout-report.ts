@@ -44,6 +44,8 @@ export interface Report {
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
   paused: PauseInfo | null;
+  /** #649 — per ticket: CONNECTs sent again because the upstream moved (null = not measured: only the loop's sidecar knows) and review rounds beyond the first (derived from the recorded reviews). `total` sums the tickets. */
+  moves: { reconnects: { total: number; perTicket: Record<string, number> } | null; extraReviewRounds: { total: number; perTicket: Record<string, number> } };
 }
 
 const oneLine = (s: string, n = 300): string => { const t = s.replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
@@ -68,7 +70,11 @@ export function findingsLeftOf(ticket: string, t: TicketState): ReportFinding[] 
 }
 
 /** The report from the state alone. `costs` = the host's per-ticket token counts (null/absent = not measurable, printed as such, never 0). */
-export function buildReport(state: FanoutState, costs: Record<string, TokenCost | null> = {}): Report {
+/** #649 — review rounds beyond the first: distinct recorded round numbers minus one. */
+export const extraReviewRoundsOf = (t: TicketState): number => Math.max(0, new Set((t.reviews ?? []).map((r) => r.n)).size - 1);
+const sumOf = (m: Record<string, number>): number => Object.values(m).reduce((a, b) => a + b, 0);
+
+export function buildReport(state: FanoutState, costs: Record<string, TokenCost | null> = {}, reconnects: Record<string, number> | null = null): Report {
   const ids = orderedTickets(state);
   const merged: string[] = [], dropped: string[] = [], unfinished: string[] = [], parked: ReportParked[] = [];
   for (const id of ids) {
@@ -89,6 +95,10 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
     flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
     paused: pauseOf(state),
+    moves: {
+      reconnects: reconnects ? (() => { const perTicket = Object.fromEntries(ids.map((id) => [id, reconnects[id] ?? 0])); return { total: sumOf(perTicket), perTicket }; })() : null,
+      extraReviewRounds: (() => { const perTicket = Object.fromEntries(ids.map((id) => [id, extraReviewRoundsOf(state.tickets[id])])); return { total: sumOf(perTicket), perTicket }; })(),
+    },
   };
 }
 
@@ -126,6 +136,10 @@ export function renderReport(r: Report): string {
     for (const f of r.findingsLeft) L.push(`  ${f.ticket}/${f.finding}  ${f.severity}  ${f.end}${f.note ? `: ${f.note}` : ''}`);
   }
   if (r.flaky.length) L.push(`flaky (red, then green on the one re-run): ${r.flaky.join(', ')}`);
+  const per = (m: Record<string, number>): string => Object.entries(m).filter(([, n]) => n > 0).map(([id, n]) => `${id} ${n}`).join(' · ');
+  const rc = r.moves.reconnects, rr = r.moves.extraReviewRounds;
+  L.push(`re-connects (a CONNECT sent again because the upstream moved): ${rc ? `${rc.total}${rc.total ? ` — ${per(rc.perTicket)}` : ''}` : 'not measured'}`);
+  L.push(`extra review rounds (beyond the first): ${rr.total}${rr.total ? ` — ${per(rr.perTicket)}` : ''}`);
   L.push(`cost: ${Object.entries(r.costPerTicket).map(([id, c]) => `${id} ${fmtTokens(c)}`).join(' · ')}${Object.keys(r.costPerTicket).length ? ` · total ${total.toLocaleString('en-US')} tokens (measured tickets only)` : ''}`);
   return L.join('\n') + '\n';
 }

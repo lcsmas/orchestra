@@ -22,12 +22,14 @@ export interface LoopSide {
   /** #605-only: `rev:T:head` / `impl:T:head` → how many times a dead reviewer / implementer was replaced for that head (the cap of `LoopOptions.maxReplacements`). */
   replaced: Record<string, number>;
   /** #628 — ticket → the delivery refusal orders sent to its implementer: `head` it had, `n` orders sent for it (2 with no new head ⇒ the implementer is replaced), `at` the last order, `replacing` = released on purpose (a respawn that is no death). */
+  /** #649 — dependent → how many times a CONNECT was sent again because its upstream moved (the report counts them). */
+  reconnects: Record<string, number>;
   orders: Record<string, { head: string; n: number; at: string; reason: string; replacing?: true }>;
 }
 /** `FanoutState` + the sidecar.  */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {} });
+const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {}, reconnects: {} });
 const sideFilePath = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function sideRead(file: string): LoopSide {

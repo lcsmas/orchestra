@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
-import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, renderConnectAsk, runLoop, DEFAULT_OPTIONS } from './fanout-loop.ts';
+import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, renderConnectAsk, runLoop, DEFAULT_OPTIONS, sortReady, transitiveDependents } from './fanout-loop.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
 import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
 import { applyPlan } from './fanout-plan.ts';
@@ -116,6 +116,47 @@ test('decision 10: two independent tickets that are ready in the same pass merge
   assert.deepEqual(r.violations, []);
 });
 
+test('#649: A (2 transitive dependents) and B (none) both ready in one pass — A merges first although B was ready 40 s earlier; the chain then follows', async () => {
+  const r = await go('most-depended');
+  assert.equal(r.result.exit, 0);
+  const order = mergeOrder(r.world.events);
+  assert.ok(order.indexOf('A') < order.indexOf('B'), `A before B: ${order.join(',')}`);
+  assert.deepEqual(order.filter((t) => t !== 'B'), ['A', 'C', 'D']);
+  assert.deepEqual(r.violations, []);
+});
+test('#649: tied dependents keep readiness order (B before A, both without dependents)', async () => {
+  const r = await go('readiness');
+  assert.deepEqual(mergeOrder(r.world.events), ['B', 'A']);
+});
+test('#649: transitiveDependents counts unfinished dependents only, through the chain, cycle-safe; sortReady = dependents desc, then readiness', () => {
+  const t = (dependsOn: string[], status = 'nominated') => ({ dependsOn, status });
+  assert.deepEqual(transitiveDependents({ A: t([]), B: t([]), C: t(['A']), D: t(['C']) }), { A: 2, B: 0, C: 1, D: 0 });
+  assert.deepEqual(transitiveDependents({ A: t([]), C: t(['A']), D: t(['C'], 'merged') }), { A: 1, C: 0, D: 0 }, 'a merged dependent is no longer at risk');
+  assert.deepEqual(transitiveDependents({ A: t(['B']), B: t(['A']) }), { A: 1, B: 1 }, 'a cycle terminates');
+  const r = (id: string, dependents: number, readyAt: number, order: number) => ({ id, dependents, readyAt, order });
+  assert.deepEqual(sortReady([r('B', 0, 1, 1), r('A', 2, 9, 0), r('X', 0, 1, 0)]).map((x) => x.id), ['A', 'X', 'B']);
+});
+test('#649: the judge accepts the most-depended-first order and refuses a ready ticket with more dependents merged after one with fewer', () => {
+  const ev = (rest: Ev[]): Ev[] => [{ t: 0, ev: 'spawn', ticket: 'A' }, { t: 0, ev: 'spawn', ticket: 'B' },
+    { t: 20, ev: 'ci-start', ticket: 'A', head: H('a'), doneAt: 25, result: 'green' }, { t: 20, ev: 'ci-start', ticket: 'B', head: H('b'), doneAt: 25, result: 'green' },
+    { t: 40, ev: 'review-record', ticket: 'A', head: H('a'), verdict: 'approve' }, { t: 30, ev: 'review-record', ticket: 'B', head: H('b'), verdict: 'approve' }, ...rest];
+  const deps = { A: [], B: [], C: ['A'] };
+  const judge = (rest: Ev[]) => judgeRun({ events: ev(rest), deps, tickets: ['A', 'B', 'C'], startAt: {} }).map((x) => x.rule);
+  const mA = { t: 50, ev: 'merge', ticket: 'A', head: H('a'), ci: 'green' } as Ev, mB = { t: 50, ev: 'merge', ticket: 'B', head: H('b'), ci: 'green' } as Ev;
+  assert.ok(!judge([mA, mB]).includes('merge-order'), 'A (1 dependent) first although B was ready earlier');
+  assert.ok(judge([mB, mA]).includes('merge-order'), 'B first while A, with a dependent, was ready');
+});
+test('#649: the closing report counts re-connects and extra review rounds, per run and per ticket', async () => {
+  const mv = await go('upstream-moves', { stallMs: 4 * 3_600_000 });
+  assert.deepEqual(mv.result.report.moves.reconnects, { total: 1, perTicket: { T1: 0, T2: 1 } }, 'T2 was asked again because T1 moved');
+  assert.match(renderReport(mv.result.report), /re-connects \(a CONNECT sent again because the upstream moved\): 1 — T2 1/);
+  const cr = await go('corrections-fix');
+  const rr = cr.result.report.moves.extraReviewRounds;
+  assert.deepEqual(rr, { total: 1, perTicket: { ...Object.fromEntries(Object.keys(rr.perTicket).map((k) => [k, 0])), T1: 1 } }, 'T1: changes-requested then approve = one round beyond the first');
+  assert.equal(cr.result.report.moves.reconnects!.total, 0);
+  assert.match(renderReport(cr.result.report), /extra review rounds \(beyond the first\): 1 — T1 1/);
+  assert.deepEqual((await go('readiness')).result.report.moves, { reconnects: { total: 0, perTicket: { A: 0, B: 0 } }, extraReviewRounds: { total: 0, perTicket: { A: 0, B: 0 } } });
+});
 test('decision 8 (#607, composed): red CI → one re-run → the author is told the check → the same failure after its fix parks the ticket, its dependent with it; a red CI is never merged', async () => {
   const r = await go('red-ci');
   assert.equal(r.result.exit, 3);
@@ -258,7 +299,7 @@ test('the loop writes the REAL #603 records: choices and the pause live in state
   assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'reversible-default']]);
   const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
   for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
-  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'replaced', 'signalled']);
+  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'reconnects', 'replaced', 'signalled']);
   assert.deepEqual(r.result.report.parked, []);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {
@@ -529,6 +570,7 @@ test('a respawned author is asked to connect AGAIN (the ask is keyed by implemen
       return d.fleet.wake(ws, text);
     } };
   await runLoop(depsOf(home, d, { fleet }, { maxPasses: 40 }));
+  assert.equal(readLoopState(home, 'rts7')!.loop.reconnects.T3 ?? 0, 0, '#649: a re-ask of a respawned author on the SAME head is not a re-connect (the upstream did not move)');
   const t3 = wakes.filter(([, l]) => l.startsWith('CONNECT T1 '));
   assert.deepEqual(t3.map(([ws]) => ws).filter((w) => w.startsWith('ws-impl-T3')), ['ws-impl-T3', 'ws-impl-T3-r2']);
 });

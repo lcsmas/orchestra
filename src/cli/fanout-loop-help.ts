@@ -3,7 +3,7 @@
 export const LOOP_USAGE = `The Boucle (#601, slice 1) — no model leads a vague: \`fanout run\` takes it from its tickets to its closing report. seatRecords=on, verifier=off (the command inits its own run when none exists).
   orchestra fanout run [--run <id>] [--tickets a,b,c | --plan <plan.json>] [--start-check] [--minor-policy <v>]
         lead the run: plan → start every implementer at once on the frozen names → mail → nominations → open the PR → review → approvals → connect a dependent to its approved upstream → CI → corrections → deliver in readiness order → end.
-        Prints the closing report (JSON on stdout, text on stderr): merged · parked (ticket, cause, reason) · the irreversible choices (FIRST, --taken "irreversible: …") · choices the agents took · findings left · flaky checks · cost per ticket · the pause.
+        Prints the closing report (JSON on stdout, text on stderr): merged · parked (ticket, cause, reason) · the irreversible choices (FIRST, --taken "irreversible: …") · choices the agents took · findings left · flaky checks · re-connects and extra review rounds (#649) · cost per ticket · the pause.
         Exit 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (lift it with \`orchestra fanout state set --run <id> --resume-run\`, then run again) · 2 refused ([run-…]) · 1 could not run.
         It is the ONLY reader of the run's mail and never waits for a person. Killed and started again it adopts every live agent and opens no second agent, pull request or merge.
         --start-check: before the start, open an EMPTY pull request into the target, await its checks, close it; a red check there = the run does not start.
