@@ -504,10 +504,15 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
     const verdict = recordedVerdictOf(s0, id, t.head, t.tree);
     const rec = verdict.ok ? verdict.recorded : null;
     if (!rec) return; // no recorded verdict on this content: nothing to merge on (defence in depth: `ctx.approved` already says so)
+    // #637 (#512's content key, as `fanout deliver` reads it): a head with another sha and the SAME git tree is covered by the verdict (`reviewOn` matched it), and so is a PR head that differs from the state's
+    const covering = reviewOn(t, t.head, t.tree); // matched by sha or by tree: a different sha here IS the same tree
+    const verdictSameTree = !!covering && !loopSameSha(covering.head, t.head);
+    const prTree = loopSameSha(pr.head, t.head) ? null : await deps.git.tree(pr.head);
+    const headSameTree = !!prTree && !!t.tree && prTree === t.tree;
     const dec = decideDelivery({
       pr: { state: 'OPEN', baseRefName: s0.target, headRefOid: pr.head, mergeable: 'MERGEABLE' }, checks: dc, into: s0.target, verifiedHead: t.head,
       verdict: { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head },
-      waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [],
+      waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [], verdictSameTree, headSameTree, treesDiffer: !loopSameSha(pr.head, t.head) && !!prTree && !headSameTree,
     });
     if (dec.action === 'wait') { ctx.waitOn(`ci:${id}:${t.head}`, deps.options.stallMs); return; } // a CI running / registering is work under way (bounded)
     if (dec.action !== 'merge') { if (dec.action === 'refuse') { ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); await orderImplementer(ctx, id, dec.reason, dec.detail); } return; }

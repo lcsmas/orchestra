@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "run": "same-tree-head",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      }
+    ]
+  },
+  "agents": {
+    "T1": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        },
+        {
+          "do": "retree",
+          "afterMs": 900000
+        }
+      ]
+    }
+  },
+  "timing": {
+    "ciMs": 1800000
+  }
+}
