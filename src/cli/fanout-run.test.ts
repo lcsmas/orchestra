@@ -28,7 +28,7 @@ test('MUST-FAIL --scenario without ORCHESTRA_FANOUT_DUMMY=1 is refused ([run-sce
   assert.equal(fs.existsSync(path.join(d.env.ORCHESTRA_HOME!, 'fanout')), false, 'no state was created');
   assert.equal((await runFanoutRun(['--scenario', scen('rts7')], deps({ ORCHESTRA_FANOUT_DUMMY: '0' }))).code, 2, 'only the value 1 opens the gate');
 });
-test('no scenario: the live ports are not wired — exit 1, named', async () => {
+test('no scenario and no host route: the live loop cannot run — exit 1, named', async () => {
   const r = await runFanoutRun(['--tickets', 'A,B'], deps(DUMMY));
   assert.equal(r.code, 1);
   assert.match(r.stderr, /\[run-live-ports\]/);

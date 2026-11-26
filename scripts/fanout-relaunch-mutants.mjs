@@ -29,7 +29,7 @@ const MUTANTS = [
   ['release-state-dropped-when-no-release', RL, [["freeing.size ? { ...state, tickets, updatedAt: now } : state", "released.length ? { ...state, tickets, updatedAt: now } : state"]]],
   ['merged-ungated-divergence-hidden', RL, [["    out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !(parkReason(d, state0.tickets[d.ticket]) && isParked(state0.tickets[d.ticket])));", "    out.diverged = plan.divergences.filter((d) => d.kind !== 'reality-unreadable' && !parkReason(d, state0.tickets[d.ticket]));"]]],
   ['empty-run-exit-0', RP, [["if (r.unfinished.length || !r.merged.length) return 1;", "if (r.unfinished.length) return 1;"]]],
-  ['tokens-dedupe-per-file', RP, [["    collect(text, byId, anon);\n  }\n  return any ? total(byId) : null;", "    const own = new Map(); collect(text, own, anon); for (const [k, v] of own) byId.set(`${f}:${k}`, v);\n  }\n  return any ? total(byId) : null;"]]],
+  ['tokens-dedupe-per-file', RP, [["    collect(text, byId, anon);\n  }\n  return any ? tokenTotal(byId) : null;", "    const own = new Map(); collect(text, own, anon); for (const [k, v] of own) byId.set(`${f}:${k}`, v);\n  }\n  return any ? tokenTotal(byId) : null;"]]],
   ['ungated-hand-merge-not-parked', RL, [["if (d.kind === 'merged-at-ungated-head') return", "if (false) return"]]],
   ['park-a-merged-ticket', RL, [[" && !isParked(state0.tickets[x.d.ticket]) && !TERMINAL.has(state0.tickets[x.d.ticket].status));", " && !isParked(state0.tickets[x.d.ticket]));"]]],
   ['equiv-park-twice-writes-again', RL, [[" x.why !== null && !isParked(state0.tickets[x.d.ticket]) &&", " x.why !== null &&"]], 'equivalent'],  // since #603 (stack C) reconcile adds no divergence for a parked ticket (`claimsWork` is false), so the `!isParked` filter here is redundant
@@ -52,7 +52,7 @@ const MUTANTS = [
   ['flaky-not-read', RP, [["flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),", 'flaky: [],']]],
   ['choice-pointer-lost', RP, [["pr: state.tickets[c.ticket]?.pr ?? null, branch: state.tickets[c.ticket]?.branch ?? null }));", "pr: null, branch: null }));"]]],
   ['tokens-no-dedupe', RP, [["const key = typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`;", "const key = `anon-${anon.n++}`;"]]],
-  ['tokens-unreadable-is-zero', RP, [["  return any ? total(byId) : null;\n}\n\n/** Every", "  return total(byId);\n}\n\n/** Every"]]],
+  ['tokens-unreadable-is-zero', RP, [["  return any ? tokenTotal(byId) : null;\n}\n\n/** Every", "  return tokenTotal(byId);\n}\n\n/** Every"]]],
   ['tokens-last-line-wins', RP, [["byId.set(key, prev ? { i: Math.max(prev.i, cur.i), o: Math.max(prev.o, cur.o), r: Math.max(prev.r, cur.r), c: Math.max(prev.c, cur.c) } : cur);", "byId.set(key, cur);"]]],
   ['subagent-transcripts-skipped', RP, [["if (e.isDirectory()) { if (depth < 4) walk(p, depth + 1); }", "if (e.isDirectory()) { /* skipped */ }"]]],
   ['dropped-dependent-parked-upstream', RL, [["{ cause: 'situation', reason: `blocked by ${dropped} (dropped, never merged)` }", "{ cause: 'upstream', reason: `blocked by ${dropped} (dropped, never merged)` }"]]],

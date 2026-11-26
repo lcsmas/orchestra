@@ -7,6 +7,7 @@ import { store } from './store';
 import { detectRemoteUrl, refResolves } from './git';
 import { sessionKeys } from './session-identity-host.ts';
 import { dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
+import { transcriptDirOfWorkspace } from './agent-sdk';
 
 const productionDeps: AcceptanceHostDeps = {
   get home() { return orchestraHome(); },
@@ -50,6 +51,7 @@ const productionDeps: AcceptanceHostDeps = {
     for (const id of ids) { const ws = store.getWorkspace(id); if (ws && ws.host?.kind !== 'sandbox') { await installOrchestraHooks(ws.worktreePath); done.push(id); } }
     return done;
   },
+  transcriptDirOf: (id) => { const w = store.getWorkspace(id); return w ? transcriptDirOfWorkspace(w) : null; }, // #614: the Boucle's cost-per-ticket reads these
   post: ({ to, sender, body }) => {
     const ws = store.getWorkspace(to);
     if (!ws) throw new Error(`unknown workspace ${to}`);

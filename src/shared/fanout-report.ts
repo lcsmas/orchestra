@@ -121,7 +121,7 @@ export function renderReport(r: Report): string {
 // ── cost per ticket, from the transcripts ─────────────────────────────────────────────────────────────────────────────
 
 type Usage = { i: number; o: number; r: number; c: number };
-const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+const tokenCount = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
 /** Add one transcript's assistant usages to `byId` (one entry per `message.id`, each field at its MAX: a message streamed as several lines repeats its usage and the last carries the final `output_tokens`; a resumed or forked session that copies history into a new file repeats ids — one map per COUNT keeps them single). Lines with no id are each their own message. */
 function collect(jsonl: string, byId: Map<string, Usage>, anon: { n: number }): void {
   for (const raw of jsonl.split('\n')) {
@@ -133,11 +133,11 @@ function collect(jsonl: string, byId: Map<string, Usage>, anon: { n: number }): 
     const u = e.message.usage;
     const key = typeof e.message.id === 'string' ? e.message.id : `anon-${anon.n++}`;
     const prev = byId.get(key);
-    const cur = { i: num(u.input_tokens), o: num(u.output_tokens), r: num(u.cache_read_input_tokens), c: num(u.cache_creation_input_tokens) };
+    const cur = { i: tokenCount(u.input_tokens), o: tokenCount(u.output_tokens), r: tokenCount(u.cache_read_input_tokens), c: tokenCount(u.cache_creation_input_tokens) };
     byId.set(key, prev ? { i: Math.max(prev.i, cur.i), o: Math.max(prev.o, cur.o), r: Math.max(prev.r, cur.r), c: Math.max(prev.c, cur.c) } : cur); // streamed lines of one message only grow: the max per field is the final count, whatever the order of lines or files
   }
 }
-function total(byId: Map<string, Usage>): Required<TokenCost> {
+function tokenTotal(byId: Map<string, Usage>): Required<TokenCost> {
   let input = 0, output = 0, cacheRead = 0, cacheCreate = 0;
   for (const v of byId.values()) { input += v.i; output += v.o; cacheRead += v.r; cacheCreate += v.c; }
   return { tokens: input + output + cacheRead + cacheCreate, input, output, cacheRead, cacheCreate };
@@ -147,7 +147,7 @@ function total(byId: Map<string, Usage>): Required<TokenCost> {
 export function tokensOfTranscript(jsonl: string): Required<TokenCost> {
   const byId = new Map<string, Usage>();
   collect(jsonl, byId, { n: 0 });
-  return total(byId);
+  return tokenTotal(byId);
 }
 
 /** {@link tokensOfTranscript} over files with ONE id map (a message copied into a second file is counted once); null when NO file could be read (unmeasured is not 0). */
@@ -161,7 +161,7 @@ export function tokensOfFiles(files: string[], read: (p: string) => string = (p)
     any = true;
     collect(text, byId, anon);
   }
-  return any ? total(byId) : null;
+  return any ? tokenTotal(byId) : null;
 }
 
 /** Every `*.jsonl` under a transcript directory, recursively: the session files AND `<session>/subagents/*.jsonl` (Agent-tool transcripts — measured 28 % of a real session's tokens). A workspace restarted or cleared has one file per session: all are the ticket's cost. [] when the directory is absent. */

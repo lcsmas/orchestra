@@ -21,3 +21,8 @@ test('wiring: the writer is spawned through dispatchAgentSpawnRequest (the role 
   assert.match(src, /runId: resolveWaveRunId\(ws\)/);
   assert.match(src, /recipient: to/);
 });
+
+test('#614 wiring: the host reports a workspace\'s transcript directory through the SDK\'s own resolution (pinned account + mangled worktree)', () => {
+  assert.match(read('fanout-acceptance-wiring.ts'), /transcriptDirOf: \(id\) => \{ const w = store\.getWorkspace\(id\); return w \? transcriptDirOfWorkspace\(w\) : null; \}/);
+  assert.match(read('agent-sdk.ts'), /export const transcriptDirOfWorkspace = transcriptDir;/);
+});
