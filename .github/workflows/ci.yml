@@ -11,7 +11,8 @@ on:
   pull_request:
     branches: [master]
     # `labeled`: adding `ci-full` after the push re-runs the CI with every rig (the label is read from the event payload). Another label also starts a run — same selection, the old run is cancelled.
-    types: [opened, synchronize, reopened, labeled]
+    # `closed` (release-gate-rapide): a closed/merged PR's run is CANCELLED (same concurrency group) and the closing event itself runs no job — a stale run no longer holds the 20-job limit.
+    types: [opened, synchronize, reopened, labeled, closed]
   workflow_dispatch:
 
 permissions:
@@ -30,6 +31,7 @@ env:
 
 jobs:
   typecheck:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -48,6 +50,7 @@ jobs:
           if-no-files-found: warn
 
   tests:
+    if: github.event.action != 'closed'
     name: tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -91,6 +94,7 @@ jobs:
           overwrite: true
 
   rigs:
+    if: github.event.action != 'closed'
     # each group installs once and runs its rigs in sequence (D5, ledger #569); the rigs of a group total ~15 min (.github/ci-rigs.json, `rigs.mjs assign`)
     timeout-minutes: 150
     runs-on: ubuntu-latest
@@ -129,7 +133,7 @@ jobs:
   # and when typecheck or a rig group is. It also prints the per-job table and the LOCAL-ONLY rig list.
   suite:
     needs: [typecheck, tests, rigs]
-    if: always()
+    if: always() && github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

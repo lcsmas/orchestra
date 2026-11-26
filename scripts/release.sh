@@ -411,10 +411,10 @@ else
     rg_run_gate || exit 1
   fi
 fi
-# #595: a pull request runs only the rigs its files select; the TAG's tree needs one green run of every rig (a workflow_dispatch run of ci.yml on a commit with the same tree).
+# #595: a pull request runs only the rigs its files select; the TAG's tree needs one green run of every rig (a ci.yml dispatch, or push + mutants.yml, on a commit with the same tree; none -> it dispatches one).
 say "Full rig run (#595): a green workflow_dispatch run of ci.yml on this tree"
 if [ "$DRY_RUN" = 1 ]; then
-  printf '  [dry-run] full rig run: gh run list --workflow ci.yml --event workflow_dispatch --status success -> a commit with this tree (package.json version line masked)%s\n' \
+  printf '  [dry-run] full rig run: gh run list --workflow ci.yml --status success -> a dispatch (or push + mutants.yml) run on a commit with this tree (package.json version line masked); none -> dispatch one%s\n' \
     "$([ "$SKIP_GATE" = 1 ] && printf ' — BYPASSED (--skip-release-gate: %s)' "$SKIP_GATE_REASON")"
 elif [ "$SKIP_GATE" = 1 ]; then
   printf 'full-ci: NOT REQUIRED (--skip-release-gate) — the full rig run (ci.yml workflow_dispatch) was NOT required. Reason: %s\n' "$SKIP_GATE_REASON" >&2

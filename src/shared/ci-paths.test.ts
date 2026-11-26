@@ -236,7 +236,7 @@ test('F6: a changed package.json script selects every rig that reaches it THROUG
 
 test('F5: ci.yml re-runs on `labeled` (ci-full added after the push) and only the `ci-full` label forces everything', () => {
   const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
-  assert.match(wf, /^    types: \[opened, synchronize, reopened, labeled\]$/m);
+  assert.match(wf, /^    types: \[opened, synchronize, reopened, labeled, closed\]$/m);
   assert.match(wf, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci-full'\) && 'the ci-full label forces every rig'/);
   assert.equal(wf.match(/'ci-full'/g)!.length, 1, 'no other label is read');
   assert.match(wf, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);

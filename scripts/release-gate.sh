@@ -9,7 +9,7 @@
 # #484 RECEIPT: a full PASS writes `<git-common-dir>/release-gate-receipts/<tree>` (the gated tree with package.json's `version` line masked + the
 # gate version); release.sh skips the gate when HEAD's masked tree has a receipt of this gate version (rg_receipt_check). Standalone: `bash scripts/release-gate.sh`.
 # Rig: verify-release-receipt.sh.
-# #595: rg_full_ci_check — the tag's tree also needs a green FULL rig run (a `workflow_dispatch` run of ci.yml on a commit with the same tree); release.sh refuses without it. Rig: verify-release-gate.sh `ci_*` arms.
+# #595: rg_full_ci_check — the tag's tree also needs a green FULL rig run (a green ci.yml dispatch, or a ci.yml push run + mutants.yml run, on a commit with the same tree; else it dispatches one); release.sh refuses without it. Rig: verify-release-gate.sh `ci_*` arms.
 
 # Bump this when the gate's checks change meaning: every receipt of another version stops counting (#484).
 RG_GATE_VERSION=1
@@ -244,27 +244,82 @@ rg_run_gate() {
   echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 "$head0^{tree}")"
 }
 
-# #595 FULL RIG RUN: a pull request runs only the rigs its files select, so the tag's tree needs one green run of EVERY rig. `ci.yml` has a `workflow_dispatch` trigger = the full run (no path
-# selection); the tag's tree must equal (package.json's version line masked, as the #484 receipt) the tree of a commit with a green dispatch run. A pull_request run never counts (path-selected).
-# Prints the proof on stdout and returns 0, or prints the REFUSED line on stderr and returns 1 (fails closed: an unreadable list is a refusal). RG_GH overrides `gh` (rig).
-rg_full_ci_check() {
-  local gh="${RG_GH:-gh}" want rows sha url norm n=0 lines
-  want="$(rg_norm_tree HEAD)" || { _rg_refuse full-ci "cannot resolve HEAD's tree"; return 1; }
-  if ! rows="$("$gh" run list --workflow ci.yml --event workflow_dispatch --status success --limit 40 --json headSha,url 2>/dev/null)"; then
-    _rg_refuse full-ci "'gh run list --workflow ci.yml --event workflow_dispatch' failed, so a green full rig run cannot be proven (fails closed). Check 'gh auth status'."; return 1
-  fi
-  lines="$(printf '%s' "$rows" | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{for(const r of JSON.parse(t))if(r&&/^[0-9a-f]{7,40}$/.test(r.headSha||""))console.log(r.headSha+"\t"+(r.url||""))}catch{process.exit(1)}})')" \
-    || { _rg_refuse full-ci "'gh run list' printed something that is not the expected JSON (fails closed)"; return 1; }
-  while IFS=$'\t' read -r sha url; do
-    [ -n "$sha" ] || continue; n=$((n + 1))
+# #595 FULL RIG RUN: a pull request runs only the rigs its files select, so the tag's tree needs one green run of EVERY rig. The tree (package.json's version line masked, as the #484 receipt) is accepted when
+# a commit with the same tree has (A) a green `workflow_dispatch` run of ci.yml (the full run), OR (B) a green push-to-master run of ci.yml AND — when the tree carries .github/workflows/mutants.yml (#635, the
+# mutant rigs leave the PR runs) — a green mutants.yml run on a commit with that tree. A pull_request run never counts (path-selected). Only when neither exists does it dispatch one (see rg_full_ci_dispatch).
+# Prints the proof on stdout and returns 0, or the REFUSED line on stderr and 1 (fails closed: an unreadable list is a refusal). RG_GH overrides `gh` (rig); RG_FULL_CI_DISPATCH=0 never dispatches.
+_rg_tree_run() { # <workflow> <event-regex> <want-tree> — prints "sha<TAB>url<TAB>event" of the first green run on a commit with <want-tree>; rc 0 found, 1 none, 2 gh/JSON unreadable
+  local gh="${RG_GH:-gh}" rows lines sha url ev norm
+  rows="$("$gh" run list --workflow "$1" --status success --limit 60 --json headSha,url,event 2>/dev/null)" || return 2
+  lines="$(printf '%s' "$rows" | RG_EV="$2" node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{const re=new RegExp("^(?:"+process.env.RG_EV+")$");for(const r of JSON.parse(t))if(r&&/^[0-9a-f]{7,40}$/.test(r.headSha||"")&&re.test(r.event||""))console.log(r.headSha+"\t"+(r.url||"")+"\t"+r.event)}catch{process.exit(1)}})')" || return 2
+  [ -z "${_RG_NF:-}" ] || printf '%s\n' "$lines" | grep -c . >> "$_RG_NF"   # a subshell's counter would be lost: count through a file
+  while IFS=$'\t' read -r sha url ev; do
+    [ -n "$sha" ] || continue
     git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null || continue
     norm="$(rg_norm_tree "$sha")" || continue
-    if [ "$norm" = "$want" ]; then
+    if [ "$norm" = "$3" ]; then printf '%s\t%s\t%s\n' "$sha" "$url" "$ev"; return 0; fi
+  done <<<"$lines"
+  return 1
+}
+rg_full_ci_check() {
+  local want hit rc sha url ev mhit n=0
+  _RG_NF="$(mktemp "${TMPDIR:-/tmp}/rg-ci-n.XXXXXX")" || _RG_NF=""
+  want="$(rg_norm_tree HEAD)" || { _rg_refuse full-ci "cannot resolve HEAD's tree"; return 1; }
+  hit="$(_rg_tree_run ci.yml 'workflow_dispatch|push' "$want")"; rc=$?
+  if [ "$rc" = 2 ]; then _rg_refuse full-ci "'gh run list --workflow ci.yml' failed or printed something that is not the expected JSON, so a green full rig run cannot be proven (fails closed). Check 'gh auth status'."; return 1; fi
+  if [ "$rc" = 0 ]; then
+    IFS=$'\t' read -r sha url ev <<<"$hit"
+    if [ "$ev" = workflow_dispatch ]; then
       echo "full rig run PASS: $url (ci.yml workflow_dispatch on ${sha:0:8}, tree ${want:0:12}, package.json version line masked)"; return 0
     fi
-  done <<<"$lines"
-  _rg_refuse full-ci "no green workflow_dispatch run of ci.yml (every rig, no path selection) on a commit with this tree (${want:0:12}; $n recent green dispatch run(s) checked). A pull-request run is path-selected and never counts. Run it, wait for green, then release again: gh workflow run ci.yml --ref <branch-or-master> ; gh run watch — or --skip-release-gate \"<reason>\" (recorded in the release notes)."
+    # a push-to-master ci.yml run: complete only with the mutants workflow green on the same tree (when this tree has one)
+    if ! git cat-file -e "HEAD:.github/workflows/mutants.yml" 2>/dev/null; then
+      echo "full rig run PASS: $url (ci.yml $ev on ${sha:0:8}, tree ${want:0:12}, package.json version line masked)"; return 0
+    fi
+    mhit="$(_rg_tree_run mutants.yml 'push|schedule|workflow_dispatch' "$want")"; rc=$?
+    if [ "$rc" = 2 ]; then _rg_refuse full-ci "'gh run list --workflow mutants.yml' failed or printed something that is not the expected JSON (fails closed)."; return 1; fi
+    if [ "$rc" = 0 ]; then
+      echo "full rig run PASS: $url (ci.yml $ev on ${sha:0:8}) + $(printf '%s' "$mhit" | cut -f2) (mutants.yml on $(printf '%s' "$mhit" | cut -c1-8)), tree ${want:0:12}, package.json version line masked"; return 0
+    fi
+    echo "  full rig run: ci.yml $ev run found ($url) but no green mutants.yml run on this tree — the mutant rigs are not covered" >&2
+  fi
+  [ -z "$_RG_NF" ] || n="$(head -1 "$_RG_NF" 2>/dev/null)"; rm -f "${_RG_NF:-/nonexistent}"; _RG_NF=""
+  if [ "${RG_FULL_CI_DISPATCH:-1}" != 0 ] && rg_full_ci_dispatch "$want"; then return 0; fi
+  _rg_refuse full-ci "no green run of every rig on a commit with this tree (${want:0:12}; $n recent green ci.yml dispatch/push run(s) checked): need a ci.yml workflow_dispatch run, or a ci.yml push run + a mutants.yml run. A pull-request run is path-selected and never counts. ${_RG_DISPATCH_WHY:-} Run it, wait for green, then release again: gh workflow run ci.yml --ref <branch-or-master> ; gh run watch — or --skip-release-gate \"<reason>\" (recorded in the release notes)."
   return 1
+}
+
+# Nothing proves the tree yet: dispatch ci.yml on the remote branch whose tip IS HEAD (a run needs a pushed commit; a branch tip differing from HEAD would prove another tree), or join the dispatch run
+# already queued/running on it, and wait for it (RG_FULL_CI_WAIT seconds, default 5400). rc 0 = green (proof printed), 1 = not dispatched / red (_RG_DISPATCH_WHY says why).
+rg_full_ci_dispatch() {
+  local gh="${RG_GH:-gh}" head br id rows deadline st cc url
+  head="$(git rev-parse HEAD)"
+  br="$(git ls-remote --heads origin 2>/dev/null | awk -v h="$head" '$1==h{sub("refs/heads/","",$2);print $2}' | sort | awk 'BEGIN{m=""} $0=="master"{m=$0} NR==1{f=$0} END{print (m!=""?m:f)}')"
+  if [ -z "$br" ]; then _RG_DISPATCH_WHY="Not dispatched: HEAD ${head:0:8} is not the tip of any remote branch (push it first)."; return 1; fi
+  list_runs() { "$gh" run list --workflow ci.yml --event workflow_dispatch --branch "$br" --limit 10 --json databaseId,headSha,status,conclusion,url 2>/dev/null; }
+  pick() { printf '%s' "$1" | RG_H="$head" node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{const r=JSON.parse(t).filter(x=>x.headSha===process.env.RG_H&&x.status!=="completed")[0];if(r)console.log(r.databaseId+"\t"+(r.url||""))}catch{}})'; }
+  rows="$(list_runs)" || { _RG_DISPATCH_WHY="Not dispatched: 'gh run list' failed."; return 1; }
+  id="$(pick "$rows")"
+  if [ -z "$id" ]; then
+    echo "  full rig run: none on this tree — dispatching ci.yml on $br (${head:0:8})" >&2
+    "$gh" workflow run ci.yml --ref "$br" >/dev/null 2>&1 || { _RG_DISPATCH_WHY="Dispatch failed ('gh workflow run ci.yml --ref $br')."; return 1; }
+    deadline=$((SECONDS + 120))
+    while [ -z "$id" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 5; id="$(pick "$(list_runs)")"; done
+    [ -n "$id" ] || { _RG_DISPATCH_WHY="Dispatched ci.yml on $br but no run appeared in 2 min."; return 1; }
+  else echo "  full rig run: joining the dispatch run already in flight on this tree" >&2
+  fi
+  url="$(printf '%s' "$id" | cut -f2)"; id="$(printf '%s' "$id" | cut -f1)"
+  deadline=$((SECONDS + ${RG_FULL_CI_WAIT:-5400}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    rows="$("$gh" run view "$id" --json status,conclusion 2>/dev/null | tr -d '\n')"
+    st="$(printf '%s' "$rows" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"; cc="$(printf '%s' "$rows" | sed -n 's/.*"conclusion":"\([^"]*\)".*/\1/p')"
+    if [ "$st" = completed ]; then
+      if [ "$cc" = success ]; then echo "full rig run PASS: $url (ci.yml workflow_dispatch on ${head:0:8}, dispatched by the release, tree ${1:0:12}, package.json version line masked)"; return 0; fi
+      _RG_DISPATCH_WHY="The dispatched run $url ended '$cc'."; return 1
+    fi
+    sleep "${RG_FULL_CI_POLL:-30}"
+  done
+  _RG_DISPATCH_WHY="The dispatched run $url did not finish within ${RG_FULL_CI_WAIT:-5400}s."; return 1
 }
 
 # After the suite (node ABI 127) and before the packaged build (Electron ABI 130).
