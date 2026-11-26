@@ -1,6 +1,7 @@
 {
  "_doc": "Every rig is RUNS_IN_CI or LOCAL_ONLY + reason (#568). Guard: src/shared/ci-rigs.test.ts. Read by the matrix + summary of .github/workflows/ci.yml.",
  "groups": 17,
+ "prGroups": 12,
  "suiteShards": 2,
  "sharedPaths": [
   "package.json",
@@ -734,7 +735,7 @@
     "scripts/disk-guard.cjs",
     "scripts/verify-disk-guard.mjs"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:disk-guard-ui",
@@ -1409,7 +1410,7 @@
     "src/shared/workspace-name.ts",
     "src/shared/worktree-sizes.ts"
    ],
-   "group": 3
+   "group": 8
   },
   {
    "id": "test:hung-cli",
@@ -1425,7 +1426,7 @@
     "src/main/session-watchdog.ts",
     "src/main/store.ts"
    ],
-   "group": 8
+   "group": 7
   },
   {
    "id": "test:claude-code-update",
@@ -1444,7 +1445,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 13
+   "group": 11
   },
   {
    "id": "test:liveness-failed-call",
@@ -1462,7 +1463,7 @@
     "src/main/workspaces.ts",
     "src/shared/bus-liveness.ts"
    ],
-   "group": 12
+   "group": 11
   },
   {
    "id": "test:session-debug-log",
@@ -1478,7 +1479,7 @@
     "src/main/session-debug-log-fs.ts",
     "src/main/store.ts"
    ],
-   "group": 17
+   "group": 2
   },
   {
    "id": "test:context-seed",
@@ -1493,7 +1494,7 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 12
+   "group": 10
   },
   {
    "id": "test:session-budget",
@@ -1536,7 +1537,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 15
+   "group": 10
   },
   {
    "id": "test:fanout-open",
@@ -1547,7 +1548,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-open.mjs"
    ],
-   "group": 14
+   "group": 9
   },
   {
    "id": "test:fanout-open-mutants",
@@ -1559,7 +1560,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-open.mjs"
    ],
-   "group": 11
+   "group": 4
   },
   {
    "id": "test:fanout-followup",
@@ -1570,7 +1571,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-followup.mjs"
    ],
-   "group": 15
+   "group": 5
   },
   {
    "id": "test:fanout-followup-mutants",
@@ -1591,7 +1592,7 @@
     "@bundle:cli",
     "scripts/e2e-spec-sentence.mjs"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:spec-sentence-mutants",
@@ -1612,7 +1613,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-closeout.mjs"
    ],
-   "group": 17
+   "group": 11
   },
   {
    "id": "test:fanout-closeout-mutants",
@@ -1624,7 +1625,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-closeout.mjs"
    ],
-   "group": 13
+   "group": 6
   },
   {
    "id": "test:fanout-acceptance",
@@ -1655,7 +1656,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-jest-config.mjs"
    ],
-   "group": 11
+   "group": 7
   },
   {
    "id": "test:fanout-jest-config-mutants",
@@ -1667,7 +1668,7 @@
     "@bundle:cli",
     "scripts/e2e-fanout-jest-config.mjs"
    ],
-   "group": 15
+   "group": 5
   },
   {
    "id": "test:fanout-tree-verdict",
@@ -1679,7 +1680,7 @@
     "scripts/e2e-fanout-tree-verdict.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 17
+   "group": 10
   },
   {
    "id": "test:fanout-tree-verdict-mutants",
@@ -1692,7 +1693,7 @@
     "scripts/e2e-fanout-tree-verdict.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 16
+   "group": 3
   },
   {
    "id": "test:fanout-switches",
@@ -1763,7 +1764,7 @@
     "src/shared/fanout-demonstration.test.ts",
     "src/shared/fanout-role-texts.test.ts"
    ],
-   "group": 15
+   "group": 10
   },
   {
    "id": "test:fanout-loop-skill-mutants",
@@ -1822,7 +1823,7 @@
     "src/shared/fanout-loop-skill.test.ts",
     "src/shared/fanout-role-texts.test.ts"
    ],
-   "group": 9
+   "group": 15
   },
   {
    "id": "test:fanout-review-mutants",
@@ -1871,7 +1872,7 @@
     "src/shared/types.ts",
     "src/cli/fanout-review.test.ts"
    ],
-   "group": 12
+   "group": 2
   },
   {
    "id": "test:fanout-park-mutants",
@@ -1885,7 +1886,7 @@
     "src/shared/fanout-park.test.ts"
    ],
    "wallSec": 258,
-   "group": 15
+   "group": 16
   },
   {
    "id": "test:fanout-plan",
@@ -1902,7 +1903,7 @@
     "src/cli/fanout-plan.test.ts",
     "src/shared/fanout-plan.test.ts"
    ],
-   "group": 5
+   "group": 9
   },
   {
    "id": "test:fanout-plan-mutants",
@@ -1919,7 +1920,7 @@
     "src/cli/fanout-plan.test.ts",
     "src/shared/fanout-plan.test.ts"
    ],
-   "group": 8
+   "group": 12
   },
   {
    "id": "test:fanout-switches-mutants",
@@ -2085,7 +2086,7 @@
     "src/shared/watcher-status.ts",
     "src/cli/fanout-record.test.ts"
    ],
-   "group": 1
+   "group": 3
   },
   {
    "id": "test:fanout-record-mutants",
@@ -2182,7 +2183,7 @@
     "src/shared/watcher-status.ts",
     "src/cli/fanout-record.test.ts"
    ],
-   "group": 9
+   "group": 3
   },
   {
    "id": "test:fanout-checks",
@@ -2211,7 +2212,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-check.test.ts"
    ],
-   "group": 16
+   "group": 8
   },
   {
    "id": "test:fanout-checks-mutants",
@@ -2241,7 +2242,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-check.test.ts"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:fanout-seat-records",
@@ -2269,7 +2270,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-seat-records.test.ts"
    ],
-   "group": 2
+   "group": 7
   },
   {
    "id": "test:fanout-seat-records-mutants",
@@ -2297,7 +2298,7 @@
     "src/shared/verified-fanout-skill.ts",
     "src/cli/fanout-seat-records.test.ts"
    ],
-   "group": 14
+   "group": 12
   },
   {
    "id": "test:fanout-start",
@@ -2355,7 +2356,7 @@
     "src/main/fanout-start-wiring.test.ts",
     "src/main/git-reuse-branch.test.ts"
    ],
-   "group": 3
+   "group": 10
   },
   {
    "id": "test:fanout-start-mutants",
@@ -2413,7 +2414,7 @@
     "src/main/fanout-start-wiring.test.ts",
     "src/main/git-reuse-branch.test.ts"
    ],
-   "group": 7
+   "group": 2
   },
   {
    "id": "test:fanout-run",
@@ -2433,7 +2434,7 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 8
+   "group": 6
   },
   {
    "id": "test:fanout-run-mutants",
@@ -2454,7 +2455,7 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 16
+   "group": 14
   },
   {
    "id": "test:fanout-run-mutants-2",
@@ -2475,7 +2476,7 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 15
+   "group": 17
   },
   {
    "id": "test:fanout-run-mutants-3",
@@ -2496,7 +2497,7 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 13
+   "group": 16
   },
   {
    "id": "test:fanout-run-mutants-4",
@@ -2517,7 +2518,7 @@
     "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
-   "group": 14
+   "group": 13
   },
   {
    "id": "test:acceptance-forced",
@@ -2529,7 +2530,7 @@
     "scripts/e2e-fanout-acceptance-forced.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 15
+   "group": 6
   },
   {
    "id": "test:acceptance-forced-mutants",
@@ -2542,7 +2543,7 @@
     "scripts/e2e-fanout-acceptance-forced.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 12
+   "group": 9
   },
   {
    "id": "test:harness-brief",
@@ -2567,7 +2568,7 @@
     "pnpm-lock.yaml",
     "scripts/e2e-fanout-harness-brief.mjs"
    ],
-   "group": 7
+   "group": 5
   },
   {
    "id": "test:freeze-check",
@@ -2579,7 +2580,7 @@
     "scripts/e2e-fanout-freeze-check.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 10
+   "group": 4
   },
   {
    "id": "test:freeze-check-mutants",
@@ -2592,7 +2593,7 @@
     "scripts/e2e-fanout-freeze-check.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 17
+   "group": 15
   },
   {
    "id": "test:harness-amend",
@@ -2604,7 +2605,7 @@
     "scripts/e2e-fanout-harness-amend.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 6
+   "group": 2
   },
   {
    "id": "test:harness-amend-mutants",
@@ -2617,7 +2618,7 @@
     "scripts/e2e-fanout-harness-amend.mjs",
     "scripts/lib/mutant-pool.mjs"
    ],
-   "group": 12
+   "group": 7
   },
   {
    "id": "test:role-guard-cli",
@@ -2630,7 +2631,7 @@
     "scripts/session-budget/scratch-guard.mjs",
     "src/shared/role-guard.ts"
    ],
-   "group": 14
+   "group": 12
   },
   {
    "id": "test:session-identity",
@@ -2679,7 +2680,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 4
+   "group": 12
   },
   {
    "id": "test:pause-ui-render",
@@ -2730,7 +2731,7 @@
     "src/shared/watcher-status.ts",
     "src/renderer/components/pause/**"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:memcap-render",
@@ -2795,7 +2796,7 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:memcap-shot",
@@ -2891,7 +2892,7 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:memory-cap-row-shot",
@@ -2916,7 +2917,7 @@
     "scripts/pause-ui/seed-bus.mjs",
     "scripts/pause-ui/ui-arm.mjs"
    ],
-   "group": 2
+   "group": 3
   },
   {
    "id": "test:watchers-strip-render",
@@ -2962,7 +2963,7 @@
     "src/shared/vague-human.ts",
     "src/shared/watcher-status.ts"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:pause-ui-mutants",
@@ -3103,7 +3104,7 @@
     "scripts/pause-ui/seed-bus.mjs",
     "scripts/pause-ui/ui-arm.mjs"
    ],
-   "group": 11
+   "group": 8
   },
   {
    "id": "test:migrate-transcripts",
@@ -3118,7 +3119,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 1
+   "group": 2
   },
   {
    "id": "test:migrate-transcripts-mutants",
@@ -3138,7 +3139,7 @@
     "src/main/migrate-account-wiring.test.ts",
     "src/main/transcript-move.test.ts"
    ],
-   "group": 3
+   "group": 13
   },
   {
    "id": "test:pause-trap",
@@ -3307,7 +3308,7 @@
     "src/shared/session-budget.test.ts",
     "src/shared/tool-input-summary.test.ts"
    ],
-   "group": 8
+   "group": 12
   },
   {
    "id": "test:browser-reliquats",
@@ -3469,7 +3470,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 6
+   "group": 5
   },
   {
    "id": "test:browser-reliquats-mutants",
@@ -3790,7 +3791,7 @@
     "src/shared/session-budget.test.ts",
     "src/shared/tool-input-summary.test.ts"
    ],
-   "group": 8
+   "group": 3
   },
   {
    "id": "test:pause-trap-mutants",
@@ -3981,7 +3982,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 13
+   "group": 5
   },
   {
    "id": "test:admission-wake",
@@ -4017,7 +4018,7 @@
     "src/shared/bus-wake.ts",
     "src/shared/keeper-protocol.ts"
    ],
-   "group": 13
+   "group": 7
   },
   {
    "id": "test:top-level-run-mutants",
@@ -4346,7 +4347,7 @@
     "src/main/wave-run-anchor-wiring.test.ts",
     "src/shared/bus-switches.test.ts"
    ],
-   "group": 3
+   "group": 5
   },
   {
    "id": "test:mail-strangers-mutants",
@@ -4479,7 +4480,7 @@
     "src/main/bus-asks-gates.test.ts",
     "src/main/mail-between-strangers.test.ts"
    ],
-   "group": 9
+   "group": 16
   },
   {
    "id": "test:old-channel-closed",
@@ -4497,7 +4498,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 9
+   "group": 7
   },
   {
    "id": "test:old-channel-closed-mutants",
@@ -4584,7 +4585,7 @@
     "src/shared/bus-switches.test.ts",
     "src/shared/peer-messages.test.ts"
    ],
-   "group": 10
+   "group": 6
   },
   {
    "id": "test:run-close-mutants",
@@ -4725,7 +4726,7 @@
     "!**/*.test.mjs",
     "src/main/bus-run-close.test.ts"
    ],
-   "group": 2
+   "group": 8
   },
   {
    "id": "test:git-identity-mutants",
@@ -4971,7 +4972,7 @@
     "src/shared/member-memory.ts",
     "src/shared/resources.ts"
    ],
-   "group": 6
+   "group": 7
   },
   {
    "id": "test:reliquats-memory-mutants",
@@ -5135,7 +5136,7 @@
     "src/shared/resource-monitor.test.ts",
     "src/shared/resources.test.ts"
    ],
-   "group": 3
+   "group": 13
   },
   {
    "id": "test:container-memory",
@@ -5161,7 +5162,7 @@
     "src/shared/container-accounting.ts",
     "src/shared/resources.ts"
    ],
-   "group": 8
+   "group": 7
   },
   {
    "id": "test:container-memory-mutants",
@@ -5391,7 +5392,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 7
+   "group": 6
   },
   {
    "id": "test:composed-night",
@@ -5429,7 +5430,7 @@
     "src/main/workspaces.ts",
     "src/shared/bus-wake.ts"
    ],
-   "group": 6
+   "group": 3
   },
   {
    "id": "test:plain-parent-mutants",
@@ -5590,7 +5591,7 @@
     "src/shared/run-position.test.ts",
     "src/**"
    ],
-   "group": 11
+   "group": 17
   },
   {
    "id": "test:spawn-account-inherit",
@@ -5614,7 +5615,7 @@
     "src/shared/spawn-account.ts",
     "src/**"
    ],
-   "group": 8
+   "group": 6
   },
   {
    "id": "test:roles-position",
@@ -6171,7 +6172,7 @@
     "!**/*.test.mjs",
     "src/main/spawn-dispatch.test.ts"
    ],
-   "group": 5
+   "group": 7
   },
   {
    "id": "test:attach-any-agent-mutants",
@@ -6307,7 +6308,7 @@
     "src/shared/dnd-attach-zone.test.ts",
     "src/shared/move-exchanges.test.ts"
    ],
-   "group": 11
+   "group": 10
   },
   {
    "id": "test:composed-night-mutants",
@@ -6586,7 +6587,7 @@
     "src/keeper/release-lease.test.ts",
     "src/main/liveness-small-run.test.ts"
    ],
-   "group": 9
+   "group": 2
   },
   {
    "id": "canary:memhog",
@@ -7055,7 +7056,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 2
+   "group": 4
   },
   {
    "id": "test:bloc-html-setting",
@@ -7075,7 +7076,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:bloc-html-instruction",
@@ -7117,7 +7118,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 9
+   "group": 11
   },
   {
    "id": "test:relance",
@@ -7159,7 +7160,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 5
+   "group": 12
   },
   {
    "id": "test:handoff-cache",
@@ -7201,7 +7202,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 6
+   "group": 12
   },
   {
    "id": "test:handoff-role",
@@ -7244,7 +7245,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 5
+   "group": 3
   },
   {
    "id": "test:vague",
@@ -7310,7 +7311,7 @@
     "scripts/pause-ui/seed-bus.mjs",
     "scripts/pause-ui/ui-arm.mjs"
    ],
-   "group": 7
+   "group": 4
   },
   {
    "id": "test:inbox-redrive",
@@ -7327,7 +7328,7 @@
     "src/main/sdk-delivery.ts",
     "src/main/store.ts"
    ],
-   "group": 7
+   "group": 4
   },
   {
    "id": "test:keeper-stop-semantics",
@@ -7342,7 +7343,7 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 9
+   "group": 6
   },
   {
    "id": "test:keeper-facade-restart",
@@ -7357,7 +7358,7 @@
     "src/main/keeper-client.ts",
     "src/main/platform/index.ts"
    ],
-   "group": 16
+   "group": 12
   },
   {
    "id": "test:pinned-node",
@@ -7376,7 +7377,7 @@
     "src/main/keeper-runtime-install.ts",
     "src/main/platform/index.ts"
    ],
-   "group": 5
+   "group": 8
   },
   {
    "id": "test:pinned-node-mutants",
@@ -7704,7 +7705,7 @@
     "src/shared/memory-scope.test.ts",
     "src/shared/scope-net.test.ts"
    ],
-   "group": 16
+   "group": 3
   },
   {
    "id": "test:pause-containers",
@@ -7729,7 +7730,7 @@
     "src/main/platform/index.ts",
     "src/shared/bus-switches.ts"
    ],
-   "group": 17
+   "group": 4
   },
   {
    "id": "test:hook-cost",
@@ -7747,7 +7748,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 2
+   "group": 11
   },
   {
    "id": "test:tool-lines",
@@ -7765,7 +7766,7 @@
     "scripts/e2e-tool-lines.mjs",
     "scripts/e2e-tool-lines.sh"
    ],
-   "group": 2
+   "group": 11
   },
   {
    "id": "test:bloc-html-chrome",
@@ -7823,7 +7824,7 @@
     "scripts/e2e-contained-rig.sh",
     "src/renderer/assets/fonts/orchestra-symbols.woff2"
    ],
-   "group": 12
+   "group": 9
   },
   {
    "id": "test:agent-view-removal",
@@ -7846,7 +7847,7 @@
     "scripts/fixtures/real-cli-badmodel-2.1.284.jsonl",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 8
+   "group": 5
   },
   {
    "id": "test:sidebar-orca",
@@ -7867,7 +7868,7 @@
     "scripts/e2e-sidebar-orca-drive.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 10
+   "group": 9
   },
   {
    "id": "test:network-visibility-shot",
@@ -7911,7 +7912,7 @@
     "src/shared/context-breakdown.ts",
     "src/shared/context-usage.ts"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:command-output-mutants",
@@ -7941,7 +7942,7 @@
     "!**/*.test.mjs",
     "src/shared/builtin-command-output.test.ts"
    ],
-   "group": 3
+   "group": 16
   },
   {
    "id": "test:command-output-e2e",
@@ -8002,7 +8003,7 @@
     "src/main/store.ts",
     "src/shared/bus-wake.ts"
    ],
-   "group": 5
+   "group": 10
   },
   {
    "id": "test:bus-contention",
@@ -8013,7 +8014,7 @@
     "scripts/verify-bus-contention.mjs",
     "src/main/bus.ts"
    ],
-   "group": 13
+   "group": 12
   },
   {
    "id": "test:bus-status",
@@ -8024,7 +8025,7 @@
     "@bundle:cli",
     "scripts/verify-bus-status-cli.mjs"
    ],
-   "group": 14
+   "group": 2
   },
   {
    "id": "test:bus-pane",
@@ -8330,7 +8331,7 @@
     "src/shared/workspace-name.ts",
     "src/shared/worktree-sizes.ts"
    ],
-   "group": 15
+   "group": 11
   },
   {
    "id": "test:reparent-notice",
@@ -8624,7 +8625,7 @@
     "src/shared/workspace-name.ts",
     "src/shared/worktree-sizes.ts"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:session-key-keeper",
@@ -8639,7 +8640,7 @@
     "src/main/platform/index.ts",
     "src/main/session-identity.ts"
    ],
-   "group": 10
+   "group": 8
   },
   {
    "id": "test:session-identity-mutants",
@@ -8854,7 +8855,7 @@
     "src/shared/reparent-run.test.ts",
     "src/shared/session-identity.test.ts"
    ],
-   "group": 3
+   "group": 14
   },
   {
    "id": "test:restart-row-shot",
@@ -8897,7 +8898,7 @@
     "scripts/pinned-node/smoke.cjs",
     "scripts/verify-native-manifest.mjs"
    ],
-   "group": 4
+   "group": 9
   },
   {
    "id": "test:rig-selftest",
@@ -8910,7 +8911,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/run-rig-selftest.sh"
    ],
-   "group": 4
+   "group": 6
   },
   {
    "id": "test:fork-control",
@@ -9005,7 +9006,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 4
+   "group": 11
   },
   {
    "id": "test:release-receipt",
@@ -9039,7 +9040,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 16
+   "group": 5
   },
   {
    "id": "test:release-receipt-mutants",
@@ -9074,7 +9075,7 @@
     "!**/*.test.mjs",
     "src/shared/session-budget.test.ts"
    ],
-   "group": 9
+   "group": 11
   },
   {
    "id": "scripts/e2e-acces-mobile.sh",
@@ -9116,7 +9117,7 @@
     "src/acces-mobile/server-refusal-drain.test.ts",
     "src/acces-mobile/server.test.ts"
    ],
-   "group": 10
+   "group": 7
   },
   {
    "id": "scripts/e2e-attach-any-agent.sh",
@@ -9135,7 +9136,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 12
+   "group": 3
   },
   {
    "id": "scripts/e2e-boot-heal-bound.mjs",
@@ -9234,7 +9235,7 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 15
+   "group": 10
   },
   {
    "id": "scripts/e2e-browser-cli.sh",
@@ -9261,7 +9262,7 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 12
+   "group": 8
   },
   {
    "id": "scripts/e2e-browser-design-proxy-mutants.sh",
@@ -9289,7 +9290,7 @@
     "scripts/lib/rig-runtime.mjs",
     "src/main/**"
    ],
-   "group": 4
+   "group": 14
   },
   {
    "id": "scripts/e2e-browser-design-proxy.sh",
@@ -9315,7 +9316,7 @@
     "scripts/lib/rig-runtime.mjs",
     "src/main/**"
    ],
-   "group": 17
+   "group": 4
   },
   {
    "id": "scripts/e2e-browser-design-source.sh",
@@ -9341,7 +9342,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 3
+   "group": 10
   },
   {
    "id": "scripts/e2e-browser-hidden-drive.sh",
@@ -9401,7 +9402,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 9
+   "group": 6
   },
   {
    "id": "scripts/e2e-browser-profiles.sh",
@@ -9429,7 +9430,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 11
+   "group": 8
   },
   {
    "id": "scripts/e2e-browser-tab-memory.sh",
@@ -9453,7 +9454,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 3
+   "group": 9
   },
   {
    "id": "scripts/e2e-browser-tabs-registry.sh",
@@ -9474,7 +9475,7 @@
     "scripts/e2e-browser-tabs-registry.sh",
     "scripts/e2e-contained-rig.sh"
    ],
-   "group": 7
+   "group": 12
   },
   {
    "id": "scripts/e2e-browser-tabs.sh",
@@ -9499,7 +9500,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 16
+   "group": 12
   },
   {
    "id": "scripts/e2e-browser-whole-flow.sh",
@@ -9526,7 +9527,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 2
+   "group": 11
   },
   {
    "id": "scripts/e2e-bus-page-header.sh",
@@ -9558,7 +9559,7 @@
     "src/main/docker-api.ts",
     "src/main/resource-monitor.ts"
    ],
-   "group": 15
+   "group": 7
   },
   {
    "id": "scripts/e2e-cookie-fuse.sh",
@@ -9640,7 +9641,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 11
+   "group": 9
   },
   {
    "id": "scripts/e2e-hibernate-wake.sh",
@@ -9673,7 +9674,7 @@
     "src/shared/hibernation.ts",
     "src/shared/inbox-blocks.ts"
    ],
-   "group": 13
+   "group": 7
   },
   {
    "id": "scripts/e2e-inherit-empty-boot.sh",
@@ -9710,7 +9711,7 @@
     "src/main/platform/index.ts",
     "src/main/store.ts"
    ],
-   "group": 16
+   "group": 8
   },
   {
    "id": "scripts/e2e-keeper-lifecycle.mjs",
@@ -9732,7 +9733,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/resources.ts"
    ],
-   "group": 11
+   "group": 9
   },
   {
    "id": "scripts/e2e-keyring-mutants.mjs",
@@ -9797,7 +9798,7 @@
     "src/shared/bus-switches.ts",
     "src/shared/pause-memory.ts"
    ],
-   "group": 16
+   "group": 10
   },
   {
    "id": "scripts/e2e-memory-guard-modal.mjs",
@@ -9853,7 +9854,7 @@
     "scripts/migrate-parent-names.mjs",
     "src/shared/naming-migration.ts"
    ],
-   "group": 8
+   "group": 9
   },
   {
    "id": "scripts/e2e-opening-task.mjs",
@@ -9876,7 +9877,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/opening-task.ts"
    ],
-   "group": 14
+   "group": 5
   },
   {
    "id": "scripts/e2e-packaged-run-proof.sh",
@@ -10056,7 +10057,7 @@
     "src/shared/bus-switches.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 7
+   "group": 8
   },
   {
    "id": "scripts/e2e-pause-gates.mjs",
@@ -10086,7 +10087,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/session-wedge.ts"
    ],
-   "group": 14
+   "group": 6
   },
   {
    "id": "scripts/e2e-r1-repro.mjs",
@@ -10116,7 +10117,7 @@
     "src/main/store.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 11
+   "group": 7
   },
   {
    "id": "scripts/e2e-rename-authority.sh",
@@ -10168,7 +10169,7 @@
     "src/shared/human-gates.ts",
     "src/shared/inbox-blocks.ts"
    ],
-   "group": 7
+   "group": 6
   },
   {
    "id": "scripts/e2e-rss-page-size.mjs",
@@ -10188,7 +10189,7 @@
     "src/main/resource-monitor.ts",
     "src/main/resources.ts"
    ],
-   "group": 4
+   "group": 3
   },
   {
    "id": "scripts/e2e-session-wedge.sh",
@@ -10206,7 +10207,7 @@
     "src/main/session-watchdog.ts",
     "src/main/store.ts"
    ],
-   "group": 5
+   "group": 6
   },
   {
    "id": "scripts/e2e-spawn-name-human-paths.mjs",
@@ -10226,7 +10227,7 @@
     "src/main/store.ts",
     "src/main/workspaces.ts"
    ],
-   "group": 2
+   "group": 9
   },
   {
    "id": "scripts/e2e-spawn-name-race.mjs",
@@ -10248,7 +10249,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 17
+   "group": 9
   },
   {
    "id": "scripts/e2e-spawn-name.sh",
@@ -10268,7 +10269,7 @@
     "scripts/e2e-spawn-name.sh",
     "scripts/session-budget/fake-anthropic-api.mjs"
    ],
-   "group": 4
+   "group": 5
   },
   {
    "id": "scripts/e2e-spawn-profile.sh",
@@ -10291,7 +10292,7 @@
     "scripts/lib/rig-runtime.mjs",
     "scripts/session-budget/fake-anthropic-api.mjs"
    ],
-   "group": 10
+   "group": 11
   },
   {
    "id": "scripts/e2e-spawn-prompt-duplication.mjs",
@@ -10310,7 +10311,7 @@
     "src/shared/ci-rigs.ts",
     "src/shared/pending-prompts.ts"
    ],
-   "group": 10
+   "group": 3
   },
   {
    "id": "scripts/e2e-stop-before-move.mjs",
@@ -10332,7 +10333,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 13
+   "group": 5
   },
   {
    "id": "scripts/e2e-usage-resume-rig.sh",
@@ -10364,7 +10365,7 @@
     "src/shared/verified-fanout-files.ts",
     "src/shared/verified-fanout-skill.ts"
    ],
-   "group": 1
+   "group": 8
   },
   {
    "id": "scripts/e2e-browser-agent-tabs.sh",
@@ -10395,7 +10396,7 @@
     "scripts/fixtures/browser-site/server.mjs",
     "scripts/lib/rig-runtime.mjs"
    ],
-   "group": 14
+   "group": 10
   },
   {
    "id": "scripts/e2e-browser-popups-mutants.mjs",
@@ -10476,7 +10477,7 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs"
    ],
-   "group": 6
+   "group": 15
   },
   {
    "id": "scripts/e2e-composed-drive.sh",
@@ -10515,7 +10516,7 @@
     "scripts/e2e-contained-rig.sh",
     "scripts/run-rig-selftest.sh"
    ],
-   "group": 17
+   "group": 4
   },
   {
    "id": "scripts/e2e-memory-banner.sh",
@@ -10577,7 +10578,7 @@
     "src/main/workspaces.ts",
     "src/shared/ci-rigs.ts"
    ],
-   "group": 7
+   "group": 4
   },
   {
    "id": "scripts/e2e-usage-resume-chain.mjs",
@@ -10627,7 +10628,7 @@
     "src/shared/fanout-relaunch.test.ts",
     "src/shared/fanout-report.test.ts"
    ],
-   "group": 6
+   "group": 4
   },
   {
    "id": "scripts/e2e-live-ports-scratch.mjs",
@@ -10636,6 +10637,7 @@
    "reason": "needs `gh` auth, the network and a SCRATCH repository (ORCHESTRA_SCRATCH_REPO=<owner>/<…scratch…>, never this repo; keep it PRIVATE); it exits 1 without it. Real PR host: start-check probe, flaky job re-run, merge commit through deliver.",
    "paths": [
     ".github/workflows/ci.yml",
+    ".github/workflows/mutants.yml",
     ".github/workflows/release.yml",
     "scripts/e2e-live-ports-scratch.mjs",
     "src/cli/fanout-run-live.ts",
@@ -10676,7 +10678,7 @@
     "src/shared/home-scratch.ts",
     "scripts/role-guard/**"
    ],
-   "group": 13
+   "group": 16
   },
   {
    "id": "test:role-guard-matrix-vf2",
@@ -10697,7 +10699,7 @@
     "src/shared/home-scratch.ts",
     "scripts/role-guard/**"
    ],
-   "group": 14
+   "group": 17
   }
  ]
 }

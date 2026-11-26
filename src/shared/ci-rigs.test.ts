@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, groupsOf, jobCount, judgeArm, judgeShards, tapFails, judge, MAX_JOBS, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, suiteShardsOf, tapSkips, validateRigs, type RigFile, type ShardResult } from './ci-rigs.ts';
+import { assignGroups, isMutantRig, mutantParts, groupsOf, jobCount, judgeArm, judgeShards, tapFails, judge, MAX_JOBS, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, suiteShardsOf, tapSkips, validateRigs, type RigFile, type ShardResult } from './ci-rigs.ts';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 
@@ -331,4 +331,48 @@ test('a `# todo` test is red (it is neither a pass nor a listed skip)', () => {
   assert.equal(c?.todo, 1);
   assert.equal(judge(0, c!).ok, false);
   assert.equal(judge(0, { ...c!, todo: 0 }).ok, true);
+});
+
+// ---- #623: mutant rigs never block a pull_request ---------------------------------------------------------------------------------------------------------
+test('#623 isMutantRig: the `mutants` rigs and the role-guard matrices, nothing else', () => {
+  for (const id of ['test:fanout-run-mutants-3', 'scripts/e2e-browser-tabs-mutants.mjs', 'canary:pause-bars-mutants', 'test:role-guard-matrix', 'test:role-guard-matrix-vf2']) assert.ok(isMutantRig(id), id);
+  for (const id of ['test:fanout-run', 'test:role-guard-cli', 'scripts/e2e-browser-tabs.sh', 'test:bloc-html-chrome']) assert.ok(!isMutantRig(id), id);
+});
+
+test('#623 the committed file: every mutant rig is in exactly one mutants.yml part, the non-mutant rigs sit in the first prGroups groups, and mutants.yml pins its part list', () => {
+  const file = readRigFile(root);
+  const want = file.rigs.filter((r) => r.class === 'RUNS_IN_CI' && isMutantRig(r.id)).map((r) => r.id).sort();
+  assert.ok(want.length > 10, 'the mutant rigs exist');
+  const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'mutants.yml'), 'utf8');
+  const parts = (/part: \[([\d, ]+)\]/.exec(wf)?.[1] ?? '').split(',').map((x) => Number(x.trim()));
+  assert.deepEqual(parts, Array.from({ length: parts.length }, (_, i) => i + 1));
+  assert.match(wf, new RegExp(`--part=\\$\\{\\{ matrix.part \\}\\}/${parts.length}`), 'the workflow passes the part count it has');
+  assert.deepEqual(mutantParts(file, parts.length).flat().sort(), want, 'every mutant rig runs in exactly one part');
+  assert.match(wf, /gh issue create[^\n]*--label ci-mutants/);
+  assert.match(wf, /branches: \[master\]/); assert.match(wf, /schedule:/);
+  const k = file.prGroups as number;
+  assert.ok(Number.isInteger(k) && k >= 1 && k <= groupsOf(file));
+  for (const r of file.rigs) if (r.class === 'RUNS_IN_CI' && !isMutantRig(r.id)) assert.ok((r.group as number) <= k, `${r.id} (group ${r.group}) must sit in the first ${k} groups: the others are skipped on a pull_request`);
+});
+
+test('#623 mutantParts: longest-first onto the lightest part, deterministic, every rig once', () => {
+  const r = (id: string, wallSec: number) => ({ id, command: 'x', class: 'RUNS_IN_CI' as const, wallSec });
+  const f: RigFile = { rigs: [r('a-mutants', 100), r('b-mutants', 90), r('c-mutants', 60), r('d-mutants', 50), r('plain', 999)] };
+  assert.deepEqual(mutantParts(f, 2), [['a-mutants', 'd-mutants'], ['b-mutants', 'c-mutants']]);
+  assert.deepEqual(mutantParts(f, 1)[0], ['a-mutants', 'b-mutants', 'c-mutants', 'd-mutants']);
+});
+
+test('#623 a pull_request selection skips the mutant rigs (even on a shared-file change that selects every rig); ci-full and a dispatch keep them', () => {
+  const run = (env: Record<string, string>) => {
+    const f = path.join(os.tmpdir(), `sel-${process.pid}-${Math.random().toString(36).slice(2)}.txt`);
+    fs.writeFileSync(f, '.github/ci-rigs.json\n');
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/rigs.mjs'), 'select', '--changed-file', f], { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
+    fs.rmSync(f, { force: true });
+    return JSON.parse(r.stdout) as { ids: string[]; skipped: { id: string; why: string }[] };
+  };
+  const pr = run({ CI_PATH_SELECTION: '1' });
+  assert.ok(pr.ids.length > 50 && pr.ids.every((id) => !isMutantRig(id)), 'no mutant rig runs on a PR');
+  assert.ok(pr.skipped.some((s) => isMutantRig(s.id) && /never on a pull_request/.test(s.why)));
+  assert.ok(run({ CI_PATH_SELECTION: '1', CI_FULL_REASON: 'the ci-full label forces every rig' }).ids.some(isMutantRig), 'ci-full keeps them');
+  assert.ok(run({ CI_PATH_SELECTION: '0' }).ids.some(isMutantRig), 'a dispatch / local run keeps them');
 });

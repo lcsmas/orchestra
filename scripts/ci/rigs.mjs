@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, judgeShards, readRigFile, requiredRigIds, suiteShardsOf, validateRigs } from '../../src/shared/ci-rigs.ts';
+import { assignGroups, isMutantRig, judgeShards, readRigFile, requiredRigIds, suiteShardsOf, validateRigs } from '../../src/shared/ci-rigs.ts';
 import { repoTree } from '../../src/shared/ci-closure.ts';
 import { currentSelection, pathSelectionOn } from './selection.mjs';
 import { generatePaths, renderSelection, selectRigs, toWire } from '../../src/shared/ci-paths.ts';
@@ -40,9 +40,17 @@ if (cmd === 'select') {
   console.log(JSON.stringify({ include: Array.from({ length: n }, (_, i) => ({ shard: i + 1, shards: n })) }));
 } else if (cmd === 'assign') {
   const file = readRigFile(root);
-  const groups = assignGroups({ ...file, rigs: file.rigs.map(({ group: _g, ...r }) => r) });
-  for (const r of file.rigs) { delete r.group; const g = groups.findIndex((ids) => ids.includes(r.id)); if (g >= 0) r.group = g + 1; }
-  file.groups = file.groups ?? groups.length;
+  // #623: two phases — the non-mutant rigs balanced over the first `prGroups` groups, then the mutant rigs (skipped on a pull_request) onto the lightest of all `groups`.
+  const N = file.groups ?? 4, K = Math.min(file.prGroups ?? N, N);
+  const w = (r) => r.wallSec ?? 300;
+  const load = Array(N).fill(0);
+  for (const r of file.rigs) delete r.group;
+  const ci = file.rigs.filter((r) => r.class === 'RUNS_IN_CI');
+  const place = (rs, upTo) => { for (const r of rs.sort((a, b) => w(b) - w(a) || a.id.localeCompare(b.id))) { const g = load.indexOf(Math.min(...load.slice(0, upTo))); r.group = g + 1; load[g] += w(r); } };
+  place(ci.filter((r) => !isMutantRig(r.id)), K);
+  place(ci.filter((r) => isMutantRig(r.id)), N);
+  const groups = assignGroups(file);
+  file.groups = N;
   fs.writeFileSync(path.join(root, '.github', 'ci-rigs.json'), JSON.stringify(file, null, 1) + '\n');
   console.log(groups.map((ids, i) => `group ${i + 1}: ${ids.length} rigs, ${Math.round(ids.reduce((n, id) => n + (file.rigs.find((r) => r.id === id).wallSec ?? 300), 0) / 60)} min`).join('\n'));
 } else if (cmd === 'draft') {
@@ -60,7 +68,7 @@ if (cmd === 'select') {
   if (write) {
     file.pathSets = gen.pathSets;
     for (const r of file.rigs) if (!only.length || only.includes(r.id)) r.paths = gen.paths[r.id];
-    const order = ['_doc', 'groups', 'suiteShards', 'sharedPaths', 'noRigPaths', 'pathSets', 'rigs'];
+    const order = ['_doc', 'groups', 'prGroups', 'suiteShards', 'sharedPaths', 'noRigPaths', 'pathSets', 'rigs'];
     const out = {}; for (const k of order) if (file[k] !== undefined) out[k] = file[k]; for (const k of Object.keys(file)) if (!(k in out)) out[k] = file[k];
     fs.writeFileSync(path.join(root, '.github', 'ci-rigs.json'), JSON.stringify(out, null, 1) + '\n');
     console.log(`wrote pathSets (${Object.keys(gen.pathSets).join(', ')}) and paths for ${only.length || file.rigs.length} rig(s)`);
