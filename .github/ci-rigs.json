@@ -1769,7 +1769,6 @@
    "class": "RUNS_IN_CI",
    "wallSec": 170,
    "timeoutMin": 15,
-   "group": 6,
    "paths": [
     "scripts/fanout-loop-skill-mutants.mjs",
     "src/cli/fanout-acceptance.ts",
@@ -1820,7 +1819,8 @@
     "src/shared/verified-fanout-skill.ts",
     "src/shared/fanout-loop-skill.test.ts",
     "src/shared/fanout-role-texts.test.ts"
-   ]
+   ],
+   "group": 6
   },
   {
    "id": "test:fanout-review-mutants",
