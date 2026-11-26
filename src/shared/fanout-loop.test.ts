@@ -778,3 +778,26 @@ test('607 c1 (decision 8, composed): a READY ticket (approved, green) in the ver
   assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0, 'yet nothing merged');
   assert.equal(r.result.report.merged.length, 0);
 });
+
+// ── stack C connect fix round 2 (review 606 of ledger #613, MAJOR-3 + its minor) ────────────────────────────────────
+test('606 MAJOR-3 (composed): the author dies TWICE — every spawn after the recorded round (also the ones the loop\'s start step makes) gets exactly ONE batch, with the hand-over line', async () => {
+  const r = await go('corrections-author-dies-twice');
+  const evs = r.world.events;
+  const spawnsAt = evs.map((e, i) => (e.ev === 'spawn' && e.ticket === 'T1' ? i : -1)).filter((i) => i >= 0);
+  const batchAt = evs.map((e, i) => (e.ev === 'corrections-batch' && e.ticket === 'T1' ? i : -1)).filter((i) => i >= 0);
+  assert.ok(spawnsAt.length >= 3, `the author was respawned more than once (${spawnsAt.length} spawns)`);
+  for (let k = 0; k < spawnsAt.length; k++) {
+    const upto = k + 1 < spawnsAt.length ? spawnsAt[k + 1] : evs.length;
+    const mine = batchAt.filter((b) => b > spawnsAt[k] && b < upto);
+    assert.equal(mine.length, 1, `spawn #${k + 1} got ${mine.length} batch(es), expected exactly 1 (spawns ${spawnsAt}, batches ${batchAt})`);
+    if (k > 0) assert.match(String(evs[mine[0]].text), /You replace the previous author/);
+  }
+});
+
+test('606 m3 (stall reason): once the author PUSHED its fix the reason no longer says "no fix yet" (the reviewer is the one that is silent)', async () => {
+  const r = await go('corrections-fix-silent');
+  const p = r.result.report.parked.find((x) => x.ticket === 'T1')!;
+  assert.ok(p, 'T1 is parked by the stall');
+  assert.doesNotMatch(p.reason, /no fix yet/);
+  assert.match(p.reason, /no recorded review on its head/);
+});

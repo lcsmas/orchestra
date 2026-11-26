@@ -158,9 +158,9 @@ const mutants = [
   ['stack C connect (#608): reconcile adopts nothing (git does not overrule the state)', [[L, "  if (!readLoopState(deps.home, deps.run)) return;\n  // `readReality`", "  return;\n  // `readReality`"]]],
   ['stack C connect (#608, story 21): the report costs are not read from the fleet', [[L, "await collectCosts(s, (t) => deps.fleet.costOf(t))", "{}"]]],
   ['stack C connect (#606): stepCorrections does nothing', [[L, "const out = await runCorrections({ deps: ctx.deps, guard: ctx.guard });", "const out = [] as Awaited<ReturnType<typeof runCorrections>>;"]]],
-  ['connect fix (#606 MAJOR-1): a dead author with an unanswered batch is never replaced', [['src/shared/fanout-loop-corrections.ts', "      if (!author || !deps.fleet.live(author)) {\n        const a2", "      if (false as boolean) {\n        const a2"]]],
+  ['connect fix (#606 MAJOR-1): a dead author with an unanswered batch is never replaced', [['src/shared/fanout-loop-corrections.ts', "      if (!author || !deps.fleet.live(author) || startedAfter) {\n        const a2", "      if (false as boolean) {\n        const a2"]]],
   ['connect fix (#606 MAJOR-2): the corrections step is not guarded (one port error ends the run)', [[L, "runCorrections({ deps: ctx.deps, guard: ctx.guard })", "runCorrections({ deps: ctx.deps })"]]],
-  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested') return", "if (false as boolean) return"]]],
+  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested' && (sameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "if (false as boolean) return"]]],
   ['connect fix (#606 m2): a kill at the batch wake is swallowed as a failed wake', [['src/shared/fanout-loop-corrections.ts', "if (e instanceof LoopKilled) throw e; deps.log(", "deps.log("]]],
   ['connect fix (#608 m1-A): reconcile does not re-throw a kill that its reads swallowed', [[L, "  if (killed) throw killed;", ""]]],
   ['connect fix (#608 m1-B): reconcile\'s port trap does not see the kill', [[L, "if (e instanceof LoopKilled) killed = e; throw e;", "throw e;"]]],
@@ -168,6 +168,9 @@ const mutants = [
   ['connect fix (#608 m2): the end step does not park behind a dropped upstream', [[L, "  await runEnd({ now: deps.now,", "  void ({ now: deps.now,"]]],
   ['connect fix (#607 c2): the environment mark skips a dependent whose red was carried', [['src/shared/fanout-loop-ci.ts', "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c) continue;", "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c || !shared.find(([n]) => n === cn)?.[1].some((h) => h.id === r.id)) continue;"]]],
   ['connect fix (#607 c1): the pause break is only checked after reconcile (a ready ticket merges in the pausing pass)', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (step === 'reconcile') { const cur"]]],
+  ['connect fix 2 (#606 MAJOR-3): an author respawned by the start step never gets the batch', [['src/shared/fanout-loop-corrections.ts', "if (!author || !deps.fleet.live(author) || startedAfter) {", "if (!author || !deps.fleet.live(author)) {"]]],
+  ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(sameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
+  ['connect fix 2: a silent reviewer feeds the stall clock for ever (the wake outcome counts as progress)', [[L, "else if (o.action === 'reviewer-woken') ctx.note(", "else if (o.action === 'reviewer-woken') ctx.did("]]],
 ];
 const control = run();
 console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);

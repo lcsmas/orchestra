@@ -116,16 +116,23 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
       out.push({ ticket: id, action: 'sent', to: a.to, round: a.round, findings: x.fix, noted: x.noted, replaced: a.replaced });
     }
     if (stop) return;
-    // (1b) a batch that is out, whose round is recorded, with the head unchanged and the author DEAD (out of context / gone): a fresh author gets the batch again, with the hand-over line
+    // (1b) a batch that is out, whose round is recorded, with the head unchanged and the author DEAD (out of context / gone) — or live but STARTED AFTER the round (the loop's `start` step respawned
+    // it: a fresh session has never read the batch; `startRun` overwrites `start.at` on a respawn): the fresh author gets the batch again, with the hand-over line, ONCE (the round's `at` moves to the re-send)
     const lastRev = (store.read()!.tickets[id].reviews ?? []).slice(-1)[0];
     const lastChanging = changing[changing.length - 1];
     if (lastChanging && lastRev && lastRev.n === lastChanging.r.n && done(store.read()!, lastChanging) && sameContent(lastChanging.r.head, lastChanging.r.tree, head, tree)) {
       const cur2 = store.read()!;
       const author = cur2.tickets[id].implementer;
-      if (!author || !deps.fleet.live(author)) {
-        const a2 = await sendBatch(ctx, cur2, id, lastChanging, cur2.tickets[id].rounds?.length ?? 1);
+      const rnd = (cur2.tickets[id].rounds ?? []).find((q) => q.n === lastChanging.r.n);
+      const startAt = cur2.tickets[id].start?.at;
+      const startedAfter = !!author && deps.fleet.live(author) && !!rnd && !!startAt && Date.parse(startAt) > Date.parse(rnd.at);
+      if (!author || !deps.fleet.live(author) || startedAfter) {
+        const a2 = await sendBatch(ctx, cur2, id, lastChanging, cur2.tickets[id].rounds?.length ?? 1, startedAfter);
         if (a2.kind === 'blocked') out.push({ ticket: id, action: 'blocked', why: a2.why });
-        else out.push({ ticket: id, action: 'sent', to: a2.to, round: a2.round, findings: lastChanging.fix, noted: lastChanging.noted, replaced: a2.replaced });
+        else {
+          store.update((x) => ({ ...x, tickets: { ...x.tickets, [id]: { ...x.tickets[id], rounds: (x.tickets[id].rounds ?? []).map((q) => (q.n === lastChanging.r.n ? { ...q, at: deps.now() } : q)) } } }));
+          out.push({ ticket: id, action: 'sent', to: a2.to, round: a2.round, findings: lastChanging.fix, noted: lastChanging.noted, replaced: a2.replaced });
+        }
         return;
       }
     }
@@ -147,11 +154,11 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
   return out;
 }
 
-async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x: { r: ReviewEntry; fix: string[]; noted: string[] }, round: number): Promise<{ kind: 'sent'; to: string; replaced: boolean; round: number } | { kind: 'blocked'; why: string }> {
+async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x: { r: ReviewEntry; fix: string[]; noted: string[] }, round: number, fresh = false): Promise<{ kind: 'sent'; to: string; replaced: boolean; round: number } | { kind: 'blocked'; why: string }> {
   const { deps } = ctx;
   const store = ctx.store ?? diskStore(deps);
   let author = state.tickets[id].implementer;
-  let replaced = false;
+  let replaced = fresh; // `fresh` = the live author is a respawn that never read the batch
   if (!author || !deps.fleet.live(author)) {
     // the shipped `startRun` skips every ticket that is not todo|started (ruling v1.3): a nominated|gated ticket whose author died goes back to `started` (implementer + branch kept), then start() replaces the author
     if (state.tickets[id].status === 'nominated' || state.tickets[id].status === 'gated') store.update((s) => applyTicketPatch(s, id, { status: 'started' }, deps.now()));

@@ -151,7 +151,7 @@ export async function stepCorrections(ctx: LoopCtx): Promise<void> {
   for (const o of out) {
     if (o.action === 'sent') ctx.did(`${o.ticket}: round ${o.round} sent to ${o.to} (${o.findings.join(', ')})`);
     else if (o.action === 'parked') ctx.did(`parked ${o.ticket}: ${o.why} (${o.findings.join(', ')})`);
-    else if (o.action === 'reviewer-woken') ctx.did(`${o.ticket}: reviewer ${o.reviewer} reads ${o.head.slice(0, 12)}`);
+    else if (o.action === 'reviewer-woken') ctx.note(`${o.ticket}: reviewer ${o.reviewer} reads ${o.head.slice(0, 12)}`); // NOT progress: the host op is a no-op on a head the reviewer already holds, so a silent reviewer would feed the stall clock every pass for ever
     else if (o.action === 'blocked') ctx.note(`${o.ticket}: corrections blocked — ${o.why}`);
   }
 }
@@ -502,7 +502,7 @@ function stuckWhy(s: LoopState, id: string): string {
   if (!t.head) return 'has no candidate (no head recorded)';
   if (!t.pr) return 'is not nominated (no PR)';
   const lastRev = (t.reviews ?? [])[(t.reviews ?? []).length - 1];
-  if (lastRev?.verdict === 'changes-requested') return `has changes requested by its reviewer (open: ${countsThrough(t, lastRev.n).open.join(', ') || 'none recorded'}) and no fix yet`;
+  if (lastRev?.verdict === 'changes-requested' && (sameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return `has changes requested by its reviewer (open: ${countsThrough(t, lastRev.n).open.join(', ') || 'none recorded'}) and no fix yet`;
   if (!reviewOn(t, t.head, t.tree)) return 'has no recorded review on its head';
   const open = t.dependsOn.filter((u) => !isMerged(s, u));
   return open.length ? `waits for ${open.join(', ')}` : 'is approved but not mergeable (CI or the forge)';
