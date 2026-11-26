@@ -52,7 +52,7 @@ test('#609 on: every switch combination renders the section, with the three step
   for (const c of COMBOS) {
     const s = ON(c);
     assert.ok(s.length > 800, `section present at ${key(c)}`);
-    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"', 'orchestra fanout state set <ticket> --unpark', 'NO SAFE OPTION: <reason>', '## Choices']) {
+    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"', 'orchestra fanout state set <ticket> --unpark', 'NO SAFE OPTION: <reason>']) {
       assert.ok(s.includes(frozen), `${frozen} missing at ${key(c)}`);
     }
     for (const cause of PARK_CAUSES) assert.ok(s.includes(`\`${cause}\``), `park cause ${cause} named`);

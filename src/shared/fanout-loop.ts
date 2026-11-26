@@ -17,7 +17,7 @@ export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 
 export type LoopStep = (typeof LOOP_STEPS)[number];
 
 /** Decision 5: the constant answer to a question; the agent's own pick goes in its PR body. */
-export const FIXED_ANSWER = 'Take the reversible option, record it under `## Choices` in your PR body, continue. Do not wait for anyone.';
+export const FIXED_ANSWER = 'Take the reversible option, record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"`, continue. Do not wait for anyone.';
 /** Decision 5: an `ask` whose FIRST line starts with this declares "no safe option" (contradictory spec, irreversible act): the ticket is parked. */
 export const NO_SAFE_OPTION = 'NO SAFE OPTION: ';
 /** An agent's ask is cut to this many chars before it is listed under `choices` (the state refuses longer). */

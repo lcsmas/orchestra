@@ -113,6 +113,7 @@ import { runReview } from './fanout-review.ts';
 import { runCloseout } from './fanout-closeout.ts';
 import { runCheck } from './fanout-check.ts';
 import { fanoutCompletionRefusal, runRecord, stateSetNeedsHost } from './fanout-record.ts';
+import { runChoice } from './fanout-choice.ts';
 
 // Standalone Node.js CLI client for the Orchestra Electron app. It speaks plain
 // HTTP POST over the app's Unix socket using Node's `http.request` with the
@@ -2566,6 +2567,11 @@ async function main(argv: string[]): Promise<void> {
         fanoutDeps.identity = hostIdentity;
         if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record: the host could not vouch this session (is Orchestra running, and is this the live session of the reviewer?). Nothing was recorded.');
       }
+      if (args[0] === 'choice' && !args.includes('--help') && !args.includes('-h')) { // #641 — the implementer's choice: the host's /identity is the caller proof; a keyed session the host cannot vouch records nothing
+        await settleHostIdentity();
+        fanoutDeps.identity = hostIdentity;
+        if (process.env.ORCHESTRA_SESSION_KEY?.trim() && hostIdentity?.source !== 'host') fail('refusing to record a choice: the host could not vouch this session (is Orchestra running, and is this the live session of the implementer?). Nothing was recorded.');
+      }
       if (stateSetNeedsHost(args, process.env)) { await settleHostIdentity(); fanoutDeps.identity = hostIdentity; } // #589: a `--decide` on a seatRecords=on run is the coordinator's, proven by the host
       if (args[0] === 'state' && args[1] === 'set' && args.includes('--run-decision')) { // #587: a run decision is the coordinator's on the word of the HOST (like a freeze): fail closed when it cannot vouch
         await settleHostIdentity();
@@ -2615,7 +2621,7 @@ async function main(argv: string[]): Promise<void> {
           fanoutDeps.spawned = q.ok && Array.isArray(q.children) ? (q.children as string[]) : null;
         } catch { fanoutDeps.spawned = null; }
       }
-      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
+      const r = args[0] === 'acceptance' ? runAcceptance(args.slice(1), fanoutDeps) : args[0] === 'review' ? runReview(args.slice(1), fanoutDeps) : args[0] === 'closeout' ? runCloseout(args.slice(1), fanoutDeps) : args[0] === 'check' ? runCheck(args.slice(1), fanoutDeps) : args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) : args[0] === 'choice' ? runChoice(args.slice(1), fanoutDeps) : runFanout(args, fanoutDeps); // #553: closeout is read-only
       if (r.stdout) process.stdout.write(r.stdout);
       if (r.code !== 1 && r.stderr) process.stderr.write(r.stderr); // #486: the "using your parent's run" note rides rc 0/2 too
       if (r.code === 1) fail(r.stderr.trimEnd());

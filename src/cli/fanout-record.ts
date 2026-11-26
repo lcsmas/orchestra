@@ -8,14 +8,15 @@ import { countsThrough, parseRecordJson, recordReview, reviewerDoneRefusal } fro
 import { citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { fileOnHead, homeOf, parseArgs, runOf, treeOfSha, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
-export const RECORD_USAGE = `usage: orchestra fanout record <ticket> --head <sha> --verdict approve|changes-requested --json <file|-> [--run <id>]
+export const RECORD_USAGE = `usage: orchestra fanout record <ticket> --head <sha> --verdict approve|changes-requested --json <file|-> [--on-choice <finding>=<n>[,<finding>=<n>]] [--run <id>]
          (#589, switch seatRecords=on) the ticket's RECORDED REVIEWER records its verdict and its findings for the exact head it read — the only source of a review verdict: \`fanout gate\` and
          \`fanout deliver\` read nothing else (\`deliver --review-verdict\`, \`--no-review-gate\`, the coordinator's \`state set --finding\` / \`--finding-json\` / \`--settle\` are refused: [typed-verdict], [ungated-merge], [finding-source]).
          The --json: {"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"<the finding>","demonstration"?:{…},"report"?:{…},"specSentence"?:"<verbatim spec text>","kind"?:"code|process"}},
                       "fixed":["<id of an open finding you raised on an earlier head and have now read fixed on THIS head>",…]}   (the severity / report / specSentence / demonstration rules are those of \`state set --finding-json\`)
+         --on-choice (#641): a finding of THIS record whose subject is the ticket's recorded choice n (\`orchestra fanout choice\`) — it is listed in the closing report and never blocks the merge. A finding that the code does not do what the choice says is a normal finding: do not pass it here.
          Counts (BLOCKING / MAJOR / MINOR) are DERIVED from the open findings, never typed. approve is refused while a BLOCKING / MAJOR (or a blocking MINOR under this run's minorPolicy) finding is open; changes-requested needs one.
          Refusals (each starts with its name): [record-off] [record-wrong-ticket] (no recorded reviewer on the ticket) [record-not-reviewer] (you are not the ticket's recorded reviewer: coordinator, implementer, another ticket's reviewer)
-         [record-head-mismatch] (--head is not the head you were briefed on) [record-verdict] [record-json] [finding-exists] [fixed-not-open] [fixed-same-head] [fixed-by-non-reviewer] [approve-open-finding] [changes-no-finding].
+         [on-choice-finding] [on-choice-unknown] (--on-choice names a finding not in this record / a choice the ticket has not recorded) [record-head-mismatch] (--head is not the head you were briefed on) [record-verdict] [record-json] [finding-exists] [fixed-not-open] [fixed-same-head] [fixed-by-non-reviewer] [approve-open-finding] [changes-no-finding].
          Your worker_done is refused ([record-missing]) until the verdict of your head is recorded. The coordinator's way of NOT fixing a finding: \`state set <ticket> --decide <finding>=<reason>\` (the coordinator only, vouched by the host: [decide-caller]; a reason is required: [decision-reason-blank]; listed by \`fanout closeout\`). \`state set --verdict approve|changes-requested\` is refused too ([typed-verdict]).
          A reviewer has no run of its own: --run defaults to your coordinator's run (as for \`state show\`). Exit 0 recorded · 2 refused · 1 usage / unreadable.`;
 
@@ -29,7 +30,7 @@ export function runRecord(args: string[], deps: FanoutDeps): RunResult {
 
 function record(args: string[], deps: FanoutDeps): RunResult {
   if (args[0] === '--help' || args[0] === '-h') return { code: 0, stdout: `${RECORD_USAGE}\n`, stderr: '' };
-  const p = parseArgs(args, ['--run', '--head', '--verdict', '--json'], []);
+  const p = parseArgs(args, ['--run', '--head', '--verdict', '--json', '--on-choice'], []);
   const [ticket, ...extra] = p.pos;
   if (!ticket || extra.length || p.vals['--head'] === undefined || p.vals['--verdict'] === undefined || p.vals['--json'] === undefined) throw new FanoutStateError(RECORD_USAGE);
   const r = runOf(p, deps, 'use');
@@ -53,15 +54,29 @@ function record(args: string[], deps: FanoutDeps): RunResult {
     if (/^[0-9a-f]{7,40}$/.test(head) && typeof obs === 'string') for (const c of citationsOf(obs)) if (isProductPath(c.path) && !known.has(c.path)) known.set(c.path, fileOnHead(deps.runner, head, c.path, deps.cwd, repo));
   }
   const caller = resolveCaller(cur, deps.env, deps.identity); // #588: the host's answer for THIS call, never the env alone
+  const onChoice = parseOnChoice(p.vals['--on-choice']);
   const next = updateState(file, (s) => {
     if (!s) throw new FanoutStateError(`no state at ${file}`);
-    return recordReview(s, ticket, { head, verdict: p.vals['--verdict'], input, callerId: caller.id, callerVouched: isVouched(caller), tree, now: deps.now(), fileOnHead: (h, f) => (known.has(f) ? known.get(f)! : null) });
+    return recordReview(s, ticket, { head, verdict: p.vals['--verdict'], input, callerId: caller.id, callerVouched: isVouched(caller), tree, now: deps.now(), fileOnHead: (h, f) => (known.has(f) ? known.get(f)! : null), ...(onChoice ? { onChoice } : {}) });
   });
   const t = next.tickets[ticket];
   const rv = t.reviews![t.reviews!.length - 1];
   const c = countsThrough(t, rv.n);
   const note = tree ? '' : `note: the tree of ${head.slice(0, 8)} is unreadable (not fetched? gh?): this verdict stays keyed on the sha, not the content\n`;
   return { code: 0, stdout: `${ticket}: review ${rv.n} recorded by ${rv.reviewer} on ${rv.head.slice(0, 12)}: ${rv.verdict} — ${c.blocking} BLOCKING / ${c.major} MAJOR / ${c.minor} MINOR open${c.open.length ? ` (${c.open.join(', ')})` : ''}; raised ${rv.findings.length}, closed ${rv.closed.length}\n`, stderr: r.note + note };
+}
+
+/** `--on-choice F1=2,F2=2` → {F1: 2, F2: 2}. */
+function parseOnChoice(v: string | undefined): Record<string, number> | undefined {
+  if (v === undefined) return undefined;
+  const out: Record<string, number> = {};
+  for (const part of v.split(',').map((x) => x.trim()).filter(Boolean)) {
+    const m = /^([A-Za-z0-9][A-Za-z0-9._#:-]{0,63})=([1-9][0-9]*)$/.exec(part);
+    if (!m) throw new FanoutStateError(`--on-choice expects <finding>=<n>[,<finding>=<n>] (got ${JSON.stringify(part)})`);
+    out[m[1]] = Number(m[2]);
+  }
+  if (!Object.keys(out).length) throw new FanoutStateError('--on-choice expects <finding>=<n>[,<finding>=<n>]');
+  return out;
 }
 
 function recordReviewOffRefusal(run: string, note: string): RunResult {

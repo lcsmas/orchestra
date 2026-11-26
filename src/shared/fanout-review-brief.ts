@@ -27,6 +27,8 @@ export interface BriefInput {
   /** `renderInterfaces(state, [own, …upstreams])`, `renderDecisions(state)`, `renderSwitchesLine(state)` of fanout-brief-common.ts (computed by `briefInputOf`). */
   interfacesText: string;
   decisionsText: string;
+  /** #641 — `renderTicketChoices(state, ticket)`: '' = none recorded (nothing is printed). */
+  choicesText?: string;
   switchesLine: string;
   /** The upstream interface versions this ticket follows vs the current ones (a STALE one is said). */
   follows: BriefFollow[];
@@ -88,7 +90,7 @@ export function renderReviewerBrief(i: BriefInput): string {
   out.push('## Ticket text', i.ticketText ? briefIndent(i.ticketText) : i.ticketRef ? `(no text captured; spec reference: ${i.ticketRef})` : '(no spec recorded for this ticket)', '');
   out.push('## Frozen interfaces', i.interfacesText);
   for (const f of i.follows) out.push(f.followed === null ? `- ${f.id}: this ticket records no followed version (current v${f.current})` : f.followed === f.current ? `- ${f.id}: followed v${f.followed} = current` : `- ${f.id}: this ticket follows v${f.followed} but the current is v${f.current}: STALE`);
-  out.push('', '## Run decisions', i.decisionsText, '');
+  out.push('', '## Run decisions', i.decisionsText, ...(i.choicesText ? ['', i.choicesText] : []), '');
   out.push('## Switches in force', i.switchesLine);
   const sentences = switchSentencesOf(i.switches);
   for (const s of sentences) out.push(`- ${s}`);

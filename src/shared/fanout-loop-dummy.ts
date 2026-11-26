@@ -315,7 +315,7 @@ export class DummyWorld {
     this.revCursor.set(r.ticket, r.idx);
     if (step.do === 'die') { this.revs.delete(r.ws); this.ev('review-died', r.ticket, { ws: r.ws }); return; }
     if (step.do === 'silent') { this.ev('review-silent', r.ticket, { ws: r.ws }); return; }
-    const open = Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision).map(([id]) => id);
+    const open = Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision && f.onChoice === undefined).map(([id]) => id);
     const findings = step.do === 'changes' ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, { severity: 'BLOCKING', evidence: 'argued', report: { input: 'the scripted input', happens: 'the scripted failure', where: 'src/x.ts:1', proof: 'scripted' } }])) : {};
     const tree = this.commits.get(head)?.tree ?? null;
     try {

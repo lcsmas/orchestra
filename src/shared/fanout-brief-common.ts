@@ -13,6 +13,13 @@ export function renderDecisions(state: FanoutState): string {
   return `Decisions of the run (binding, verbatim — recorded by the coordinator):\n${d.map((x) => `${x.n}. ${x.text}`).join('\n')}`;
 }
 
+/** #641 — the choices the ticket's implementer RECORDED (`orchestra fanout choice`): the run's decisions for this ticket, listed in its reviewer's brief. '' when there are none (the brief stays byte-identical). */
+export function renderTicketChoices(state: FanoutState, ticket: string): string {
+  const cs = (state.choices ?? []).filter((c) => c.ticket === ticket);
+  if (!cs.length) return '';
+  return `Choices recorded for ${ticket} (decisions of the run: the implementer took the reversible option — the rule is fixed, no coordinator rules on it afterwards):\n${cs.map((c) => `${c.n}. ${c.question} → TAKEN: ${c.answer}`).join('\n')}\nA finding whose subject is one of these choices does not block the merge: record it with \`--on-choice <finding>=<n>\`. A finding that the code does NOT do what the choice says is a normal finding.`;
+}
+
 /** The switches in force (all of them, with their value) on ONE line. */
 export function renderSwitchesLine(state: FanoutState): string {
   const sw = switchesOf(state);
