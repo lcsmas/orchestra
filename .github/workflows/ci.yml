@@ -1,6 +1,6 @@
 # Pull-request CI (#568): tsc + the full suite + the rig matrix, no silent green. No secret, read-only token.
 # The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the `tests` jobs when a rig is in neither.
-# #594: 20 jobs per PR = typecheck + 2 suite shards (`tests`) + 16 rig groups (`rigs`) + `suite` (the verdict over all of them). The matrices are STATIC
+# #594/#623: 20 jobs RUN AT ONCE per PR = typecheck + 2 suite shards (`tests`) + 17 rig groups (`rigs`); `suite` (the verdict over all of them) runs after them, so it never overlaps. The matrices are STATIC
 # (no inventory job); src/shared/ci-rigs.test.ts pins them to `suiteShards` / `groups` of .github/ci-rigs.json — change a number in both.
 # How to add a rig / the local-only list: docs/codebase-map/build-release.md § Pull-request CI.
 name: CI
@@ -97,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     name: rigs (group ${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4

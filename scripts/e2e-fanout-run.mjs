@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EXIT_SURVIVED, exitAfterFlush, runMutantChildren } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
@@ -75,12 +76,13 @@ if (!MUTANTS) {
 }
 
 // ── mutants ──────────────────────────────────────────────────────────────────────────────────────────────────
+const CHILD = process.env.MUT_CHILD; // #623: set by the parent — run this ONE mutant (its index) in its OWN scratch copy of src/; the parent runs the control
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-run-mut-'));
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
 const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts'].map((f) => path.join(scratch, f));
-function run(timeout = 90_000) { // a mutant that runs away (an infinite loop) is KILLED by the timeout: keep it short so the rig fits its CI slot; the control gets the long one
+function run(timeout = 180_000) { // a mutant that runs away (an infinite loop) is KILLED by the timeout (printed as such); mutants run 4 at a time (#623), so it is longer than the 90 s of the serial rig; the control gets the long one
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
   const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN);
@@ -175,14 +177,21 @@ const mutants = [
   ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
   ['connect fix 2: a silent reviewer feeds the stall clock for ever (the wake outcome counts as progress)', [[L, "else if (o.action === 'reviewer-woken') ctx.note(", "else if (o.action === 'reviewer-woken') ctx.did("]]],
 ];
-const control = run(240_000);
-console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);
-if (control.fail !== 0 || control.skipped !== 0 || !(control.pass > 0)) { console.error('the unpatched copy is not green: refusing to mutate'); process.exit(1); }
-let survived = 0, refused = 0, ran = 0;
+if (CHILD === undefined) {
+  const control = run(240_000);
+  console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);
+  if (control.fail !== 0 || control.skipped !== 0 || !(control.pass > 0)) { console.error('the unpatched copy is not green: refusing to mutate'); process.exit(1); }
+  fs.rmSync(scratch, { recursive: true, force: true });
+  // #623: the mutants run in parallel, each in its own child process with its own scratch copy; output printed in mutant order. Child exit: 0 killed, 3 survived, 4 refused (stale).
+  const ids = mutants.map((_, mi) => mi).filter((mi) => mi % PART_N === PART_I - 1 && (!ONLY || mutants[mi][0].includes(ONLY)));
+  const { survived, broken, codes } = await runMutantChildren(ids, 'MUT_CHILD', [4]);
+  const refused = codes.filter((c) => c === 4).length, ran = ids.length;
+  console.log(`\n${PART ? `part ${PART}: ` : ''}${ran - survived - refused - broken}/${ran} killed, ${survived} survived, ${refused} refused`);
+  exitAfterFlush(survived || refused || broken ? 1 : 0);
+}
+let survived = 0, refused = 0;
 for (const [mi, [name, edits]] of mutants.entries()) {
-  if (mi % PART_N !== PART_I - 1) continue; // another part's mutant
-  if (ONLY && !name.includes(ONLY)) continue;
-  ran++;
+  if (String(mi) !== CHILD) continue;
   const saved = new Map();
   let stale = null;
   for (const [file, from, to] of edits) {
@@ -203,5 +212,4 @@ for (const [mi, [name, edits]] of mutants.entries()) {
   for (const [fp, text] of saved) fs.writeFileSync(fp, text);
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-console.log(`\n${PART ? `part ${PART}: ` : ''}${ran - survived - refused}/${ran} killed, ${survived} survived, ${refused} refused`);
-process.exit(survived || refused ? 1 : 0);
+process.exit(survived ? EXIT_SURVIVED : refused ? 4 : 0);

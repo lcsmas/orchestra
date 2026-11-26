@@ -4,6 +4,7 @@
 //   node scripts/e2e-fanout-tree-verdict.mjs            baseline: every arm must PASS (a must-PASS and a must-FAIL arm per clause)
 //   node scripts/e2e-fanout-tree-verdict.mjs --mutants  each patched copy of the BUILT bundle must be KILLED (≥1 arm FAILs); the baseline is the control
 import { spawnSync } from 'node:child_process';
+import { EXIT_SURVIVED, exitAfterFlush, runMutantChildren } from './lib/mutant-pool.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -305,7 +306,8 @@ if (!fs.existsSync(CLI)) { console.error(`${CLI} missing — run \`pnpm run buil
 const orig = fs.readFileSync(CLI, 'utf8');
 if (!UNFIXED && !orig.includes('builtOnTree')) { console.error('dist-electron/cli.js has no #512 tree key — it is stale: rebuild (pnpm run build:cli)'); process.exit(1); }
 
-const baselineBad = report(UNFIXED ? 'UNFIXED bundle (expected: red)' : 'baseline (built bundle)', scenarios(CLI));
+const CHILD = process.env.MUT_CHILD; // #623: set by the parent — run this ONE mutant only (baseline + anchors were checked by the parent)
+const baselineBad = CHILD !== undefined ? 0 : report(UNFIXED ? 'UNFIXED bundle (expected: red)' : 'baseline (built bundle)', scenarios(CLI));
 if (UNFIXED) process.exit(baselineBad > 0 ? 0 : 1); // inverted: the unfixed arm must FAIL
 if (!process.argv.includes('--mutants')) process.exit(baselineBad ? 1 : 0);
 if (baselineBad) { console.error('baseline is not clean: the mutant verdicts below would be meaningless'); process.exit(1); }
@@ -314,10 +316,17 @@ for (const [i, m] of mutants.entries()) for (const step of [m, ...(m.extra ?? []
   const n = orig.split(step.find).length - 1;
   if (n !== 1) { console.error(`MUTANT ${i} "${m.name}": anchor found ${n}× (needs exactly 1) — the bundle shape changed, fix the rig`); process.exit(1); }
 }
+if (CHILD === undefined) { // #623: the mutants run in parallel, each in its own child process (own scratch + own temp dirs); output printed in mutant order
+  const ids = mutants.map((_, i) => i).filter((i) => !process.env.MUT_ONLY || process.env.MUT_ONLY.split(',').includes(String(i)));
+  const { survived, broken } = await runMutantChildren(ids);
+  if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
+  console.log(`\n${mutants.length - survived - broken}/${mutants.length} mutants killed; real bundle byte-identical`);
+  exitAfterFlush(survived || broken ? 1 : 0);
+}
 let survived = 0;
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-tree-mut-'));
 for (const [i, m] of mutants.entries()) {
-  if (process.env.MUT_ONLY && !process.env.MUT_ONLY.split(',').includes(String(i))) continue; // iterate on a few: MUT_ONLY=2,3
+  if (String(i) !== CHILD) continue; // iterate on a few: MUT_ONLY=2,3
   let src = orig;
   for (const step of [m, ...(m.extra ?? [])]) {
     const n = src.split(step.find).length - 1;
@@ -332,6 +341,4 @@ for (const [i, m] of mutants.entries()) {
   if (bad === 0) survived++;
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
-console.log(`\n${mutants.length - survived}/${mutants.length} mutants killed; real bundle byte-identical`);
-process.exit(survived ? 1 : 0);
+process.exit(survived ? EXIT_SURVIVED : 0);

@@ -145,7 +145,7 @@ test('#594 ci.yml: static matrices pinned to ci-rigs.json (no inventory job), th
   assert.deepEqual(list('tests', 'shard'), iota(suiteShardsOf(file)), 'ci.yml `tests` matrix shard list != suiteShards of .github/ci-rigs.json (change both)');
   assert.deepEqual(list('tests', 'shards'), [suiteShardsOf(file)], 'ci.yml `shards` != suiteShards of .github/ci-rigs.json');
   assert.deepEqual(list('rigs', 'group'), iota(groupsOf(file)), 'ci.yml `rigs` matrix group list != groups of .github/ci-rigs.json (change both)');
-  assert.equal(list('tests', 'shard').length + list('rigs', 'group').length + 2, jobCount(file));
+  assert.equal(list('tests', 'shard').length + list('rigs', 'group').length + 1, jobCount(file));
   assert.ok(jobCount(file) <= MAX_JOBS, `${jobCount(file)} jobs per PR`);
   // the `suite` job: its id IS the check name (no `name:`), runs after everything even when a need failed, and needs ALL of them (a skipped/cancelled need is red in the summary)
   const suite = jobs.get('suite') as string;
@@ -170,10 +170,10 @@ test('#594 ci-rigs.json: suiteShards + groups fit the job limit, rigs are balanc
 
 test('must-FAIL: more jobs than the account runs, a bad suiteShards / groups, an empty group are validation problems', () => {
   const r = (id: string, extra: object = {}) => ({ id, command: 'x', class: 'RUNS_IN_CI' as const, ...extra });
-  assert.deepEqual(validateRigs({ groups: 16, suiteShards: 2, rigs: [r('a', { group: 1 })].concat(Array.from({ length: 15 }, (_, i) => r(`g${i}`, { group: i + 2 }))) }, ['a', ...Array.from({ length: 15 }, (_, i) => `g${i}`)]), [], '20 jobs fit');
+  assert.deepEqual(validateRigs({ groups: 17, suiteShards: 2, rigs: [r('a', { group: 1 })].concat(Array.from({ length: 16 }, (_, i) => r(`g${i}`, { group: i + 2 }))) }, ['a', ...Array.from({ length: 16 }, (_, i) => `g${i}`)]), [], '20 concurrent jobs fit (the `suite` verdict runs after them, #623)');
   const many = (g: number, shards: number) => validateRigs({ groups: g, suiteShards: shards, rigs: Array.from({ length: g }, (_, i) => r(`r${i}`, { group: i + 1 })) }, Array.from({ length: g }, (_, i) => `r${i}`));
-  assert.ok(many(16, 3).some((p) => /21 jobs/.test(p)), 'typecheck + 3 shards + 16 groups + suite = 21');
-  assert.ok(many(17, 2).some((p) => /21 jobs/.test(p)));
+  assert.ok(many(17, 3).some((p) => /21 jobs/.test(p)), 'typecheck + 3 shards + 17 groups = 21');
+  assert.ok(many(18, 2).some((p) => /21 jobs/.test(p)));
   assert.ok(many(3, 0).some((p) => /suiteShards must be an integer >= 1/.test(p)));
   assert.ok(validateRigs({ groups: 2, suiteShards: 1.5, rigs: [r('a', { group: 1 }), r('b', { group: 2 })] }, ['a', 'b']).some((p) => /suiteShards must be/.test(p)));
   assert.ok(validateRigs({ groups: 3, suiteShards: 1, rigs: [r('a', { group: 1 }), r('b', { group: 1 })] }, ['a', 'b']).some((p) => /group\(s\) 3 hold no rig/.test(p)) === false, 'an unassigned group is filled by assignGroups when there are rigs to spare');

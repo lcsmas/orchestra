@@ -4,11 +4,12 @@
 // Light: no Electron, no network, no tokens; the scratch copy lives under $TMPDIR; the repo is never written.
 //   node scripts/e2e-fanout-checks.mjs            control: the unpatched copy must be GREEN (24+ tests, 0 fail, 0 skipped)
 //   node scripts/e2e-fanout-checks.mjs --mutants  each mutant (exact string, must occur ONCE in its file — else REFUSED as stale) must be KILLED (≥1 test FAILs)
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { exitAfterFlush, pool } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
@@ -97,21 +98,31 @@ if (!baseOk) { console.log(base.out.slice(-3000)); fs.rmSync(scratch, { recursiv
 if (!process.argv.includes('--mutants')) { fs.rmSync(scratch, { recursive: true, force: true }); process.exit(0); }
 
 let survived = 0, refused = 0;
-for (const [i, [name, file, from, to]] of mutants.entries()) {
-  const f = path.join(scratch, file);
-  const orig = fs.readFileSync(f, 'utf8');
+// #623: each mutant runs in its OWN copy of the scratch tree, MUT_JOBS at a time (output kept in mutant order)
+const runAsync = (dir) => new Promise((resolve) => {
+  const c = spawn(process.execPath, ['--test', '--experimental-strip-types', path.join(dir, 'src/cli/fanout-check.test.ts')], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, TMPDIR: tmpBase } });
+  let out = ''; c.stdout.on('data', (d) => { out += d; }); c.stderr.on('data', (d) => { out += d; });
+  const t = setTimeout(() => c.kill('SIGKILL'), 240_000);
+  c.on('close', () => { clearTimeout(t); const n = (k) => Number(new RegExp(`^# ${k} (\\d+)`, 'm').exec(out)?.[1] ?? NaN); resolve({ pass: n('pass'), fail: n('fail') }); });
+});
+const lines = await pool(mutants, async ([name, file, from, to], i) => {
+  const tag = `M${String(i + 1).padStart(2, '0')}`;
+  const orig = fs.readFileSync(path.join(scratch, file), 'utf8');
   const n = orig.split(from).length - 1;
-  if (n !== 1) { console.log(`M${String(i + 1).padStart(2, '0')} REFUSED (stale: the string occurs ${n}×, need exactly 1) — ${name}`); refused++; continue; }
-  fs.writeFileSync(f, orig.replace(from, () => to));
-  const r = run();
-  fs.writeFileSync(f, orig);
-  const killed = r.fail > 0 || Number.isNaN(r.pass); // a mutant that breaks the module graph (no tests ran) is also dead
-  if (!killed) survived++;
-  console.log(`M${String(i + 1).padStart(2, '0')} ${killed ? 'KILLED' : 'SURVIVED'} (${r.pass} pass / ${r.fail} fail) — ${name}`);
-}
+  if (n !== 1) return { line: `${tag} REFUSED (stale: the string occurs ${n}×, need exactly 1) — ${name}`, refused: true };
+  const dir = fs.mkdtempSync(path.join(tmpBase, 'fanout-chk-mut-'));
+  try {
+    fs.cpSync(scratch, dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, file), orig.replace(from, () => to));
+    const r = await runAsync(dir);
+    const killed = r.fail > 0 || Number.isNaN(r.pass); // a mutant that breaks the module graph (no tests ran) is also dead
+    return { line: `${tag} ${killed ? 'KILLED' : 'SURVIVED'} (${r.pass} pass / ${r.fail} fail) — ${name}`, survived: !killed };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+for (const l of lines) { console.log(l.line); if (l.refused) refused++; if (l.survived) survived++; }
 const after = run(); // the restore is real: the copy is green again
 const same = after.fail === 0 && after.pass === base.pass;
 console.log(`\n${mutants.length - survived - refused}/${mutants.length} mutants killed, ${survived} survived, ${refused} refused; scratch restored → ${same ? 'GREEN' : 'RED'}`);
 
 fs.rmSync(scratch, { recursive: true, force: true });
-process.exit(survived || refused || !same ? 1 : 0);
+exitAfterFlush(survived || refused || !same ? 1 : 0);

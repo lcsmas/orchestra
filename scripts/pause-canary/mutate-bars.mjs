@@ -6,7 +6,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { exitAfterFlush, pool } from '../lib/mutant-pool.mjs';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,6 +23,12 @@ for (const t of TESTS) fs.copyFileSync(path.join(REPO, 'src', 'main', t), path.j
 if (MEMHOG) { fs.cpSync(path.join(REPO, 'src', 'shared'), path.join(tmp, 'src', 'shared'), { recursive: true }); fs.cpSync(path.join(REPO, 'scripts', 'memory-cap'), path.join(tmp, 'scripts', 'memory-cap'), { recursive: true }); fs.cpSync(path.join(REPO, 'src', 'keeper', 'index.ts'), path.join(tmp, 'src', 'keeper', 'index.ts'), { recursive: true, dereference: true }); }   // the app test pins the keeper's cap-state line against the source; the os test spawns the stand-in CLI
 const targetOf = (f) => path.join(tmp, 'scripts', 'pause-canary', f);
 const origOf = Object.fromEntries(['bars.mjs', 'lib.mjs', 'memhog-bars.mjs', 'memhog-app-facts.mjs', 'memhog-os.mjs', 'memhog-arms.mjs'].map((f) => [f, fs.readFileSync(targetOf(f), 'utf8')]));
+// #623: a mutant runs in its OWN copy of the scratch tree (`dir`), MUT_JOBS at a time; the control and the after-run use `tmp` itself.
+const runAsync = (dir) => new Promise((resolve) => {
+  const c = spawn(process.execPath, ['--test', '--experimental-strip-types', ...TESTS.map((t) => `src/main/${t}`)], { cwd: dir, stdio: ['ignore', 'pipe', 'ignore'] });
+  let out = ''; c.stdout.on('data', (d) => { out += d; });
+  c.on('close', () => resolve({ pass: Number(/# pass (\d+)/.exec(out)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(out)?.[1] ?? -1) }));
+});
 const run = () => { const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS.map((t) => `src/main/${t}`)], { cwd: tmp, encoding: 'utf8' }); return { pass: Number(/# pass (\d+)/.exec(r.stdout)?.[1] ?? -1), fail: Number(/# fail (\d+)/.exec(r.stdout)?.[1] ?? -1) }; };
 
 const PAUSE_MUTANTS = [
@@ -81,20 +88,23 @@ const clean = run();
 let bad = 0;
 console.log(`CLEAN control: pass ${clean.pass} fail ${clean.fail}`);
 if (clean.fail !== 0 || clean.pass < 1) { console.log('CLEAN control is not clean — nothing measured'); process.exit(1); }
-for (const [name, find, replace, file = 'bars.mjs'] of MUTANTS) {
+const results = await pool(MUTANTS, async ([name, find, replace, file = 'bars.mjs']) => {
   const orig = origOf[file];
   const hits = orig.split(find).length - 1;
-  if (hits !== 1) { console.log(`${name}: PATTERN-GONE (anchor matched ${hits}×)`); bad++; continue; }
-  fs.writeFileSync(targetOf(file), orig.replace(find, () => replace));
-  const r = run();
-  fs.writeFileSync(targetOf(file), orig);
-  const killed = r.fail > 0;
-  if (!killed) bad++;
-  console.log(`${name}: ${killed ? 'killed' : 'SURVIVED'} (pass ${r.pass} fail ${r.fail})`);
-}
+  if (hits !== 1) return { line: `${name}: PATTERN-GONE (anchor matched ${hits}×)`, ok: false };
+  const dir = fs.mkdtempSync(path.join(base, 'mutbars-m-'));
+  try {
+    fs.cpSync(tmp, dir, { recursive: true, verbatimSymlinks: true });
+    fs.writeFileSync(path.join(dir, 'scripts', 'pause-canary', file), orig.replace(find, () => replace));
+    const r = await runAsync(dir);
+    const killed = r.fail > 0;
+    return { line: `${name}: ${killed ? 'killed' : 'SURVIVED'} (pass ${r.pass} fail ${r.fail})`, ok: killed };
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+for (const r of results) { console.log(r.line); if (!r.ok) bad++; }
 const same = Object.keys(origOf).every((f) => fs.readFileSync(targetOf(f), 'utf8') === origOf[f]);
 const after = run();
 console.log(`restored byte-exact: ${same}; CLEAN control after: pass ${after.pass} fail ${after.fail}`);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`MUTATE-BARS: ${bad === 0 && same && after.fail === 0 ? 'PASS' : 'FAIL'} (${MUTANTS.length} mutants)`);
-process.exit(bad === 0 && same && after.fail === 0 ? 0 : 1);
+exitAfterFlush(bad === 0 && same && after.fail === 0 ? 0 : 1);
