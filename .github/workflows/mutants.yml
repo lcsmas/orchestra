@@ -8,6 +8,11 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'a release whose gate reused a pull_request run (release.sh): red => that release becomes a pre-release + the issue names it'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -55,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -81,7 +86,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh label create ci-mutants --color B60205 --description "a mutant rig is red (#623)" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
-          gh issue create --repo "$GITHUB_REPOSITORY" --label ci-mutants --title "ci-mutants: mutant rig(s) red at ${GITHUB_SHA::8} (${GITHUB_EVENT_NAME})" --body-file "$RUNNER_TEMP/body.md"
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -n "$TAG" ]; then
+            printf '\n\nRelease `%s` was gated on a pull_request run (no mutant rigs) and is marked a **pre-release** (not Latest) until this is fixed.\n' "$TAG" >> "$RUNNER_TEMP/body.md"
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci-mutants --title "ci-mutants: release $TAG has red mutant rig(s) (pre-release)" --body-file "$RUNNER_TEMP/body.md"
+            for i in $(seq 1 90); do   # --ci-only: the release is created by release.yml, maybe still building
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false && break
+              sleep 20
+            done
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --label ci-mutants --title "ci-mutants: mutant rig(s) red at ${GITHUB_SHA::8} (${GITHUB_EVENT_NAME})" --body-file "$RUNNER_TEMP/body.md"
+          fi
       - name: Verdict
         if: steps.verdict.outputs.rc != '0'
         run: exit 1

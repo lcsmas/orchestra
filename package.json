@@ -203,6 +203,7 @@
     "test:gates": "bash scripts/run-gates.sh",
     "test:release-preflight": "bash scripts/verify-release-preflight.sh",
     "test:release-gate": "bash scripts/verify-release-gate.sh",
+    "test:release-reuse-pr-ci": "bash scripts/verify-release-reuse-pr-ci.sh",
     "test:release-receipt": "bash scripts/verify-release-receipt.sh",
     "test:release-receipt-mutants": "bash scripts/verify-release-receipt.sh --mutants",
     "release": "bash scripts/release.sh"

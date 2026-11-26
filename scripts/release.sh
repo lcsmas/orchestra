@@ -56,6 +56,9 @@
 # RELEASE GATE (#207/#208): before any tag/push the tree must pass `npx tsc --noEmit`, the full
 # suite, the session-budget suite and the Admission rigs (scripts/release-gate.sh), then `pnpm run build:bus-abi` for a local build. Escape hatch:
 # --skip-release-gate "<reason>" (mandatory, appended to the release notes; not with --ci-only).
+# #595 full rig run: the tag's tree needs a green ci.yml dispatch (or push + mutants.yml) run; none -> it dispatches one. REUSE (reuse-pr-ci): a green pull_request run whose MERGE-REF tree is byte-identical to the
+# tag's tree (version line masked) also counts, with the mutant rigs absent from it: AFTER the release, mutants.yml is dispatched on the tag (release_tag input); if it ends red the GitHub release is marked
+# pre-release (not Latest, no install picks it) and a `ci-mutants` issue names the release. Different tree or red PR run -> dispatch as before.
 # #484: the gate is SKIPPED when scripts/release-gate.sh already PASSED on this exact tree (a receipt keyed by the git tree id, package.json's
 # version line masked; any other change, another gate version or an unclean tree runs it). The vague's final gate runs `bash scripts/release-gate.sh`.
 # #595 FULL RIG RUN: after the gate, the tree must also have a green `workflow_dispatch` run of ci.yml (every rig; pull-request runs are path-selected): `gh workflow run ci.yml --ref master`.
@@ -421,6 +424,7 @@ elif [ "$SKIP_GATE" = 1 ]; then
 else
   _rg_ci="$(rg_full_ci_check)" || exit 1
   echo "  $_rg_ci"
+  case "$_rg_ci" in *"mutant rigs NOT in this run"*) MUTANTS_AFTER=1;; esac
 fi
 if [ "$CI_ONLY" = 0 ]; then
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] pnpm run build:bus-abi\n'; else rg_prepare_native || exit 1; fi
@@ -534,6 +538,12 @@ if [ "$CI_ONLY" = 0 ]; then
 else
   say "Tag pushed — GitHub Actions will build and publish release"
   echo "  Monitor: https://github.com/lcsmas/orchestra/actions"
+fi
+
+# A gate that reused a pull_request run (mutant rigs absent): run them on the released tag; red => pre-release + ci-mutants issue (mutants.yml, release_tag).
+if [ "${MUTANTS_AFTER:-0}" = 1 ]; then
+  say "Mutant rigs on $TAG (mutants.yml release_tag)"
+  run "gh workflow run mutants.yml --ref '$TAG' -f release_tag='$TAG'"
 fi
 
 # ------------------------------------------------ package.json integrity (end) ---

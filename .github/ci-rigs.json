@@ -9009,6 +9009,21 @@
    "group": 11
   },
   {
+   "id": "test:release-reuse-pr-ci",
+   "command": "pnpm run test:release-reuse-pr-ci",
+   "class": "RUNS_IN_CI",
+   "wallSec": 10,
+   "paths": [
+    "scripts/release-gate.sh",
+    "scripts/verify-release-reuse-pr-ci.sh"
+   ],
+   "group": 5,
+   "pathsExtra": [
+    "scripts/release-gate.sh",
+    "scripts/verify-release-reuse-pr-ci.sh"
+   ]
+  },
+  {
    "id": "test:release-receipt",
    "command": "pnpm run test:release-receipt",
    "class": "RUNS_IN_CI",
