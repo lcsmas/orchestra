@@ -236,7 +236,7 @@ for (const role of ['implementer', 'verifier', 'reviewer', 'explorer', 'scribe']
     ['$( )', `x=$(${DELIVER})`], ['if/then', `if true; then ${DELIVER}; fi`], ['newline', `cd /r\n${DELIVER}`], ['extra spaces', 'orchestra   fanout   deliver --branch b'],
     ['bare deliver', 'orchestra fanout deliver'],
   ] as const) deny(role, `fanout deliver ${name}`, bash(cmd), /fanout deliver opens and MERGES/);
-  // #476: a scribe relays the coordinator's `state set` lines; `init` stays denied to it
+  // #476: a scribe relays the coordinator's `state set` lines (not `--status merged` under seatRecords=on: [state-caller], #612; the hook layer alone still allows it); `init` stays denied to it
   const SETS = [['fanout state set', 'orchestra fanout state set 473 --status merged --pr 5'], ['fanout state set via bash -c', 'bash -c "orchestra fanout state set 1 --status x"'], ['bare state set in sh -c', "sh -c 'orchestra fanout state set'"]] as const;
   for (const [name, cmd] of SETS) { if (role === 'scribe') allow(role, `${name} (scribe relay)`, bash(cmd)); else deny(role, name, bash(cmd), /state file/); }
   // #514: a scribe cannot rewrite a merge claim (--forget-merge), exactly like --accept-merged; plain relay flags stay allowed

@@ -65,7 +65,7 @@ test('#609 on: the exit codes of the text are the frozen ones and the help says 
   for (const [code, word] of [['0', 'every ticket merged'], ['3', 'parked'], ['4', 'paused'], ['2', 'refused'], ['1', 'could not run']] as const) {
     assert.match(s, new RegExp(`exit ${code}[^·]*?${word}|· ${code} [^·]*?${word}`), `exit ${code} (${word}) in the skill`);
   }
-  assert.match(LOOP_USAGE, /Exit 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused \(resumable: run it again\) · 2 refused \(\[run-…\]\) · 1 could not run/);
+  assert.match(LOOP_USAGE, /Exit 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused \(lift it with `orchestra fanout state set --run <id> --resume-run`, then run again\) · 2 refused \(\[run-…\]\) · 1 could not run/);
   // must-fail: swapping two codes in the text breaks the match
   const swapped = s.replace('3 ≥1 parked', '4 ≥1 parked');
   assert.doesNotMatch(swapped, /· 3 [^·]*?parked/);
@@ -101,8 +101,9 @@ test('#609 help: `orchestra fanout loop-help` prints the usage (exit 0), names t
   const r = runFanout(['loop-help'], { env: {}, cwd: '/', runner: (() => ({ code: 1, stdout: '', stderr: '' })) as never, now: () => '', readStdin: () => '' } as never);
   assert.equal(r.code, 0);
   assert.equal(r.stdout, `${LOOP_USAGE}\n`);
-  for (const name of ['orchestra fanout run', 'orchestra fanout plan --tickets', 'orchestra fanout plan submit', '--park <cause> --park-reason', '--unpark', '--pause <reason> [--pause-check <name>]', '--resume-run', 'plan-refused-twice', 'NO SAFE OPTION']) assert.ok(LOOP_USAGE.includes(name), name);
+  for (const name of ['orchestra fanout run', 'orchestra fanout plan --tickets', 'orchestra fanout plan submit', '--park <cause> --park-reason', '--unpark', '--pause <reason> [--pause-check <name>]', '--run <id> --resume-run', 'plan-refused-twice', 'NO SAFE OPTION']) assert.ok(LOOP_USAGE.includes(name), name);
   for (const cause of PARK_CAUSES) assert.ok(LOOP_USAGE.includes(cause), `cause ${cause}`);
+  assert.ok(ON().includes('--resume-run'), 'the skill says how a pause is lifted (the real `fanout run` help: state set --run <id> --resume-run)');
   const main = COMMANDS.find((c) => c.name === 'fanout')!;
   assert.ok(!main.detail.includes('The Boucle'), 'the main `help fanout` detail is byte-identical (the Boucle has its own help, like seat-help)');
 });

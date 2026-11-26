@@ -43,7 +43,7 @@ No model leads a run: you **prepare**, **launch**, **read the report** (¤orches
 
 1. **Prepare** — one ticket per spec, disjoint files, the ledger open (§0). Write NO order about sequencing: the brief is rendered by code and says every implementer starts at once on frozen names; a ¤--run-decision¤ after the plan is refused (¤decision-after-plan¤).
 2. **Launch** — ¤orchestra fanout run --tickets <id,id,…>¤ (or ¤--plan <plan.json>¤; ¤--start-check¤ when the CI is doubtful). ¤--tickets¤ has a single-use ¤explo-plan-<run8>¤ agent write the plan; code refuses it on a missing ticket, a cycle or an interface with no exact name (¤plan-refused-twice¤: exit 2, nothing starts). Run it from a workspace with no agent (¤orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"¤) and you may close your session: the loop is the ONLY reader of the run's mail.
-3. **Read the report** — exit **0** every ticket merged · **3** ≥1 parked (cause ¤question¤ / ¤situation¤ / ¤ci¤ / ¤upstream¤ + reason; dependents park too) · **4** paused: one check red on several PRs is the environment, fix it and run the same command again (it adopts every live agent, opens no second PR) · **2** refused · **1** could not run. The report lists the agents' choices (their PR's ¤## Choices¤), findings left, cost per ticket.
+3. **Read the report** — exit **0** every ticket merged · **3** ≥1 parked (cause ¤question¤ / ¤situation¤ / ¤ci¤ / ¤upstream¤ + reason; dependents park too) · **4** paused: one check red on several PRs is the environment — fix it, ¤orchestra fanout state set --run <id> --resume-run¤, run the same command again (it adopts every live agent, opens no second PR) · **2** refused · **1** could not run. The report lists the agents' choices (their PR's ¤## Choices¤), findings left, cost per ticket.
 4. **A parked ticket** — settle its cause, ¤orchestra fanout state set <ticket> --unpark¤, run again. An agent's question gets the fixed answer "take the reversible option, record it, continue"; ¤NO SAFE OPTION: <reason>¤ parks.
 
 <!--/sw-->
@@ -92,7 +92,12 @@ The role is the ¤--name¤ prefix the spawner gave (§1): ¤ops-¤ coordinator,
   ¤gh pr merge¤ and workspace delete/archive to every role but the coordinator. It keys on
   ¤.orchestra/role¤ (no file ⇒ inert: the LEAD, human sessions and role-less agents are never
   guarded). ¤orchestra fanout deliver|open¤ and ¤fanout state init|set¤ to every role but the
+<!--sw seatRecords=off-->
   coordinator (¤state show¤ and ¤resume¤ stay open); a ¤scribe-¤ may ¤state set¤. A BLOCKED is the answer, never to be routed around: report the branch ref to the
+<!--/sw-->
+<!--sw seatRecords=on-->
+  coordinator (¤state show¤ and ¤resume¤ stay open); a ¤scribe-¤ may ¤state set¤ except ¤--status merged¤ (¤[state-caller]¤: only the run's owner records a merge). A BLOCKED is the answer, never to be routed around: report the branch ref to the
+<!--/sw-->
   coordinator (ledger comment + one ping), or hand the change to the role that may make it.
 
 
