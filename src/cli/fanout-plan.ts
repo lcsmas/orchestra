@@ -13,6 +13,7 @@ import { homeOf, parseArgs, runOf, type FanoutDeps, type RunResult } from './fan
 
 export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [--run <id>] [--repo <owner/name>] [--print] [--timeout <min>]
        orchestra fanout plan submit <file|-> --run <id>
+  A fresh run needs no \`state init\` (#626): the state is created with the switches \`fanout run\` uses (seatRecords=on, minorPolicy=demonstrated, verifier=off; --repo <owner/name> optional, the target = origin/HEAD, else the GitHub default branch).
   seatRecords=on, coordinator only: spawns ONE single-use agent (explo-plan-<run8>, explorer role) whose brief is rendered by code from the ticket ids (no flag takes text), and returns when its plan is accepted:
   prints {"plan":"accepted","hash","attempts","tickets"} (exit 0). --print renders the brief and spawns nothing. --timeout (default 45, minutes) = how long to wait for the plan.
   The plan agent submits with \`plan submit\`: the CLI checks the file and answers at once. The plan file holds exactly {version, tickets[{id,title,spec,dependsOn}], interfaces{<depended-on ticket>: text with ≥1 \`exact name\`}}.

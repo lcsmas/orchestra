@@ -10,6 +10,7 @@ import type { Host } from '../shared/fanout-loop-live-fleet.ts';
 import { runLive } from './fanout-run-live.ts';
 
 export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,b,c | --plan <plan.json>] [--scenario <scenario.json>] [--start-check] [--minor-policy <legacy|refuse|spec|demonstrated>]
+  With --tickets and no --plan, the plan agent is spawned (the shipped \`fanout plan\`, #625) and its accepted plan awaited before anything starts.
   Leads the vague from its plan to its closing report: starts EVERY implementer at once on the frozen interfaces, reads the run's mail (the only reader), connects a dependent to its upstream when the upstream's reviewer
   approved it, opens the pull requests, wakes the reviewers, and merges — recorded approval on the head + green CI on the head + upstreams merged, in READINESS order — until every ticket is merged or parked.
   seatRecords=on, verifier=off, minorPolicy=demonstrated (the loop's default; \`state init\` is done for its own run when none exists). The loop never types a verdict and never waits for a person: a parked ticket parks its dependents.
