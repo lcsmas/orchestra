@@ -81,7 +81,7 @@ test('D4 — the HUMAN paths reusing dispatchSpawnRequest pass NO name and NO na
 test('D4 — dispatchSpawnRequest itself never demands a name: the requirement is NOT keyed on defaultKind', () => {
   const body = bodyOf(workspacesSrc, 'export async function dispatchSpawnRequest(');
   assert.doesNotMatch(body, /checkSpawnName/);
-  assert.match(body, /\{ namedBy: input\.namedBy, exactName: input\.exactName, \.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}/); // #587 PR B: + the in-process reuseBranch // forwarded only when the agent route set them
+  assert.match(body, /\{ namedBy: input\.namedBy, exactName: input\.exactName, \.\.\.\(input\.noAgent \? \{ noAgent: \{ runCommand: input\.noAgent\.runCommand\.trim\(\) \} \} : \{\}\), \.\.\.\(input\.reuseBranch \? \{ reuseBranch: true \} : \{\}\) \}/); // #612: noAgent first // #587 PR B: + the in-process reuseBranch // forwarded only when the agent route set them
   assert.doesNotMatch(body, /namedBy: input\.from/); // dispatchSpawnRequest never invents a namer from `from`
 });
 

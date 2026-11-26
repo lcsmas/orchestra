@@ -51,6 +51,8 @@ export interface VagueFacts {
   coordinatorHasParent: boolean;
   /** A turn can be started for the coordinator at all (not archived, has a worktree, not a sandbox pause, its start does not keep failing). */
   coordinatorWakeable: boolean;
+  /** #612: the coordinator is a no-agent workspace whose detached command is ALIVE (it polls, waits on CI): the run is awake — it has no session, so no idle clock or census can say so. Absent = false. */
+  coordinatorCommandAlive?: boolean;
   /** The run (or an ancestor) is Paused. */
   paused: boolean;
   /** The run is on HOLD (`orchestra run hold`: a parked fleet, deliberately silenced). */
@@ -60,7 +62,7 @@ export interface VagueFacts {
 /** Per workspace id, its Reliquats (kernel scope) — `'unknown'` = unreadable (UNKNOWN is not NONE). */
 export type VagueCensus = ReadonlyMap<string, RelanceCensus>;
 
-export type VagueAwakeWhy = 'no-task' | 'paused' | 'run-held' | 'member-active' | 'waiting' | 'held-start' | 'dormant' | 'process' | 'quiet' | 'resumed';
+export type VagueAwakeWhy = 'no-task' | 'paused' | 'run-held' | 'member-active' | 'waiting' | 'held-start' | 'dormant' | 'process' | 'quiet' | 'resumed' | 'coordinator-command';
 
 export interface VagueProcessLine {
   owner: string;
@@ -127,6 +129,7 @@ export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {
   if (people(f).some((p) => p.active)) return 'member-active';
   if (people(f).some((p) => p.waiting)) return 'waiting';
   if (people(f).some((p) => p.heldStart)) return 'held-start';
+  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612: after the clauses above, so their order (and the mutants anchored on it) is untouched
   // Nobody of this vague did anything since the app started: an old wave left unarchived (its tasks never released) is not a sleep that happened on this watch — declaring it would
   // re-nudge every such coordinator (a real model turn, a Veille start) at every launch. A person opening one of its workspaces, or any event, brings it into play.
   return null;
@@ -140,6 +143,7 @@ export function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | nul
   if (f.paused) return 'paused';
   if (f.runHeld) return 'run-held';
   if (f.members.some((m) => m.active || m.waiting || m.heldStart || (m.lastTurnStartAt ?? -Infinity) > ep.declaredAt)) return 'resumed';
+  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612
   return null;
 }
 

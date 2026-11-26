@@ -76,9 +76,10 @@ export function fanoutCompletionRefusal(sender: string, runId: string, env: Node
   } catch { return null; }
 }
 
-/** `state set … --decide|--json` on a run whose seatRecords is ON: index.ts then asks the host who the caller is (a decision is the coordinator's, vouched). Reads the state only; false for anything it cannot read. */
+/** `state set … --decide|--json|--status merged` on a run whose seatRecords is ON: index.ts then asks the host who the caller is (a decision is the coordinator's, vouched). Reads the state only; false for anything it cannot read. */
 export function stateSetNeedsHost(args: string[], env: NodeJS.ProcessEnv): boolean {
-  if (args[0] !== 'state' || args[1] !== 'set' || !(args.includes('--decide') || args.includes('--json'))) return false;
+  const mergedFlag = args.some((a, i) => a === '--status' && args[i + 1] === 'merged'); // #612: `--status merged` is the run owner's (a --json patch is already covered above)
+  if (args[0] !== 'state' || args[1] !== 'set' || !(args.includes('--decide') || args.includes('--json') || mergedFlag)) return false;
   const i = args.indexOf('--run');
   try {
     const { run } = resolveFanoutRun(i >= 0 ? args[i + 1] : undefined, env);

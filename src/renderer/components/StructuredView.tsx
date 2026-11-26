@@ -129,6 +129,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
   const session = useStore((s) => s.agentSessions[workspaceId]);
   // A prior SDK session on disk means the next message RESUMES it (the agent
   // keeps its memory), even though the message list starts empty this render.
+  const noAgent = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.noAgent === true); // #612
   const canResume = useStore(
     (s) => !!s.workspaces.find((w) => w.id === workspaceId)?.sdkSessionId,
   );
@@ -339,7 +340,7 @@ export function StructuredView({ workspaceId, isActive }: Props) {
       {session?.oversizedMemory?.length ? (
         <MemorySizeBanner files={session.oversizedMemory} />
       ) : null}
-      <MessageList session={session} canResume={canResume} />
+      <MessageList session={session} canResume={canResume} noAgent={noAgent} />
       {/* A4 extension point: permission dialog(s) for parked canUseTool calls.
           Rendered as an overlay above the list. */}
       <PermissionSlot session={session} workspaceId={workspaceId} />
@@ -400,9 +401,12 @@ function BgTaskIcon() {
 function MessageList({
   session,
   canResume,
+  noAgent,
 }: {
   session: AgentSession | undefined;
   canResume?: boolean;
+  /** #612: a command owns this workspace — no agent session, ever (empty state says so). */
+  noAgent?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // The sized inner wrapper. A ResizeObserver on it drives follow-mode scrolling
@@ -741,20 +745,24 @@ function MessageList({
             </svg>
           </div>
           <div className="av-empty-title">
-            {session
+            {noAgent
+              ? 'No agent session by design'
+              : session
               ? 'Session ready'
               : canResume
                 ? 'Resume your session'
                 : 'Start a structured session'}
           </div>
           <div className="av-empty-desc">
-            {!session && canResume
+            {noAgent
+              ? 'This workspace runs a command (the Run button), not an agent: it owns a fan-out run, mail to it is read by the command, and nothing here starts an agent.'
+              : !session && canResume
               ? 'Previous session found — your next message resumes it. The agent keeps its memory; earlier messages aren’t re-shown here.'
               : 'Send a message to start the agent — replies, tool activity and diffs render natively here.'}
           </div>
-          <div className="av-empty-hint">
+          {!noAgent && <div className="av-empty-hint">
             <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
-          </div>
+          </div>}
         </div>
       ) : (
         <div
@@ -1118,6 +1126,7 @@ function Composer({
    *  composer owns its text state, so this is the seam rather than lifting it. */
   handleRef?: React.MutableRefObject<{ prefill: (text: string) => void } | null>;
 }) {
+  const noAgentHere = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.noAgent === true); // #612
   const [text, setText] = useState('');
   // Images pasted into the composer, pending send. Each carries the base64 for
   // the wire plus a data URL for the thumbnail preview.
@@ -1724,7 +1733,9 @@ function Composer({
               setAcDismissed(false);
             }}
             placeholder={
-              bashMode
+              noAgentHere
+                ? 'No agent session here — this workspace runs a command'
+                : bashMode
                 ? 'Enter a shell command — runs in the worktree, output shared with the agent'
                 : 'Message the agent — / for skills, ! for bash, paste an image or PDF…'
             }
