@@ -91,15 +91,20 @@ case "$1 $2" in
   "run list")
     # #595: the full-rig-run check. Asserts the exact selection flags, logs the call, answers per RG_FX_CI (default: a green dispatch run on this HEAD's tree).
     echo "$*" >> "$RG_FX_LOG.ci.args"
-    case "$*" in *"--workflow ci.yml"*"--event workflow_dispatch"*"--status success"*) ;; *) echo "rig gh stub: run list without --workflow ci.yml --event workflow_dispatch --status success: $*" >&2; exit 9 ;; esac
+    case "$*" in *"--workflow ci.yml"*"--status success"*|*"--workflow mutants.yml"*"--status success"*) ;; *"--event workflow_dispatch --branch"*) echo "$*" >> "$RG_FX_LOG.disp.list"; if [ -e "$RG_FX_LOG.disp.run" ] || [ "${RG_FX_INFLIGHT:-0}" = 1 ]; then printf '[{"databaseId":77,"headSha":"%s","status":"in_progress","conclusion":"","url":"https://example.invalid/run/77"}]\n' "$(git rev-parse HEAD)"; else echo '[]'; fi; exit 0 ;; *) echo "rig gh stub: run list without --workflow ci.yml|mutants.yml --status success: $*" >&2; exit 9 ;; esac
+    case "$*" in *"--workflow mutants.yml"*) echo "$*" >> "$RG_FX_LOG.mut.args"; case "${RG_FX_MUT:-none}" in green) printf '[{"headSha":"%s","url":"https://example.invalid/mut/1","event":"push"}]\n' "$(git rev-parse HEAD)" ;; *) echo '[]' ;; esac; exit 0 ;; esac
     case "${RG_FX_CI:-green}" in
       fail) exit 1 ;;
       empty) echo '[]' ;;
       garbage) echo 'not json' ;;
-      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other"}]\n' "$(git rev-parse HEAD~1)" ;;
-      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1"}]\n' "$(git rev-parse HEAD)" ;;
+      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other","event":"workflow_dispatch"}]\n' "$(git rev-parse HEAD~1)" ;;
+      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1","event":"workflow_dispatch"}]\n' "$(git rev-parse HEAD)" ;;
+      pr) printf '[{"headSha":"%s","url":"https://example.invalid/run/pr","event":"pull_request"}]\n' "$(git rev-parse HEAD)" ;;
+      push) printf '[{"headSha":"%s","url":"https://example.invalid/run/push","event":"push"}]\n' "$(git rev-parse HEAD)" ;;
     esac
     exit 0 ;;
+  "workflow run") echo "$*" >> "$RG_FX_LOG.disp.run"; exit 0 ;;
+  "run view") echo "$*" >> "$RG_FX_LOG.disp.view"; printf '{"status":"completed","conclusion":"%s"}\n' "${RG_FX_DISP:-success}"; exit 0 ;;
   "release create") echo gh-release >> "$RG_FX_LOG"; : > "$RG_FX_LOG.notes"
     prev=""; for a in "$@"; do case "$prev" in --notes-file|-F) cat "$a" >> "$RG_FX_LOG.notes" ;; esac; prev="$a"; done; exit 0 ;;
 esac

@@ -96,6 +96,10 @@ test('ci.yml is read-only, secret-free and fans out through the data file', () =
   assert.match(wf, /format\('dispatch-\{0\}', github\.sha\)/);
   // #595: workflow_dispatch = the FULL run; path selection is on for pull_request ONLY, the ci-full label forces everything, every rig job decides before its install, the summary sees the merge commit's parents
   assert.match(wf, /^  workflow_dispatch:\n/m);
+  // release-gate-rapide: a closed PR cancels its in-flight run (same group) and the closing event runs no job (suite included, whose `if: always()` would otherwise run)
+  assert.match(wf, /types: \[opened, synchronize, reopened, labeled, closed\]/);
+  assert.equal((wf.match(/if: github\.event\.action != 'closed'/g) ?? []).length, 3);
+  assert.match(wf, /if: always\(\) && github\.event\.action != 'closed'/);
   assert.match(wf, /CI_PATH_SELECTION: \$\{\{ github\.event_name == 'pull_request' && '1' \|\| '0' \}\}/);
   assert.match(wf, /CI_FULL_REASON: .*contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci-full'\)/);
   assert.match(wf, /id: plan\n\s+run: node [^\n]*run-group\.mjs "\$\{\{ matrix\.group \}\}" --plan/);

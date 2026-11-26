@@ -37,15 +37,20 @@ case "$1 $2" in
   "run list")
     # #595: the full-rig-run check. Asserts the exact selection flags, logs the call, answers per RG_FX_CI (default: a green dispatch run on this HEAD's tree).
     echo "$*" >> "$RG_FX_LOG.ci.args"
-    case "$*" in *"--workflow ci.yml"*"--event workflow_dispatch"*"--status success"*) ;; *) echo "rig gh stub: run list without --workflow ci.yml --event workflow_dispatch --status success: $*" >&2; exit 9 ;; esac
+    case "$*" in *"--workflow ci.yml"*"--status success"*|*"--workflow mutants.yml"*"--status success"*) ;; *"--event workflow_dispatch --branch"*) echo "$*" >> "$RG_FX_LOG.disp.list"; if [ -e "$RG_FX_LOG.disp.run" ] || [ "${RG_FX_INFLIGHT:-0}" = 1 ]; then printf '[{"databaseId":77,"headSha":"%s","status":"in_progress","conclusion":"","url":"https://example.invalid/run/77"}]\n' "$(git rev-parse HEAD)"; else echo '[]'; fi; exit 0 ;; *) echo "rig gh stub: run list without --workflow ci.yml|mutants.yml --status success: $*" >&2; exit 9 ;; esac
+    case "$*" in *"--workflow mutants.yml"*) echo "$*" >> "$RG_FX_LOG.mut.args"; case "${RG_FX_MUT:-none}" in green) printf '[{"headSha":"%s","url":"https://example.invalid/mut/1","event":"push"}]\n' "$(git rev-parse HEAD)" ;; *) echo '[]' ;; esac; exit 0 ;; esac
     case "${RG_FX_CI:-green}" in
       fail) exit 1 ;;
       empty) echo '[]' ;;
       garbage) echo 'not json' ;;
-      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other"}]\n' "$(git rev-parse HEAD~1)" ;;
-      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1"}]\n' "$(git rev-parse HEAD)" ;;
+      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other","event":"workflow_dispatch"}]\n' "$(git rev-parse HEAD~1)" ;;
+      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1","event":"workflow_dispatch"}]\n' "$(git rev-parse HEAD)" ;;
+      pr) printf '[{"headSha":"%s","url":"https://example.invalid/run/pr","event":"pull_request"}]\n' "$(git rev-parse HEAD)" ;;
+      push) printf '[{"headSha":"%s","url":"https://example.invalid/run/push","event":"push"}]\n' "$(git rev-parse HEAD)" ;;
     esac
     exit 0 ;;
+  "workflow run") echo "$*" >> "$RG_FX_LOG.disp.run"; exit 0 ;;
+  "run view") echo "$*" >> "$RG_FX_LOG.disp.view"; printf '{"status":"completed","conclusion":"%s"}\n' "${RG_FX_DISP:-success}"; exit 0 ;;
   "release create")
     echo gh-release >> "$RG_FX_LOG"
     : > "$RG_FX_LOG.notes"
@@ -181,7 +186,7 @@ PKG
 
 # run_release <args...> -> OUT (stdout+stderr), RC
 run_release() {
-  OUT="$(cd "$W" && PATH="$SB/bin:$PATH" RG_FX_LOG="$LOG" bash scripts/release.sh "$@" 2>&1)"; RC=$?
+  OUT="$(cd "$W" && PATH="$SB/bin:$PATH" RG_FX_LOG="$LOG" RG_FULL_CI_DISPATCH="${RG_FULL_CI_DISPATCH:-0}" RG_FULL_CI_POLL=0 bash scripts/release.sh "$@" 2>&1)"; RC=$?
 }
 steps() { tr '\n' ' ' < "$LOG" | sed 's/ $//'; }
 nothing_shipped() { # name — no bump commit, no local/origin tag, origin master unmoved
@@ -360,15 +365,15 @@ ci_refused() { # name variant marker — REFUSED naming full-ci AFTER the whole 
   mk_fixture "$1" ok pass; RG_FX_CI="$2" run_release 0.5.271
   refused "$1" full-ci "$3" "tsc test session-budget admission-hold admission-wake"; nothing_shipped "$1"
 }
-ci_refused ci_missing empty "no green workflow_dispatch run of ci.yml (every rig, no path selection) on a commit with this tree"
-ci_refused ci_other_tree other "1 recent green dispatch run(s) checked"
+ci_refused ci_missing empty "no green run of every rig on a commit with this tree"
+ci_refused ci_other_tree other "1 recent green ci.yml dispatch/push run(s) checked"
 ci_refused ci_gh_fails fail "so a green full rig run cannot be proven"
 ci_refused ci_garbage garbage "not the expected JSON"
 mk_fixture ci_green ok pass; run_release 0.5.271
 if [ "$RC" = 0 ] && [[ "$OUT" == *"full rig run PASS: https://example.invalid/run/1"* ]]; then pass "ci_green proceeds, proof printed" "rc=0 $(printf '%s' "$OUT" | grep -F 'full rig run PASS' | head -1 | cut -c1-110)"
 else fail "ci_green proceeds, proof printed" "rc=$RC tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
-if [ "$(wc -l < "$LOG.ci.args" 2>/dev/null)" = 1 ] && grep -q -- '--workflow ci.yml --event workflow_dispatch --status success' "$LOG.ci.args"; then pass "ci_green asks for dispatch runs only" "one call: $(cut -c1-90 "$LOG.ci.args")"
-else fail "ci_green asks for dispatch runs only" "args=[$(cat "$LOG.ci.args" 2>/dev/null)]"; fi
+if [ "$(wc -l < "$LOG.ci.args" 2>/dev/null)" = 1 ] && grep -q -- '--workflow ci.yml --status success' "$LOG.ci.args" && [ ! -e "$LOG.mut.args" ]; then pass "ci_green asks ci.yml only (a dispatch run is complete alone)" "one call: $(cut -c1-90 "$LOG.ci.args")"
+else fail "ci_green asks ci.yml only" "args=[$(cat "$LOG.ci.args" 2>/dev/null)]"; fi
 # a dispatch run on ANOTHER commit with the same tree counts (a tree, not a sha, is what the tag carries)
 mk_fixture ci_same_tree ok pass
 git -C "$W" commit -q --allow-empty -m "noop: same tree as its parent"
@@ -379,6 +384,34 @@ if [ "$RC" = 0 ] && [ ! -s "$LOG.ci.args" ] && [[ "$OUT" == *"full rig run (ci.y
 else fail "ci_bypass names the skipped full run" "rc=$RC ci-args=[$(cat "$LOG.ci.args" 2>/dev/null)]"; fi
 mk_fixture ci_dry err pass; run_release 0.5.271 --dry-run
 if [ "$RC" = 0 ] && [[ "$OUT" == *"[dry-run] full rig run:"* ]] && [ ! -s "$LOG.ci.args" ]; then pass "ci_dry prints the plan, asks nothing" "rc=0"; else fail "ci_dry prints the plan, asks nothing" "rc=$RC"; fi
+
+
+# ── release-gate-rapide: tree reuse (green dispatch / green push set / missing rig -> dispatch) ─────────────────
+mk_fixture ci_pr_only ok pass; RG_FX_CI=pr run_release 0.5.271
+if [ "$RC" != 0 ] && [[ "$OUT" == *"REFUSED"*"full-ci"* ]]; then pass "ci_pr_only refused" "a pull_request run never counts"; else fail "ci_pr_only refused" "rc=$RC"; fi
+nothing_shipped ci_pr_only
+mk_fixture ci_push_set ok pass
+mkdir -p "$W/.github/workflows"; echo 'name: mutants' > "$W/.github/workflows/mutants.yml"; git -C "$W" add -A; git -C "$W" commit -q -m "mutants.yml"; git -C "$W" push -q origin master; ORIGIN0="$(git -C "$ORIGIN" rev-parse master)"; HEAD0="$(git -C "$W" rev-parse HEAD)"
+RG_FX_CI=push RG_FX_MUT=green run_release 0.5.271
+if [ "$RC" = 0 ] && [[ "$OUT" == *"full rig run PASS: https://example.invalid/run/push"*"mutants.yml"* ]] && [ ! -e "$LOG.disp.run" ]; then pass "ci_push_set accepted without dispatch" "push ci.yml + green mutants.yml on the tree"
+else fail "ci_push_set accepted without dispatch" "rc=$RC tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+mk_fixture ci_push_nomut ok pass
+mkdir -p "$W/.github/workflows"; echo 'name: mutants' > "$W/.github/workflows/mutants.yml"; git -C "$W" add -A; git -C "$W" commit -q -m "mutants.yml"; git -C "$W" push -q origin master; ORIGIN0="$(git -C "$ORIGIN" rev-parse master)"; HEAD0="$(git -C "$W" rev-parse HEAD)"
+RG_FX_CI=push RG_FX_MUT=none run_release 0.5.271
+if [ "$RC" != 0 ] && [[ "$OUT" == *"REFUSED"*"full-ci"* ]] && [[ "$OUT" == *"mutant rigs are not covered"* ]] && [ ! -e "$LOG.disp.run" ]; then pass "ci_push_nomut not enough (missing rig), dispatch off -> refused" "mutants.yml missing"
+else fail "ci_push_nomut not enough" "rc=$RC"; fi
+mk_fixture ci_dispatch ok pass; git -C "$W" push -q origin master 2>/dev/null
+RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 run_release 0.5.271
+if [ "$RC" = 0 ] && grep -q 'workflow run ci.yml --ref master' "$LOG.disp.run" 2>/dev/null && [[ "$OUT" == *"dispatched by the release"* ]]; then pass "ci_dispatch: none on the tree -> dispatches ci.yml on the branch tip, waits, proceeds" "$(cat "$LOG.disp.run")"
+else fail "ci_dispatch" "rc=$RC run=[$(cat "$LOG.disp.run" 2>/dev/null)] tail=[$(printf '%s' "$OUT" | tail -3 | tr '\n' '|')]"; fi
+# a dispatch run already in flight on this tree is joined, not duplicated
+mk_fixture ci_join ok pass
+RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 RG_FX_INFLIGHT=1 run_release 0.5.271
+if [ "$RC" = 0 ] && [ ! -e "$LOG.disp.run" ] && [[ "$OUT" == *"dispatched by the release"* ]]; then pass "ci_join: in-flight dispatch joined, none started" "rc=0"; else fail "ci_join" "rc=$RC run=[$(cat "$LOG.disp.run" 2>/dev/null)]"; fi
+mk_fixture ci_dispatch_red ok pass; git -C "$W" push -q origin master 2>/dev/null
+RG_FX_CI=empty RG_FULL_CI_DISPATCH=1 RG_FX_DISP=failure run_release 0.5.271
+if [ "$RC" != 0 ] && [[ "$OUT" == *"ended 'failure'"* ]]; then pass "ci_dispatch_red refused" "the dispatched run failed"; else fail "ci_dispatch_red refused" "rc=$RC"; fi
+nothing_shipped ci_dispatch_red
 
 # ── escape hatch ─────────────────────────────────────────────────────────────
 mk_fixture bypass err fail; run_release 0.5.271 --skip-release-gate "rig: emergency hotfix"
