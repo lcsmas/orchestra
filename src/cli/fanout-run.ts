@@ -46,7 +46,7 @@ export async function runFanoutRun(args: string[], deps: FanoutDeps, host?: Host
       const log: string[] = [];
       const result = await runLive({ home: homeOf(deps.env), run, caller, env: deps.env, cwd: deps.cwd, options, host, log: (l) => { log.push(l); process.stderr.write(`${l}\n`); } });
       const out = { exit: result.exit, passes: result.passes, ...(result.reason ? { reason: result.reason } : {}), report: result.report };
-      return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: reportText(result.report) };
+      return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: runReportText(result.report) };
     }
     if (deps.env.ORCHESTRA_FANOUT_DUMMY !== '1') throw new SeatRefusal('run-scenario-gated', '--scenario swaps in the dummy fleet and is refused unless ORCHESTRA_FANOUT_DUMMY=1: it never touches a real workspace, branch or pull request');
     let scenario;

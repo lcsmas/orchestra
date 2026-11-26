@@ -553,6 +553,3 @@ test('live fleet: a reviewer is never spawned on a head the state does not hold 
   await assert.rejects(h.fleet.spawnReviewer('T1', sha40()), /the head moved/);
   assert.equal(h.world.events.filter((e) => e.ev === 'review-spawn').length, 0, 'nothing was spawned');
 });
-
-// Review 614 r2 MINOR-2 — SETTLED as the stack's, not this ticket's: `costPerTicket` is filled where 608's `stepEnd` runs `collectCosts(state, deps.fleet.costOf)` (stack C connects 605's hooks to 608). The live `costOf` below is what it will call.
-test.todo('stack C: the loop\'s closing report fills costPerTicket from fleet.costOf (605 stepEnd/finish ← 608 collectCosts) — measured today: report.costPerTicket = {T1: null} on the composed run');

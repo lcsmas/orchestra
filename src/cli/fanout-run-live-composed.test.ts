@@ -13,7 +13,8 @@ import { createLiveForge } from '../shared/fanout-loop-live-forge.ts';
 import { FakeForge } from '../shared/fanout-loop-live-fake-gh.ts';
 import { fakeBus } from '../shared/fanout-loop-live-fake-bus.ts';
 import { readState, stateFile } from '../shared/fanout-state.ts';
-import { mergeThroughDeliver } from './fanout-run-live.ts';
+import { liveCostOf, mergeThroughDeliver } from './fanout-run-live.ts';
+import type { Host } from '../shared/fanout-loop-live-fleet.ts';
 import type { ForgePort } from '../shared/fanout-loop-ports.ts';
 
 const made: string[] = [];
@@ -23,7 +24,7 @@ after(() => { for (const d of made) fs.rmSync(d, { recursive: true, force: true 
 const ONE: Scenario = { version: 1, run: 'cm1', repo: { tickets: [{ id: 'T1', dependsOn: [], spec: 'spec/T1.md' }] } };
 const TWO: Scenario = { version: 1, run: 'cm2', repo: { tickets: [{ id: 'T1', dependsOn: [], spec: 'spec/T1.md' }, { id: 'T2', dependsOn: ['T1'], spec: 'spec/T2.md' }] } };
 
-async function compose(sc: Scenario, o: { wrapForge?: (f: ForgePort) => ForgePort; ci?: Record<string, string[]> } = {}) {
+async function compose(sc: Scenario, o: { wrapForge?: (f: ForgePort) => ForgePort; ci?: Record<string, string[]>; transcripts?: (ids: string[]) => Record<string, string | null> | null } = {}) {
   const home = tmp();
   const run = sc.run!;
   const d = buildDummy({ home, run, scenario: sc });
@@ -36,7 +37,8 @@ async function compose(sc: Scenario, o: { wrapForge?: (f: ForgePort) => ForgePor
   for (const [b, r] of Object.entries(o.ci ?? {})) fake.script.set(b, r);
   const bus = fakeBus(d, run, home);
   const readNow = () => readState(stateFile(home, run));
-  const fleet = await createLiveFleet({ run, caller: run, cli: bus.cli, host: bus.host, readState: readNow, costOf: d.fleet.costOf });
+  const host: Host = async (body) => body.op === 'transcripts' && o.transcripts ? ((dirs) => (dirs ? { ok: true, op: 'transcripts', dirs } : { ok: false, error: 'host cannot say' }))(o.transcripts(body.ids as string[])) : bus.host(body);
+  const fleet = await createLiveFleet({ run, caller: run, cli: bus.cli, host, readState: readNow, costOf: o.transcripts ? liveCostOf({ run, caller: run, host, readState: readNow }) : d.fleet.costOf });
   const sleep = async (ms: number): Promise<void> => { await d.sleep(ms); fake.advance(ms); };
   const logs: string[] = [];
   const deliver = mergeThroughDeliver({ home, run, log: (l) => logs.push(`deliver: ${l}`), deps: { gh: fake.gh, sleep, now: () => fake.clock } });
@@ -74,6 +76,29 @@ test('composed MUST-FAIL (the review\'s measured failure): a forge that reports 
   assert.notEqual(r.result.exit, 0);
   assert.equal(merges(r.fake), 0);
   assert.deepEqual(r.result.report.merged, []);
+});
+
+const line = (id: string, u: Record<string, number>): string => `${JSON.stringify({ type: 'assistant', message: { id, usage: u } })}\n`;
+function transcripts(): (ids: string[]) => Record<string, string | null> {
+  const root = tmp();
+  return (ids) => Object.fromEntries(ids.map((id) => {
+    const dir = path.join(root, id);
+    fs.mkdirSync(dir, { recursive: true });
+    // the implementer's session: m1 streamed twice (counted once, the larger); every other workspace of the ticket (the reviewer): m2
+    fs.writeFileSync(path.join(dir, 's.jsonl'), id.includes('review') ? line('m2', { input_tokens: 5, output_tokens: 5 }) : line('m1', { input_tokens: 100, output_tokens: 10 }) + line('m1', { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 1000, cache_creation_input_tokens: 10 }));
+    return [id, dir];
+  }));
+}
+
+test('composed (review 614 r2 MINOR-2, #601 story 21): the closing report carries the COST PER TICKET read from the transcripts the host names (implementer + reviewer, a streamed message once)', async () => {
+  const r = await compose(ONE, { transcripts: transcripts() });
+  assert.equal(r.result.exit, 0, r.logs.slice(-6).join('\n'));
+  assert.deepEqual(r.result.report.costPerTicket.T1, { tokens: 100 + 50 + 1000 + 10 + 5 + 5 }, JSON.stringify(r.result.report.costPerTicket));
+});
+test('composed MUST-FAIL: a host that cannot say where the transcripts are leaves the cost UNMEASURED (null), never 0', async () => {
+  const r = await compose(ONE, { transcripts: () => null });
+  assert.equal(r.result.exit, 0);
+  assert.equal(r.result.report.costPerTicket.T1, null);
 });
 
 test('composed MUST-FAIL: a CI that stays red on the head is never merged (the loop parks the ticket, exit 3, nothing merged)', async () => {

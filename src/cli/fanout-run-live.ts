@@ -7,7 +7,7 @@ import { createLiveForge, type MergeAnswer } from '../shared/fanout-loop-live-fo
 import { createLiveGit, type Exec, type ExecResult } from '../shared/fanout-loop-live-git.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from '../shared/fanout-loop.ts';
 import { tokensOfFiles, transcriptFilesIn, workspacesOfTicket } from '../shared/fanout-report.ts';
-import { SeatRefusal, readState, stateFile } from '../shared/fanout-state.ts';
+import { SeatRefusal, readState, stateFile, type FanoutState } from '../shared/fanout-state.ts';
 import { deliver, realDeps, recordedStateFor, upstreamsFromState, verifierSwitchFromState, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState } from './fanout-acceptance.ts';
 import { followUpFromState } from './fanout-followup.ts';
@@ -62,6 +62,19 @@ export function mergeThroughDeliver(i: { home: string; run: string; log: (l: str
   };
 }
 
+/** `FleetPort.costOf` of the live run (#601 story 21): the tokens of every workspace that worked on the ticket (#608 `workspacesOfTicket`), read from the transcript directories the HOST names (op `transcripts`) with #608's `transcriptFilesIn` + `tokensOfFiles`. null = unmeasured, never 0. */
+export function liveCostOf(i: { run: string; caller: string; key?: string; host: Host; readState: () => FanoutState | null }): (ticket: string) => Promise<{ tokens: number } | null> {
+  return async (ticket) => {
+    const t = i.readState()?.tickets[ticket];
+    const ids = t ? workspacesOfTicket(t) : [];
+    if (!ids.length) return null;
+    const r = await i.host({ op: 'transcripts', run: i.run, from: i.caller, key: i.key, ids });
+    const dirs = (r.ok && r.dirs && typeof r.dirs === 'object' ? r.dirs : {}) as Record<string, string | null>;
+    const c = tokensOfFiles(Object.values(dirs).flatMap((d) => (d && fs.existsSync(d) ? transcriptFilesIn(d) : [])));
+    return c ? { tokens: c.tokens } : null;
+  };
+}
+
 export async function runLive(i: LiveRunInput): Promise<LoopResult> {
   const exec = i.exec ?? realExec;
   const cliJs = i.cliJs ?? process.argv[1];
@@ -78,15 +91,7 @@ export async function runLive(i: LiveRunInput): Promise<LoopResult> {
   const key = i.env.ORCHESTRA_SESSION_KEY?.trim() || undefined;
   const fleet = await createLiveFleet({
     run: i.run, caller: i.caller, cli, host: i.host, readState: readNow, key,
-    costOf: async (ticket) => { // #608: tokens of every workspace that worked on the ticket, from the transcript directories the host names
-      const t = readNow()?.tickets[ticket];
-      const ids = t ? workspacesOfTicket(t) : [];
-      if (!ids.length) return null;
-      const r = await i.host({ op: 'transcripts', run: i.run, from: i.caller, key, ids });
-      const dirs = (r.ok && r.dirs && typeof r.dirs === 'object' ? r.dirs : {}) as Record<string, string | null>;
-      const c = tokensOfFiles(Object.values(dirs).flatMap((d) => (d && fs.existsSync(d) ? transcriptFilesIn(d) : [])));
-      return c ? { tokens: c.tokens } : null;
-    },
+    costOf: liveCostOf({ run: i.run, caller: i.caller, key, host: i.host, readState: readNow }),
   });
   const result = await runLoop({
     home: i.home, run: i.run, caller: i.caller, fleet, forge, git,
