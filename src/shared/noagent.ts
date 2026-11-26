@@ -79,3 +79,14 @@ export function recordIsAlive(rec: NoAgentRecord, ticksNow: number | null, pidPr
   if (rec.startTicks === null) return pidProbe;
   return ticksNow !== null && ticksNow === rec.startTicks;
 }
+
+/** #640 — `restart` of a no-agent workspace: no session to restart, so it starts ITS command (idempotent: a live one is `reused`). `--fresh` has nothing to clear: refused. `start` = the host's `/noagent/start`. */
+export async function restartNoAgent(
+  ws: { id: string; name?: string },
+  fresh: boolean,
+  start: (id: string) => Promise<{ ok: true; pid: number; reused: boolean; log: string } | { ok: false; error: string }>,
+): Promise<{ ok: true; noAgent: { pid: number; reused: boolean; log: string } } | { ok: false; error: string }> {
+  if (fresh) return { ok: false, error: `[noagent-fresh] ${ws.name ?? ws.id} is a no-agent workspace: there is no conversation to clear (drop --fresh)` };
+  const r = await start(ws.id);
+  return r.ok ? { ok: true, noAgent: { pid: r.pid, reused: r.reused, log: r.log } } : { ok: false, error: r.error };
+}

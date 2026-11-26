@@ -181,7 +181,10 @@ Retarget a workspace's base branch — the Diff/merge target.`,
 
 Relaunch a workspace's claude process so it re-reads CLAUDE.md/settings,
 WITHOUT touching worktree/branch/commits. Default: THIS workspace.
-  --fresh   start a new conversation (default keeps the conversation)`,
+  --fresh   start a new conversation (default keeps the conversation)
+
+A no-agent workspace (#612, #640) has no session: restart starts ITS command through the host
+(idempotent: a live command is left alone and its pid printed). --fresh is refused there.`,
   },
   {
     name: 'handoff',
