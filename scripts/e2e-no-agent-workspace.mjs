@@ -381,7 +381,8 @@ try {
     const ownerWoken = log.split('\n').filter((l) => l.includes(na.owner.id) && /\bwoke \S+ through|session (key )?registered for|session started|keeper (started|launched)/i.test(l) && !/not being woken/.test(l));
     const ownerKeeperFiles = fs.existsSync(path.join(world.ohome, 'keepers')) ? fs.readdirSync(path.join(world.ohome, 'keepers')).filter((n) => n.startsWith(na.owner.id)) : [];
     const ownerWoke = log.split('\n').filter((l) => /woke /.test(l) && l.includes(`woke ${na.owner.id}`));
-    clause('soak/zero-agent-turns-for-the-no-agent-workspace', ownerWoke.length === 0 && ownerKeeperFiles.length === 0 && !ownerWoken.some((l) => /session|keeper/i.test(l) && !/session key registered/.test(l)), `host log: ${ownerWoke.length} "woke <owner>" line(s), ${ownerKeeperFiles.length} keeper file(s) for it; model requests ${modelReqs()} in total (turns of the normal agents — ws-lead woken by liveness about the silent control ws-normal)`);
+    const notWakeable = log.split('\n').filter((l) => l.includes(na.owner.id) && /not being woken[^\n]*not-wakeable/.test(l)).length; // POSITIVE terminator: the log is not empty / rotated / reworded — the host DID consider the owner and skip it
+    clause('soak/zero-agent-turns-for-the-no-agent-workspace', notWakeable >= 1 && ownerWoke.length === 0 && ownerKeeperFiles.length === 0 && !ownerWoken.some((l) => /session|keeper/i.test(l) && !/session key registered/.test(l)), `host log: ${notWakeable} 'not-wakeable' skip line(s) for it (positive terminator), ${ownerWoke.length} "woke <owner>" line(s), ${ownerKeeperFiles.length} keeper file(s) for it; model requests ${modelReqs()} in total (turns of the normal agents — ws-lead woken by liveness about the silent control ws-normal)`);
   }
 
   // ── no live contact ──

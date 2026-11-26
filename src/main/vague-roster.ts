@@ -28,6 +28,8 @@ export interface VagueRosterDeps {
   backgroundTask(ws: Workspace): boolean;
   /** `wakeRosterEntry(ws).wakeable`: a turn can be started for it at all. */
   wakeable(ws: Workspace): boolean;
+  /** #612: a no-agent workspace's detached command is alive (`noAgentRunner().running`). Absent = never. */
+  commandAlive?(ws: Workspace): boolean;
 }
 
 const labelOf = (ws: Workspace): string => ws.name || ws.branch || ws.id;
@@ -81,6 +83,7 @@ function factsOf(d: VagueRosterDeps, rid: string, g: { coordinator: Workspace; m
     // a coordinator with no LIVE parent is the human's conversation (same rule as the liveness / Relance rosters: a dangling or archived parent is nobody)
     coordinatorHasParent: ((up) => !!up && !up.archived)(coordinatorOf(g.coordinator, d.getWorkspace)),
     coordinatorWakeable: d.wakeable(g.coordinator),
+    coordinatorCommandAlive: g.coordinator.noAgent === true && d.commandAlive?.(g.coordinator) === true, // #612
     members,
     paused: [g.coordinator, ...g.members].some((w) => d.paused(w)),
     runHeld: held.has(rid),

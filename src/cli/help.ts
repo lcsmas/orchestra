@@ -146,7 +146,9 @@ Spawn a new worktree + agent, nested under the caller by default.
                     Mail to it is read by the command ('orchestra check'), never wakes an agent.
                     Refused ([noagent-no-display]) when the host has no display: Orchestra cannot run
                     without one — use a virtual display (xvfb-run, headless sway).
-  --run-command <cmd>  the shell command of a --no-agent workspace (required with it)`,
+  --run-command <cmd>  the shell command of a --no-agent workspace (required with it). Run as /bin/sh -c with the
+                    orchestra bin dir first on PATH and the app's own PATH after it — NO login shell, so
+                    nvm / pnpm / user shims are absent unless the command names them by absolute path.`,
   },
   {
     name: 'rename',

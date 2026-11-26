@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Workspace } from '../shared/types.ts';
 import { mintSessionKey } from './session-identity.ts';
-import { noAgentCommandEnv, noAgentRefusal, noDisplayRefusal, parseNoAgentRecord, parseProcStartTicks, recordIsAlive, runCommandRefusal, type NoAgentRecord } from '../shared/noagent.ts';
+import { noAgentCommandEnv, noAgentRefusal, parseNoAgentRecord, parseProcStartTicks, recordIsAlive, runCommandRefusal, type NoAgentRecord } from '../shared/noagent.ts';
 
 export interface NoAgentDeps {
   /** `<ORCHESTRA_HOME>` — the records live in `<home>/noagent/`. */
@@ -92,8 +92,6 @@ export function createNoAgentRunner(deps: NoAgentDeps): NoAgentRunner {
     if (cmdRefusal) return { ok: false, error: cmdRefusal };
     const live = recordOf(id);
     if (live && aliveRec(live)) return { ok: true, pid: live.pid, reused: true, log: logFile(id) }; // already running: no new key (it would supersede the live command)
-    const noDisplay = noDisplayRefusal(deps.hostEnv, deps.platform);
-    if (noDisplay) return { ok: false, error: noDisplay };
     const sock = deps.sock();
     if (!sock) return { ok: false, error: `the host has no hooks socket yet (still starting?): ${id} was not started — try again in a few seconds` };
     const key = mintSessionKey();

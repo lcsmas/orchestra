@@ -850,9 +850,10 @@ export function coverFor(
 async function fanoutVerbGate(verb: 'open' | 'gate' | 'check' | 'deliver', args: string[]): Promise<{ exit: number; stdout: string; stderr: string } | null> {
   if (args.includes('--help') || args.includes('-h')) return null;
   const ri = args.indexOf('--run');
-  // every run the caller may be acting in: --run, its OWN workspace's, and the run the env / the host puts it in ($ORCHESTRA_RUN_ID — a worker's is its coordinator's); a forged env is the accepted gap (ADR 0008)
-  const own = resolveFanoutRun(ri >= 0 ? args[ri + 1] : undefined, process.env).run;
-  const runs = [...new Set([own, process.env.ORCHESTRA_RUN_ID?.trim() || null].filter((r): r is string => !!r))];
+  await settleHostIdentity(); // the run the host puts this session in (liveEnv) — never the baked $ORCHESTRA_RUN_ID (#379); a keyless caller resolves to the env at once, a superseded one is refused here
+  // every run the caller may be acting in: --run, its OWN workspace's, and the run the host puts it in (a worker's is its coordinator's); a forged env is the accepted gap (ADR 0008)
+  const own = resolveFanoutRun(ri >= 0 ? args[ri + 1] : undefined, liveEnv()).run;
+  const runs = [...new Set([own, liveEnv().ORCHESTRA_RUN_ID?.trim() || null].filter((r): r is string => !!r))];
   if (runs.length === 0) return null; // no run to attribute (a human terminal, a store-less call): nothing to judge
   if (verb !== 'deliver') {
     const ticket = ticketArgOf(verb, args);
@@ -864,7 +865,6 @@ async function fanoutVerbGate(verb: 'open' | 'gate' | 'check' | 'deliver', args:
         if (fs.existsSync(file)) return { exit: 2, stdout: '', stderr: `refused: [${CALLER_REFUSAL_NAMES[verb as CallerVerb]}] the fanout state of run ${run} exists but cannot be read (${file}) — the caller cannot be judged; fix or restore it\n` };
       }
       if (!state || !fanoutSeatRecordsOn(state)) continue;
-      await settleHostIdentity();
       const refused = callerRefusal(verb as CallerVerb, state, true, resolveFanoutCaller(state, process.env, hostIdentity), ticket);
       if (refused) return { exit: 2, stdout: '', stderr: `refused: [${refused.name}] ${refused.detail}\n` };
     }
