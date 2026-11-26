@@ -10,7 +10,19 @@ export const IMPLEMENTER_RULES = [
   `Your role file: ${FANOUT_IMPLEMENTER_SKILL_PATH}`,
 ].join('\n');
 
+/** #605 — the agent-side half of decisions 3, 4 and 5, appended ONLY when the Boucle leads the run (`input.loop`, else `state.loopPlan` once #604 freezes it): absent ⇒ the brief is byte-identical to before (pinned by test). */
+export const LOOP_BRIEF = [
+  '## The loop leads this run (this overrides anything else you were told)',
+  '- Start NOW on the frozen interface names above and write code at once: never wait for an upstream to merge. Merges in this run are MERGE COMMITS.',
+  '- A question that would wait for a person gets a fixed answer from the loop: take the reversible option, record it under `## Choices` in your PR body, continue.',
+  '- If you have NO SAFE OPTION (a contradictory spec, an irreversible act): send ONE `orchestra send --type ask` whose FIRST line is exactly `NO SAFE OPTION: <reason>`, then stop. Your ticket is set aside and the others go on.',
+  '- When the loop sends `CONNECT <upstream> <head>`: merge that exact head into your branch with a MERGE COMMIT (`git merge --no-ff <head>`; never rebase, never squash), rebuild on its real names, push, then send a `status`.',
+  '- After you push a candidate, send a `status`: the loop reads git for the head, not your words.',
+].join('\n');
+
 export interface ImplementerBriefInput {
+  /** #605 — the Boucle leads this run: append {@link LOOP_BRIEF}. Absent = read `state.loopPlan` (#604's marker). */
+  loop?: boolean;
   state: FanoutState;
   ticket: string;
   /** Respawn only: the dead implementer's branch and the head its work reached (the new agent continues from it). */
@@ -50,6 +62,7 @@ export function renderImplementerBrief(input: ImplementerBriefInput): string {
     '',
     '## Rules',
     IMPLEMENTER_RULES,
+    ...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : []),
   ];
   return lines.join('\n');
 }

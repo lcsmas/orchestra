@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "run": "slow-ci",
+  "repo": {
+    "tickets": [
+      {
+        "id": "A",
+        "dependsOn": [],
+        "spec": "spec/A.md"
+      },
+      {
+        "id": "B",
+        "dependsOn": [],
+        "spec": "spec/B.md"
+      }
+    ]
+  },
+  "timing": {
+    "ciMs": 900000
+  }
+}
