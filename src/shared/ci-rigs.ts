@@ -31,6 +31,8 @@ export interface RigEntry {
   pathsExtra?: string[];
 }
 export interface RigFile {
+  /** #623: the non-mutant rigs fill the first `prGroups` groups (balanced); the mutant rigs (skipped on a pull_request) then go onto the lightest of ALL groups — a PR's wall time is its `prGroups` non-mutant groups. Used by `rigs.mjs assign`. */
+  prGroups?: number;
   /** How many jobs the RUNS_IN_CI rigs are spread over (D5, ledger #569). Each job installs once and runs its rigs in sequence. */
   groups?: number;
   /** #594: how many jobs the suite (`node --test --test-shard=i/n`) is split over; the check named `suite` is red unless ALL of them reported (`judgeShards`). */
@@ -255,4 +257,19 @@ export function judgeArm(status: number | null, output: string, expectAbort?: st
   }
   if (lines.some((l) => VOID_RE.test(l) && !/AS EXPECTED|expect VOID/.test(l))) return { ok: false, why: 'the arm printed VOID / BROKEN / not-exercised (nothing was measured)' };
   return { ok: true, why: 'ok' };
+}
+
+/** #623: a mutant rig proves other rigs can fail; it never gates a pull_request (it runs on push to master + nightly, `.github/workflows/mutants.yml`, and in a full run: dispatch / `ci-full`). */
+export const isMutantRig = (id: string): boolean => /mutants/.test(id) || /^test:role-guard-matrix/.test(id);
+
+/** The RUNS_IN_CI mutant rigs spread over `n` parts, longest-first onto the lightest part (by `wallSec`). Deterministic; the parts of `mutants.yml`. */
+export function mutantParts(file: RigFile, n: number): string[][] {
+  const parts: string[][] = Array.from({ length: n }, () => []);
+  const load = Array<number>(n).fill(0);
+  const w = (r: RigEntry): number => r.wallSec ?? DEFAULT_WEIGHT_SEC;
+  for (const r of file.rigs.filter((x) => x.class === 'RUNS_IN_CI' && isMutantRig(x.id)).sort((a, b) => w(b) - w(a) || a.id.localeCompare(b.id))) {
+    const g = load.indexOf(Math.min(...load));
+    parts[g].push(r.id); load[g] += w(r);
+  }
+  return parts.map((p) => p.sort());
 }
