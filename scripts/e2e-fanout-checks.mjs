@@ -125,4 +125,4 @@ const same = after.fail === 0 && after.pass === base.pass;
 console.log(`\n${mutants.length - survived - refused}/${mutants.length} mutants killed, ${survived} survived, ${refused} refused; scratch restored → ${same ? 'GREEN' : 'RED'}`);
 
 fs.rmSync(scratch, { recursive: true, force: true });
-exitAfterFlush(survived || refused || !same ? 1 : 0);
+await exitAfterFlush(survived || refused || !same ? 1 : 0);
