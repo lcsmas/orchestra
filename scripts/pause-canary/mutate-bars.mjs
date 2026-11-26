@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { pool } from '../lib/mutant-pool.mjs';
+import { exitAfterFlush, pool } from '../lib/mutant-pool.mjs';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -107,4 +107,4 @@ const after = run();
 console.log(`restored byte-exact: ${same}; CLEAN control after: pass ${after.pass} fail ${after.fail}`);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`MUTATE-BARS: ${bad === 0 && same && after.fail === 0 ? 'PASS' : 'FAIL'} (${MUTANTS.length} mutants)`);
-process.exit(bad === 0 && same && after.fail === 0 ? 0 : 1);
+exitAfterFlush(bad === 0 && same && after.fail === 0 ? 0 : 1);

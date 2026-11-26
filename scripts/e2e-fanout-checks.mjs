@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pool } from './lib/mutant-pool.mjs';
+import { exitAfterFlush, pool } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
@@ -125,4 +125,4 @@ const same = after.fail === 0 && after.pass === base.pass;
 console.log(`\n${mutants.length - survived - refused}/${mutants.length} mutants killed, ${survived} survived, ${refused} refused; scratch restored → ${same ? 'GREEN' : 'RED'}`);
 
 fs.rmSync(scratch, { recursive: true, force: true });
-process.exit(survived || refused || !same ? 1 : 0);
+exitAfterFlush(survived || refused || !same ? 1 : 0);

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXIT_SURVIVED, runMutantChildren } from './lib/mutant-pool.mjs';
+import { EXIT_SURVIVED, exitAfterFlush, runMutantChildren } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CLI = path.join(ROOT, 'dist-electron', 'cli.js');
@@ -410,7 +410,7 @@ if (CHILD === undefined) { // #623: the mutants run in parallel, each in its own
   const { survived, broken } = await runMutantChildren(ids);
   if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
   console.log(`\n${BUNDLE_MUTANTS.length + HOST_MUTANTS.length - survived - broken}/${BUNDLE_MUTANTS.length + HOST_MUTANTS.length} mutants killed; real bundle byte-identical`);
-  process.exit(survived || broken ? 1 : 0);
+  exitAfterFlush(survived || broken ? 1 : 0);
 }
 let survived = 0;
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-harness-mut-'));

@@ -5,7 +5,7 @@
 //   node scripts/e2e-fanout-freeze-check.mjs            baseline: every arm must PASS
 //   node scripts/e2e-fanout-freeze-check.mjs --mutants  each patched copy of the BUILT bundle must be KILLED (≥1 arm FAILs); the baseline is the control
 import { spawnSync } from 'node:child_process';
-import { EXIT_SURVIVED, runMutantChildren } from './lib/mutant-pool.mjs';
+import { EXIT_SURVIVED, exitAfterFlush, runMutantChildren } from './lib/mutant-pool.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -311,7 +311,7 @@ if (CHILD === undefined) { // #623: the mutants run in parallel, each in its own
   const { survived, broken } = await runMutantChildren(ids);
   if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
   console.log(`\n${mutants.length - survived - broken}/${mutants.length} mutants killed; real bundle byte-identical`);
-  process.exit(survived || broken ? 1 : 0);
+  exitAfterFlush(survived || broken ? 1 : 0);
 }
 let survived = 0;
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'freeze-check-mut-'));

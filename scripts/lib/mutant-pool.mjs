@@ -33,3 +33,6 @@ export async function runMutantChildren(ids, envName = 'MUT_CHILD', okCodes = []
   }
   return { survived, broken, codes: res.map((r) => r.code) };
 }
+
+/** Exit once stdout is drained: the parent prints every child's output in one burst, and a bare process.exit() right after drops what a pipe has not taken yet (harness-amend lost 26 of 38 mutants' lines on CI). */
+export function exitAfterFlush(code) { process.exitCode = code; process.stdout.write('', () => process.exit(code)); }

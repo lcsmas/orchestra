@@ -3,7 +3,7 @@
 // file bytes / branch tips from the bare repo, keeps PRs + CI + the ledger decision comment in a json file). Light: no Electron, no network, no tokens, scratch under $TMPDIR.
 //   node scripts/e2e-fanout-acceptance-mutants.mjs            baseline: every arm must PASS (one must-PASS and one must-FAIL arm per clause)
 //   node scripts/e2e-fanout-acceptance-mutants.mjs --mutants  each patched copy of the BUILT bundle must be KILLED (≥1 arm FAILs); the baseline is the control
-// The role-guard clause (freeze|amend denied to every non-coordinator role) has its own mutant arm in src/shared/role-guard.test.ts.
+// The role-guard clause (freeze|amend denied to every non-coordinator role) has its own mutant arm in src/shared/role-guard.matrix.ts.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';

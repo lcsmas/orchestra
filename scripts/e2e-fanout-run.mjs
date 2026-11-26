@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EXIT_SURVIVED, runMutantChildren } from './lib/mutant-pool.mjs';
+import { EXIT_SURVIVED, exitAfterFlush, runMutantChildren } from './lib/mutant-pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmpBase = process.env.TMPDIR || os.tmpdir();
@@ -187,7 +187,7 @@ if (CHILD === undefined) {
   const { survived, broken, codes } = await runMutantChildren(ids, 'MUT_CHILD', [4]);
   const refused = codes.filter((c) => c === 4).length, ran = ids.length;
   console.log(`\n${PART ? `part ${PART}: ` : ''}${ran - survived - refused - broken}/${ran} killed, ${survived} survived, ${refused} refused`);
-  process.exit(survived || refused || broken ? 1 : 0);
+  exitAfterFlush(survived || refused || broken ? 1 : 0);
 }
 let survived = 0, refused = 0;
 for (const [mi, [name, edits]] of mutants.entries()) {

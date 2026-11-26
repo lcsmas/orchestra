@@ -1,5 +1,5 @@
 // #468 — the WIRING of the role guard + the role sentinel, pinned structurally (workspaces.ts imports Electron seams and cannot run
-// under `node --test`); the deny BEHAVIOUR of the installed string is src/shared/role-guard.test.ts, the real CLI is
+// under `node --test`); the deny BEHAVIOUR of the installed string is src/shared/role-guard.matrix.ts, the real CLI is
 // `pnpm run test:role-guard-cli`. The sentinel writer itself is driven for real below.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
