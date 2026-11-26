@@ -2340,7 +2340,8 @@
    "id": "test:fanout-run-mutants",
    "command": "pnpm run test:fanout-run-mutants",
    "class": "RUNS_IN_CI",
-   "wallSec": 450,
+   "timeoutMin": 20,
+   "wallSec": 300,
    "paths": [
     "@bundle:cli",
     "src/shared/fanout-loop-scenarios/**",
@@ -2352,6 +2353,24 @@
     "src/shared/fanout-loop.test.ts"
    ],
    "group": 6
+  },
+  {
+   "id": "test:fanout-run-mutants-2",
+   "command": "pnpm run test:fanout-run-mutants-2",
+   "class": "RUNS_IN_CI",
+   "timeoutMin": 20,
+   "wallSec": 300,
+   "paths": [
+    "@bundle:cli",
+    "src/shared/fanout-loop-scenarios/**",
+    "scripts/e2e-fanout-run.mjs",
+    "!**/*.test.ts",
+    "!**/*.test.tsx",
+    "!**/*.test.mjs",
+    "src/cli/fanout-run.test.ts",
+    "src/shared/fanout-loop.test.ts"
+   ],
+   "group": 14
   },
   {
    "id": "test:acceptance-forced",
@@ -7509,7 +7528,7 @@
    "command": "pnpm run test:pause-containers",
    "class": "RUNS_IN_CI",
    "wallSec": 84,
-   "group": 14,
+   "group": 12,
    "paths": [
     "@bundle:keeper",
     "scripts/.r2-register.mjs",
@@ -9861,7 +9880,7 @@
    "command": "node scripts/ci/each-arm.mjs --expect-abort hang_selftest=\"deadline: the arm hung\" node --experimental-strip-types --no-warnings --import ./scripts/.r2-register.mjs scripts/e2e-pause-gates.mjs",
    "class": "RUNS_IN_CI",
    "wallSec": 93,
-   "group": 14,
+   "group": 6,
    "paths": [
     "@bundle:cli",
     "README.md",
@@ -9993,7 +10012,7 @@
    "command": "bash scripts/e2e-session-wedge.sh",
    "class": "RUNS_IN_CI",
    "wallSec": 31,
-   "group": 14,
+   "group": 8,
    "paths": [
     "scripts/.r2-register.mjs",
     "scripts/e2e-session-wedge-redelivery.mjs",

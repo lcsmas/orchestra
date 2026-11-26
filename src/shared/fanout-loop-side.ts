@@ -25,40 +25,40 @@ export interface LoopSide {
 /** `FanoutState` + the sidecar.  */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const emptySide = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {} });
-const sideFile = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
+const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {} });
+const sideFilePath = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
-function readSide(file: string): LoopSide {
+function sideRead(file: string): LoopSide {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<LoopSide>;
-    return { ...emptySide(), ...raw };
+    return { ...sideEmpty(), ...raw };
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return emptySide();
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return sideEmpty();
     throw new SeatRefusal('loop-side-unreadable', `${file} is not readable JSON: refusing to run on a half-known state`);
   }
 }
-function writeSide(file: string, side: LoopSide): void {
+function sideWrite(file: string, side: LoopSide): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(side, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-const strip = (s: LoopState): FanoutState => { const { loop: _l, ...rest } = s; return rest; };
+const sideStrip = (s: LoopState): FanoutState => { const { loop: _l, ...rest } = s; return rest; };
 
 export function readLoopState(home: string, run: string): LoopState | null {
   const st = readState(stateFile(home, run));
-  return st ? { ...st, loop: readSide(sideFile(home, run)) } : null;
+  return st ? { ...st, loop: sideRead(sideFilePath(home, run)) } : null;
 }
 /** Read-modify-write of the state AND its sidecar under the state's lock. `mutate(null)` = no state yet. */
 export function updateLoopState(home: string, run: string, mutate: (cur: LoopState | null) => FanoutState | LoopState): LoopState {
   let out!: LoopState;
   updateState(stateFile(home, run), (cur) => {
-    const side = readSide(sideFile(home, run));
+    const side = sideRead(sideFilePath(home, run));
     const next = mutate(cur ? { ...cur, loop: side } : null);
     out = { ...next, loop: (next as Partial<LoopState>).loop ?? side }; // a pure state helper (parkTicket, recordChoice…) spreads `loop` along; a bare FanoutState keeps the side it was read with
-    writeSide(sideFile(home, run), out.loop);
-    return strip(out);
+    sideWrite(sideFilePath(home, run), out.loop);
+    return sideStrip(out);
   });
   return out;
 }
-export const withLoop = (s: FanoutState, loop: LoopSide = emptySide()): LoopState => ({ ...s, loop });
+export const withLoop = (s: FanoutState, loop: LoopSide = sideEmpty()): LoopState => ({ ...s, loop });

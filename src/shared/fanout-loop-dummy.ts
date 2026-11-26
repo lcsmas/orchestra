@@ -33,36 +33,36 @@ export interface Scenario {
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const dummyIsObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export function parseScenario(raw: unknown): Scenario {
   const bad = (m: string): never => { throw new FanoutStateError(`scenario: ${m}`); };
-  if (!isObj(raw) || raw.version !== 1) return bad('version must be 1');
-  if (!isObj(raw.repo) || !Array.isArray(raw.repo.tickets) || raw.repo.tickets.length === 0) return bad('repo.tickets must be a non-empty list');
+  if (!dummyIsObj(raw) || raw.version !== 1) return bad('version must be 1');
+  if (!dummyIsObj(raw.repo) || !Array.isArray(raw.repo.tickets) || raw.repo.tickets.length === 0) return bad('repo.tickets must be a non-empty list');
   const ids = new Set<string>();
   for (const t of raw.repo.tickets as unknown[]) {
-    if (!isObj(t) || typeof t.id !== 'string' || !Array.isArray(t.dependsOn) || typeof t.spec !== 'string') return bad('a repo ticket is {id, dependsOn[], spec}');
+    if (!dummyIsObj(t) || typeof t.id !== 'string' || !Array.isArray(t.dependsOn) || typeof t.spec !== 'string') return bad('a repo ticket is {id, dependsOn[], spec}');
     ids.add(t.id);
   }
   for (const t of raw.repo.tickets as Array<{ id: string; dependsOn: string[] }>) for (const d of t.dependsOn) if (!ids.has(d)) return bad(`${t.id} depends on unknown ${d}`);
   const steps = (v: unknown, kinds: readonly string[], where: string): void => {
     if (v === undefined) return;
     if (!Array.isArray(v)) return bad(`${where} must be a list of steps`);
-    for (const s of v) if (!isObj(s) || typeof s.do !== 'string' || !kinds.includes(s.do)) bad(`${where}: a step is {do: ${kinds.join('|')}, afterMs?, findings?, head?}`);
+    for (const s of v) if (!dummyIsObj(s) || typeof s.do !== 'string' || !kinds.includes(s.do)) bad(`${where}: a step is {do: ${kinds.join('|')}, afterMs?, findings?, head?}`);
   };
-  for (const [tk, a] of Object.entries(isObj(raw.agents) ? raw.agents : {})) {
+  for (const [tk, a] of Object.entries(dummyIsObj(raw.agents) ? raw.agents : {})) {
     if (!ids.has(tk)) return bad(`agents.${tk} is not a ticket`);
-    if (!isObj(a)) return bad(`agents.${tk} must be an object`);
+    if (!dummyIsObj(a)) return bad(`agents.${tk} must be an object`);
     steps(a.implementer, STEP_KINDS_IMPLEMENTER, `agents.${tk}.implementer`);
     steps(a.respawn, STEP_KINDS_IMPLEMENTER, `agents.${tk}.respawn`);
     steps(a.reviewer, STEP_KINDS_REVIEWER, `agents.${tk}.reviewer`);
   }
-  for (const [tk, list] of Object.entries(isObj(raw.ci) ? raw.ci : {})) {
+  for (const [tk, list] of Object.entries(dummyIsObj(raw.ci) ? raw.ci : {})) {
     if (tk !== '*' && !ids.has(tk)) return bad(`ci.${tk} is not a ticket`);
     if (!Array.isArray(list) || list.some((x) => x !== 'green' && !(typeof x === 'string' && /^red:\S+$/.test(x)))) return bad(`ci.${tk} is a list of "green" | "red:<check>"`);
   }
-  for (const [tk, list] of Object.entries(isObj(raw.events) ? raw.events : {})) {
+  for (const [tk, list] of Object.entries(dummyIsObj(raw.events) ? raw.events : {})) {
     if (!ids.has(tk)) return bad(`events.${tk} is not a ticket`);
-    if (!Array.isArray(list) || list.some((e) => !isObj(e) || typeof e.at !== 'string' || (e.kind !== 'question' && e.kind !== 'no-safe-option'))) return bad(`events.${tk} is a list of {at, kind: question|no-safe-option}`);
+    if (!Array.isArray(list) || list.some((e) => !dummyIsObj(e) || typeof e.at !== 'string' || (e.kind !== 'question' && e.kind !== 'no-safe-option'))) return bad(`events.${tk} is a list of {at, kind: question|no-safe-option}`);
   }
   return raw as unknown as Scenario;
 }
@@ -74,11 +74,11 @@ export function planOf(sc: Scenario): Plan {
   return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — the names ${d} provides`])) };
 }
 
-const DEFAULT_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };
-const EPOCH = Date.parse('2026-01-01T00:00:00Z');
-const CHECK_NAMES = ['build', 'test', 'lint'];
-const sha = (label: string): string => crypto.createHash('sha1').update(label).digest('hex');
-const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+const DUMMY_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };
+const DUMMY_EPOCH = Date.parse('2026-01-01T00:00:00Z');
+const DUMMY_CHECK_NAMES = ['build', 'test', 'lint'];
+const dummySha = (label: string): string => crypto.createHash('sha1').update(label).digest('hex');
+const dummySameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 interface Commit { parents: string[]; tree: string; at: number }
 interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
@@ -86,7 +86,7 @@ interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx:
 interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
 
 export class DummyWorld {
-  t = EPOCH;
+  t = DUMMY_EPOCH;
   events: Ev[] = [];
   readonly commits = new Map<string, Commit>();
   readonly branches = new Map<string, string>();
@@ -107,12 +107,12 @@ export class DummyWorld {
     const root = this.commit([], 'root', 'root');
     this.branches.set(target, root);
   }
-  get timing(): typeof DEFAULT_TIMING { return { ...DEFAULT_TIMING, ...(this.sc.timing ?? {}) }; }
+  get timing(): typeof DUMMY_TIMING { return { ...DUMMY_TIMING, ...(this.sc.timing ?? {}) }; }
   iso(t = this.t): string { return new Date(t).toISOString(); }
   ev(ev: string, ticket: string | undefined, extra: Record<string, unknown> = {}): void { this.events.push({ t: this.t, ev, ...(ticket ? { ticket } : {}), ...extra }); }
   commit(parents: string[], label: string, tree: string): string {
-    const id = sha(`${this.counter++}:${label}`);
-    this.commits.set(id, { parents, tree: sha(`tree:${parents.map((p) => this.commits.get(p)?.tree ?? '').join(',')}:${tree}`), at: this.t });
+    const id = dummySha(`${this.counter++}:${label}`);
+    this.commits.set(id, { parents, tree: dummySha(`tree:${parents.map((p) => this.commits.get(p)?.tree ?? '').join(',')}:${tree}`), at: this.t });
     return id;
   }
   resolve(ref: string): string | null { return this.branches.get(ref) ?? (this.commits.has(ref) ? ref : null); }
@@ -324,9 +324,9 @@ export class DummyWorld {
     const late = this.sc.faults?.lateCheck?.[p.ticket];
     const lint: ForgeCheck = { name: 'lint', jobId: `job-${p.n}-${p.runs.indexOf(run)}-lint`, status: 'green', steps, at: this.iso(run.startedAt) };
     if (late !== undefined && this.t < run.startedAt + late) return [lint]; // the workflow has not registered its other checks yet
-    if (this.t < run.doneAt) return CHECK_NAMES.map((name) => (name === 'lint' ? lint : { name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: 'pending' as const }));
+    if (this.t < run.doneAt) return DUMMY_CHECK_NAMES.map((name) => (name === 'lint' ? lint : { name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: 'pending' as const }));
     const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
-    return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
+    return DUMMY_CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !DUMMY_CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
   }
   closePr(n: number): void { const p = this.prs.get(n); if (p && p.state === 'open') { p.state = 'closed'; this.ev('pr-close', p.ticket, { n }); } }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
@@ -335,7 +335,7 @@ export class DummyWorld {
     if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
     if (p.state !== 'open') return { ok: false, reason: `the PR is ${p.state}` };
-    if (!sameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
+    if (!dummySameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
     const run = [...p.runs].reverse().find((r) => r.head === head);
     const ci = !run ? 'none' : this.t < run.doneAt ? 'pending' : run.result;
     const c = this.commit([this.branches.get(this.target)!, head], `merge:${p.ticket}`, `merge:${p.ticket}`);
@@ -409,7 +409,7 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
     updateLoopState(i.home, run, () => { const { loopPlan: _m, ...hand } = applyPlan(newState(run, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now()); return withLoop(hand); });
   }
   const log: string[] = [];
-  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 5000, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
+  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 2500, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
   const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options });
   d.world.dump();
   const s = readLoopState(i.home, run);
