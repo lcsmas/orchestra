@@ -261,6 +261,29 @@ _rg_tree_run() { # <workflow> <event-regex> <want-tree> — prints "sha<TAB>url<
   done <<<"$lines"
   return 1
 }
+# Rule 1 (reuse-pr-ci): the tag's tree equals the MERGE-REF tree a green `pull_request` ci.yml run tested (master got that PR's merge with the base unchanged). Candidates = green PR runs whose head is an
+# ancestor of HEAD (a merge commit, not a squash); the tested merge commit is read from the run's checkout log ("fetch ... +<sha>:refs/remotes/pull/N/merge"), fetched, tree compared (version line masked).
+# Prints "sha<TAB>url" of the run; rc 0 found, 1 none, 2 gh unreadable. The mutant rigs are NOT in a PR run — the caller accepts it anyway and the release re-checks them (release.sh, mutants.yml release_tag).
+_rg_pr_merge_run() { # <want-tree>
+  local gh="${RG_GH:-gh}" rows lines sha url id job log msha mt n=0
+  rows="$("$gh" run list --workflow ci.yml --event pull_request --status success --limit 60 --json databaseId,headSha,url 2>/dev/null)" || return 2
+  lines="$(printf '%s' "$rows" | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{for(const r of JSON.parse(t))if(r&&/^[0-9a-f]{7,40}$/.test(r.headSha||""))console.log(r.databaseId+"\t"+r.headSha+"\t"+(r.url||""))}catch{process.exit(1)}})')" || return 2
+  while IFS=$'\t' read -r id sha url; do
+    [ -n "$id" ] || continue
+    git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null || continue
+    git merge-base --is-ancestor "$sha" HEAD 2>/dev/null || continue
+    n=$((n+1)); [ "$n" -le "${RG_PR_RUNS_MAX:-8}" ] || break
+    job="$("$gh" api "repos/{owner}/{repo}/actions/runs/$id/jobs?per_page=1" --jq '.jobs[0].id' 2>/dev/null)" || continue
+    [ -n "$job" ] || continue
+    log="$("$gh" api "repos/{owner}/{repo}/actions/jobs/$job/logs" 2>/dev/null | sed -n 's|.*+\([0-9a-f]\{40\}\):refs/remotes/pull/[0-9]*/merge.*|\1|p' | head -1)"
+    [ -n "$log" ] || continue
+    msha="$log"
+    git cat-file -e "$msha^{commit}" 2>/dev/null || git fetch -q origin "$msha" 2>/dev/null || continue
+    mt="$(rg_norm_tree "$msha")" || continue
+    if [ "$mt" = "$1" ]; then printf '%s\t%s\n' "$sha" "$url"; return 0; fi
+  done <<<"$lines"
+  return 1
+}
 rg_full_ci_check() {
   local want hit rc sha url ev mhit n=0
   _RG_NF="$(mktemp "${TMPDIR:-/tmp}/rg-ci-n.XXXXXX")" || _RG_NF=""
@@ -284,6 +307,12 @@ rg_full_ci_check() {
     echo "  full rig run: ci.yml $ev run found ($url) but no green mutants.yml run on this tree — the mutant rigs are not covered" >&2
   fi
   [ -z "$_RG_NF" ] || n="$(head -1 "$_RG_NF" 2>/dev/null)"; rm -f "${_RG_NF:-/nonexistent}"; _RG_NF=""
+  # rule 1: the PR run's merge-ref tree IS this tree (mutant rigs not in it: accepted anyway, re-checked after the release)
+  hit="$(_rg_pr_merge_run "$want")"; rc=$?
+  if [ "$rc" = 0 ]; then
+    IFS=$'\t' read -r sha url <<<"$hit"
+    echo "full rig run PASS: $url (ci.yml pull_request on ${sha:0:8}; its merge-ref tree == this tree ${want:0:12}, package.json version line masked; mutant rigs NOT in this run — mutants.yml re-checks the release)"; return 0
+  fi
   if [ "${RG_FULL_CI_DISPATCH:-1}" != 0 ] && rg_full_ci_dispatch "$want"; then return 0; fi
   _rg_refuse full-ci "no green run of every rig on a commit with this tree (${want:0:12}; $n recent green ci.yml dispatch/push run(s) checked): need a ci.yml workflow_dispatch run, or a ci.yml push run + a mutants.yml run. A pull-request run is path-selected and never counts. ${_RG_DISPATCH_WHY:-} Run it, wait for green, then release again: gh workflow run ci.yml --ref <branch-or-master> ; gh run watch — or --skip-release-gate \"<reason>\" (recorded in the release notes)."
   return 1
