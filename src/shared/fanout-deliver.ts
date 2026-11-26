@@ -290,6 +290,9 @@ export function classifyMergeFailure(stderr: string): 'head-moved' | 'other' {
   return /head branch was modified|head (commit|sha) .*(does not match|mismatch)|expected head sha/i.test(stderr) ? 'head-moved' : 'other';
 }
 
+/** #628 — a merge call gh refused because the branch no longer merges cleanly into its base (mergeable UNKNOWN at decision time, CONFLICTING at the call): the loop's SYNC order, not a failure to retry. */
+export const isMergeConflict = (stderr: string): boolean => /not mergeable|merge conflict|conflicts? (with|in)|cannot be cleanly created/i.test(stderr);
+
 /** Names that are safe to splice into a shell line and into `gh` argv (no leading `-`, no metacharacters). */
 export const SAFE_REF = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/;
 

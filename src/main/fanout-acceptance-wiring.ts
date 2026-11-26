@@ -6,7 +6,7 @@ import { orchestraHome } from './platform/index.ts';
 import { store } from './store';
 import { detectRemoteUrl, refResolves } from './git';
 import { sessionKeys } from './session-identity-host.ts';
-import { dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
+import { archiveWorkspace, dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
 import { transcriptDirOfWorkspace } from './agent-sdk';
 
 const productionDeps: AcceptanceHostDeps = {
@@ -52,6 +52,7 @@ const productionDeps: AcceptanceHostDeps = {
     return done;
   },
   transcriptDirOf: (id) => { const w = store.getWorkspace(id); return w ? transcriptDirOfWorkspace(w) : null; }, // #614: the Boucle's cost-per-ticket reads these
+  archive: (id) => archiveWorkspace(id), // #629 plan-release (the plan agent once its plan is accepted) / #628 release (an implementer the Boucle replaces)
   post: ({ to, sender, body }) => {
     const ws = store.getWorkspace(to);
     if (!ws) throw new Error(`unknown workspace ${to}`);

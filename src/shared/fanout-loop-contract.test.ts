@@ -282,6 +282,18 @@ const fleetArms: Array<[string, (h: FleetH) => Promise<void>]> = [
     assert.ok(h.fleet.live(wsOf(h, 'T1')) && h.fleet.live(wsOf(h, 'T2')), '[live.started]');
     assert.equal(h.fleet.live('ws-not-ours'), false, '[live.stranger]');
   }],
+  ['replace (#628): the ticket\'s implementer ends on purpose — live() says so at once, its branch stays, and the next start() puts a fresh one on the SAME branch (respawned, never a second `started`)', async (h) => {
+    await h.fleet.start();
+    const w1 = wsOf(h, 'T1');
+    const branch = readState(stateFile(h.home, h.run))!.tickets.T1.branch;
+    await h.fleet.replace('T1');
+    assert.equal(h.fleet.live(w1), false, '[replace.gone]');
+    assert.ok(h.fleet.live(wsOf(h, 'T2')), '[replace.only-that-ticket]');
+    const r = await h.fleet.start();
+    assert.deepEqual(r.respawned.map((x) => [x.ticket, x.branch]), [['T1', branch]], '[replace.respawn.same-branch]');
+    assert.deepEqual(r.started, [], '[replace.not-a-first-start]');
+    assert.ok(h.fleet.live(wsOf(h, 'T1')), '[replace.fresh-live]');
+  }],
   ['mail: the run\'s messages in order, `ask` as `ask`; unread until `ack`; an ack below the last message loses nothing after it; acked ones never come back', async (h) => {
     await h.fleet.start();
     const w1 = wsOf(h, 'T1'), w2 = wsOf(h, 'T2');

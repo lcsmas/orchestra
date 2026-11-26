@@ -4,12 +4,14 @@
 // Exits as the other fanout verbs: 0 accepted · 2 refused (`[plan-…]` first; `[plan-refused-twice]` = the run does not start) · 1 usage / could not run.
 import fs from 'node:fs';
 import { TICKET_ID } from '../shared/fanout-plan.ts';
-import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stateFile } from '../shared/fanout-state.ts';
+import { FanoutStateError, SeatRefusal, assertRunId, newState, readState, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
+import type { Exec } from '../shared/fanout-loop-live-git.ts';
+import { realExec, resolveRunTarget } from './fanout-run-live.ts';
 import { submitPlan, submitText } from '../shared/fanout-plan-host.ts';
 import { renderPlanBrief } from '../shared/fanout-plan-brief.ts';
 import { homeOf, parseArgs, runOf, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
-export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [--run <id>] [--print] [--timeout <min>]
+export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [--run <id>] [--repo <owner/name>] [--print] [--timeout <min>]
        orchestra fanout plan submit <file|-> --run <id>
   seatRecords=on, coordinator only: spawns ONE single-use agent (explo-plan-<run8>, explorer role) whose brief is rendered by code from the ticket ids (no flag takes text), and returns when its plan is accepted:
   prints {"plan":"accepted","hash","attempts","tickets"} (exit 0). --print renders the brief and spawns nothing. --timeout (default 45, minutes) = how long to wait for the plan.
@@ -25,6 +27,8 @@ export interface PlanLoopOpts {
   pollMs?: number;
   /** How often the host is asked again (a dead agent is replaced once). */
   recheckMs?: number;
+  /** #626 — git / gh for the target of a state this verb initialises (default: the real ones, run in `deps.cwd`). */
+  exec?: Exec;
 }
 const realSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -38,7 +42,7 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
   try {
     if (args.includes('--help') || args.includes('-h')) return { code: 0, stdout: `${PLAN_USAGE}\n`, stderr: '' };
     if (args[0] === 'submit') return submit(args.slice(1), deps);
-    const p = parseArgs(args, ['--run', '--tickets', '--timeout'], ['--print']);
+    const p = parseArgs(args, ['--run', '--tickets', '--timeout', '--repo'], ['--print']);
     if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]} (fanout plan takes --tickets, --run, --print, --timeout; the plan agent uses \`plan submit\`)`);
     const tickets = [...new Set((p.vals['--tickets'] ?? '').split(',').map((t) => t.trim()).filter(Boolean))];
     if (!tickets.length) throw new FanoutStateError(`--tickets <id,id,…> is required\n${PLAN_USAGE}`);
@@ -47,12 +51,23 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
     const r = runOf(p, deps, 'use');
     if (p.bools.has('--print')) return { code: 0, stdout: `${renderPlanBrief(tickets, { run: r.run })}\n`, stderr: r.note };
     const file = stateFile(homeOf(deps.env), r.run);
-    const state = readState(file);
-    if (!state) throw new FanoutStateError(`no state for run ${r.run} — run \`orchestra fanout state init\` first`);
+    let state = readState(file);
+    let preNote = r.note;
+    if (!state) { // #626: the state `fanout run` would init (seatRecords=on, minorPolicy=demonstrated, verifier=off) — the documented order plan → run starts from nothing
+      const c0 = (deps.vouchedCaller ?? '').trim();
+      if (!c0 || c0 !== r.run) throw new SeatRefusal('plan-caller', `only the run's coordinator (${r.run}) asks for its plan${c0 ? `, not ${c0}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?)'}`);
+      const target = await resolveRunTarget(opts.exec ?? realExec, deps.cwd, p.vals['--repo'] ?? null);
+      updateState(file, (cur) => cur ?? newState(r.run, { target, repo: p.vals['--repo'] ?? null, switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: deps.now() }));
+      state = readState(file)!;
+      preNote += `state initialised for run ${r.run} (target ${target}, seatRecords=on, verifier=off)\n`;
+    }
     if (!seatRecordsOn(state)) throw new SeatRefusal('seat-records-off', `run ${r.run} has seatRecords=off: the plan step is a seatRecords rule (state init --switch seatRecords=on)`);
     const caller = (deps.vouchedCaller ?? '').trim(); // the HOST-vouched id (index.ts), never the bare env
     if (!caller || caller !== r.run) throw new SeatRefusal('plan-caller', `only the run's coordinator (${r.run}) asks for its plan${caller ? `, not ${caller}` : ' — the host could not vouch this session (is Orchestra running, and is this the live session of the workspace?)'}`);
-    if (state.loopPlan) return accepted(state, r.note);
+    const release = async (): Promise<string> => { // #629: the plan agent has nothing left to do — the host archives it (best effort: a refusal is said, never fatal)
+      try { const x = await host({ op: 'plan-release', run: r.run, from: caller, key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined }); return x.ok ? (x.released ? `plan agent ${String(x.released)} released\n` : '') : `plan agent not released: ${String(x.error ?? 'the host refused')}\n`; } catch (e) { return `plan agent not released: ${e instanceof Error ? e.message : String(e)}\n`; }
+    };
+    if (state.loopPlan) return accepted(state, preNote + await release());
     if (state.decisions?.length) throw new SeatRefusal('plan-after-decision', `run ${r.run} already holds ${state.decisions.length} run decision(s): they ride in every brief verbatim — no plan agent is spawned (start from a state with none)`);
     const timeoutMin = p.vals['--timeout'] === undefined ? 45 : Number(p.vals['--timeout']);
     if (!Number.isFinite(timeoutMin) || timeoutMin <= 0) throw new FanoutStateError('--timeout must be a number of minutes > 0');
@@ -62,12 +77,12 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
       return res.ok ? res : failFrom(res);
     };
     const first = await ask();
-    let note = `${r.note}plan agent ${String(first.name)} ${first.action === 'adopt' ? 'already running' : first.action === 'in-flight' ? 'starting' : first.action === 'accepted' ? '(plan already accepted)' : 'spawned'}${first.id ? ` (${String(first.id)})` : ''}\n`;
+    let note = `${preNote}plan agent ${String(first.name)} ${first.action === 'adopt' ? 'already running' : first.action === 'in-flight' ? 'starting' : first.action === 'accepted' ? '(plan already accepted)' : 'spawned'}${first.id ? ` (${String(first.id)})` : ''}\n`;
     const start = nowMs();
     let lastAsk = start;
     for (;;) {
       const st = readState(file);
-      if (st?.loopPlan) return accepted(st, note);
+      if (st?.loopPlan) return accepted(st, note + await release());
       if (st?.planRefusal) return { code: 2, stdout: '', stderr: `${note}[${st.planRefusal.code}] the plan step ended without a plan (loopPlan not set) — the run does not start: ${st.planRefusal.detail}\n` }; // the state remembers it, whatever happened to the record
       if (nowMs() - start > timeoutMin * 60_000) return { code: 1, stdout: '', stderr: `${note}no accepted plan after ${timeoutMin} min — nothing was recorded (run \`orchestra fanout plan --tickets …\` again: a live agent is adopted, never duplicated)\n` };
       if (nowMs() - lastAsk >= recheckMs) { // a dead plan agent is replaced ONCE; a second death is [plan-agent-dead]

@@ -5,17 +5,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dispatchFanoutAcceptance, type AcceptanceHostDeps } from './fanout-acceptance-host.ts';
+import { claimReviewer, reviewerName, settleReviewer } from './fanout-review.ts';
 import { applyTicketPatch, newState, stateFile, updateState } from './fanout-state.ts';
 
 const NOW = '2026-01-01T00:00:00.000Z';
-function host(): { deps: AcceptanceHostDeps; alive: Set<string> } {
+function host(): { deps: AcceptanceHostDeps; alive: Set<string>; archived: string[] } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'host-live-'));
   updateState(stateFile(home, 'run1'), () => {
-    return applyTicketPatch(newState('run1', { target: 'main', repo: null, now: NOW }), 'T1', { implementer: 'ws-impl' }, NOW);
+    const s = applyTicketPatch(newState('run1', { target: 'main', repo: null, now: NOW }), 'T1', { implementer: 'ws-impl' }, NOW);
+    return settleReviewer(claimReviewer(s, 'T1', { kind: 'spawn', name: reviewerName('T1', 1), head: 'a'.repeat(40), base: null, text: 'brief', now: NOW }), 'T1', { id: 'ws-rev' }, NOW); // a REVIEWER of the run: in the state, not an implementer
   });
-  const alive = new Set(['ws-impl', 'ws-stranger']);
-  const deps = { home, now: () => NOW, isWorkspace: (id: string) => alive.has(id), repoPath: () => undefined, spawn: async () => ({ ok: false }), post: () => undefined, vouches: (id: string, key?: string) => id === 'run1' && key === 'k-run1', isLive: (id: string) => alive.has(id), transcriptDirOf: (id: string) => `/t/${id}` } as unknown as AcceptanceHostDeps;
-  return { deps, alive };
+  const alive = new Set(['ws-impl', 'ws-stranger', 'ws-rev']);
+  const archived: string[] = [];
+  const deps = { archive: async (id: string) => { archived.push(id); alive.delete(id); }, home, now: () => NOW, isWorkspace: (id: string) => alive.has(id), repoPath: () => undefined, spawn: async () => ({ ok: false }), post: () => undefined, vouches: (id: string, key?: string) => id === 'run1' && key === 'k-run1', isLive: (id: string) => alive.has(id), transcriptDirOf: (id: string) => `/t/${id}` } as unknown as AcceptanceHostDeps;
+  return { deps, alive, archived };
 }
 const ask = (deps: AcceptanceHostDeps, o: Record<string, unknown>) => dispatchFanoutAcceptance({ run: 'run1', from: 'run1', key: 'k-run1', ids: ['ws-impl'], ...o }, deps);
 
@@ -38,4 +41,14 @@ test('MUST-FAIL: a caller the host cannot vouch (no key, a wrong key, another wo
       assert.match(String((r as { error: string }).error), new RegExp(`^\\[${op}-caller\\]`));
     }
   }
+});
+
+test('#628 release: archives a LIVE implementer of the run (its branch stays) — never a stranger, never a dead one; an unvouched caller is refused [release-caller]', async () => {
+  const { deps, alive, archived } = host();
+  assert.deepEqual(await ask(deps, { op: 'release', ids: ['ws-stranger', 'ws-rev', 'ws-impl'] }), { ok: true, op: 'release', released: ['ws-impl'] });
+  assert.deepEqual(archived, ['ws-impl'], 'neither the stranger nor the run\'s reviewer was touched');
+  assert.ok(alive.has('ws-stranger'));
+  assert.deepEqual(await ask(deps, { op: 'release', ids: ['ws-impl'] }), { ok: true, op: 'release', released: [] }, 'already gone');
+  for (const bad of [{ key: undefined }, { key: 'k-other' }, { from: 'ws-stranger' }]) assert.match(String(((await ask(deps, { op: 'release', ...bad })) as { error: string }).error), /^\[release-caller\]/);
+  assert.deepEqual(archived, ['ws-impl']);
 });

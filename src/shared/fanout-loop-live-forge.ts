@@ -4,7 +4,7 @@
 import type { ForgeCheck, ForgePort } from './fanout-loop-ports.ts';
 import type { ExecResult } from './fanout-loop-live-git.ts';
 import { FanoutStateError } from './fanout-state.ts';
-import { classifyMergeFailure, isUserStep, normaliseRollupItem, parseActionsJobUrl, type RollupItem } from './fanout-deliver.ts';
+import { classifyMergeFailure, isMergeConflict, isUserStep, normaliseRollupItem, parseActionsJobUrl, type RollupItem } from './fanout-deliver.ts';
 
 export type Gh = (args: string[]) => Promise<ExecResult>;
 export interface MergeAnswer { ok: boolean; reason?: string; detail?: string }
@@ -157,7 +157,7 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
       if (!deps.bareMerge) throw new ForgeGhError('the live forge has no `deliver` wired: a merge is never done around it (rigs pass bareMerge: true)');
       const r = await deps.gh(['pr', 'merge', String(n), `--${method}`, '--match-head-commit', matchHead, ...repoArgs]);
       if (r.code === 0) return { ok: true };
-      return { ok: false, reason: classifyMergeFailure(r.stderr) === 'head-moved' ? 'head-moved' : 'gh-failed', detail: r.stderr.trim().slice(0, 300) };
+      return { ok: false, reason: classifyMergeFailure(r.stderr) === 'head-moved' ? 'head-moved' : isMergeConflict(r.stderr) ? 'merge-conflict' : 'gh-failed', detail: r.stderr.trim().slice(0, 300) };
     },
 
     async close(n) {

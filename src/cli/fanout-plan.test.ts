@@ -34,15 +34,16 @@ function run(t: { after: (fn: () => void) => void }, sw = 'seatRecords=on'): { h
 }
 const load = (home: string): FanoutState => readState(stateFile(home, RUN))!;
 
-interface FakeHost { spawns: Array<{ from?: string; name: string; task: string; repoPath?: string }>; live: Set<string>; deps: PlanHostDeps; answer: (n: number) => { ok: boolean; id?: string; error?: string } }
+interface FakeHost { archived: string[]; spawns: Array<{ from?: string; name: string; task: string; repoPath?: string }>; live: Set<string>; deps: PlanHostDeps; answer: (n: number) => { ok: boolean; id?: string; error?: string } }
 function fakeHost(home: string): FakeHost {
-  const f: FakeHost = { spawns: [], live: new Set(), answer: (n) => ({ ok: true, id: `plan-ws-${n}` }), deps: undefined as never };
+  const f: FakeHost = { archived: [], spawns: [], live: new Set(), answer: (n) => ({ ok: true, id: `plan-ws-${n}` }), deps: undefined as never };
   f.deps = {
     home, now: () => NOW,
     isWorkspace: (id) => id === RUN || f.live.has(id),
     isLive: (id) => f.live.has(id) || id === RUN,
     repoPath: () => '/repo',
     vouches: (id, key) => id === RUN && key === 'k',
+    archive: async (id) => { f.archived.push(id); f.live.delete(id); },
     spawn: async (i) => { f.spawns.push(i); const r = f.answer(f.spawns.length); if (r.ok && r.id) f.live.add(r.id); return r; },
   };
   return f;
@@ -482,4 +483,70 @@ test('m-new: a run that holds a decision is refused [plan-after-decision] UP FRO
   assert.match(v.stderr, /^\[plan-after-decision\]/);
   assert.equal(f.spawns.length, 0);
   assert.equal(fs.existsSync(planSidecarFile(home, RUN)), false);
+});
+
+// ── #629: the plan agent is released once its plan is accepted ──
+test('#629 plan-release: refused until a plan was ACCEPTED (an agent still writing is never cut); then the plan agent is archived once — a second call finds it gone', async (t) => {
+  const { home } = run(t);
+  const f = fakeHost(home);
+  await ask(f);
+  const rel = (over: Record<string, unknown> = {}) => dispatchFanoutAcceptance({ op: 'plan-release', run: RUN, from: RUN, key: 'k', ...over }, { ...f.deps, post: () => undefined });
+  assert.match(String(((await rel()) as { error?: string }).error), /^\[plan-release-open\]/);
+  assert.deepEqual(f.archived, []);
+  submitPlan({ home, run: RUN, text: JSON.stringify(goodPlan()), caller: 'plan-ws-1', now: NOW });
+  assert.match(String(((await rel({ key: 'nope' })) as { error?: string }).error), /^\[plan-release-caller\]/);
+  assert.deepEqual(f.archived, [], 'an unvouched caller archives nothing');
+  assert.deepEqual(await rel(), { ok: true, op: 'plan-release', released: 'plan-ws-1' });
+  assert.deepEqual(f.archived, ['plan-ws-1']);
+  assert.deepEqual(await rel(), { ok: true, op: 'plan-release', released: null });
+  assert.deepEqual(f.archived, ['plan-ws-1'], 'archived once');
+});
+test('#629: `fanout plan` releases the plan agent as soon as it sees the accepted plan (and says so)', async (t) => {
+  const { home, d } = run(t);
+  const f = fakeHost(home);
+  const c = clock();
+  c.onTick((n) => { if (n === 3) submitPlan({ home, run: RUN, text: JSON.stringify(goodPlan()), caller: 'plan-ws-1', now: NOW }); });
+  const r = await runPlan(['--tickets', 'A,B'], d, hostVia(f), c);
+  assert.equal(r.code, 0);
+  assert.deepEqual(f.archived, ['plan-ws-1']);
+  assert.match(r.stderr, /plan agent plan-ws-1 released/);
+});
+test('#629: a host that cannot release does not fail the accepted plan — the verb says it and exits 0', async (t) => {
+  const { home, d } = run(t);
+  const f = fakeHost(home);
+  submitPlan({ home, run: RUN, text: JSON.stringify(goodPlan()), caller: (await ask(f), 'plan-ws-1'), now: NOW });
+  const r = await runPlan(['--tickets', 'A,B'], d, async () => ({ ok: false, error: 'archive failed' }));
+  assert.equal(r.code, 0);
+  assert.match(r.stderr, /plan agent not released: archive failed/);
+});
+
+// ── #626: `fanout plan` on a fresh run inits the state `fanout run` would ──
+test('#626: no state → `fanout plan` initialises it (seatRecords=on, minorPolicy=demonstrated, verifier=off; the target through the #627 resolver, --repo recorded) and spawns the plan agent', async (t) => {
+  const home = mkHome(t);
+  const d = depsOf(home);
+  const f = fakeHost(home);
+  const c = clock();
+  c.onTick((n) => { if (n === 3) submitPlan({ home, run: RUN, text: JSON.stringify(goodPlan()), caller: 'plan-ws-1', now: NOW }); });
+  const calls: string[] = [];
+  const exec = async (cmd: string, args: string[]) => { calls.push(`${cmd} ${args.join(' ')}`); return cmd === 'gh' ? { code: 0, stdout: 'trunk\n', stderr: '' } : { code: 1, stdout: '', stderr: 'no origin/HEAD' }; };
+  const r = await runPlan(['--tickets', 'A,B', '--repo', 'o/r'], d, hostVia(f), { ...c, exec });
+  assert.equal(r.code, 0, r.stderr);
+  const st = load(home);
+  assert.deepEqual([st.target, st.repo], ['trunk', 'o/r']);
+  assert.deepEqual([st.switches?.seatRecords, st.switches?.minorPolicy, st.switches?.verifier], ['on', 'demonstrated', 'off']);
+  assert.match(r.stderr, /state initialised for run/);
+  assert.ok(calls.some((x) => x.startsWith('gh repo view o/r')));
+  assert.equal(f.spawns.length, 1);
+});
+test('#626: an unvouched session on a fresh run creates NO state (and asks nothing of the host); an existing state is never re-initialised', async (t) => {
+  const home = mkHome(t);
+  const never = async () => { throw new Error('the host must not be asked'); };
+  const exec = async () => ({ code: 0, stdout: 'main\n', stderr: '' });
+  const unv = await runPlan(['--tickets', 'A,B'], { ...depsOf(home), vouchedCaller: null }, never, { exec });
+  assert.match(unv.stderr, /^\[plan-caller\]/);
+  assert.equal(readState(stateFile(home, RUN)), null);
+  const r2 = run(t, 'seatRecords=on,minorPolicy=spec');
+  const before = JSON.stringify(load(r2.home));
+  await runPlan(['--tickets', 'A,B'], r2.d, async () => ({ ok: false, error: 'x' }), { exec, ...clock(), pollMs: 1 }).catch(() => undefined);
+  assert.equal(load(r2.home).switches?.minorPolicy, 'spec', before);
 });

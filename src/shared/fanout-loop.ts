@@ -47,6 +47,8 @@ export interface LoopOptions {
   /** #607 — a re-run's red whose job id did not change and carries no id: wait this long before trusting it (default 0) / a re-run still showing the old run after this long is given up (default 10 min) */
   rerunSettleMs?: number;
   rerunExpireMs?: number;
+  /** #628 — a delivery refusal order (SYNC …) to an implementer: how long its head may stay unchanged before the next order (default 15 min); 2 orders with no new head replace the implementer */
+  orderWaitMs?: number;
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -61,6 +63,8 @@ export interface LoopDeps {
   sleep(loopMs: number): Promise<void>;
   log(line: string): void;
   options: LoopOptions;
+  /** #625 — asks for the plan of `options.tickets` when no plan is given: resolves once a plan is ACCEPTED (live: the shipped `fanout plan --tickets … --run <id>`), throws a SeatRefusal when the plan step ended without one. Absent = `--plan` is required. */
+  planner?: (tickets: string[]) => Promise<void>;
 }
 export interface LoopResult { exit: 0 | 1 | 2 | 3 | 4; report: Report; passes: number; reason?: string }
 
@@ -79,7 +83,7 @@ export interface LoopCtx {
   approved: Map<string, Approval>;
   progress: string[];
   finished: boolean;
-  /** log a line once per distinct text (a log filter, not state: a restart merely logs it again) */
+  /** log a line once per distinct text, again when it repeats on a later pass — at most once per `NOTE_REPEAT_PASSES` (a log filter, not state: a restart merely logs it again) */
   note(line: string): void;
   /** work is under way that the loop cannot see as a state change (a held start, a CI running, a reviewer reading): it counts as progress for the stall clock */
   busy: boolean;
@@ -92,6 +96,8 @@ export interface LoopCtx {
   did(msg: string): void;
 }
 
+/** A note that repeats is printed again after this many passes (a stuck ticket must stay visible). */
+export const NOTE_REPEAT_PASSES = 10;
 const loopSameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 const loopMs = (iso: string): number => Date.parse(iso);
 
@@ -166,7 +172,14 @@ export async function stepPlan(ctx: LoopCtx): Promise<void> {
     ctx.did('state initialised (seatRecords=on)');
   }
   if (s.plan && planMissing(s).length === 0) return;
-  if (!o.plan) throw new LoopRefusal('run-plan-needed', `run ${deps.run} has no complete plan${s.plan ? `: ${planMissing(s).join('; ')}` : ''} — pass --plan <plan.json> (#604's file)`);
+  if (!o.plan && o.tickets?.length && deps.planner) { // #625: no plan file, tickets named: the plan agent is spawned (by the shipped `fanout plan`) and awaited
+    ctx.did(`asking for a plan of ${o.tickets.join(', ')} (the plan agent is spawned)`);
+    await deps.planner(o.tickets);
+    s = ctx.st();
+    if (s.plan && planMissing(s).length === 0) { ctx.did(`plan accepted: ${s.plan.tickets.join(', ')}`); return; }
+    throw new LoopRefusal('run-plan-incomplete', `the plan agent's plan is incomplete: ${planMissing(s).join('; ')}`);
+  }
+  if (!o.plan) throw new LoopRefusal('run-plan-needed', `run ${deps.run} has no complete plan${s.plan ? `: ${planMissing(s).join('; ')}` : ''} — pass --plan <plan.json> (#604's file) or --tickets a,b,c (the plan agent is spawned)`);
   const plan = o.plan;
   updateLoopState(deps.home, deps.run, (cur) => ({ ...withLoop(applyPlan(cur!, plan, deps.now()), cur!.loop) }));
   ctx.did(`plan applied: ${plan.tickets.map((t) => t.id).join(', ')}`);
@@ -188,7 +201,7 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
   let need = activeTickets(s).filter((id) => { const t = s.tickets[id]; return (t.status === 'todo' || t.status === 'started') && (!t.implementer || !deps.fleet.live(t.implementer)); });
   for (const id of need) { // an implementer that is recorded but gone is a DEATH: replaced up to the cap
     const t = s.tickets[id];
-    if (!t.implementer) continue;
+    if (!t.implementer || s.loop.orders[id]?.replacing) continue; // #628: released on purpose — not a death, never charged to the cap
     const n = s.loop.replaced[`impl:${id}:${t.head ?? ''}`] ?? 0;
     if (n >= cap) {
       const reason = `implementer died ${n} times (replaced ${n}×, last at ${t.head ? t.head.slice(0, 12) : 'no head'})`;
@@ -203,6 +216,7 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
   const r = await deps.fleet.start();
   for (const x of r.started) ctx.did(`started ${x.ticket} (${x.ws})`);
   for (const x of r.respawned) {
+    if (s.loop.orders[x.ticket]?.replacing) { ctx.update((y) => ({ ...y, loop: { ...y.loop, orders: { ...y.loop.orders, [x.ticket]: { ...y.loop.orders[x.ticket], replacing: undefined, n: 0 } } } })); ctx.did(`replaced the implementer of ${x.ticket} (${x.ws}) on its branch`); continue; }
     const key = `impl:${x.ticket}:${s.tickets[x.ticket]?.head ?? ''}`;
     ctx.update((y) => ({ ...y, loop: { ...y.loop, replaced: { ...y.loop.replaced, [key]: (y.loop.replaced[key] ?? 0) + 1 } } }));
     ctx.did(`restarted ${x.ticket} (${x.ws})`);
@@ -401,6 +415,51 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
   });
 }
 
+/** #628 — refusals another step already has a rule for (CI waits and parks, the corrections / review steps, the nominations step reading a moved head, an unfinished upstream, a closed PR): noted only. Every OTHER refusal goes to the ticket's implementer. */
+export const RULED_REFUSALS: ReadonlySet<string> = new Set(['head-moved', 'ci-red', 'no-checks', 'zero-steps', 'review-blocking', 'verdict-head-mismatch', 'upstream-not-merged', 'upstream-changed', 'pr-closed', 'record-missing', 'no-verdict', 'timeout', 'acceptance-pending', 'gh-failed', 'pr-not-open', 'pr-mismatch', 'no-ticket']);
+export function renderSyncOrder(i: { ticket: string; target: string; pr: number; reason: string; detail: string }): string {
+  const conflict = i.reason === 'merge-conflict';
+  return [
+    conflict ? `SYNC ${i.target}` : `FIX ${i.reason}`,
+    `${i.ticket}: the forge refuses to merge PR #${i.pr}: ${i.reason}${i.detail ? ` — ${i.detail}` : ''}.`,
+    `${conflict ? 'Merge' : 'Fix what it names; if it is about the base, merge'} ${i.target} into your branch with a MERGE COMMIT (git fetch origin && git merge --no-ff origin/${i.target} — never rebase, never squash), resolve the conflicts, run the checks, push,`,
+    'then send a status with the new head sha. Do not wait for anything else.',
+  ].join('\n');
+}
+/** #628 — a delivery refusal the loop has no rule for goes to the ticket's implementer with the raw reason (`merge-conflict` = the SYNC order). Orders are spaced by `orderWaitMs`; 2 orders with the head unchanged replace the implementer
+ *  with a fresh one on the same branch, and the order goes out again. Never a park, never a global limit (owner, 2026-11-26). */
+async function orderImplementer(ctx: LoopCtx, id: string, reason: string, detail: string): Promise<void> {
+  if (RULED_REFUSALS.has(reason)) return;
+  const { deps } = ctx;
+  const t = ctx.st().tickets[id];
+  if (!t.implementer || !t.head || !t.pr) return;
+  const o = ctx.st().loop.orders[id];
+  const replacing = !!o?.replacing;
+  const now = deps.now();
+  if (!deps.fleet.live(t.implementer)) { // dead: `stepStart` puts a fresh one on the branch, the order follows next pass (a ticket released on purpose must read `started` for that)
+    if (replacing && t.status !== 'started') ctx.update((x) => withLoop(applyTicketPatch(x, id, { status: 'started' }, now), x.loop));
+    return;
+  }
+  const sameHead = !!o && loopSameSha(o.head, t.head);
+  const send = async (n: number): Promise<void> => {
+    await deps.fleet.wake(t.implementer!, renderSyncOrder({ ticket: id, target: ctx.st().target, pr: t.pr!, reason, detail }));
+    ctx.update((x) => ({ ...x, loop: { ...x.loop, orders: { ...x.loop.orders, [id]: { head: t.head!, n, at: now, reason } } } }));
+    ctx.did(`${id}: ${reason} — order ${n} sent to ${t.implementer}`);
+  };
+  if (!sameHead) return send(1); // a new head = progress: the count starts again
+  if (replacing) { // released on purpose but still alive (the release failed): again
+    await deps.fleet.replace(id);
+    return;
+  }
+  if (o.n === 0) return send(1); // a fresh implementer: it gets the order at once
+  if (loopMs(now) - loopMs(o.at) < (deps.options.orderWaitMs ?? 15 * 60_000)) { ctx.busy = true; return; } // the implementer is on it
+  if (o.n < 2) return send(o.n + 1);
+  // 2 orders, the head never moved: a fresh implementer on the same branch (state first: `started` is what `fanout start` respawns; the release after — a failed release is retried)
+  ctx.update((x) => ({ ...withLoop(applyTicketPatch(x, id, { status: 'started' }, now), x.loop), loop: { ...x.loop, orders: { ...x.loop.orders, [id]: { ...o, n: 0, at: now, replacing: true as const } } } }));
+  await deps.fleet.replace(id);
+  ctx.did(`${id}: ${o.n} orders without a new head — implementer ${t.implementer} replaced by a fresh one on the same branch`);
+}
+
 interface Ready { id: string; readyAt: number; order: number; head: string; pr: number }
 /** Decision 10: recorded approval on the head + green CI on the head + upstreams merged — merged in READINESS order (the moment the last condition held), never declaration order. */
 export async function stepDeliver(ctx: LoopCtx): Promise<void> {
@@ -451,7 +510,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
       waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [],
     });
     if (dec.action === 'wait') { ctx.waitOn(`ci:${id}:${t.head}`, deps.options.stallMs); return; } // a CI running / registering is work under way (bounded)
-    if (dec.action !== 'merge') { if (dec.action === 'refuse') ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); return; }
+    if (dec.action !== 'merge') { if (dec.action === 'refuse') { ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); await orderImplementer(ctx, id, dec.reason, dec.detail); } return; }
     const upMergedAt = Math.max(0, ...t.dependsOn.map((u) => loopMs(s0.tickets[u].updatedAt)));
     const checkAt = Math.max(0, ...checks.map((c) => (c.at ? loopMs(c.at) : 0)));
     ready.push({ id, readyAt: Math.max(loopMs(a.at), checkAt, upMergedAt), order: plan.indexOf(id), head: dec.head, pr: t.pr });
@@ -459,7 +518,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
   ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);
   for (const r of ready) await ctx.guard(`${r.id} merge`, async () => {
     const res = await deps.forge.merge(r.pr, r.head, 'merge'); // a MERGE COMMIT, never a squash (decision 3: dependents connect by merge commit)
-    if (!res.ok) { ctx.note(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}`); return; }
+    if (!res.ok) { ctx.note(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}${res.detail ? `: ${res.detail}` : ''}`); await orderImplementer(ctx, r.id, res.reason ?? 'unknown', res.detail ?? ''); return; }
     ctx.update((x) => withLoop(applyTicketPatch(x, r.id, { status: 'merged' }, deps.now()), x.loop));
     ctx.did(`merged ${r.id} (PR #${r.pr})`);
   });
@@ -477,9 +536,9 @@ const LOOP_STEP_FNS: Record<LoopStep, (ctx: LoopCtx) => Promise<void>> = {
   approvals: stepApprovals, connect: stepConnect, ci: stepCi, corrections: stepCorrections, deliver: stepDeliver, end: stepEnd,
 };
 
-function newCtx(deps: LoopDeps, pass: number, seen: Set<string>): LoopCtx {
+export function newCtx(deps: LoopDeps, pass: number, seen: Map<string, number>): LoopCtx {
   const ctx: LoopCtx = {
-    note: (line) => { if (!seen.has(line)) { seen.add(line); deps.log(`[pass ${pass}] ${line}`); } },
+    note: (line) => { const last = seen.get(line); if (last === undefined || pass - last >= NOTE_REPEAT_PASSES) { seen.set(line, pass); deps.log(`[pass ${pass}] ${line}`); } },
     deps, run: deps.run, pass, signals: new Set(), approved: new Map(), progress: [], finished: false, busy: false,
     waitOn: (key, boundMs) => {
       let since = ctx.st().loop.busySince[key];
@@ -518,7 +577,7 @@ function stuckWhy(s: LoopState, id: string): string {
 export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
   let lastProgress = loopMs(deps.now());
   let passes = 0;
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const finish = async (exit: LoopResult['exit'], reason?: string): Promise<LoopResult> => {
     const s = readLoopState(deps.home, deps.run) ?? withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null });
     const report = buildReport(s, await collectCosts(s, (t) => deps.fleet.costOf(t))); // story 21: the cost per ticket is READ from the transcripts, not left null

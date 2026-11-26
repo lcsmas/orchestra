@@ -41,6 +41,10 @@ export function fakeBus(d: Dummy, run: string, home: string): { cli: Cli; host: 
     }
     return out('', 1, `fake cli: unsupported: ${args.join(' ')}`);
   };
-  const host: Host = async (body) => body.op === 'live' ? { ok: true, op: 'live', live: (body.ids as string[]).filter((id) => d.world.impls.has(id) || d.world.revs.has(id)) } : { ok: false, error: 'unsupported' };
+  const host: Host = async (body) => {
+    if (body.op === 'live') return { ok: true, op: 'live', live: (body.ids as string[]).filter((id) => d.world.impls.has(id) || d.world.revs.has(id)) };
+    if (body.op === 'release') { const released = (body.ids as string[]).filter((id) => d.world.impls.has(id)); for (const id of released) { const a = d.world.impls.get(id)!; d.world.impls.delete(id); d.world.ev('impl-replaced', a.ticket, { ws: id }); } return { ok: true, op: 'release', released }; } // #628: the host archives an implementer
+    return { ok: false, error: 'unsupported' };
+  };
   return { cli, host, lots, calls, fail };
 }

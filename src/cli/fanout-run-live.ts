@@ -7,7 +7,7 @@ import { createLiveForge, type MergeAnswer } from '../shared/fanout-loop-live-fo
 import { createLiveGit, type Exec, type ExecResult } from '../shared/fanout-loop-live-git.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from '../shared/fanout-loop.ts';
 import { tokensOfFiles, transcriptFilesIn, workspacesOfTicket } from '../shared/fanout-report.ts';
-import { SeatRefusal, readState, stateFile, type FanoutState } from '../shared/fanout-state.ts';
+import { FanoutStateError, SeatRefusal, readState, stateFile, type FanoutState } from '../shared/fanout-state.ts';
 import { deliver, realDeps, recordedStateFor, upstreamsFromState, verifierSwitchFromState, type DeliverDeps } from './fanout-deliver.ts';
 import { acceptanceFromState } from './fanout-acceptance.ts';
 import { followUpFromState } from './fanout-followup.ts';
@@ -19,6 +19,18 @@ export const realExec: Exec = (cmd, args, opts) => new Promise<ExecResult>((reso
     resolve({ code, stdout: String(stdout), stderr: err && (err as { code?: unknown }).code === 'ENOENT' ? `${cmd}: command not found` : String(stderr) });
   });
 });
+
+/** #627 — the branch the run merges into when none was given: `origin/HEAD` if the clone has it, else the forge's default branch (`gh repo view`), else what `git ls-remote --symref origin HEAD` says. Never guessed: no answer = `[run-target]`. */
+export async function resolveRunTarget(exec: Exec, cwd: string, repo: string | null): Promise<string> {
+  const local = await exec('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
+  if (local.code === 0 && local.stdout.trim()) return local.stdout.trim().replace(/^origin\//, '');
+  const gh = await exec('gh', ['repo', 'view', ...(repo ? [repo] : []), '--json', 'defaultBranchRef', '-q', '.defaultBranchRef.name'], { cwd });
+  if (gh.code === 0 && /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/.test(gh.stdout.trim())) return gh.stdout.trim();
+  const ls = await exec('git', ['ls-remote', '--symref', 'origin', 'HEAD'], { cwd });
+  const m = ls.code === 0 ? /^ref:\s+refs\/heads\/(\S+)\s+HEAD\s*$/m.exec(ls.stdout) : null;
+  if (m) return m[1];
+  throw new SeatRefusal('run-target', 'cannot tell the default branch of this repository (no refs/remotes/origin/HEAD, `gh repo view` and `git ls-remote --symref origin HEAD` gave nothing): `git remote set-head origin -a` first — the loop never guesses the branch it merges into');
+}
 
 export interface LiveRunInput {
   home: string;
@@ -75,17 +87,29 @@ export function liveCostOf(i: { run: string; caller: string; key?: string; host:
   };
 }
 
+/** #625 — the planner port, live: the shipped `fanout plan --tickets … --run <id>` (it spawns the plan agent and waits for an accepted plan); its exit 1 `no accepted plan after N min` is asked again (a live agent is adopted, never duplicated), a refusal ([plan-…], exit 2) ends the run. */
+export function livePlanner(i: { cli: Cli; run: string; log: (l: string) => void; attempts?: number }): (tickets: string[]) => Promise<void> {
+  return async (tickets) => {
+    for (let k = 0; k < (i.attempts ?? 6); k++) {
+      const r = await i.cli(['fanout', 'plan', '--tickets', tickets.join(','), '--run', i.run]);
+      if (r.stderr.trim()) i.log(r.stderr.trim());
+      if (r.code === 0) return;
+      const text = (r.stderr || r.stdout).trim();
+      const m = /^\[([a-z0-9-]+)\]\s*([\s\S]*)/m.exec(text); // a note line may come first
+      if (r.code === 2 && m) throw new SeatRefusal(m[1], m[2].trim());
+      if (!/no accepted plan/.test(text)) throw new FanoutStateError(`orchestra fanout plan failed (exit ${r.code}): ${text.slice(0, 400)}`);
+    }
+    throw new FanoutStateError(`no accepted plan after ${i.attempts ?? 6} asks of \`fanout plan\``);
+  };
+}
+
 export async function runLive(i: LiveRunInput): Promise<LoopResult> {
   const exec = i.exec ?? realExec;
   const cliJs = i.cliJs ?? process.argv[1];
   const cli: Cli = (args) => exec(process.execPath, [cliJs, ...args], { cwd: i.cwd });
   const git = createLiveGit({ git: (args) => exec('git', args, { cwd: i.cwd }) });
   const existing = readState(stateFile(i.home, i.run));
-  const target = existing?.target ?? i.options.target ?? (await (async () => {
-    const r = await exec('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: i.cwd });
-    if (r.code !== 0 || !r.stdout.trim()) throw new SeatRefusal('run-target', 'cannot tell the default branch of this repository (no refs/remotes/origin/HEAD): `git remote set-head origin -a` first — the loop never guesses the branch it merges into');
-    return r.stdout.trim().replace(/^origin\//, '');
-  })());
+  const target = existing?.target ?? i.options.target ?? await resolveRunTarget(exec, i.cwd, existing?.repo ?? i.options.repo ?? null);
   const readNow = () => readState(stateFile(i.home, i.run));
   const forge = createLiveForge({ gh: (args) => exec('gh', args, { cwd: i.cwd }), branchHead: (b) => git.head(b), ...(existing?.repo ? { repo: existing.repo } : {}), deliver: mergeThroughDeliver({ home: i.home, run: i.run, log: i.log }) });
   const key = i.env.ORCHESTRA_SESSION_KEY?.trim() || undefined;
@@ -99,6 +123,7 @@ export async function runLive(i: LiveRunInput): Promise<LoopResult> {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     log: i.log,
     options: { ...DEFAULT_OPTIONS, ...i.options, target },
+    planner: livePlanner({ cli, run: i.run, log: i.log }),
   });
   return result;
 }
