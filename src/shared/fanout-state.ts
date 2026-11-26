@@ -312,6 +312,8 @@ export const SAFE_BRANCH = /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/;
 const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 
 export class FanoutStateError extends Error {}
+/** #667 — the clone has no `user.email`: the start check's empty commit would be unverifiable, so the start is refused `[run-start-check-identity]`. */
+export class StartCheckIdentityError extends FanoutStateError {}
 /** #587 (I1) — a refusal of the `seatRecords` rules: the message STARTS with its name in brackets (`[plan-incomplete] …`), the CLI exits 2 on it (a plain FanoutStateError exits 1). */
 export class SeatRefusal extends FanoutStateError {
   readonly refusal: string;

@@ -133,7 +133,7 @@ const ciCtxOf = (ctx: LoopCtx): Parameters<typeof runCi>[0] => ({
   state: ctx.st(),
   update: (m) => ctx.update((x) => m(x)),
 });
-/** #607 (decision 9) — the optional start check: an empty PR into the target, its checks awaited, closed. A red or missing check refuses the start (`[run-start-check-<red|missing|timeout|unsupported>]`, exit 2): nothing was launched. */
+/** #607 (decision 9) — the optional start check: an empty PR into the target, its checks awaited, closed. A red or missing check refuses the start (`[run-start-check-<red|missing|timeout|unsupported|identity>]`, exit 2): nothing was launched. */
 export async function stepStartCheck(ctx: LoopCtx): Promise<void> {
   const r = await runStartCheck(ciCtxOf(ctx));
   if (!r.ok) throw new LoopRefusal(`run-${r.code}`, r.detail);

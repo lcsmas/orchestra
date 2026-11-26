@@ -7,7 +7,7 @@
 //   red again ─ the author gets the check name + the log extract (once per head) ─ the same failure after its fix → ticket parked (cause `ci`)
 //   the same check red on ≥2 pull requests of the run → the run pauses (`pauseRun`), NO message to an author, no re-run.
 import crypto from 'node:crypto';
-import { parkTicket, pausedOf, pauseRun, resumeRun, situationFingerprint, type CiRecord, type FanoutState, type TicketState } from './fanout-state.ts';
+import { parkTicket, StartCheckIdentityError, pausedOf, pauseRun, resumeRun, situationFingerprint, type CiRecord, type FanoutState, type TicketState } from './fanout-state.ts';
 import type { FleetPort, ForgeCheck, ForgePort, GitPort } from './fanout-loop-ports.ts';
 
 type CheckInfo = ForgeCheck;
@@ -292,7 +292,7 @@ export async function stepPauseWatch(ctx: CiCtx): Promise<PauseWatchResult> {
 }
 
 // ── decision 9: the optional start check ───────────────────────────────────────────────────────────────────────
-export type StartCheckCode = 'start-check-red' | 'start-check-missing' | 'start-check-timeout' | 'start-check-unsupported';
+export type StartCheckCode = 'start-check-red' | 'start-check-missing' | 'start-check-timeout' | 'start-check-unsupported' | 'start-check-identity';
 export type StartCheckResult = { ok: true; skipped?: 'off' | 'already-started'; /** #654: red, then green on the one re-run */ flaky?: string[] } | { ok: false; code: StartCheckCode; detail: string; checks: string[] };
 
 /** The probe branch of a run (one per run: a restarted loop adopts it, never opens a second). */
@@ -315,7 +315,9 @@ export async function stepStartCheck(ctx: CiCtx): Promise<StartCheckResult> {
   const missingAfter = deps.options.startCheckMissingMs ?? 120_000;
   let pr: number | null = null;
   try {
-    const { head } = await emptyBranch.call(deps.git, branch, base);
+    let head: string;
+    try { ({ head } = await emptyBranch.call(deps.git, branch, base)); }
+    catch (e) { if (e instanceof StartCheckIdentityError) return { ok: false, code: 'start-check-identity', detail: e.message, checks: [] }; throw e; }
     pr = (await deps.forge.openPr({ branch, base, title: `start-check: empty pull request of run ${deps.run} — do not merge` })).n;
     deps.log(`start-check: #${pr} (${branch} → ${base}) opened, waiting for its checks`);
     let waited = 0;
