@@ -21,8 +21,8 @@ export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,
   Without --scenario it runs on the LIVE ports as the run's coordinator (a no-agent workspace, #612: \`orchestra spawn --no-agent --run-command "orchestra fanout run …"\`): fleet = the shipped verbs (fanout start|review, check, ack, send) + the host,
   forge = gh (the merge goes through the shipped \`fanout deliver\`, so its refusals are the loop's), git = git. Refused [run-caller] unless the host vouches the caller as the run's coordinator.`;
 
-const runReportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
-  `merged ${r.merged.length}${r.merged.length ? ` (${r.merged.join(', ')})` : ''} · parked ${r.parked.length}${r.parked.map((p) => ` ${p.ticket} [${p.cause}] ${p.reason}`).join(';')} · choices ${r.choices.length}\n`;
+const runReportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[]; moves: { reconnects: { total: number } | null; extraReviewRounds: { total: number } } }): string =>
+  `merged ${r.merged.length}${r.merged.length ? ` (${r.merged.join(', ')})` : ''} · parked ${r.parked.length}${r.parked.map((p) => ` ${p.ticket} [${p.cause}] ${p.reason}`).join(';')} · choices ${r.choices.length} · re-connects ${r.moves.reconnects?.total ?? 'not measured'} · extra review rounds ${r.moves.extraReviewRounds.total}\n`; // #649: the per-ticket counts are in the JSON report (`moves`)
 
 export async function runFanoutRun(args: string[], deps: FanoutDeps, host?: Host): Promise<RunResult> {
   try {
