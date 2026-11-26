@@ -7,7 +7,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildDummy, parseScenario, planOf, runDummyLoop, type Scenario } from './fanout-loop-dummy.ts';
 import { FIXED_ANSWER, LOOP_STEPS, ASK_MAX, LoopKilled, renderConnectAsk, runLoop, DEFAULT_OPTIONS, sortReady, transitiveDependents } from './fanout-loop.ts';
-import { renderReport } from './fanout-report.ts';
 import { judgeRun, RULES, type Ev } from './fanout-loop-judge.ts';
 import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
 import { applyPlan } from './fanout-plan.ts';
