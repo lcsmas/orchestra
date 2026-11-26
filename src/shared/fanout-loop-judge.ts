@@ -55,7 +55,7 @@ export function judgeRun(i: JudgeInput): Violation[] {
     askKeys.add(k);
   }
   // decision 10 — merge = recorded approval on the head + green CI on the head + upstreams merged, in readiness order
-  const readiness: Array<{ tk: string; at: number; i: number }> = [];
+  const readiness: Array<{ tk: string; at: number; i: number; mt: number }> = [];
   for (const m of merges) {
     const tk = String(m.ticket);
     const records = i.events.filter((x) => x.ev === 'review-record' && x.ticket === tk && (judgeSameSha(x.head, m.head) || (typeof x.tree === 'string' && x.tree === m.tree)) && idx(x) < idx(m)); // #512: a verdict covers a head by sha OR by git tree
@@ -65,10 +65,25 @@ export function judgeRun(i: JudgeInput): Violation[] {
     for (const up of i.deps[tk] ?? []) { const um = mergeOf(up); if (!um || idx(um) > idx(m)) v('merge-upstream-unmerged', `${tk} merged before its upstream ${up}`, tk); }
     const ci = [...i.events].reverse().find((x) => x.ev === 'ci-start' && x.ticket === tk && judgeSameSha(x.head, m.head));
     const upAt = Math.max(0, ...(i.deps[tk] ?? []).map((up) => mergeOf(up)?.t ?? 0));
-    readiness.push({ tk, at: Math.max(approvals.length ? Math.min(...approvals.map((a) => a.t)) : 0, typeof ci?.doneAt === 'number' ? ci.doneAt : 0, upAt), i: idx(m) });
+    readiness.push({ tk, at: Math.max(approvals.length ? Math.min(...approvals.map((a) => a.t)) : 0, typeof ci?.doneAt === 'number' ? ci.doneAt : 0, upAt), i: idx(m), mt: m.t });
   }
+  // #649 — among tickets ready in one pass, the one with the most UNMERGED transitive dependents goes first; ties keep readiness order
+  const dependentsAt = (tk: string, atIdx: number): number => {
+    let n = 0;
+    for (const u of Object.keys(i.deps)) {
+      if (u === tk) continue;
+      const um = mergeOf(u);
+      if (um && idx(um) < atIdx) continue;
+      const seen = new Set<string>(); const stack = [...(i.deps[u] ?? [])];
+      while (stack.length) { const x = stack.pop()!; if (seen.has(x)) continue; seen.add(x); stack.push(...(i.deps[x] ?? [])); }
+      if (seen.has(tk)) n++;
+    }
+    return n;
+  };
   for (let a = 0; a < readiness.length; a++) for (let b = a + 1; b < readiness.length; b++) {
-    if (readiness[b].at < readiness[a].at) v('merge-order', `${readiness[b].tk} was ready ${readiness[a].at - readiness[b].at} ms before ${readiness[a].tk} but merged after it`, readiness[b].tk);
+    const da = dependentsAt(readiness[a].tk, readiness[a].i), db = dependentsAt(readiness[b].tk, readiness[a].i);
+    if (db > da && readiness[b].at <= readiness[a].mt) v('merge-order', `${readiness[b].tk} (${db} dependents) was ready when ${readiness[a].tk} (${da}) merged first`, readiness[b].tk);
+    else if (readiness[b].at < readiness[a].at && !(da > db)) v('merge-order', `${readiness[b].tk} was ready ${readiness[a].at - readiness[b].at} ms before ${readiness[a].tk} but merged after it`, readiness[b].tk);
   }
   // decision 5 — a question gets the fixed answer
   for (const e of i.events.filter((x) => x.ev === 'ask' && x.kind === 'question')) {

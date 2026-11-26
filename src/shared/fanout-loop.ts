@@ -409,7 +409,8 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
       if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue; // once per (dependent, upstream, head, AUTHOR): a respawned author is asked again
       if (t.builtOn[up] && loopSameSha(t.builtOn[up], a.head)) continue;
       await deps.fleet.wake(t.implementer, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head }));
-      ctx.update((x) => ({ ...x, loop: { ...x.loop, asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } }, askedTo: { ...x.loop.askedTo, [id]: { ...(x.loop.askedTo[id] ?? {}), [up]: t.implementer! } } } }));
+      const moved = !!asked && !loopSameSha(asked, a.head); // #649: a CONNECT sent again because the upstream moved (a respawned author re-asked on the SAME head is not one)
+      ctx.update((x) => ({ ...x, loop: { ...x.loop, ...(moved ? { reconnects: { ...x.loop.reconnects, [id]: (x.loop.reconnects[id] ?? 0) + 1 } } : {}), asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } }, askedTo: { ...x.loop.askedTo, [id]: { ...(x.loop.askedTo[id] ?? {}), [up]: t.implementer! } } } }));
       ctx.did(`asked ${id} to connect to ${up} at ${a.head.slice(0, 12)}`);
     }
   });
@@ -460,13 +461,28 @@ async function orderImplementer(ctx: LoopCtx, id: string, reason: string, detail
   ctx.did(`${id}: ${o.n} orders without a new head — implementer ${t.implementer} replaced by a fresh one on the same branch`);
 }
 
-interface Ready { id: string; readyAt: number; order: number; head: string; pr: number }
-/** Decision 10: recorded approval on the head + green CI on the head + upstreams merged — merged in READINESS order (the moment the last condition held), never declaration order. */
+interface Ready { id: string; readyAt: number; order: number; head: string; pr: number; dependents: number }
+/** #649 — per ticket, how many UNFINISHED tickets (not merged, not dropped) depend on it, directly or through others. Cycle-safe. */
+export function transitiveDependents(tickets: Record<string, { dependsOn: string[]; status: string }>): Record<string, number> {
+  const open = Object.keys(tickets).filter((id) => tickets[id].status !== 'merged' && tickets[id].status !== 'dropped');
+  const out: Record<string, number> = Object.fromEntries(Object.keys(tickets).map((id) => [id, 0]));
+  for (const d of open) {
+    const seen = new Set<string>();
+    const walk = (id: string): void => { for (const u of tickets[id]?.dependsOn ?? []) if (u in tickets && !seen.has(u)) { seen.add(u); walk(u); } };
+    walk(d);
+    for (const u of seen) if (u !== d) out[u]++;
+  }
+  return out;
+}
+/** #649 — the merge order of the tickets ready in one pass: the most transitive dependents first (a chain root moves every dependent when another merge lands before it), then READINESS order. Never waits for a ticket that is not ready. */
+export const sortReady = <T extends { dependents: number; readyAt: number; order: number }>(ready: T[]): T[] => [...ready].sort((x, y) => y.dependents - x.dependents || x.readyAt - y.readyAt || x.order - y.order);
+/** Decision 10 + #649: recorded approval on the head + green CI on the head + upstreams merged — merged most-depended-on first, then in READINESS order (the moment the last condition held), never declaration order. */
 export async function stepDeliver(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
   const s0 = ctx.st();
   const ready: Ready[] = [];
   const plan = s0.plan?.tickets ?? [];
+  const dependents = transitiveDependents(s0.tickets);
   for (const id of activeTickets(s0)) await ctx.guard(`${id} deliver`, async () => {
     const t = s0.tickets[id];
     const a = ctx.approved.get(id);
@@ -518,10 +534,9 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
     if (dec.action !== 'merge') { if (dec.action === 'refuse') { ctx.note(`${id}: not deliverable — ${dec.reason}: ${dec.detail}`); await orderImplementer(ctx, id, dec.reason, dec.detail); } return; }
     const upMergedAt = Math.max(0, ...t.dependsOn.map((u) => loopMs(s0.tickets[u].updatedAt)));
     const checkAt = Math.max(0, ...checks.map((c) => (c.at ? loopMs(c.at) : 0)));
-    ready.push({ id, readyAt: Math.max(loopMs(a.at), checkAt, upMergedAt), order: plan.indexOf(id), head: dec.head, pr: t.pr });
+    ready.push({ id, readyAt: Math.max(loopMs(a.at), checkAt, upMergedAt), order: plan.indexOf(id), head: dec.head, pr: t.pr, dependents: dependents[id] ?? 0 });
   });
-  ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);
-  for (const r of ready) await ctx.guard(`${r.id} merge`, async () => {
+  for (const r of sortReady(ready)) await ctx.guard(`${r.id} merge`, async () => {
     const res = await deps.forge.merge(r.pr, r.head, 'merge'); // a MERGE COMMIT, never a squash (decision 3: dependents connect by merge commit)
     if (!res.ok) { ctx.note(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}${res.detail ? `: ${res.detail}` : ''}`); await orderImplementer(ctx, r.id, res.reason ?? 'unknown', res.detail ?? ''); return; }
     ctx.update((x) => withLoop(applyTicketPatch(x, r.id, { status: 'merged' }, deps.now()), x.loop));
@@ -585,7 +600,7 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
   const seen = new Map<string, number>();
   const finish = async (exit: LoopResult['exit'], reason?: string): Promise<LoopResult> => {
     const s = readLoopState(deps.home, deps.run) ?? withLoop({ version: 1, run: deps.run, target: deps.options.target, repo: null, tickets: {}, updatedAt: deps.now(), reconciledAt: null });
-    const report = buildReport(s, await collectCosts(s, (t) => deps.fleet.costOf(t))); // story 21: the cost per ticket is READ from the transcripts, not left null
+    const report = buildReport(s, await collectCosts(s, (t) => deps.fleet.costOf(t)), s.loop.reconnects); // story 21: the cost per ticket is READ from the transcripts, not left null
     // a finished run with nothing parked exits through the report's own rule (0, or 1 when nothing merged at all)
     return { exit: exit === 0 ? reportExit(report) === 1 ? 1 : 0 : exit, report, passes, ...(reason ? { reason } : {}) };
   };

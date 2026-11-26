@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "run": "most-depended",
+  "repo": {
+    "tickets": [
+      {
+        "id": "A",
+        "dependsOn": [],
+        "spec": "spec/A.md"
+      },
+      {
+        "id": "B",
+        "dependsOn": [],
+        "spec": "spec/B.md"
+      },
+      {
+        "id": "C",
+        "dependsOn": [
+          "A"
+        ],
+        "spec": "spec/C.md"
+      },
+      {
+        "id": "D",
+        "dependsOn": [
+          "C"
+        ],
+        "spec": "spec/D.md"
+      }
+    ]
+  },
+  "agents": {
+    "A": {
+      "reviewer": [
+        {
+          "do": "approve",
+          "afterMs": 350000
+        }
+      ]
+    },
+    "B": {
+      "reviewer": [
+        {
+          "do": "approve",
+          "afterMs": 310000
+        }
+      ]
+    }
+  }
+}
