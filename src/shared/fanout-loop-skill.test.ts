@@ -52,7 +52,7 @@ test('#609 on: every switch combination renders the section, with the three step
   for (const c of COMBOS) {
     const s = ON(c);
     assert.ok(s.length > 800, `section present at ${key(c)}`);
-    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"', 'orchestra fanout state set <ticket> --unpark', 'NO SAFE OPTION: <reason>']) {
+    for (const frozen of ['orchestra fanout run --tickets', '--plan <plan.json>', '--start-check', 'plan-refused-twice', 'decision-after-plan', 'explo-plan-<run8>', 'orchestra spawn --no-agent --name ops-<object> --run-command "orchestra fanout run …"', 'orchestra fanout state set <ticket> --unpark', 'irreversible: <what>']) {
       assert.ok(s.includes(frozen), `${frozen} missing at ${key(c)}`);
     }
     for (const cause of PARK_CAUSES) assert.ok(s.includes(`\`${cause}\``), `park cause ${cause} named`);
@@ -101,7 +101,7 @@ test('#609 help: `orchestra fanout loop-help` prints the usage (exit 0), names t
   const r = runFanout(['loop-help'], { env: {}, cwd: '/', runner: (() => ({ code: 1, stdout: '', stderr: '' })) as never, now: () => '', readStdin: () => '' } as never);
   assert.equal(r.code, 0);
   assert.equal(r.stdout, `${LOOP_USAGE}\n`);
-  for (const name of ['orchestra fanout run', 'orchestra fanout plan --tickets', 'orchestra fanout plan submit', '--park <cause> --park-reason', '--unpark', '--pause <reason> [--pause-check <name>]', '--run <id> --resume-run', 'plan-refused-twice', 'NO SAFE OPTION']) assert.ok(LOOP_USAGE.includes(name), name);
+  for (const name of ['orchestra fanout run', 'orchestra fanout plan --tickets', 'orchestra fanout plan submit', '--park <cause> --park-reason', '--unpark', '--pause <reason> [--pause-check <name>]', '--run <id> --resume-run', 'plan-refused-twice', 'irreversible']) assert.ok(LOOP_USAGE.includes(name), name);
   for (const cause of PARK_CAUSES) assert.ok(LOOP_USAGE.includes(cause), `cause ${cause}`);
   assert.ok(ON().includes('--resume-run'), 'the skill says how a pause is lifted (the real `fanout run` help: state set --run <id> --resume-run)');
   const main = COMMANDS.find((c) => c.name === 'fanout')!;

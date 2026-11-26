@@ -16,10 +16,8 @@ import { countsThrough, recordedVerdictOf, reviewOn } from './fanout-record.ts';
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
 export type LoopStep = (typeof LOOP_STEPS)[number];
 
-/** Decision 5: the constant answer to a question; the agent's own pick goes in its PR body. */
-export const FIXED_ANSWER = 'Take the reversible option, record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"`, continue. Do not wait for anyone.';
-/** Decision 5: an `ask` whose FIRST line starts with this declares "no safe option" (contradictory spec, irreversible act): the ticket is parked. */
-export const NO_SAFE_OPTION = 'NO SAFE OPTION: ';
+/** Decision 5 (#645): the constant answer to EVERY question — no ask parks a ticket. An irreversible need is a script in the PR that is never run, recorded as a choice whose `--taken` starts `irreversible:`. */
+export const FIXED_ANSWER = 'Take the reversible option unless the spec imposes the action; an irreversible need is code or a script in your PR that you never run. Record it with `orchestra fanout choice <your ticket> --question "<the question>" --taken "<the option>"` (for an irreversible need: `--taken "irreversible: <what, run by hand>"`), continue. Do not wait for anyone.';
 /** An agent's ask is cut to this many chars before it is listed under `choices` (the state refuses longer). */
 export const ASK_MAX = 2000;
 
@@ -229,19 +227,12 @@ export async function stepStart(ctx: LoopCtx): Promise<void> {
   for (const x of r.failed) ctx.note(`could not start ${x.ticket}: ${x.error} (tried again next pass)`);
 }
 
-/** Decision 5, fail CLOSED: the marker opening ANY line of the body (any case, spacing or punctuation) parks; only a body without it is a question that gets the fixed answer. */
 /** An agent's text goes into `choices` / a park reason: control characters would be refused by the state ([choice-bad]) and the message would be retried for ever. */
 const loopClean = (t: string): string => t.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').trim() || '(empty)';
-/** `recordChoice`, except past the state's cap (`CHOICES_MAX`): the choice is NOT listed (said in the log) — the answer still goes out and a park still lands; a refused listing would poison every restart. */
+/** `recordChoice`, except past the state's cap (`CHOICES_MAX`): the choice is NOT listed (said in the log) — the answer still goes out; a refused listing would poison every restart. */
 function listChoice(x: FanoutState, e: Parameters<typeof recordChoice>[1], now: string, note: (l: string) => void): FanoutState {
   if ((x.choices?.length ?? 0) >= CHOICES_MAX) { note(`choices are full (${CHOICES_MAX}): "${e.question.slice(0, 60)}" is not listed (it stays in the agent's PR body)`); return x; }
   return recordChoice(x, e, now);
-}
-export function parseNoSafeOption(body: string): { reason: string } | null {
-  const m = /^[ \t\W_]*no[ \t_-]*safe[ \t_-]*option\b/im.exec(body); // the marker OPENS a line (any case/spacing/punctuation): a question that merely contains the words ("is there no safe option name collision?") stays a question
-  if (!m) return null;
-  const rest = body.slice(m.index + m[0].length).replace(/^[\s:.\-–—]+/, '').trim();
-  return { reason: loopClean(rest.split('\n')[0]).slice(0, 300).replace(/^\(empty\)$/, '(no reason given)') };
 }
 
 /** The loop is the ONLY reader of the run's mail (one `fleet.mail()` per pass). The mail is acked only AFTER its batch is processed, and each message is handled idempotently (`loop.handled`): a kill mid-batch loses nothing — the
@@ -258,14 +249,6 @@ export async function stepMail(ctx: LoopCtx): Promise<void> {
       if (h === 'done') return;
       const ticket = m.ticket ?? implementerTicket(s, m.sender);
       if (m.kind === 'ask') {
-        const nso = parseNoSafeOption(m.body);
-        if (nso) {
-          if (ticket && s.tickets[ticket] && !ticketMerged(s, ticket)) {
-            ctx.update((x) => { const y = listChoice(parkTicket(x, ticket, { cause: 'question', reason: nso.reason }, deps.now()), { ticket, question: nso.reason, rule: 'no-safe-option', answer: 'parked' }, deps.now(), ctx.note); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'done' as const } } }; });
-            ctx.did(`parked ${ticket}: no safe option — ${nso.reason}`);
-          } else markDone(m.seq);
-          return;
-        }
         const first = loopClean(m.body.split('\n')[0]).slice(0, ASK_MAX); // `recordChoice` refuses longer text ([choice-bad]); the full text stays in the agent's PR body
         if (!h) ctx.update((x) => { const y = listChoice(x, { ticket: ticket ?? m.sender, question: first, rule: 'reversible-default', answer: FIXED_ANSWER }, deps.now(), ctx.note); return { ...y, loop: { ...x.loop, handled: { ...x.loop.handled, [m.seq]: 'listed' as const } } }; });
         await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');
