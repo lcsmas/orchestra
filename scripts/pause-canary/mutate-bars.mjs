@@ -107,4 +107,4 @@ const after = run();
 console.log(`restored byte-exact: ${same}; CLEAN control after: pass ${after.pass} fail ${after.fail}`);
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`MUTATE-BARS: ${bad === 0 && same && after.fail === 0 ? 'PASS' : 'FAIL'} (${MUTANTS.length} mutants)`);
-exitAfterFlush(bad === 0 && same && after.fail === 0 ? 0 : 1);
+await exitAfterFlush(bad === 0 && same && after.fail === 0 ? 0 : 1);
