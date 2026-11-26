@@ -187,7 +187,7 @@ if (CHILD === undefined) {
   const { survived, broken, codes } = await runMutantChildren(ids, 'MUT_CHILD', [4]);
   const refused = codes.filter((c) => c === 4).length, ran = ids.length;
   console.log(`\n${PART ? `part ${PART}: ` : ''}${ran - survived - refused - broken}/${ran} killed, ${survived} survived, ${refused} refused`);
-  exitAfterFlush(survived || refused || broken ? 1 : 0);
+  await exitAfterFlush(survived || refused || broken ? 1 : 0);
 }
 let survived = 0, refused = 0;
 for (const [mi, [name, edits]] of mutants.entries()) {
@@ -212,4 +212,4 @@ for (const [mi, [name, edits]] of mutants.entries()) {
   for (const [fp, text] of saved) fs.writeFileSync(fp, text);
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-process.exit(survived ? EXIT_SURVIVED : refused ? 4 : 0);
+await exitAfterFlush(survived ? EXIT_SURVIVED : refused ? 4 : 0);

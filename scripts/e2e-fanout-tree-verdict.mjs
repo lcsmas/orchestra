@@ -321,7 +321,7 @@ if (CHILD === undefined) { // #623: the mutants run in parallel, each in its own
   const { survived, broken } = await runMutantChildren(ids);
   if (fs.readFileSync(CLI, 'utf8') !== orig) { console.error('the real bundle changed during the run'); process.exit(1); }
   console.log(`\n${mutants.length - survived - broken}/${mutants.length} mutants killed; real bundle byte-identical`);
-  exitAfterFlush(survived || broken ? 1 : 0);
+  await exitAfterFlush(survived || broken ? 1 : 0);
 }
 let survived = 0;
 const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-tree-mut-'));
@@ -341,4 +341,4 @@ for (const [i, m] of mutants.entries()) {
   if (bad === 0) survived++;
 }
 fs.rmSync(scratch, { recursive: true, force: true });
-process.exit(survived ? EXIT_SURVIVED : 0);
+await exitAfterFlush(survived ? EXIT_SURVIVED : 0);

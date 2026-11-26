@@ -1,6 +1,7 @@
 // #623 — run the mutants of a mutant rig in parallel: the parent re-launches ITSELF once per mutant (env MUT_CHILD=<id>, own scratch dir / own temp copy, so nothing is shared)
 // through a bounded pool and prints each child's output in mutant order. A child exits 0 = KILLED, 3 = SURVIVED, anything else = the rig itself broke (counted, never a silent pass).
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 
 export const MUT_JOBS = Math.max(1, Number(process.env.MUTANT_JOBS) || Math.min(4, os.availableParallelism()));
@@ -28,11 +29,24 @@ export async function runMutantChildren(ids, envName = 'MUT_CHILD', okCodes = []
   const res = await pool(ids, (id) => selfChild({ [envName]: String(id) }));
   let survived = 0, broken = 0;
   for (const r of res) {
-    process.stdout.write(r.out.endsWith('\n') ? r.out : r.out + '\n');
-    if (r.code === EXIT_SURVIVED) survived++; else if (r.code !== EXIT_KILLED && !(okCodes ?? []).includes(r.code)) { broken++; console.log(`   → BROKEN (the mutant run exited ${r.code}: the rig itself failed, not a verdict)`); }
+    writeAllSync(r.out.endsWith('\n') ? r.out : r.out + '\n');
+    if (r.code === EXIT_SURVIVED) survived++; else if (r.code !== EXIT_KILLED && !(okCodes ?? []).includes(r.code)) { broken++; writeAllSync(`   → BROKEN (the mutant run exited ${r.code}: the rig itself failed, not a verdict)\n`); }
   }
   return { survived, broken, codes: res.map((r) => r.code) };
 }
 
-/** Exit once stdout is drained: the parent prints every child's output in one burst, and a bare process.exit() right after drops what a pipe has not taken yet (harness-amend lost 26 of 38 mutants' lines on CI). */
-export function exitAfterFlush(code) { process.exitCode = code; process.stdout.write('', () => process.exit(code)); }
+/** Blocking write of ALL of `text` to fd 1 (a pipe/socket the runner reads): a burst through process.stdout.write + process.exit() lost the last mutants' lines on CI (#623: harness-amend 26 of 38, acceptance-forced 11 of 34). */
+export function writeAllSync(text) {
+  const buf = Buffer.from(text); let off = 0;
+  while (off < buf.length) {
+    try { off += fs.writeSync(1, buf, off); }
+    catch (e) { if (e.code !== 'EAGAIN') throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
+  }
+}
+
+/** Exit once what console.log queued is flushed too (stdout.writableLength counts bytes libuv has not completed). */
+export async function exitAfterFlush(code) {
+  process.exitCode = code;
+  for (let i = 0; i < 500 && process.stdout.writableLength > 0; i++) await new Promise((r) => setTimeout(r, 10));
+  process.exit(code);
+}
