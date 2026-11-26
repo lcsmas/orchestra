@@ -36,10 +36,16 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # the mutant-anchor step selects from `git diff HEAD^1 HEAD`, like the rig groups
       - uses: ./.github/actions/setup
         with:
           bus-abi: 'false'
       - run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs typecheck
+      # #665: every mutant rig the PR's paths select — each anchor still occurs exactly once in this tree (no rig run, seconds). Mutant rigs only run after the merge (#623): a stale anchor was caught there, as a red master.
+      - name: mutant anchors
+        if: ${{ !cancelled() }}
+        run: node --experimental-strip-types --no-warnings scripts/ci/mutant-anchors.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
