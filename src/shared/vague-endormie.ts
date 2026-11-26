@@ -126,10 +126,10 @@ export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {
   if (!f.members.some((m) => m.unfinished)) return 'no-task';
   if (f.paused) return 'paused';
   if (f.runHeld) return 'run-held';
-  if (f.coordinatorCommandAlive) return 'coordinator-command';
   if (people(f).some((p) => p.active)) return 'member-active';
   if (people(f).some((p) => p.waiting)) return 'waiting';
   if (people(f).some((p) => p.heldStart)) return 'held-start';
+  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612: after the clauses above, so their order (and the mutants anchored on it) is untouched
   // Nobody of this vague did anything since the app started: an old wave left unarchived (its tasks never released) is not a sleep that happened on this watch — declaring it would
   // re-nudge every such coordinator (a real model turn, a Veille start) at every launch. A person opening one of its workspaces, or any event, brings it into play.
   return null;
@@ -142,8 +142,8 @@ export function episodeEnd(f: VagueFacts, ep: VagueEpisode): VagueAwakeWhy | nul
   if (!f.members.some((m) => m.unfinished)) return 'no-task';
   if (f.paused) return 'paused';
   if (f.runHeld) return 'run-held';
-  if (f.coordinatorCommandAlive) return 'coordinator-command';
   if (f.members.some((m) => m.active || m.waiting || m.heldStart || (m.lastTurnStartAt ?? -Infinity) > ep.declaredAt)) return 'resumed';
+  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612
   return null;
 }
 

@@ -22,8 +22,8 @@ const MUTANTS = [
   ['blk-no-task', S, "export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {\n  if (!f.members.some((m) => m.unfinished)) return 'no-task';\n", 'export function blockerOf(f: VagueFacts): VagueAwakeWhy | null {\n'],
   ['blk-paused', S, `${BLOCK}  if (people(f).some((p) => p.active))`, "  if (f.runHeld) return 'run-held';\n  if (people(f).some((p) => p.active))"],
   ['blk-run-held', S, "  if (f.runHeld) return 'run-held';\n  if (people(f).some((p) => p.active))", '  if (people(f).some((p) => p.active))'],
-  ['blk-coordinator-command', S, "  if (f.coordinatorCommandAlive) return 'coordinator-command';\n  if (people(f).some((p) => p.active)) return 'member-active';\n", "  if (people(f).some((p) => p.active)) return 'member-active';\n"], // #612
-  ['end-coordinator-command', S, "  if (f.coordinatorCommandAlive) return 'coordinator-command';\n  if (f.members.some((m) => m.active ||", "  if (f.members.some((m) => m.active ||"], // #612
+  ['blk-coordinator-command', S, "  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612: after the clauses above, so their order (and the mutants anchored on it) is untouched\n", ''], // #612
+  ['end-coordinator-command', S, "  if (f.coordinatorCommandAlive) return 'coordinator-command'; // #612\n", ''], // #612
   ['blk-active', S, "  if (people(f).some((p) => p.active)) return 'member-active';\n", ''],
   ['blk-waiting', S, "  if (people(f).some((p) => p.waiting)) return 'waiting';\n", ''],
   ['blk-held-start', S, "  if (people(f).some((p) => p.heldStart)) return 'held-start';\n", ''],
