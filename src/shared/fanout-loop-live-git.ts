@@ -1,7 +1,7 @@
 // #614 (spec #601, ledger #613) — the LIVE GitPort of the Boucle: real git behind an injected runner. Local refs win while nothing is pushed, `origin` takes over once it is ahead (a branch the author pushed and a local copy that never moved).
 // Every read fails closed: an unreadable ref is `null` / `false`, a git error that is not "unknown object" throws (the loop ends `could not run`, never a guess).
 import type { GitPort } from './fanout-loop-ports.ts';
-import { FanoutStateError } from './fanout-state.ts';
+import { FanoutStateError, StartCheckIdentityError } from './fanout-state.ts';
 
 export interface ExecResult { code: number; stdout: string; stderr: string }
 /** A process behind a seam (argv, never a shell). Production: `execFile`; tests: a fake or the real binary in a temp repo. */
@@ -66,7 +66,9 @@ export function createLiveGit(deps: LiveGitDeps): GitPort {
       const existing = onRemote ? await verify(remoteSha) : null; // an object we cannot read is not adopted
       // a killed start check left its probe: adopt it only while it is STILL empty over the base as it is now; a stale one is replaced
       if (existing && (await out(['rev-parse', `${existing}^{tree}`])) === (await out(['rev-parse', `${b}^{tree}`])) && (await isAncestor(b, existing))) return { head: existing };
-      const commit = await out(['-c', 'user.name=orchestra', '-c', 'user.email=orchestra@localhost', 'commit-tree', `${b}^{tree}`, '-p', b, '-m', `orchestra start check (${branch}) — empty`]);
+      // #667: the clone's own identity (a forge such as Vercel rejects an unknown author) — none configured ⇒ refuse before anything is pushed
+      if (!(await out(['config', 'user.email']))) throw new StartCheckIdentityError('no git user.email is configured in this clone: the start check\'s empty commit would carry no verifiable author (set `git config user.email`)');
+      const commit = await out(['commit-tree', `${b}^{tree}`, '-p', b, '-m', `orchestra start check (${branch}) — empty`]);
       if (!commit || !SHA.test(commit)) throw new FanoutStateError('git commit-tree produced no commit');
       const push = await deps.git(['push', '--quiet', ...(onRemote ? ['--force'] : []), remote, `${commit}:refs/heads/${branch}`]);
       if (push.code !== 0) throw new FanoutStateError(`git push of the probe branch failed: ${push.stderr.trim().slice(0, 300)}`);

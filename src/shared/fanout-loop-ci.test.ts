@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyTicketPatch, newState, parseState, type FanoutState } from './fanout-state.ts';
 import { flakyAtMerge, renderCiMessage, startCheckBranch, stepCi, stepPauseWatch, stepStartCheck, type CiCtx, type CiOptions } from './fanout-loop-ci.ts';
-import { pausedOf, pauseRun, resumeRun } from './fanout-state.ts';
+import { StartCheckIdentityError, pausedOf, pauseRun, resumeRun } from './fanout-state.ts';
 import type { ForgeCheck as CheckInfo } from './fanout-loop-ports.ts';
 type CiState = FanoutState;
 
@@ -647,6 +647,15 @@ test('start check is skipped once a ticket started (a restarted loop does not pr
   q.ctx.deps.git = { head: async () => null, tree: async () => null, isMerged: async () => false };
   const r = await stepStartCheck(q.ctx);
   assert.equal(r.ok === false && r.code, 'start-check-unsupported');
+});
+
+test('#667: no git identity in the clone ⇒ [start-check-identity], no pull request opened', async () => {
+  const { ctx, calls } = probe({ startCheck: true }, [[green('ci')]]);
+  ctx.deps.git = { ...ctx.deps.git, emptyBranch: async () => { throw new StartCheckIdentityError('no git user.email is configured in this clone'); } };
+  const r = await stepStartCheck(ctx);
+  assert.equal(r.ok === false && r.code, 'start-check-identity');
+  assert.equal(calls.opened.length, 0, 'nothing opened');
+  assert.deepEqual(calls.deleted, ['orchestra-start-check-' + ctx.deps.run.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 8)], 'the probe name is still cleaned up');
 });
 
 test('m2: a forge outage on every poll is reported as such in the refusal detail', async () => {

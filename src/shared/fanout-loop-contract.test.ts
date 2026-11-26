@@ -19,7 +19,7 @@ import { createLiveFleet, verbError, type Cli, type Host } from './fanout-loop-l
 import { CHECKS, FakeForge } from './fanout-loop-live-fake-gh.ts';
 import { fakeBus } from './fanout-loop-live-fake-bus.ts';
 import { FIXED_ANSWER } from './fanout-loop.ts';
-import { SeatRefusal, applyTicketPatch, newState, readState, setPlan, stateFile, updateState } from './fanout-state.ts';
+import { SeatRefusal, StartCheckIdentityError, applyTicketPatch, newState, readState, setPlan, stateFile, updateState } from './fanout-state.ts';
 
 const made: string[] = [];
 const tmp = (): string => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'fanout-contract-')); made.push(d); return d; };
@@ -464,6 +464,29 @@ test('live git: a stale probe (the base moved since a killed start check) is REP
   r.commitLocal('main'); // an UNPUSHED local commit must not travel with the probe
   const e3 = await r.port.emptyBranch('orchestra-start-check-def', 'main');
   assert.equal(await r.port.tree(e3.head), await r.port.tree(r.sh('rev-parse', 'origin/main')), 'cut from origin/main, not from local main');
+});
+
+// #667 — the probe's author is the CLONE's identity (no `-c user.*` override); no identity ⇒ the named refusal, nothing pushed
+function identityClone(email: string | null): { port: GitPort; work: string; bare: string } {
+  const root = tmp(); const bare = path.join(root, 'r.git'); const work = path.join(root, 'w');
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', HOME: root, GIT_AUTHOR_NAME: undefined, GIT_AUTHOR_EMAIL: undefined, GIT_COMMITTER_NAME: undefined, GIT_COMMITTER_EMAIL: undefined, EMAIL: undefined } as unknown as NodeJS.ProcessEnv;
+  const run = (cwd: string, args: string[]): { status: number | null; stdout: string; stderr: string } => spawnSync('git', args, { cwd, encoding: 'utf8', env });
+  fs.mkdirSync(bare); run(bare, ['init', '--bare', '--quiet']); fs.mkdirSync(work); run(work, ['init', '--quiet', '-b', 'main']); run(work, ['remote', 'add', 'origin', bare]);
+  fs.writeFileSync(path.join(work, 'f'), '0\n'); run(work, ['add', '.']);
+  run(work, ['-c', 'user.name=seed', '-c', 'user.email=seed@seed', 'commit', '--quiet', '-m', 'root']); run(work, ['push', '--quiet', 'origin', 'main']);
+  if (email) { run(work, ['config', 'user.name', 'Clone Owner']); run(work, ['config', 'user.email', email]); }
+  return { work, bare, port: createLiveGit({ git: (args) => { const r = run(work, args); return Promise.resolve({ code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr }); } }) };
+}
+test('live git #667: the start check\'s empty commit is authored by the clone\'s git identity', async () => {
+  const c = identityClone('19366215+lcsmas@users.noreply.github.com');
+  const e = await c.port.emptyBranch('orchestra-start-check-id1', 'main');
+  const log = spawnSync('git', ['log', '-1', '--format=%ae|%an|%ce|%cn', e.head], { cwd: c.work, encoding: 'utf8' }).stdout.trim();
+  assert.equal(log, '19366215+lcsmas@users.noreply.github.com|Clone Owner|19366215+lcsmas@users.noreply.github.com|Clone Owner', '[identity.author] author + committer = the clone\'s user.name / user.email');
+});
+test('live git #667: no user.email in the clone ⇒ a StartCheckIdentityError, nothing pushed', async () => {
+  const c = identityClone(null);
+  await assert.rejects(c.port.emptyBranch('orchestra-start-check-id2', 'main'), (e: Error) => e instanceof StartCheckIdentityError && /user\.email/.test(e.message));
+  assert.equal(spawnSync('git', ['ls-remote', '--heads', c.bare, 'orchestra-start-check-id2'], { encoding: 'utf8' }).stdout.trim(), '', 'no probe branch on the remote');
 });
 
 // ── live forge: the reused branch name, a re-run into a running run, the missing deliver ──
