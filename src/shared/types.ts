@@ -134,6 +134,11 @@ export interface Workspace {
    * reached over the wire (sandbox agents are paused, ADR 0007 / #220). See
    * {@link WorkspaceHost}. Local is the default for every existing workspace. */
   host?: WorkspaceHost;
+  /** #612 — a workspace with NO agent session by design: its {@link runCommand} (started by the host, detached) owns a fan-out run as its coordinator, vouched by the host's `/identity`.
+   *  Every start funnel / mail wake / liveness / Relance / Vague endormie skips it (`not-wakeable`, `sandboxPausedMessage`). Created by `orchestra spawn --no-agent`; absent = a normal workspace. */
+  noAgent?: boolean;
+  /** #612 — the shell command of a {@link noAgent} workspace (`orchestra spawn --run-command`), started detached by `POST /noagent/start`. */
+  runCommand?: string;
   /** Model this workspace's agent runs on (a Claude Code model arg: an alias
    * like `haiku`/`sonnet`/`opus` or a full model id). Set at creation by
    * `/spawn`'s `model` param (`orchestra spawn --model`); absent = the login's

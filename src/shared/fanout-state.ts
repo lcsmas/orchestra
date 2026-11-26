@@ -9,7 +9,7 @@ import { DEMONSTRATION_FIELDS, DEMONSTRATION_LIMIT, DEMONSTRATION_TEXT_MAX, clas
 
 export const STATE_VERSION = 1;
 
-export const TICKET_STATUSES = ['todo', 'started', 'nominated', 'gated', 'merged', 'dropped'] as const;
+export const TICKET_STATUSES = ['todo', 'started', 'nominated', 'gated', 'merged', 'dropped', 'parked'] as const; // #603: parked = set aside by the loop (never merged, never dropped)
 export type TicketStatus = (typeof TICKET_STATUSES)[number];
 export const VERDICTS = ['none', 'pass', 'fail', 'approve', 'changes-requested'] as const;
 export type Verdict = (typeof VERDICTS)[number];
@@ -151,8 +151,24 @@ export interface TicketState {
   review?: ReviewRecord;
   /** #587 PR B (ledger #591 I6) — written ONLY by `orchestra fanout start` (the host): when this ticket's implementer was launched, `spawn` or `respawn` (a dead one replaced), the sha256 of the brief it was given, how many briefs the ticket has had. Not settable by `state set`. */
   start?: { at: string; kind: 'spawn' | 'respawn'; briefHash: string; briefs: number };
+  /** #603 — set EXACTLY when `status` is `parked` (parseState refuses either without the other): why the loop set this ticket aside. Written only by `parkTicket` / `unparkTicket`. */
+  parked?: ParkRecord;
+  /** #603 — the situation fingerprint of each round of findings this ticket went through (`recordRound`); the same one twice = the ticket loops. */
+  rounds?: RoundRecord[];
   updatedAt: string;
 }
+
+// ── #603 (ledger #613 FROZEN NAMES v1): parked, the situation fingerprint, the agents' recorded choices, the run's pause ──
+export const PARK_CAUSES = ['question', 'situation', 'ci', 'upstream'] as const;
+export type ParkCause = (typeof PARK_CAUSES)[number];
+/** `blockedBy` is set exactly when `cause` is `upstream` (the parked ticket it waits for); a transitive dependent's reason is `blocked by <ticket>`. */
+export interface ParkRecord { cause: ParkCause; reason: string; at: string; blockedBy?: string }
+export interface RoundRecord { n: number; fingerprint: string; at: string }
+export const CHOICE_RULES = ['reversible-default', 'no-safe-option'] as const;
+export type ChoiceRule = (typeof CHOICE_RULES)[number];
+export interface ChoiceRecord { n: number; ticket: string; question: string; rule: ChoiceRule; answer: string; at: string }
+/** The ONLY pause of slice 1: `prs` = the pull requests red on the same `check` (null = no single check named). */
+export interface PauseRecord { at: string; reason: string; check: string | null; prs: number[] }
 
 /** #588 (I3) — one brief sent to the ticket's reviewer: `kind` = first spawn / delta to the SAME live reviewer / a new reviewer after the old one died. `hash` = sha256 of `text`. */
 export interface ReviewBrief { n: number; kind: 'spawn' | 'wake' | 'replace'; head: string; base: string | null; hash: string; text: string; reviewer: string | null; at: string }
@@ -188,6 +204,14 @@ export interface FanoutState {
   plan?: { tickets: string[]; declaredAt: string };
   /** #587 PR A (ledger #591 I3 v2) — the run's decisions: what the coordinator must tell every seat; EVERY brief carries them verbatim (`fanout-brief-common.ts`). Appended by `state set --run-decision`, never edited. */
   decisions?: Array<{ n: number; text: string; by: string; at: string }>;
+  /** #603 — what the agents chose when they asked (`recordChoice`), oldest first; the closing report lists each. */
+  choices?: ChoiceRecord[];
+  /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
+  pause?: PauseRecord;
+  /** #604 (ledger #613 FROZEN v1) — set ONLY by `applyPlan` (src/shared/fanout-plan.ts): the run's plan came from the plan step of the Boucle (hash = sha256 of the normalised plan JSON, attempts = submissions it took). From then on `--run-decision` is refused `decision-after-plan`. Not settable by `state set`. */
+  loopPlan?: { at: string; hash: string; attempts: number };
+  /** #604 (review r1 m3) — set ONLY by the plan step when it ENDS without a plan (`plan-refused-twice` | `plan-apply-failed`): `fanout start` / `applyPlan` refuse while it stands, so deleting the plan record does not reopen the run. Not settable by `state set`. */
+  planRefusal?: { at: string; code: 'plan-refused-twice' | 'plan-apply-failed'; detail: string };
   tickets: Record<string, TicketState>;
   updatedAt: string;
   reconciledAt: string | null;
@@ -236,9 +260,13 @@ export function switchSourceOf(state: SwitchHolder, name: SwitchName): 'explicit
   return stored !== undefined ? 'explicit' : 'default';
 }
 
-const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'tickets', 'updatedAt', 'reconciledAt']);
+const TOP_KEYS = new Set(['version', 'run', 'target', 'repo', 'harness', 'switches', 'switchDefaults', 'switchesFrozen', 'plan', 'decisions', 'loopPlan', 'planRefusal', 'tickets', 'updatedAt', 'reconciledAt']);
 const TICKET_KEYS = new Set(['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'acceptance', 'spec', 'specText', 'implementer', 'verifier', 'accept', 'tree', 'builtOnTree', 'checks', 'findings', 'followUpOf', 'mergedHead', 'mergedTree', 'forgottenMerges', 'fixes', 'depsDeclared', 'iface', 'follows', 'review', 'start', 'updatedAt']);
 TICKET_KEYS.add('reviews'); // #589 (I4)
+TICKET_KEYS.add('parked'); // #603
+TICKET_KEYS.add('rounds'); // #603
+TOP_KEYS.add('choices'); // #603
+TOP_KEYS.add('pause'); // #603
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
 export const DERIVED_KEYS = ['tree', 'builtOnTree'] as const;
@@ -323,6 +351,20 @@ function planOf(v: unknown): NonNullable<FanoutState['plan']> {
   if (tickets.length === 0) throw new FanoutStateError('plan.tickets is empty');
   return { tickets, declaredAt: isoOf(v.declaredAt, 'plan.declaredAt') };
 }
+function loopPlanOf(v: unknown): NonNullable<FanoutState['loopPlan']> {
+  if (!isObj(v)) throw new FanoutStateError('loopPlan must be {at, hash, attempts}');
+  refuseUnknown(v, new Set(['at', 'hash', 'attempts']), 'loopPlan');
+  if (typeof v.hash !== 'string' || !SHA256.test(v.hash)) throw new FanoutStateError('loopPlan.hash must be a sha256');
+  if (!Number.isInteger(v.attempts) || (v.attempts as number) < 1) throw new FanoutStateError('loopPlan.attempts must be an integer ≥ 1');
+  return { at: isoOf(v.at, 'loopPlan.at'), hash: v.hash, attempts: v.attempts as number };
+}
+function planRefusalOf(v: unknown): NonNullable<FanoutState['planRefusal']> {
+  if (!isObj(v)) throw new FanoutStateError('planRefusal must be {at, code, detail}');
+  refuseUnknown(v, new Set(['at', 'code', 'detail']), 'planRefusal');
+  if (v.code !== 'plan-refused-twice' && v.code !== 'plan-apply-failed') throw new FanoutStateError('planRefusal.code must be plan-refused-twice|plan-apply-failed');
+  if (typeof v.detail !== 'string' || !v.detail.trim()) throw new FanoutStateError('planRefusal.detail must be non-blank');
+  return { at: isoOf(v.at, 'planRefusal.at'), code: v.code, detail: v.detail };
+}
 function ifaceOfStored(v: unknown, where: string): Iface | null {
   if (v === null) return null;
   if (!isObj(v)) throw new FanoutStateError(`${where}: iface must be {version, text, history}`);
@@ -386,6 +428,7 @@ function decisionsOf(v: unknown): NonNullable<FanoutState['decisions']> {
 export function addDecision(state: FanoutState, text: string, by: string, now: string): FanoutState {
   const st = stampDefaults(state);
   if (!seatRecordsOn(st)) throw seatOff('--run-decision');
+  if (st.loopPlan) throw new SeatRefusal('decision-after-plan', `run ${st.run} has a plan of the loop (#604, ${st.loopPlan.at}): nothing writes a run decision after it — an order to wait cannot exist; what every seat needs is in the plan's interfaces`);
   const t = text.replace(/\r\n/g, '\n').trim();
   if (!t) throw new SeatRefusal('decision-blank', 'the decision is blank — write what every seat of the run must know');
   if (t.length > DECISION_TEXT_MAX || CTRL.test(t)) throw new FanoutStateError(`a decision must be printable text of at most ${DECISION_TEXT_MAX} characters`);
@@ -1015,6 +1058,8 @@ export function parseState(raw: unknown): FanoutState {
       ...(t.checks !== undefined ? { checks: checkRecordsOf(t.checks, `ticket ${id}`) } : {}),
       ...(t.review !== undefined ? { review: reviewOf(t.review, `ticket ${id}`) } : {}),
       ...(t.reviews !== undefined ? { reviews: reviewsOf(t.reviews, `ticket ${id}`) } : {}), // #589 (I4)
+      ...(t.parked !== undefined ? { parked: parkOf(t.parked, `ticket ${id}`) } : {}), // #603
+      ...(t.rounds !== undefined ? { rounds: roundsOf(t.rounds, `ticket ${id}`) } : {}), // #603
       updatedAt: typeof t.updatedAt === 'string' ? t.updatedAt : String(raw.updatedAt),
     };
   }
@@ -1029,11 +1074,16 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.switchesFrozen !== undefined ? { switchesFrozen: switchesFrozenOf(raw.switchesFrozen) } : {}),
     ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
+    ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
+    ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
+    ...(raw.loopPlan !== undefined ? { loopPlan: loopPlanOf(raw.loopPlan) } : {}),
+    ...(raw.planRefusal !== undefined ? { planRefusal: planRefusalOf(raw.planRefusal) } : {}),
     tickets,
     updatedAt: raw.updatedAt,
     reconciledAt: typeof raw.reconciledAt === 'string' ? raw.reconciledAt : null,
   };
   assertAcyclic(state);
+  assertParkedCoherent(state); // #603
   return state;
 }
 
@@ -1245,11 +1295,13 @@ export function applyTicketPatch(state0: FanoutState, id: string, patch: Record<
 export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Record<string, unknown>, now: string, derived: { tree?: string | null; builtOnTree?: Record<string, string>; specText?: string | null; /** #572 — does a path exist on a head (the CLI reads git); absent = a demonstration's file cannot be checked (refused with that reason) */ fileOnHead?: FileOnHead } = {}): FanoutState {
   const state = stampDefaults(state0); // #559: BEFORE the patch — a first spawn made by this very patch must not read as a legacy run
   if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
+  if ('park' in patch || 'unpark' in patch || patch.status === 'parked') return applyParkPatch(state, id, patch, now); // #603: parking is its own transition (it moves the dependents too); it refuses every other key itself
   refuseUnknown(patch, new Set<string>([...SETTABLE_KEYS, ...SEAT_PATCH_KEYS]), 'patch');
   const seat = seatRecordsOn(state);
   for (const k of SEAT_PATCH_KEYS) if (k in patch && !seat) throw seatOff(`--${k === 'interfaceReason' ? 'interface-reason' : k}`);
   const prev: TicketState = state.tickets[id] ?? blankTicket(now);
   const next: TicketState = { ...prev, updatedAt: now };
+  if (prev.status === 'parked' && 'status' in patch) throw new FanoutStateError(`${id} is parked (${prev.parked?.cause}: ${prev.parked?.reason}) — \`state set ${id} --unpark\` first; a parked ticket's status does not move by itself`);
   if ('branch' in patch) next.branch = checked(strOrNull(patch.branch, 'branch'), SAFE_BRANCH, 'branch');
   if ('pr' in patch) next.pr = prOrNull(patch.pr);
   if ('head' in patch) next.head = checked(strOrNull(patch.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)');
@@ -1435,6 +1487,204 @@ export function applyTicketPatchCore(state0: FanoutState, id: string, patch: Rec
   return freezeAtFirstSpawn(out, now); // #554: the first spawn of the run fixes the switches
 }
 
+// ── #603 (ledger #613 FROZEN NAMES v1): parked / rounds / choices / pause — parsers, then the pure transitions ───────────────────
+const parkRefusal = (code: string, detail: string): SeatRefusal => new SeatRefusal(code, detail);
+const HEX_FP = /^[0-9a-f]{8,64}$/;
+/** A reason / check name over its bound is CUT (`max - 1` characters + `…`), never refused: the loop's decision to park or pause must land (the full text lives in the agent's PR body). */
+const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+export const PARK_REASON_MAX = 1000;
+export const CHOICE_TEXT_MAX = 2000;
+export const PAUSE_CHECK_MAX = 300;
+export const CHOICES_MAX = 500;
+function parkOf(v: unknown, where: string): ParkRecord {
+  if (!isObj(v)) throw new FanoutStateError(`${where}: parked must be {cause, reason, at}`);
+  refuseUnknown(v, new Set(['cause', 'reason', 'at', 'blockedBy']), `${where} parked`);
+  const cause = enumOf(v.cause, PARK_CAUSES, `${where}: parked.cause`);
+  if (typeof v.reason !== 'string' || !v.reason.trim()) throw parkRefusal('park-no-reason', `${where}: parked has no reason — a parked ticket says why`);
+  const reason = lineOf(v.reason, `${where}: parked.reason`, PARK_REASON_MAX);
+  const at = isoOf(v.at, `${where}: parked.at`);
+  if (cause === 'upstream') {
+    if (typeof v.blockedBy !== 'string' || !SAFE_TICKET.test(v.blockedBy)) throw new FanoutStateError(`${where}: parked.cause upstream needs blockedBy (the parked ticket it waits for)`);
+    return { cause, reason, at, blockedBy: v.blockedBy };
+  }
+  if (v.blockedBy !== undefined) throw new FanoutStateError(`${where}: parked.blockedBy only applies to cause upstream`);
+  return { cause, reason, at };
+}
+function roundsOf(v: unknown, where: string): RoundRecord[] {
+  if (!Array.isArray(v)) throw new FanoutStateError(`${where}: rounds must be a list of {n, fingerprint, at}`);
+  let last = 0;
+  return v.map((r, i) => {
+    if (!isObj(r)) throw new FanoutStateError(`${where}: rounds[${i}] must be an object`);
+    refuseUnknown(r, new Set(['n', 'fingerprint', 'at']), `${where} rounds[${i}]`);
+    // `n` is the round's own number (the review's, v1.1): any positive integer, strictly increasing — rounds with no review of their own (an approve, a connect) leave gaps
+    if (!Number.isInteger(r.n) || (r.n as number) <= last) throw new FanoutStateError(`${where}: rounds[${i}].n must be an integer greater than ${last} (rounds are numbered by review, strictly increasing)`);
+    last = r.n as number;
+    if (typeof r.fingerprint !== 'string' || !HEX_FP.test(r.fingerprint)) throw new FanoutStateError(`${where}: rounds[${i}].fingerprint must be lowercase hex (a situationFingerprint)`);
+    return { n: r.n as number, fingerprint: r.fingerprint, at: isoOf(r.at, `${where}: rounds[${i}].at`) };
+  });
+}
+function choiceFieldOf(v: unknown, where: string): string {
+  if (typeof v !== 'string' || !v.trim()) throw parkRefusal('choice-bad', `${where} must be a non-blank text`);
+  if (v.length > CHOICE_TEXT_MAX || CTRL.test(v)) throw parkRefusal('choice-bad', `${where} must be printable text of at most ${CHOICE_TEXT_MAX} characters`);
+  return v.replace(/\r\n/g, '\n').trim();
+}
+function choiceOf(e: unknown, n: number, at: string | null, where: string): ChoiceRecord {
+  if (!isObj(e)) throw parkRefusal('choice-bad', `${where} must be an object {ticket, question, rule, answer}`);
+  refuseUnknown(e, new Set(['n', 'ticket', 'question', 'rule', 'answer', 'at']), where);
+  if (typeof e.ticket !== 'string' || !SAFE_TICKET.test(e.ticket)) throw parkRefusal('choice-bad', `${where}.ticket must be a ticket id`);
+  if (typeof e.rule !== 'string' || !(CHOICE_RULES as readonly string[]).includes(e.rule)) throw parkRefusal('choice-bad', `${where}.rule must be ${CHOICE_RULES.join('|')}`);
+  return { n, ticket: e.ticket, question: choiceFieldOf(e.question, `${where}.question`), rule: e.rule as ChoiceRule, answer: choiceFieldOf(e.answer, `${where}.answer`), at: at ?? isoOf(e.at, `${where}.at`) };
+}
+function choicesOf(v: unknown): ChoiceRecord[] {
+  if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('choices must be a non-empty list of {n, ticket, question, rule, answer, at}');
+  return v.map((e, i) => {
+    if (isObj(e) && e.n !== i + 1) throw new FanoutStateError(`choices[${i}].n must be ${i + 1}`);
+    return choiceOf(e, i + 1, isObj(e) && typeof e.at === 'string' ? isoOf(e.at, `choices[${i}].at`) : null, `choices[${i}]`);
+  });
+}
+function pauseOf(v: unknown): PauseRecord {
+  if (!isObj(v)) throw new FanoutStateError('pause must be {at, reason, check, prs}');
+  refuseUnknown(v, new Set(['at', 'reason', 'check', 'prs']), 'pause');
+  if (typeof v.reason !== 'string' || !v.reason.trim()) throw parkRefusal('pause-no-reason', 'pause has no reason — a paused run says why');
+  const reason = lineOf(v.reason, 'pause.reason', PARK_REASON_MAX);
+  if (v.check !== null && (typeof v.check !== 'string' || !v.check.trim() || v.check.length > PAUSE_CHECK_MAX || CTRL.test(v.check))) throw new FanoutStateError('pause.check must be a check name or null');
+  if (!Array.isArray(v.prs) || v.prs.some((n) => !Number.isInteger(n) || (n as number) < 1)) throw new FanoutStateError('pause.prs must be a list of pull request numbers');
+  return { at: isoOf(v.at, 'pause.at'), reason, check: v.check as string | null, prs: [...new Set(v.prs as number[])].sort((a, b) => a - b) };
+}
+/** status `parked` ⇔ a `parked` record (a half-written parking is refused when read AND when written); `blockedBy` names a ticket of the state. */
+function assertParkedCoherent(state: FanoutState): void {
+  for (const [id, t] of Object.entries(state.tickets)) {
+    if (t.status === 'parked' && !t.parked) throw parkRefusal('park-no-reason', `ticket ${id}: status parked with no \`parked\` record (cause + reason)`);
+    if (t.status !== 'parked' && t.parked) throw new FanoutStateError(`ticket ${id}: a \`parked\` record on a ticket whose status is ${t.status}`);
+    if (t.parked?.blockedBy && !state.tickets[t.parked.blockedBy]) throw new FanoutStateError(`ticket ${id}: parked.blockedBy names ${t.parked.blockedBy}, which is not a ticket of the run`);
+  }
+}
+
+/** Every ticket `id` depends on, directly or not (never `id` itself). */
+function upstreamClosure(state: FanoutState, id: string): Set<string> {
+  const out = new Set<string>();
+  const walk = (x: string): void => { for (const d of state.tickets[x]?.dependsOn ?? []) if (!out.has(d)) { out.add(d); walk(d); } };
+  walk(id);
+  out.delete(id);
+  return out;
+}
+/** The tickets that depend on `id`, directly or not. */
+function dependentsOf(state: FanoutState, id: string): string[] {
+  return Object.keys(state.tickets).filter((x) => x !== id && upstreamClosure(state, x).has(id));
+}
+/** What a ticket goes back to when it is unparked: `started` if it ever had work (a branch, a head, an implementer, a launch), else `todo`. The loop re-derives the rest from git. */
+const restoredStatus = (t: TicketState): TicketStatus => (t.branch || t.head || t.implementer || t.start ? 'started' : 'todo');
+function withoutPark(t: TicketState, now: string): TicketState {
+  const { parked: _p, ...rest } = t;
+  return { ...rest, status: restoredStatus(t), verdict: 'none', updatedAt: now }; // a verdict spoke about work that was set aside: it is read again from the next round
+}
+
+/** `parkTicket` — set `id` aside with a `cause` (question | situation | ci) and a written `reason`; EVERY ticket that depends on it, directly or not, is parked `upstream` with `blocked by <id>`.
+ *  Refusals: `park-bad-cause` (not one of the three; `upstream` is only ever given to a dependent), `park-no-reason`, `park-unknown-ticket`, `park-merged` (a merged ticket is done), `park-dropped`.
+ *  Idempotent: a ticket already parked for its own cause keeps its first record (a restarted loop parks again without rewriting history). */
+export function parkTicket(state: FanoutState, id: string, input: { cause: ParkCause | string; reason: string }, now: string): FanoutState {
+  if (typeof input.cause !== 'string' || !(PARK_CAUSES as readonly string[]).includes(input.cause) || input.cause === 'upstream') throw parkRefusal('park-bad-cause', `${id}: --park needs a cause: ${PARK_CAUSES.filter((c) => c !== 'upstream').join('|')} (got ${JSON.stringify(input.cause)}${input.cause === 'upstream' ? '; `upstream` is given to the dependents of a parked ticket, never chosen' : ''})`);
+  if (typeof input.reason !== 'string' || !input.reason.trim()) throw parkRefusal('park-no-reason', `${id}: a parked ticket needs a reason (--park-reason <text>): the closing report prints it`);
+  const reason = lineOf(clip(input.reason.trim(), PARK_REASON_MAX), `${id}: park reason`, PARK_REASON_MAX);
+  const t = state.tickets[id];
+  if (!t) throw parkRefusal('park-unknown-ticket', `${id}: no such ticket in run ${state.run} — nothing to park`);
+  if (t.status === 'merged') throw parkRefusal('park-merged', `${id} is merged — a merged ticket is done, not parked`);
+  if (t.status === 'dropped') throw parkRefusal('park-dropped', `${id} is dropped — a dropped ticket is already out of the run`);
+  const tickets = { ...state.tickets };
+  if (!(t.status === 'parked' && t.parked && t.parked.cause !== 'upstream')) tickets[id] = { ...t, status: 'parked', parked: { cause: input.cause as ParkCause, reason, at: now }, updatedAt: now };
+  for (const d of dependentsOf(state, id)) {
+    const dt = tickets[d];
+    if (dt.status === 'merged' || dt.status === 'dropped' || dt.status === 'parked') continue; // done, out, or already parked (a root keeps its own cause)
+    tickets[d] = { ...dt, status: 'parked', parked: { cause: 'upstream', reason: `blocked by ${id}`, at: now, blockedBy: id }, updatedAt: now };
+  }
+  return { ...state, tickets, updatedAt: now };
+}
+
+/** After a root parking went away (unparked, or the ticket merged by hand): a ticket parked `upstream` stays parked only while some ticket it depends on is still parked for its OWN cause (blockedBy follows to it), else it goes back to work. Idempotent. */
+export function releaseUpstreamParks(state: FanoutState, now: string): FanoutState {
+  const roots = new Set(Object.entries(state.tickets).filter(([, t]) => t.status === 'parked' && t.parked && t.parked.cause !== 'upstream').map(([id]) => id));
+  let tickets = state.tickets;
+  for (const [id, t] of Object.entries(state.tickets)) {
+    if (t.status !== 'parked' || t.parked?.cause !== 'upstream') continue;
+    const still = [...upstreamClosure(state, id)].filter((u) => roots.has(u)).sort();
+    if (still.length === 0) tickets = { ...tickets, [id]: withoutPark(t, now) };
+    else if (!still.includes(t.parked.blockedBy ?? '')) tickets = { ...tickets, [id]: { ...t, parked: { ...t.parked, reason: `blocked by ${still[0]}`, blockedBy: still[0] }, updatedAt: now } };
+  }
+  return tickets === state.tickets ? state : { ...state, tickets, updatedAt: now };
+}
+
+/** `unparkTicket` — take a ticket parked for its own cause back to work; the dependents it was holding go back too unless another parked ticket still holds them. */
+export function unparkTicket(state: FanoutState, id: string, now: string): FanoutState {
+  const t = state.tickets[id];
+  if (!t) throw new FanoutStateError(`${id}: no such ticket in run ${state.run}`);
+  if (t.status !== 'parked' || !t.parked) throw new FanoutStateError(`${id} is not parked (status ${t.status})`);
+  if (t.parked.cause === 'upstream') throw new FanoutStateError(`${id} is parked because ${t.parked.blockedBy} is — unpark ${t.parked.blockedBy} (its dependents follow)`);
+  const freed = releaseUpstreamParks({ ...state, tickets: { ...state.tickets, [id]: withoutPark(t, now) }, updatedAt: now }, now);
+  const held = [...upstreamClosure(freed, id)].filter((u) => freed.tickets[u]?.status === 'parked' && freed.tickets[u].parked?.cause !== 'upstream').sort();
+  if (held.length === 0) return freed;
+  const me = freed.tickets[id]; // its own cause is gone but a ticket it depends on is still parked: it goes back to being held by that one, never live under a parked upstream
+  return { ...freed, tickets: { ...freed.tickets, [id]: { ...me, status: 'parked', parked: { cause: 'upstream', reason: `blocked by ${held[0]}`, at: now, blockedBy: held[0] } } }, updatedAt: now };
+}
+/** `state set <ticket> --park … / --unpark / --status parked`: the patch forms of the two transitions (alone: no other key but `status: parked` with a park). */
+function applyParkPatch(state: FanoutState, id: string, patch: Record<string, unknown>, now: string): FanoutState {
+  if (!SAFE_TICKET.test(id)) throw new FanoutStateError(`unsafe ticket id ${JSON.stringify(id)}`);
+  if ('unpark' in patch) {
+    if (Object.keys(patch).some((k) => k !== 'unpark')) throw new FanoutStateError(`${id}: --unpark takes no other flag`);
+    if (patch.unpark !== true) throw new FanoutStateError(`${id}: unpark must be true`);
+    return unparkTicket(state, id, now);
+  }
+  if (Object.keys(patch).some((k) => k !== 'park' && k !== 'status')) throw new FanoutStateError(`${id}: --park takes only --park-reason (and --status parked), no other flag`);
+  if ('status' in patch && patch.status !== 'parked') throw new FanoutStateError(`${id}: --park sets the status parked; ${JSON.stringify(patch.status)} cannot go with it`);
+  const park = isObj(patch.park) ? patch.park : null;
+  if (!park) throw parkRefusal('park-no-reason', `${id}: --status parked needs --park <cause> --park-reason <text> (cause: ${PARK_CAUSES.filter((c) => c !== 'upstream').join('|')})`);
+  return parkTicket(state, id, { cause: park.cause as string, reason: park.reason as string }, now);
+}
+
+/** Every parked ticket, in the state's ticket order, with its record. */
+export function parkedTickets(state: FanoutState): Array<{ ticket: string } & ParkRecord> {
+  return Object.entries(state.tickets).filter(([, t]) => t.status === 'parked' && t.parked).map(([ticket, t]) => ({ ticket, ...t.parked! }));
+}
+
+/** The situation of a round: the open findings (ids) + the candidate tree, as one sha256 hex. The same pair twice = the same situation. */
+export function situationFingerprint(input: { openFindings: string[]; tree: string }): string {
+  return crypto.createHash('sha256').update(`findings:${[...input.openFindings].sort().join(',')}\ntree:${input.tree}`).digest('hex');
+}
+/** Record one round of `id`'s findings. `repeat` = this fingerprint was ALREADY recorded for the ticket (the second sighting parks it). One call per round: recording the same round twice is a repeat.
+ *  `n` = the round's number when the caller has one (the review's); absent = the last number + 1 (= length + 1 while the rounds are contiguous). It must exceed the last recorded `n`. */
+export function recordRound(state: FanoutState, id: string, fingerprint: string, now: string, n?: number): { state: FanoutState; repeat: boolean } {
+  if (typeof fingerprint !== 'string' || !HEX_FP.test(fingerprint)) throw new FanoutStateError(`${id}: a round fingerprint is lowercase hex (situationFingerprint) — got ${JSON.stringify(fingerprint)}`);
+  const t = state.tickets[id];
+  if (!t) throw new FanoutStateError(`${id}: no such ticket in run ${state.run} — no round to record`);
+  const rounds = t.rounds ?? [];
+  const repeat = rounds.some((r) => r.fingerprint === fingerprint);
+  const last = rounds.length ? rounds[rounds.length - 1].n : 0;
+  if (n !== undefined && (!Number.isInteger(n) || n <= last)) throw new FanoutStateError(`${id}: round number ${n} must be an integer greater than the last recorded round (${last})`);
+  return { state: { ...state, tickets: { ...state.tickets, [id]: { ...t, rounds: [...rounds, { n: n ?? last + 1, fingerprint, at: now }], updatedAt: now } }, updatedAt: now }, repeat };
+}
+
+/** Record what an agent chose when it asked (`[choice-bad]` on a blank / unknown-rule / oversized entry). Numbered from 1, never edited. */
+export function recordChoice(state: FanoutState, entry: { ticket: string; question: string; rule: ChoiceRule | string; answer: string; n?: number; at?: string }, now: string): FanoutState {
+  const list = state.choices ?? [];
+  if (list.length >= CHOICES_MAX) throw parkRefusal('choice-bad', `the run already holds ${list.length} choices (at most ${CHOICES_MAX})`);
+  const rec = choiceOf({ ticket: entry.ticket, question: entry.question, rule: entry.rule, answer: entry.answer }, list.length + 1, now, 'choice');
+  return { ...state, choices: [...list, rec], updatedAt: now };
+}
+
+/** Pause the run: the same check is red on several pull requests, which is the environment, not a ticket. `[pause-no-reason]` without a reason. A second call while paused keeps the first record and adds the pull requests. */
+export function pauseRun(state: FanoutState, input: { reason: string; check: string | null; prs: number[] }, now: string): FanoutState {
+  if (typeof input.reason !== 'string' || !input.reason.trim()) throw parkRefusal('pause-no-reason', 'a pause needs a reason (--pause <reason>): the report says why the run stopped');
+  const next = pauseOf({ at: now, reason: clip(input.reason.trim(), PARK_REASON_MAX), check: typeof input.check === 'string' ? clip(input.check, PAUSE_CHECK_MAX) : input.check ?? null, prs: input.prs ?? [] });
+  if (state.pause) return { ...state, pause: { ...state.pause, prs: [...new Set([...state.pause.prs, ...next.prs])].sort((a, b) => a - b) }, updatedAt: now };
+  return { ...state, pause: next, updatedAt: now };
+}
+/** Lift the pause (a no-op when the run is not paused). */
+export function resumeRun(state: FanoutState, now: string): FanoutState {
+  if (!state.pause) return state;
+  const { pause: _p, ...rest } = state;
+  return { ...rest, updatedAt: now };
+}
+export const pausedOf = (state: FanoutState): PauseRecord | null => state.pause ?? null;
+
 // ── persistence: one writer, atomic rewrite ───────────────────────────────────────────────────────────────
 
 export function readState(file: string): FanoutState | null {
@@ -1533,7 +1783,7 @@ export type DivergenceKind =
 
 export interface Divergence { ticket: string; kind: DivergenceKind; detail: string }
 
-export type TicketClass = 'done' | 'dropped' | 'waiting' | 'startable' | 'in-progress' | 'awaiting-gate' | 'awaiting-merge' | 'needs-fix' | 'diverged';
+export type TicketClass = 'done' | 'dropped' | 'parked' | 'waiting' | 'startable' | 'in-progress' | 'awaiting-gate' | 'awaiting-merge' | 'needs-fix' | 'diverged';
 export type ActionName =
   | 'none' | 'wait-upstream' | 'start' | 'start-against-frozen-interface' | 'continue' | 'gate' | 'merge' | 'fix-and-renominate'
   | 're-gate' | 'record-merged' | 'investigate' | 'recreate-branch';
@@ -1553,14 +1803,14 @@ function realityMerged(r: TicketReality | undefined, status: TicketStatus, targe
   if (!r) return undefined;
   // A PR merged into another base (a stacked PR's upstream branch) is NOT on the target.
   if (r.pr?.state === 'MERGED' && r.pr.baseRefName === target) return true;
-  if (r.mergedIntoTarget === true && status !== 'started') return true;
+  if (r.mergedIntoTarget === true && status !== 'started' && status !== 'parked') return true; // #603: a parked branch cut from the target tip is trivially "contained", like a started one — never a merge
   if (r.error) return undefined;
   return false;
 }
 
 /** The head a MERGED ticket landed at when it differs from the head its pass/approve verdict covered; null = no such mismatch. */
 function ungatedMergeHead(t: TicketState, r: TicketReality | undefined, rm: boolean | undefined): string | null {
-  if (rm !== true || (t.status !== 'gated' && t.status !== 'merged') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
+  if (rm !== true || (t.status !== 'gated' && t.status !== 'merged' && t.status !== 'parked') || (t.verdict !== 'pass' && t.verdict !== 'approve') || !t.head) return null;
   const mergedHead = r?.pr?.state === 'MERGED' ? r.pr.headRefOid : r?.branchHead;
   const mergedTree = r?.pr?.state === 'MERGED' ? r.prTree : r?.branchTree;
   return mergedHead && !sameContent(mergedHead, mergedTree, t.head, t.tree) ? mergedHead : null; // #512: the verdict's tree merged = covered
@@ -1584,7 +1834,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
 
   for (const [id, t] of Object.entries(state.tickets)) {
     const r = reality[id];
-    const claimsWork = t.status !== 'todo' && t.status !== 'dropped';
+    const claimsWork = t.status !== 'todo' && t.status !== 'dropped' && t.status !== 'parked'; // #603: a parked ticket's branch / PR may be gone or closed on purpose
     if (r?.error) add({ ticket: id, kind: 'reality-unreadable', detail: `could not read git/gh (${r.error}); nothing concluded about this ticket` });
     const rm = realityMerged(r, t.status, state.target);
     const accepted = t.status === 'merged' && !!t.mergedAccepted;
@@ -1596,6 +1846,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       add({ ticket: id, kind: 'reality-merged-state-not', detail: `reality says merged (${r?.pr?.state === 'MERGED' ? `PR #${t.pr ?? '?'} MERGED` : `tip in origin/${state.target}`}) but state says ${t.status}` });
       // An ungated-head merge is NOT recorded: the divergence must persist across resumes until the merged tree is re-gated.
       if (!ungated) writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged' }, why: 'reality merged' });
+      else if (t.status === 'parked') writeBack.push({ ticket: id, seen: t.updatedAt, patch: { status: 'merged', head: ungated, tree: (r?.pr?.state === 'MERGED' ? r.prTree : r?.branchTree) ?? null, verdict: 'none' }, why: `a parked ticket merged by hand at ${ungated.slice(0, 8)} (adopted at the head that really merged; the verdict was on another)` }); // #603 r1: the divergence below stays
     }
     if (r && !r.error && claimsWork && t.status !== 'merged' && t.branch && r.branchHead === null && rm !== true) {
       add({ ticket: id, kind: 'branch-gone', detail: `branch ${t.branch} is not on the remote` });
@@ -1612,7 +1863,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
       } else {
         writeBack.push({ ticket: id, seen: t.updatedAt, patch: { head: r.branchHead, tree: r.branchTree ?? null }, why: 'head moved' });
       }
-    } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && r.pr.state === 'OPEN') {
+    } else if (r?.pr && t.head && r.pr.headRefOid && !sameContent(r.pr.headRefOid, r.prTree, t.head, t.tree) && t.status !== 'merged' && t.status !== 'parked' && r.pr.state === 'OPEN') {
       add({ ticket: id, kind: 'pr-head-moved', detail: `PR #${t.pr} head ${r.pr.headRefOid.slice(0, 8)} != recorded ${t.head.slice(0, 8)}` });
     }
     if (r?.pr?.state === 'MERGED' && r.pr.baseRefName !== state.target && rm !== true && t.status !== 'dropped' && !accepted) {
@@ -1621,7 +1872,7 @@ export function reconcile(state: FanoutState, reality: Reality): ReconcilePlan {
     if (ungated) {
       add({ ticket: id, kind: 'merged-at-ungated-head', detail: `merged at ${ungated.slice(0, 8)} but the ${t.verdict} verdict was on ${t.head?.slice(0, 8)}: re-gate the merged tree, then \`state set ${id} --status merged --head ${ungated.slice(0, 12)} --forget-merge <reason>\`` });
     }
-    if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped') {
+    if (r?.pr?.state === 'CLOSED' && t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'parked') {
       add({ ticket: id, kind: 'pr-closed-unmerged', detail: `PR #${t.pr} is CLOSED without merging` });
     }
     if ((t.status === 'nominated' || t.status === 'gated' || t.status === 'merged')) {
@@ -1671,6 +1922,7 @@ function planTicket(id: string, t: TicketState, own: Divergence[], open: string[
   switch (t.status) {
     case 'merged': return { class: 'done', next: { action: 'none', detail: 'merged' } };
     case 'dropped': return { class: 'dropped', next: { action: 'none', detail: 'dropped' } };
+    case 'parked': return { class: 'parked', next: { action: 'none', detail: `parked (${t.parked?.cause}): ${t.parked?.reason} — never counted as merged; \`state set ${id} --unpark\` returns it to work` } };
     case 'todo':
       if (open.length === 0) return { class: 'startable', next: { action: 'start', detail: t.dependsOn.length ? 'every upstream is merged' : 'no upstream' } };
       if (t.frozenInterface) return { class: 'startable', next: { action: 'start-against-frozen-interface', detail: `build against ${t.frozenInterface}; ${early ? `nominate only once ${open.join(', ')} has a verified candidate (nominated|gated) and you rebased onto its head` : `nominate only once ${open.join(', ')} is MERGED (earlyGate=off)`}` } };
@@ -1694,8 +1946,9 @@ export function applyWriteBack(state: FanoutState, writeBack: ReconcilePlan['wri
     const cur = tickets[w.ticket];
     // Skip a ticket changed since the plan read it (`seen`), and never lower one this batch already recorded as merged.
     if (!cur || state.tickets[w.ticket].updatedAt !== w.seen || mergedHere.has(w.ticket)) continue;
-    tickets[w.ticket] = { ...cur, ...w.patch, ...(w.patch.status === 'merged' ? { mergedHead: cur.mergedHead ?? cur.head, mergedTree: cur.mergedHead ? cur.mergedTree : cur.tree } : {}), updatedAt: now };
+    const { parked: _parked, ...curRest } = cur; // #603: reality moved the ticket on (e.g. merged by hand): its parking ends with it
+    tickets[w.ticket] = { ...(w.patch.status ? curRest : cur), ...w.patch, ...(w.patch.status === 'merged' ? { mergedHead: cur.mergedHead ?? w.patch.head ?? cur.head, mergedTree: cur.mergedHead ? cur.mergedTree : w.patch.tree !== undefined ? w.patch.tree : cur.tree } : {}), updatedAt: now };
     if (w.patch.status === 'merged') mergedHere.add(w.ticket);
   }
-  return parseState({ ...state, tickets, updatedAt: now, reconciledAt: now });
+  return parseState(releaseUpstreamParks({ ...state, tickets, updatedAt: now, reconciledAt: now }, now));
 }

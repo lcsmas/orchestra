@@ -21,7 +21,7 @@ function mkHome(t: { after: (fn: () => void) => void }): string {
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   return d;
 }
-const mkDeps = (home: string, ws = 'r1'): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, vouchedCaller: ws, cwd: home, runner: offline, now: () => NOW, readStdin: () => '' });
+const mkDeps = (home: string, ws = 'r1'): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: ws }, vouchedCaller: ws, identity: { source: 'host', runId: ws, generation: null }, cwd: home, runner: offline, now: () => NOW, readStdin: () => '' });
 const sh = (d: FanoutDeps, ...a: string[]) => runFanout(['state', ...a], d);
 const set = (d: FanoutDeps, ...a: string[]) => sh(d, 'set', '--run', 'r1', ...a);
 const load = (d: FanoutDeps): FanoutState => readState(stateFile(d.env.ORCHESTRA_HOME!, 'r1'))!;

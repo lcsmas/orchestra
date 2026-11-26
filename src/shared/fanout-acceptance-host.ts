@@ -6,6 +6,7 @@ import {
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
 import { dispatchReview, type ReviewHostDeps, type ReviewHostResult } from './fanout-review-host.ts';
+import { dispatchPlan, type PlanHostResult } from './fanout-plan-host.ts';
 import { startRun, type StartDeps, type StartResult } from './fanout-start.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
@@ -49,6 +50,7 @@ export type AcceptanceHostResult =
   | { ok: true; op: 'children'; children: string[] }
   | Extract<ReviewHostResult, { ok: true }> // #588: `fanout review`
   | { ok: true; op: 'start'; result: StartResult }
+  | Extract<PlanHostResult, { ok: true }> // #604: `fanout plan`
   | { ok: true; op: 'frozen' | 'amended'; notified: string[]; failed: Array<{ id: string; error: string }>; note?: string }
   | { ok: false; error: string };
 
@@ -75,6 +77,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       return { ok: true, op: 'skills', refreshed: deps.refreshSkills ? await deps.refreshSkills(ids) : [] };
     }
     if (input.op === 'review') return await dispatchReview(input, deps); // #588: spawn / wake / replace the ticket's reviewer (src/shared/fanout-review-host.ts)
+    if (input.op === 'plan') return await dispatchPlan(input, deps); // #604: spawn (or adopt) the single-use plan agent (src/shared/fanout-plan-host.ts)
     if (input.op === 'start') { // #587 PR B: launch the implementers of the plan (every refusal is a SeatRefusal: its message starts with [name])
       if (!deps.implementerLive || !deps.spawnImplementer) return { ok: false, error: 'this host does not launch implementers (fanout start is not wired)' };
       const spawnImplementer = deps.spawnImplementer;

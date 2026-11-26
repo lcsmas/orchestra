@@ -56,6 +56,7 @@ import { dispatchLoginUrlRequest } from './login-url';
 import { dispatchReloadSkillsRequest } from './agent-sdk';
 import { dispatchRestartRequest } from './restart-workspace.ts';
 import { dispatchIdentityRequest } from './session-identity-host.ts';
+import { dispatchNoAgentStart } from './noagent.ts';
 import { dispatchHandoffRequest } from './handoff-host.ts';
 import { dispatchBrowserRequest } from './browser-cdp-host.ts';
 import { log } from './logger';
@@ -260,7 +261,9 @@ export async function startHooksServer(): Promise<void> {
               send(200, { ok: false, error: 'missing id' });
             }
           } else if (route === '/spawn') {
-            if (typeof msg.task === 'string') {
+            // #612: `--no-agent --run-command <cmd>` carries no task (no agent will ever read one).
+            const noAgentSpawn = msg.noAgent === true;
+            if (typeof msg.task === 'string' || noAgentSpawn) {
               send(
                 200,
                 // #382: the agent route — `name` REQUIRED (an old CLI/skill sends none → refused, nothing created).
@@ -268,9 +271,10 @@ export async function startHooksServer(): Promise<void> {
                   from: typeof msg.from === 'string' ? msg.from : undefined,
                   repoPath: typeof msg.repoPath === 'string' ? msg.repoPath : undefined,
                   baseBranch: typeof msg.baseBranch === 'string' ? msg.baseBranch : undefined,
-                  task: msg.task,
+                  task: typeof msg.task === 'string' ? msg.task : '',
                   agent: 'claude',
                   detached: msg.detached === true,
+                  ...(noAgentSpawn ? { noAgent: { runCommand: typeof msg.runCommand === 'string' ? msg.runCommand : '' } } : {}),
                   model: typeof msg.model === 'string' ? msg.model : undefined,
                   effort: typeof msg.effort === 'string' ? msg.effort : undefined,
                   name: typeof msg.name === 'string' ? msg.name : undefined,
@@ -600,6 +604,9 @@ export async function startHooksServer(): Promise<void> {
             // #379 / ADR 0008: a session's CURRENT run + generation, resolved by the host on every bus CLI call
             // (`{id, key}` → `{ok, runId, generation}`; a replaced session's key → `superseded`). Never logs/echoes the key.
             send(200, dispatchIdentityRequest(msg));
+          } else if (route === '/noagent/start') {
+            // #612: start (or confirm) the DETACHED command of a no-agent workspace — the host mints + registers its session key, so `/identity` vouches it as the run's coordinator. Idempotent: a live command is never re-keyed.
+            send(200, await dispatchNoAgentStart(msg));
           } else if (route === '/handoff') {
             // #466: `orchestra handoff` — `{id, key, summary}`; the summary shape + the open run are checked host-side, the context ends at the turn end.
             send(200, dispatchHandoffRequest(msg));
