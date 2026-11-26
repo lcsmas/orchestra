@@ -1532,6 +1532,12 @@ async function main(argv: string[]): Promise<void> {
         process.stdout.write(`${formatRestartHeldReply(target, res.note)}\n`);
         return;
       }
+      if (res.noAgent && typeof res.noAgent === 'object') {
+        // #640: a no-agent workspace — its detached command, started or already alive (idempotent)
+        const na = res.noAgent as { pid: number; reused: boolean; log: string };
+        process.stdout.write(na.reused ? `${target}: its command is already running (pid ${na.pid}) — nothing restarted\n` : `Started ${target}'s command (pid ${na.pid}, log ${na.log})\n`);
+        return;
+      }
       if (res.openingTask === true) {
         // #227 F8: a start whose first turn was not confirmed within the wait says so — never "delivered" for a start nothing confirmed.
         process.stdout.write(

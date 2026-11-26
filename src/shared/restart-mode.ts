@@ -140,6 +140,8 @@ export interface RestartResult {
   note?: string;
   /** #286 Admission: the restart was ACCEPTED but HELD for low memory — nothing was stopped; it runs when memory recovers. */
   held?: { since: number };
+  /** #640: the workspace is a no-agent one — its detached command was started (or found alive: `reused`); no agent session is involved. */
+  noAgent?: { pid: number; reused: boolean; log: string };
   error?: string;
 }
 
