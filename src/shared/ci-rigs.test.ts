@@ -211,7 +211,7 @@ function runSummary(shards: ShardResult[], needs: Record<string, { result: strin
     put('typecheck', { ...base, name: 'typecheck', ok: true, counts: { run: 1, pass: 1, fail: 0, skipped: 0 } });
     for (const r of file.rigs.filter((x) => x.class === 'RUNS_IN_CI' && x.id !== dropRig)) put(`rig:${r.id}`, { ...base, name: `rig:${r.id}`, id: r.id, ok: true, counts: { run: 1, pass: 1, fail: 0, skipped: 0 } });
     for (const s of shards) put(s.name, { ...base, ...s, counts: { run: s.counts.run, pass: s.counts.run, fail: 0, skipped: 0 } });
-    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/rigs.mjs'), 'summary', dir], { encoding: 'utf8', env: { ...process.env, NEEDS_JSON: JSON.stringify(needs), GITHUB_STEP_SUMMARY: '' } });
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', path.join(root, 'scripts/ci/rigs.mjs'), 'summary', dir], { encoding: 'utf8', env: { ...process.env, CI_PATH_SELECTION: '0', CI_FULL_REASON: '', NEEDS_JSON: JSON.stringify(needs), GITHUB_STEP_SUMMARY: '' } });
     return { status: r.status, out: r.stdout + r.stderr };
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
