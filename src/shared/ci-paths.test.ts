@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWalker, repoTree, walkedDirs, type Tree } from './ci-closure.ts';
-import { compressPaths, expandPaths, generatePaths, matchPaths, recallProblems, renderSelection, selectRigs, toWire, validatePatterns } from './ci-paths.ts';
+import { compressPaths, expandPaths, generatePaths, matchPaths, omittedGlobs, recallProblems, renderSelection, selectRigs, toWire, validatePatterns } from './ci-paths.ts';
 import { readRigFile, validateRigs, requiredRigIds, type RigFile } from './ci-rigs.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -240,4 +240,17 @@ test('F5: ci.yml re-runs on `labeled` (ci-full added after the push) and only th
   assert.match(wf, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'ci-full'\) && 'the ci-full label forces every rig'/);
   assert.equal(wf.match(/'ci-full'/g)!.length, 1, 'no other label is read');
   assert.match(wf, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
+});
+
+// ---- #644: a rig that only boots the app bundle is not selected by the fanout family it merely carries ------------------------------------------------------
+test('#644: a fanout-only change selects the fanout rigs, never an app-booting UI rig; a rig with a fanout id/script keeps the family', () => {
+  const appRig = real.rigs.find((r) => r.id === 'test:bloc-html-chrome');
+  assert.ok(appRig?.paths?.includes('@bundle:app'));
+  for (const f of ['src/shared/fanout-loop.ts', 'src/cli/fanout-run.ts', 'src/shared/verified-fanout-skill.ts']) {
+    const ran = selectRigs(real, [f]).ran.map((r) => r.id);
+    assert.ok(!ran.includes('test:bloc-html-chrome') && !ran.includes('test:bloc-budget') && !ran.includes('scripts/e2e-acces-mobile.sh'), `${f} selected a UI rig`);
+    if (!f.includes('verified-fanout')) assert.ok(ran.includes('test:fanout-run'), `${f} must still select test:fanout-run`);
+  }
+  assert.ok(selectRigs(real, ['src/shared/bloc-html-document.ts']).ran.some((r) => r.id === 'test:bloc-html-chrome'), 'its own closure still selects it');
+  assert.ok(omittedGlobs(appRig?.paths).length > 0 && omittedGlobs(['@bundle:app']).length === 0);
 });
