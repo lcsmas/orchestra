@@ -904,3 +904,40 @@ test('#629: a nomination the state REFUSES is logged "has a head", never "nomina
   assert.ok(!lines.some((l) => /T2 nominated/.test(l)), lines.join('\n'));
   assert.ok(lines.some((l) => /cannot be nominated yet — .*follows T1 v1/.test(l)), lines.join("\n"));
 });
+
+// ── #637: a head with ANOTHER sha and the SAME tree as the approved one is delivered (#512 content key) ──
+test('#637: the implementer re-connects onto a same-tree head AFTER the approval — no new review (the verdict covers the tree), deliver merges the real PR head instead of refusing verdict-head-mismatch every pass', async () => {
+  const r = await go('same-tree-head', { stallMs: 4 * 3_600_000, maxPasses: 3000 });
+  assert.equal(r.result.exit, 0, `${r.result.reason ?? ''} ${r.log.filter((l) => /not deliverable/.test(l)).slice(0, 2).join(' | ')}`);
+  assert.deepEqual(r.result.report.merged, ['T1']);
+  const rt = r.world.events.find((e) => e.ev === 'retree')!;
+  const approved = r.world.events.find((e) => e.ev === 'review-record' && e.ticket === 'T1')!;
+  assert.ok(rt && approved && approved.t < rt.t, 'the approval is on the OLD head, the same-tree commit comes after it');
+  assert.equal(r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T1').length, 1, 'no second review: the verdict covers the tree');
+  assert.equal(r.world.events.find((e) => e.ev === 'merge')!.head, rt.head, 'the merge binds to the real PR head, not the verdict\'s');
+  assert.ok(!r.log.some((l) => /verdict-head-mismatch/.test(l)), 'never refused');
+  assert.deepEqual(r.violations, []);
+});
+test('#637: the PR head is ANOTHER sha with the verified head\'s tree (the forge moved, the content did not) — delivered, the merge bound to the real PR head', async () => {
+  const scn = sc('same-tree-head', { agents: { T1: { implementer: [{ do: 'code' }, { do: 'nominate' }] } } });
+  let prHead = '';
+  const wrap = (d: ReturnType<typeof buildDummy>) => ({ ...d, forge: { ...d.forge,
+    async prState(n: number) { const s = await d.forge.prState(n); if (s.state !== 'open') return s; if (!prHead) { prHead = d.world.commit([s.head], 'forge-head', 'x'); d.world.commits.get(prHead)!.tree = d.world.commits.get(s.head)!.tree; } return { ...s, head: prHead }; },
+    async merge(n: number, h: string, m: 'merge' | 'squash' | 'rebase') { assert.equal(h, prHead, 'the merge is bound to the REAL pull request head'); return d.forge.merge(n, d.world.branches.get(d.world.prs.get(n)!.branch)!, m); },
+  } });
+  const r = await runDummyLoop({ home: tmp(), scenario: scn, options: { stallMs: 4 * 3_600_000, maxPasses: 3000 }, wrap });
+  assert.equal(r.result.exit, 0, `${r.result.reason ?? ''} ${r.log.filter((l) => /not deliverable/.test(l)).slice(0, 1).join('')}`);
+  assert.deepEqual(r.result.report.merged, ['T1']);
+});
+test('#637 MUST-FAIL: a PR head with ANOTHER tree than the verified head is never delivered (head-moved) — the same-tree rule does not open the gate', async () => {
+  const scn = sc('same-tree-head', { agents: { T1: { implementer: [{ do: 'code' }, { do: 'nominate' }] } } });
+  let prHead = '';
+  const wrap = (d: ReturnType<typeof buildDummy>) => ({ ...d, forge: { ...d.forge,
+    async prState(n: number) { const s = await d.forge.prState(n); if (s.state !== 'open') return s; if (!prHead) prHead = d.world.commit([s.head], 'forge-head', 'another-content'); return { ...s, head: prHead }; },
+    async merge(n: number, h: string, m: 'merge' | 'squash' | 'rebase') { return d.forge.merge(n, d.world.branches.get(d.world.prs.get(n)!.branch)!, m); }, // the dummy forge itself would refuse a moved head: here only the LOOP's gate is measured
+  } });
+  const r = await runDummyLoop({ home: tmp(), scenario: scn, options: { stallMs: 60 * 60_000, maxPasses: 3000 }, wrap });
+  assert.equal(r.result.exit, 3);
+  assert.deepEqual(r.result.report.merged, []);
+  assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0);
+});

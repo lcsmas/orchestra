@@ -16,7 +16,7 @@ import { applyTicketPatch, FanoutStateError, newState, stateFile } from './fanou
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
-export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
+export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'retree', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
 export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
 export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string }
 export interface Scenario {
@@ -226,6 +226,15 @@ export class DummyWorld {
         this.post('status', a.ws, a.ticket, `connected to ${ask.up} — head ${c}`);
         break;
       }
+      case 'retree': { // #637: a new commit that adds NOTHING (a merge of what the branch already holds): another sha, the SAME git tree — the recorded verdict still covers it (#512)
+        const head = this.branches.get(a.branch)!;
+        const c = this.commit([head], `${a.branch}:retree${a.idx}`, 'retree');
+        this.commits.get(c)!.tree = this.commits.get(head)!.tree;
+        this.branches.set(a.branch, c);
+        this.ev('retree', a.ticket, { head: c, from: head });
+        this.post('status', a.ws, a.ticket, `re-connected, same content — head ${c}`);
+        break;
+      }
       case 'sync': { // #628: the SYNC order — the target merged into the branch with a MERGE COMMIT, pushed, the new head reported
         if (a.syncs <= 0) { a.mode = 'connect'; return; }
         a.syncs--;
@@ -311,7 +320,7 @@ export class DummyWorld {
     const tree = this.commits.get(head)?.tree ?? null;
     try {
       updateLoopState(this.home, this.run, (cur) => withLoop(recordReview(cur!, r.ticket, { head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve', input: { findings: findings as never, fixed: step.do === 'approve' ? open : [] }, callerId: r.ws, callerVouched: true, tree, now: this.iso() }), cur!.loop));
-      this.ev('review-record', r.ticket, { ws: r.ws, head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve' });
+      this.ev('review-record', r.ticket, { ws: r.ws, head, tree, verdict: step.do === 'changes' ? 'changes-requested' : 'approve' });
       this.post('worker_done', r.ws, r.ticket, `recorded ${step.do} on ${head}`);
     } catch (e) { this.ev('review-error', r.ticket, { error: e instanceof Error ? e.message : String(e) }); }
   }
@@ -365,7 +374,7 @@ export class DummyWorld {
     this.branches.set(this.target, c);
     p.state = 'merged';
     p.mergedHead = head;
-    this.ev('merge', p.ticket, { n, head, ci, commit: c });
+    this.ev('merge', p.ticket, { n, head, tree: this.commits.get(head)?.tree, ci, commit: c });
     return { ok: true };
   }
   dump(): void {
