@@ -420,7 +420,8 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
   d.world.dump();
   const s = readLoopState(i.home, run);
   const startAt: Record<string, number | null> = {};
-  for (const t of i.scenario.repo.tickets) startAt[t.id] = s?.tickets[t.id]?.start?.at ? Date.parse(s.tickets[t.id].start!.at) : null;
+  // the FIRST launch of each ticket (a respawn overwrites the state's `start.at`, which would read as a start AFTER the first merge)
+  for (const t of i.scenario.repo.tickets) { const first = d.world.events.find((e) => e.ev === 'spawn' && e.ticket === t.id); startAt[t.id] = first ? Date.parse(d.world.iso(first.t)) : s?.tickets[t.id]?.start?.at ? Date.parse(s.tickets[t.id].start!.at) : null; }
   const violations = judgeRun({ events: d.world.events, deps: Object.fromEntries(i.scenario.repo.tickets.map((t) => [t.id, t.dependsOn])), tickets: i.scenario.repo.tickets.map((t) => t.id), startAt });
   return { result, violations, world: d.world, log };
 }

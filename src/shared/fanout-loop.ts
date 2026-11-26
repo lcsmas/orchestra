@@ -5,12 +5,13 @@ import type { FleetPort, ForgePort, GitPort } from './fanout-loop-ports.ts';
 import { readLoopState, updateLoopState, withLoop, type LoopState } from './fanout-loop-side.ts';
 import { applyPlan, type Plan } from './fanout-plan.ts';
 import { buildReport, collectCosts, reportExit, type Report } from './fanout-report.ts';
+import { LoopKilled } from './fanout-loop-kill.ts';
 import { stepCi as runCi, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
 import { runCorrections } from './fanout-loop-corrections.ts';
 import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
 import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, CHOICES_MAX, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
-import { recordedVerdictOf, reviewOn } from './fanout-record.ts';
+import { countsThrough, recordedVerdictOf, reviewOn } from './fanout-record.ts';
 
 export const LOOP_STEPS = ['reconcile', 'plan', 'start', 'mail', 'nominations', 'open', 'review', 'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const;
 export type LoopStep = (typeof LOOP_STEPS)[number];
@@ -65,7 +66,7 @@ export interface LoopResult { exit: 0 | 1 | 2 | 3 | 4; report: Report; passes: n
 
 export class LoopRefusal extends SeatRefusal {}
 /** A process death (a test's seam): never swallowed by `ctx.guard`. */
-export class LoopKilled extends Error {}
+export { LoopKilled };
 
 export interface Approval { head: string; at: string; round: number }
 export interface LoopCtx {
@@ -146,7 +147,7 @@ export async function stepCi(ctx: LoopCtx): Promise<void> {
 }
 /** #606 — findings in ONE batch to the same author, the same reviewer reads the fix, the same situation (open findings + tree) twice parks the ticket. */
 export async function stepCorrections(ctx: LoopCtx): Promise<void> {
-  const out = await runCorrections({ deps: ctx.deps });
+  const out = await runCorrections({ deps: ctx.deps, guard: ctx.guard });
   for (const o of out) {
     if (o.action === 'sent') ctx.did(`${o.ticket}: round ${o.round} sent to ${o.to} (${o.findings.join(', ')})`);
     else if (o.action === 'parked') ctx.did(`parked ${o.ticket}: ${o.why} (${o.findings.join(', ')})`);
@@ -500,6 +501,8 @@ function stuckWhy(s: LoopState, id: string): string {
   if (!t.implementer) return 'has no implementer';
   if (!t.head) return 'has no candidate (no head recorded)';
   if (!t.pr) return 'is not nominated (no PR)';
+  const lastRev = (t.reviews ?? [])[(t.reviews ?? []).length - 1];
+  if (lastRev?.verdict === 'changes-requested') return `has changes requested by its reviewer (open: ${countsThrough(t, lastRev.n).open.join(', ') || 'none recorded'}) and no fix yet`;
   if (!reviewOn(t, t.head, t.tree)) return 'has no recorded review on its head';
   const open = t.dependsOn.filter((u) => !isMerged(s, u));
   return open.length ? `waits for ${open.join(', ')}` : 'is approved but not mergeable (CI or the forge)';

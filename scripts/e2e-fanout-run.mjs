@@ -76,7 +76,7 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-run-mut-'));
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
-const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts'].map((f) => path.join(scratch, f));
+const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts'].map((f) => path.join(scratch, f));
 function run() {
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout: 240_000, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
@@ -158,6 +158,16 @@ const mutants = [
   ['stack C connect (#608): reconcile adopts nothing (git does not overrule the state)', [[L, "  if (!readLoopState(deps.home, deps.run)) return;\n  // `readReality`", "  return;\n  // `readReality`"]]],
   ['stack C connect (#608, story 21): the report costs are not read from the fleet', [[L, "await collectCosts(s, (t) => deps.fleet.costOf(t))", "{}"]]],
   ['stack C connect (#606): stepCorrections does nothing', [[L, "const out = await runCorrections({ deps: ctx.deps });", "const out = [] as Awaited<ReturnType<typeof runCorrections>>;"]]],
+  ['connect fix (#606 MAJOR-1): a dead author with an unanswered batch is never replaced', [['src/shared/fanout-loop-corrections.ts', "      if (!author || !deps.fleet.live(author)) {\n        const a2", "      if (false as boolean) {\n        const a2"]]],
+  ['connect fix (#606 MAJOR-2): the corrections step is not guarded (one port error ends the run)', [[L, "runCorrections({ deps: ctx.deps, guard: ctx.guard })", "runCorrections({ deps: ctx.deps })"]]],
+  ['connect fix (#606 m1): the stall reason of a ticket waiting for corrections says "approved"', [[L, "if (lastRev?.verdict === 'changes-requested') return", "if (false as boolean) return"]]],
+  ['connect fix (#606 m2): a kill at the batch wake is swallowed as a failed wake', [['src/shared/fanout-loop-corrections.ts', "if (e instanceof LoopKilled) throw e; deps.log(", "deps.log("]]],
+  ['connect fix (#608 m1-A): reconcile does not re-throw a kill that its reads swallowed', [[L, "  if (killed) throw killed;", ""]]],
+  ['connect fix (#608 m1-B): reconcile\'s port trap does not see the kill', [[L, "if (e instanceof LoopKilled) killed = e; throw e;", "throw e;"]]],
+  ['connect fix (#608 m2): a finished run with nothing merged exits 0', [[L, "exit: exit === 0 ? reportExit(report) === 1 ? 1 : 0 : exit,", "exit,"]]],
+  ['connect fix (#608 m2): the end step does not park behind a dropped upstream', [[L, "  await runEnd({ now: deps.now,", "  void ({ now: deps.now,"]]],
+  ['connect fix (#607 c2): the environment mark skips a dependent whose red was carried', [['src/shared/fanout-loop-ci.ts', "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c) continue;", "        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);\n        if (!c || !shared.find(([n]) => n === cn)?.[1].some((h) => h.id === r.id)) continue;"]]],
+  ['connect fix (#607 c1): the pause break is only checked after reconcile (a ready ticket merges in the pausing pass)', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (step === 'reconcile') { const cur"]]],
 ];
 const control = run();
 console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);

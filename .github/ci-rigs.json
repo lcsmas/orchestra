@@ -2331,6 +2331,8 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs",
     "src/cli/fanout-run.test.ts",
+    "src/shared/fanout-loop-ci.test.ts",
+    "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
    "group": 1
@@ -2348,6 +2350,8 @@
     "!**/*.test.tsx",
     "!**/*.test.mjs",
     "src/cli/fanout-run.test.ts",
+    "src/shared/fanout-loop-ci.test.ts",
+    "src/shared/fanout-loop-corrections.test.ts",
     "src/shared/fanout-loop.test.ts"
    ],
    "group": 11

@@ -641,3 +641,20 @@ test('m2: a forge outage on every poll is reported as such in the refusal detail
   assert.equal(r.ok, false);
   if (!r.ok) assert.match(r.detail, /502 bad gateway/);
 });
+
+// ── stack C connect review (607 c2) ─────────────────────────────────────────────────────────────────────────────
+test('c2: a dependent whose red was only CARRIED at the pause is not reported flaky once the environment is fixed (the mark goes to every ticket red on the blamed check)', async () => {
+  const w = world({ tickets: [{ id: 'A', pr: 1, head: sha('a') }, { id: 'B', pr: 2, head: sha('b'), deps: ['A'] }, { id: 'C', pr: 3, head: sha('c') }] });
+  w.script[1] = [red('unit', { jobId: 'A1' })];
+  w.script[2] = [red('unit', { jobId: 'B1' })];
+  w.script[3] = [red('unit', { jobId: 'C1' })];
+  assert.equal((await w.pass()).paused, true, 'A and C: the environment (B is carried, not counted)');
+  w.state = resumeRun(w.state, T);
+  w.script[1] = [green('unit')];
+  w.script[3] = [green('unit')];
+  await w.pass(); // A merges? no: it is green and settled; B's red is no longer carried
+  w.script[2] = [green('unit')];
+  await w.pass();
+  assert.deepEqual(w.state.tickets.B.ci?.flaky ?? [], [], 'the environment fault is not a flaky test');
+  assert.equal(w.state.tickets.B.ci?.reruns, 0, 'its own re-run was never spent (an environment re-run does not count)');
+});

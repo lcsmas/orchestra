@@ -100,7 +100,7 @@ export function renderReport(r: Report): string {
   const L: string[] = [];
   const total = Object.values(r.costPerTicket).reduce((n, c) => n + (c?.tokens ?? 0), 0);
   L.push(`fanout run ${r.run}: ${r.merged.length} merged, ${r.parked.length} parked${r.dropped.length ? `, ${r.dropped.length} dropped` : ''}${r.unfinished.length ? `, ${r.unfinished.length} unfinished` : ''}${r.paused ? ' — PAUSED' : ''}`);
-  if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — run \`orchestra fanout run --run ${r.run}\` again to resume`);
+  if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — lift the pause with \`orchestra fanout state set --run ${r.run} --resume-run\`, then run \`orchestra fanout run --run ${r.run}\` again`);
   L.push(`merged: ${r.merged.length ? r.merged.join(', ') : '(none)'}`);
   if (r.parked.length) { L.push('parked:'); for (const p of r.parked) L.push(`  ${p.ticket}  [${p.cause}]  ${oneLine(p.reason)}`); }
   if (r.unfinished.length) L.push(`unfinished: ${r.unfinished.join(', ')}`);

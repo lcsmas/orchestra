@@ -2,6 +2,7 @@
 // a fresh author only when the author is dead, and the situation (open findings + candidate tree) seen twice parks the ticket. No counters, nothing in memory between passes: the state file is the memory.
 // Built on the FROZEN NAMES v1 of ledger #613 (LoopDeps / FleetPort / GitPort, #603's rounds + parkTicket): the narrow `CorrectionsDeps` below is a structural SUBSET of LoopDeps, so the real LoopCtx assigns to it.
 import { countsThrough } from './fanout-record.ts';
+import { LoopKilled } from './fanout-loop-kill.ts';
 import {
   applyTicketPatch, blockingMinors, parkTicket, readState, recordRound, sameContent, situationFingerprint, stateFile, switchesOf, updateState,
   type FanoutState, type FindingRecord, type ReviewEntry, type TicketState,
@@ -26,7 +27,8 @@ export interface CorrectionsDeps {
 }
 /** Where the state lives: the file under `home` by default; a test hands an in-memory one. */
 export interface CorrectionsStore { read(): FanoutState | null; update(fn: (s: FanoutState) => FanoutState): FanoutState }
-export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore }
+/** `ctx.guard` of the loop: one ticket's share of the step — a thrown PORT error is logged and retried next pass; a refusal or a kill still ends the pass. Absent = unguarded (the unit tests). */
+export interface CorrectionsCtx { deps: CorrectionsDeps; store?: CorrectionsStore; guard?: (label: string, fn: () => Promise<void>) => Promise<boolean> }
 
 export type CorrectionsOutcome =
   | { ticket: string; action: 'sent'; to: string; round: number; findings: string[]; noted: string[]; replaced: boolean }
@@ -78,12 +80,12 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
   const out: CorrectionsOutcome[] = [];
   const first = store.read();
   if (!first) return out;
-  for (const id of Object.keys(first.tickets)) {
+  const ticketPass = async (id: string): Promise<void> => {
     const state = store.read()!;
     const t = state.tickets[id] as TicketState | undefined;
-    if (!t || isDone(t) || !t.branch || !(t.reviews ?? []).length) continue;
+    if (!t || isDone(t) || !t.branch || !(t.reviews ?? []).length) return;
     const head = await deps.git.head(t.branch);
-    if (!head) continue;
+    if (!head) return;
     const tree = await deps.git.tree(head);
     const changing = changingReviews(state, id);
     const fpOf = (x: (typeof changing)[number]): string => situationFingerprint({ openFindings: x.fix, tree: x.r.tree ?? x.r.head });
@@ -113,7 +115,20 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
       cur = store.update(keep);
       out.push({ ticket: id, action: 'sent', to: a.to, round: a.round, findings: x.fix, noted: x.noted, replaced: a.replaced });
     }
-    if (stop) continue;
+    if (stop) return;
+    // (1b) a batch that is out, whose round is recorded, with the head unchanged and the author DEAD (out of context / gone): a fresh author gets the batch again, with the hand-over line
+    const lastRev = (store.read()!.tickets[id].reviews ?? []).slice(-1)[0];
+    const lastChanging = changing[changing.length - 1];
+    if (lastChanging && lastRev && lastRev.n === lastChanging.r.n && done(store.read()!, lastChanging) && sameContent(lastChanging.r.head, lastChanging.r.tree, head, tree)) {
+      const cur2 = store.read()!;
+      const author = cur2.tickets[id].implementer;
+      if (!author || !deps.fleet.live(author)) {
+        const a2 = await sendBatch(ctx, cur2, id, lastChanging, cur2.tickets[id].rounds?.length ?? 1);
+        if (a2.kind === 'blocked') out.push({ ticket: id, action: 'blocked', why: a2.why });
+        else out.push({ ticket: id, action: 'sent', to: a2.to, round: a2.round, findings: lastChanging.fix, noted: lastChanging.noted, replaced: a2.replaced });
+        return;
+      }
+    }
     // (2) the author pushed: the recorded reviewer reads the fix (host op: same live reviewer, a replacement only for a dead one, noop when already briefed on this head)
     const t2 = store.read()!.tickets[id] as TicketState;
     const last = changing[changing.length - 1];
@@ -122,9 +137,12 @@ export async function runCorrections(ctx: CorrectionsCtx): Promise<CorrectionsOu
     if (last && want && done(store.read()!, last) && !reviewed(head)) {
       const live = deps.fleet.live(want);
       const got = await deps.fleet.spawnReviewer(id, head); // a NEW sha (even with the same tree) is read: a finding raised on a head is only closed on a later one
-      if (live && got.id !== want) { deps.log(`corrections: ${id} — a second reviewer ${got.id} for the live ${want}: its verdict is not the one that read the findings`); out.push({ ticket: id, action: 'reviewer-changed', expected: want, got: got.id }); continue; }
+      if (live && got.id !== want) { deps.log(`corrections: ${id} — a second reviewer ${got.id} for the live ${want}: its verdict is not the one that read the findings`); out.push({ ticket: id, action: 'reviewer-changed', expected: want, got: got.id }); return; }
       out.push({ ticket: id, action: 'reviewer-woken', head, reviewer: got.id });
     }
+  };
+  for (const id of Object.keys(first.tickets)) {
+    if (ctx.guard) await ctx.guard(`${id} corrections`, () => ticketPass(id)); else await ticketPass(id);
   }
   return out;
 }
@@ -140,11 +158,11 @@ async function sendBatch(ctx: CorrectionsCtx, state: FanoutState, id: string, x:
     await deps.fleet.start(); // only a ticket with NO live implementer is (re)started there
     const again = store.read()!.tickets[id].implementer;
     if (!again || !deps.fleet.live(again)) { deps.log(`corrections: ${id} — no live author yet (${author ?? 'none recorded'}); the batch waits for the next pass`); return { kind: 'blocked', why: 'no-live-author' }; }
-    replaced = again !== author;
+    replaced = true; // the previous author was NOT live: whoever is live now is a fresh session, even under the same workspace id (the dummy reuses it)
     author = again;
   }
   const text = renderBatch(store.read()!, id, x, round, replaced);
-  try { await deps.fleet.wake(author, text); } catch (e) { deps.log(`corrections: ${id} — wake of ${author} failed (${(e as Error).message}); retried on the next pass`); return { kind: 'blocked', why: 'wake-failed' }; }
+  try { await deps.fleet.wake(author, text); } catch (e) { if (e instanceof LoopKilled) throw e; deps.log(`corrections: ${id} — wake of ${author} failed (${(e as Error).message}); retried on the next pass`); return { kind: 'blocked', why: 'wake-failed' }; }
   deps.log(`corrections: ${id} — one batch of ${x.fix.length} to ${author}${x.noted.length ? `; noted, not sent: ${x.noted.join(', ')}` : ''}`);
   return { kind: 'sent', to: author, replaced, round };
 }

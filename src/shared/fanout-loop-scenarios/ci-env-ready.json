@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "run": "ci-env-ready",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [],
+        "spec": "spec/T2.md"
+      },
+      {
+        "id": "T4",
+        "dependsOn": [],
+        "spec": "spec/T4.md"
+      }
+    ]
+  },
+  "ci": {
+    "T1": [
+      "red:build"
+    ],
+    "T2": [
+      "red:build"
+    ]
+  },
+  "agents": {
+    "T4": {
+      "implementer": [
+        {
+          "do": "code",
+          "afterMs": 30000
+        },
+        {
+          "do": "nominate",
+          "afterMs": 30000
+        }
+      ],
+      "reviewer": [
+        {
+          "do": "approve",
+          "afterMs": 330000
+        }
+      ]
+    }
+  }
+}

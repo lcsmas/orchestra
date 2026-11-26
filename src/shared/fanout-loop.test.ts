@@ -202,6 +202,7 @@ test('judge MUST-FAIL: each rule fires on a log that breaks it', () => {
   assert.ok(rules(base(), undefined, { A: 0, B: 99 }).includes('start-all-before-first-merge'));
   assert.ok(rules([...base().filter((e) => !(e.ev === 'code' && e.ticket === 'B')), { t: 40, ev: 'code', ticket: 'B' }]).includes('implementer-waited'));
   assert.ok(rules([...base(), { t: 1, ev: 'spawn', ticket: 'A' }]).includes('duplicate-agent'));
+  assert.ok(!rules([...base(), { t: 1, ev: 'impl-died', ticket: 'A' }, { t: 2, ev: 'spawn', ticket: 'A' }]).includes('duplicate-agent'), 'a replacement AFTER a death is not a duplicate');
   assert.ok(rules([...base(), { t: 1, ev: 'pr-open', ticket: 'A' }, { t: 2, ev: 'pr-open', ticket: 'A' }]).includes('duplicate-agent'));
   assert.ok(rules([{ t: 5, ev: 'connect-ask', ticket: 'B', up: 'A', head: H('a') }, ...base()]).includes('connected-before-approval'));
   assert.ok(rules([...base(), { t: 31, ev: 'connect-ask', ticket: 'B', up: 'A', head: H('a') }]).includes('connected-after-merge'));
@@ -683,4 +684,97 @@ test('#608 (composed): a ticket whose branch vanished is parked by the reconcile
   assert.deepEqual(again.report.parked.map((p) => [p.ticket, p.cause]), [['A', 'situation']]);
   assert.match(again.report.parked[0].reason, /is gone/);
   assert.equal(d.world.events.filter((e) => e.ev === 'spawn').length, spawns, 'no second agent');
+});
+
+// ── stack C connect fix round (reviews 606 / 608 / 607 of ledger #613) ─────────────────────────────────────────────
+test('606 MAJOR-1 (composed): the author dies AFTER its batch (round recorded, head unchanged) → a fresh author gets the batch again with the hand-over line → fix → the same reviewer approves → merged', async () => {
+  const r = await go('corrections-author-dies');
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(r.result.report.merged.sort(), ['T1', 'T2']);
+  const batches = r.world.events.filter((e) => e.ev === 'corrections-batch');
+  assert.equal(batches.length, 2, 'the batch again, to the new author');
+  assert.doesNotMatch(String(batches[0].text), /You replace the previous author/);
+  assert.match(String(batches[1].text), /You replace the previous author/);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 2);
+  assert.deepEqual(r.violations, []);
+});
+
+test('606 MAJOR-2 (composed): a transient port error inside the corrections step is retried next pass — it never ends the run', async () => {
+  let thrown = 0;
+  const r = await runDummyLoop({ home: tmp(), scenario: load('corrections-fix'), options: { stallMs: 30 * 60_000, maxPasses: 1500 }, wrap: (d) => ({ ...d, git: { ...d.git, async head(b: string) { if (thrown < 2 && /runCorrections/.test(new Error().stack ?? '')) { thrown++; throw new Error('ECONNRESET git'); } return d.git.head(b); } } }) });
+  assert.ok(thrown >= 1, 'the fault was injected');
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(r.result.report.merged.sort(), ['T1', 'T2']);
+});
+
+test('606 m1: the stall park reason of a ticket waiting for corrections names the open findings, not "approved"', async () => {
+  const r = await go('changes-requested');
+  const p = r.result.report.parked.find((x) => x.ticket === 'T1')!;
+  assert.match(p.reason, /changes requested by its reviewer \(open: F1\)/);
+  assert.doesNotMatch(p.reason, /approved but not mergeable/);
+});
+
+test('606 m2 (decision 12): killed between the wake of a batch and the write of its round, the restart sends the batch AGAIN (once) and the run finishes', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'corrections-fix', scenario: load('corrections-fix') });
+  let crashed = false;
+  const fleet = { ...d.fleet, async wake(ws: string, text: string) { await d.fleet.wake(ws, text); if (!crashed && /^Corrections for /.test(text)) { crashed = true; throw new LoopKilled('killed after the wake'); } } };
+  const deps = { home, run: 'corrections-fix', caller: 'corrections-fix', fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  await assert.rejects(runLoop(deps), /killed after the wake/);
+  const again = await runLoop(deps);
+  assert.equal(again.exit, 0);
+  assert.equal(d.world.events.filter((e) => e.ev === 'corrections-batch').length, 2, 'the first wake reached the author, the restart re-sent it (a crash resends, never loses)');
+});
+
+test('608 m1 (decision 12): killed INSIDE the reconcile step (its git read) the pass dies — reconcile\'s "unknown, never gone" swallow does not eat the kill — and the restart finishes with no second agent', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
+  let fresh = false, crashed = false;
+  const sleep = async (ms: number) => { fresh = true; await d.sleep(ms); };
+  const git = { ...d.git, async head(b: string) { if (fresh) { fresh = false; if (!crashed && d.world.events.some((e) => e.ev === 'spawn')) { crashed = true; throw new LoopKilled('killed in reconcile'); } } return d.git.head(b); } };
+  const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge: d.forge, git, now: d.now, sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  await assert.rejects(runLoop(deps), /killed in reconcile/);
+  const again = await runLoop(deps);
+  assert.equal(again.exit, 0);
+  assert.equal(d.world.events.filter((e) => e.ev === 'spawn').length, 7, 'no second agent for any ticket');
+});
+
+test('608 m2 (decision 11, composed): a run where nothing merged and nothing is parked (every ticket dropped by the human) ends exit 1, not 0', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'readiness', scenario: load('readiness') });
+  updateLoopState(home, 'readiness', () => {
+    let st = applyPlan(newState('readiness', { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now());
+    for (const id of ['A', 'B']) st = applyTicketPatch(st, id, { status: 'dropped' }, d.now());
+    return withLoop(st);
+  });
+  const r = await runLoop({ home, run: 'readiness', caller: 'readiness', fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } });
+  assert.deepEqual(r.report.merged, []);
+  assert.deepEqual(r.report.parked, []);
+  assert.equal(r.exit, 1);
+});
+
+test('608 m2 (decision 11, composed): a ticket behind a DROPPED upstream is parked at once with that reason (the end step), not after a 30-minute stall', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'red-ci', scenario: { ...load('red-ci'), ci: {}, agents: {} } });
+  updateLoopState(home, 'red-ci', () => {
+    let st = applyPlan(newState('red-ci', { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now());
+    st = applyTicketPatch(st, 'T1', { status: 'dropped' }, d.now());
+    return withLoop(st);
+  });
+  const r = await runLoop({ home, run: 'red-ci', caller: 'red-ci', fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } });
+  const t3 = r.report.parked.find((p) => p.ticket === 'T3');
+  assert.ok(t3, JSON.stringify(r.report.parked));
+  assert.match(t3!.reason, /blocked by T1 \(dropped, never merged\)/);
+  assert.deepEqual(r.report.merged, ['T2']);
+  assert.equal(r.exit, 3);
+});
+
+test('607 c1 (decision 8, composed): a READY ticket (approved, green) in the very pass that pauses the run is NOT merged — nothing merges while the run is paused', async () => {
+  const r = await go('ci-env-ready');
+  assert.equal(r.result.exit, 4);
+  assert.equal(r.result.report.paused?.check, 'build');
+  const approved = r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T4' && e.verdict === 'approve');
+  assert.equal(approved.length, 1, 'T4 was approved (its CI is green) before the pause');
+  assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0, 'yet nothing merged');
+  assert.equal(r.result.report.merged.length, 0);
 });

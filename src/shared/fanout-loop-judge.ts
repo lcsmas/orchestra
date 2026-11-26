@@ -35,7 +35,8 @@ export function judgeRun(i: JudgeInput): Violation[] {
   // decision 12 — never a second agent / PR for a ticket
   for (const tk of i.tickets) {
     const spawns = i.events.filter((e) => e.ev === 'spawn' && e.ticket === tk).length;
-    if (spawns > 1) v('duplicate-agent', `${tk}: ${spawns} implementers were started`, tk);
+    const died = i.events.filter((e) => e.ev === 'impl-died' && e.ticket === tk).length; // a DEAD implementer is replaced (decision 12 forbids a second agent beside a live one, not after a death)
+    if (spawns > 1 + died) v('duplicate-agent', `${tk}: ${spawns} implementers were started (${died} died)`, tk);
     const prs = i.events.filter((e) => e.ev === 'pr-open' && e.ticket === tk).length;
     if (prs > 1) v('duplicate-agent', `${tk}: ${prs} pull requests were opened`, tk);
   }

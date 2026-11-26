@@ -133,9 +133,11 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
     const reason = `check "${name}" is red on ${prs.map((n) => `#${n}`).join(', ')}${shared.length > 1 ? ` (also: ${shared.slice(1).map(([n]) => `"${n}"`).join(', ')})` : ''} — the environment, not a ticket; no author was told`;
     state = ctx.update((s) => {
       let n = pauseRun(s, { reason, check: name, prs }, deps.now());
-      for (const [cn, v] of shared) for (const h of v) {
-        const job = rows.find((x) => x.id === h.id)?.checks.find((c) => c.name === cn)?.jobId ?? null;
-        n = withCi(n, h.id, (x) => ({ ...x, env: [...x.env.filter((e) => e.name !== cn), { name: cn, job, reran: false }] }), deps.now());
+      // the mark goes to EVERY ticket red on a blamed check — a dependent whose red is only carried too (it never counted toward the pause): whatever turns green later is the environment, not a flaky test
+      for (const [cn] of shared) for (const r of rows) {
+        const c = r.checks.find((x) => x.status === 'red' && x.name === cn);
+        if (!c) continue;
+        n = withCi(n, r.id, (x) => ({ ...x, env: [...x.env.filter((e) => e.name !== cn), { name: cn, job: c.jobId ?? null, reran: false }] }), deps.now());
       }
       return n;
     });

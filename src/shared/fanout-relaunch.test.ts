@@ -319,7 +319,7 @@ test('stepEnd: a paused run is done with exit 4 even with tickets in flight (res
   assert.equal(e.exit, 4);
   assert.deepEqual(e.report!.paused, pause);
   assert.deepEqual(e.report!.unfinished, ['A']);
-  assert.match(renderReport(e.report!), /PAUSED .*build.*#1, #2, #3.*run again|run `orchestra fanout run --run run1` again/s);
+  assert.match(renderReport(e.report!), /PAUSED .*build.*#1, #2, #3.*orchestra fanout state set --run run1 --resume-run/s); // m3 (stack C review): the line names the verb that lifts the pause — re-running alone exits 4 at once
 });
 
 test('stepEnd: a ticket behind a DROPPED upstream is parked, so the run ends instead of waiting for a merge that cannot come', async () => {
