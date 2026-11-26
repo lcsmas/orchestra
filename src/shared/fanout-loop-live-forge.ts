@@ -30,16 +30,16 @@ export interface LiveForgeDeps {
 type Row = RollupItem & { completedAt?: string; startedAt?: string };
 const PR_STATES: Record<string, 'open' | 'merged' | 'closed'> = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
 
-export class GhError extends FanoutStateError {}
+export class ForgeGhError extends FanoutStateError {}
 
 export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-check runs a re-run would touch (rig/diagnostics) */ failedRuns(n: number, names: string[]): Promise<string[]> } {
   const repoArgs = deps.repo ? ['--repo', deps.repo] : [];
   const gh = async (args: string[]): Promise<string> => {
     const r = await deps.gh(args);
-    if (r.code !== 0) throw new GhError(`gh ${args.slice(0, 2).join(' ')} failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+    if (r.code !== 0) throw new ForgeGhError(`gh ${args.slice(0, 2).join(' ')} failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
     return r.stdout;
   };
-  const json = async <T>(args: string[]): Promise<T> => { const o = await gh(args); try { return JSON.parse(o) as T; } catch { throw new GhError(`gh ${args.slice(0, 2).join(' ')}: not JSON: ${o.slice(0, 120)}`); } };
+  const json = async <T>(args: string[]): Promise<T> => { const o = await gh(args); try { return JSON.parse(o) as T; } catch { throw new ForgeGhError(`gh ${args.slice(0, 2).join(' ')}: not JSON: ${o.slice(0, 120)}`); } };
   const extractChars = deps.extractChars ?? 2000;
 
   const view = (n: number): Promise<{ state: string; headRefOid: string; statusCheckRollup?: Row[] }> => json(['pr', 'view', String(n), '--json', 'state,headRefOid,statusCheckRollup', ...repoArgs]);
@@ -77,7 +77,7 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     const count = (jobs: JobRow[]): number | null => { const mine = jobs.filter((x) => String(x.databaseId) === j.job); return mine.length ? mine.reduce((a2, x) => a2 + (x.steps ?? []).filter((st) => (st.conclusion ?? '').toLowerCase() === 'success' && isUserStep(st.name)).length, 0) : null; };
     let n = count(await jobsOf(j.run));
     if (!n) n = count(await jobsOf(j.run, true)); // unknown job (a re-run made it) or 0 steps (the cached list was read while it was still running): read again once
-    if (n === null) throw new GhError(`gh run view ${j.run}: job ${j.job} not found`); // fail closed: never "no steps to worry about"
+    if (n === null) throw new ForgeGhError(`gh run view ${j.run}: job ${j.job} not found`); // fail closed: never "no steps to worry about"
     return n;
   }
 
@@ -111,17 +111,17 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
       if (r.code !== 0) {
         const again = pick(await list()); // lost a race with a second opener: adopt its PR, never open two
         if (again !== null) return { n: again };
-        throw new GhError(`gh pr create failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
+        throw new ForgeGhError(`gh pr create failed (exit ${r.code}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`);
       }
       const m = /\/pull\/(\d+)\s*$/.exec(r.stdout.trim());
-      if (!m) throw new GhError(`gh pr create: no pull request number in ${JSON.stringify(r.stdout.trim().slice(0, 120))}`);
+      if (!m) throw new ForgeGhError(`gh pr create: no pull request number in ${JSON.stringify(r.stdout.trim().slice(0, 120))}`);
       return { n: Number(m[1]) };
     },
 
     async prState(n) {
       const v = await json<{ state: string; headRefOid: string }>(['pr', 'view', String(n), '--json', 'state,headRefOid', ...repoArgs]);
       const state = PR_STATES[v.state];
-      if (!state) throw new GhError(`gh pr view ${n}: unknown state ${JSON.stringify(v.state)}`);
+      if (!state) throw new ForgeGhError(`gh pr view ${n}: unknown state ${JSON.stringify(v.state)}`);
       return { state, head: v.headRefOid };
     },
 
@@ -139,14 +139,14 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
 
     async rerun(n, names) {
       const runs = await failedRuns(n, names);
-      if (!runs.length) throw new GhError(`no re-runnable Actions job behind ${names.join(', ') || '(no check)'} on #${n} (an external status has no run to re-run)`);
+      if (!runs.length) throw new ForgeGhError(`no re-runnable Actions job behind ${names.join(', ') || '(no check)'} on #${n} (an external status has no run to re-run)`);
       // GitHub re-runs a run only once it is COMPLETED: the red job's siblings may still be going — wait for them (bounded), never re-run into a refusal that would end the loop
       const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
       for (let waited = 0; ; waited += 15_000) {
         const v = await view(n);
         const inRed = (r: Row): boolean => { const j = parseActionsJobUrl(r.detailsUrl ?? r.targetUrl); return !!j && runs.includes(j.run); }; // only the red run's own jobs: a required external status stuck EXPECTED is not a sibling
         if (!(v.statusCheckRollup ?? []).some((r) => inRed(r) && statusOf(r) === 'pending')) break;
-        if (waited >= (deps.rerunWaitMs ?? 20 * 60_000)) throw new GhError(`#${n}: the Actions run is still in progress after ${Math.round(waited / 60_000)} min — it cannot be re-run yet`);
+        if (waited >= (deps.rerunWaitMs ?? 20 * 60_000)) throw new ForgeGhError(`#${n}: the Actions run is still in progress after ${Math.round(waited / 60_000)} min — it cannot be re-run yet`);
         await sleep(15_000);
       }
       for (const run of runs) await gh(['run', 'rerun', run, '--failed', ...repoArgs]); // the red jobs only
@@ -154,7 +154,7 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
 
     async merge(n, matchHead, method) {
       if (deps.deliver) return deps.deliver({ n, head: matchHead, method });
-      if (!deps.bareMerge) throw new GhError('the live forge has no `deliver` wired: a merge is never done around it (rigs pass bareMerge: true)');
+      if (!deps.bareMerge) throw new ForgeGhError('the live forge has no `deliver` wired: a merge is never done around it (rigs pass bareMerge: true)');
       const r = await deps.gh(['pr', 'merge', String(n), `--${method}`, '--match-head-commit', matchHead, ...repoArgs]);
       if (r.code === 0) return { ok: true };
       return { ok: false, reason: classifyMergeFailure(r.stderr) === 'head-moved' ? 'head-moved' : 'gh-failed', detail: r.stderr.trim().slice(0, 300) };
