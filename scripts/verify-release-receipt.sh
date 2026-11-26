@@ -65,7 +65,9 @@ if _rg_why="$(rg_receipt_check)"; then
     echo "release-gate: SKIPPED
 X
   mutate bypass_ignored   release.sh <<'X'
-elif [ "$SKIP_GATE" = 1 ]; then|||elif false; then
+elif [ "$SKIP_GATE" = 1 ]; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite|||elif false; then
+  printf 'release-gate: BYPASSED (--skip-release-gate) — tsc, the full suite
 X
   bad=0
   for n in $(ls "$M"); do
@@ -87,6 +89,18 @@ cat > "$SB/bin/gh" <<'GH'
 #!/bin/sh
 case "$1 $2" in
   "auth status"|"release list") exit 0 ;;
+  "run list")
+    # #595: the full-rig-run check. Asserts the exact selection flags, logs the call, answers per RG_FX_CI (default: a green dispatch run on this HEAD's tree).
+    echo "$*" >> "$RG_FX_LOG.ci.args"
+    case "$*" in *"--workflow ci.yml"*"--event workflow_dispatch"*"--status success"*) ;; *) echo "rig gh stub: run list without --workflow ci.yml --event workflow_dispatch --status success: $*" >&2; exit 9 ;; esac
+    case "${RG_FX_CI:-green}" in
+      fail) exit 1 ;;
+      empty) echo '[]' ;;
+      garbage) echo 'not json' ;;
+      other) printf '[{"headSha":"%s","url":"https://example.invalid/run/other"}]\n' "$(git rev-parse HEAD~1)" ;;
+      green) printf '[{"headSha":"%s","url":"https://example.invalid/run/1"}]\n' "$(git rev-parse HEAD)" ;;
+    esac
+    exit 0 ;;
   "release create") echo gh-release >> "$RG_FX_LOG"; : > "$RG_FX_LOG.notes"
     prev=""; for a in "$@"; do case "$prev" in --notes-file|-F) cat "$a" >> "$RG_FX_LOG.notes" ;; esac; prev="$a"; done; exit 0 ;;
 esac

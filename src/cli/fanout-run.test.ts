@@ -65,3 +65,8 @@ test('a run that already has a state is refused (the dummy world is rebuilt from
   assert.equal(r.code, 2);
   assert.match(r.stderr, /\[run-dummy-state-exists\]/);
 });
+
+test('608 m3: the help says what lifts a pause — `state set --run <id> --resume-run` — not just "run again" (a re-run of a paused run exits 4 at once)', () => {
+  assert.match(RUN_USAGE, /orchestra fanout state set --run <id> --resume-run/);
+  assert.doesNotMatch(RUN_USAGE, /paused \(resumable: run again\)/);
+});

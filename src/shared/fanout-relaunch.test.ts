@@ -166,7 +166,7 @@ test('a PARKED ticket whose branch is trivially "contained" in the target is NOT
   w.merged.add('b1');
   const parked = parkShim(stateOf({ A: gated(1, 'a', { status: 'started' }) }), 'A', { cause: 'question', reason: 'NO SAFE OPTION: x' }, T0);
   const reality = { A: { branchHead: sha('a'), branchTree: sha('a'), mergedIntoTarget: true, pr: { state: 'OPEN' as const, headRefOid: sha('a'), baseRefName: 'master' } } };
-  assert.ok(reconcile(parked, reality).writeBack.some((x) => x.patch.status === 'merged'), 'the unfixed rule WOULD adopt it');
+  assert.ok(!reconcile(parked, reality).writeBack.some((x) => x.patch.status === 'merged'), 'since #603 (realityMerged takes the status) reconcile itself does not adopt a parked ticket by ancestry; writeBackFor below stays as the guard of the covered-merge case');
   assert.deepEqual(writeBackFor(parked, reality, reconcile(parked, reality).writeBack), []);
   const out = await stepReconcile(rctx(w, memPort(parked)));
   assert.deepEqual(out.adopted, []);
@@ -319,7 +319,7 @@ test('stepEnd: a paused run is done with exit 4 even with tickets in flight (res
   assert.equal(e.exit, 4);
   assert.deepEqual(e.report!.paused, pause);
   assert.deepEqual(e.report!.unfinished, ['A']);
-  assert.match(renderReport(e.report!), /PAUSED .*build.*#1, #2, #3.*run again|run `orchestra fanout run --run run1` again/s);
+  assert.match(renderReport(e.report!), /PAUSED .*build.*#1, #2, #3.*orchestra fanout state set --run run1 --resume-run/s); // m3 (stack C review): the line names the verb that lifts the pause — re-running alone exits 4 at once
 });
 
 test('stepEnd: a ticket behind a DROPPED upstream is parked, so the run ends instead of waiting for a merge that cannot come', async () => {

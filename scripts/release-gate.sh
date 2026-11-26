@@ -9,6 +9,7 @@
 # #484 RECEIPT: a full PASS writes `<git-common-dir>/release-gate-receipts/<tree>` (the gated tree with package.json's `version` line masked + the
 # gate version); release.sh skips the gate when HEAD's masked tree has a receipt of this gate version (rg_receipt_check). Standalone: `bash scripts/release-gate.sh`.
 # Rig: verify-release-receipt.sh.
+# #595: rg_full_ci_check — the tag's tree also needs a green FULL rig run (a `workflow_dispatch` run of ci.yml on a commit with the same tree); release.sh refuses without it. Rig: verify-release-gate.sh `ci_*` arms.
 
 # Bump this when the gate's checks change meaning: every receipt of another version stops counting (#484).
 RG_GATE_VERSION=1
@@ -241,6 +242,29 @@ rg_run_gate() {
   rm -rf "$dir"
   rg_receipt_write "$head0" "tsc clean; $detail"
   echo "release-gate: PASS — tsc clean; $detail; tree $(git rev-parse --short=12 "$head0^{tree}")"
+}
+
+# #595 FULL RIG RUN: a pull request runs only the rigs its files select, so the tag's tree needs one green run of EVERY rig. `ci.yml` has a `workflow_dispatch` trigger = the full run (no path
+# selection); the tag's tree must equal (package.json's version line masked, as the #484 receipt) the tree of a commit with a green dispatch run. A pull_request run never counts (path-selected).
+# Prints the proof on stdout and returns 0, or prints the REFUSED line on stderr and returns 1 (fails closed: an unreadable list is a refusal). RG_GH overrides `gh` (rig).
+rg_full_ci_check() {
+  local gh="${RG_GH:-gh}" want rows sha url norm n=0 lines
+  want="$(rg_norm_tree HEAD)" || { _rg_refuse full-ci "cannot resolve HEAD's tree"; return 1; }
+  if ! rows="$("$gh" run list --workflow ci.yml --event workflow_dispatch --status success --limit 40 --json headSha,url 2>/dev/null)"; then
+    _rg_refuse full-ci "'gh run list --workflow ci.yml --event workflow_dispatch' failed, so a green full rig run cannot be proven (fails closed). Check 'gh auth status'."; return 1
+  fi
+  lines="$(printf '%s' "$rows" | node -e 'let t="";process.stdin.on("data",d=>t+=d).on("end",()=>{try{for(const r of JSON.parse(t))if(r&&/^[0-9a-f]{7,40}$/.test(r.headSha||""))console.log(r.headSha+"\t"+(r.url||""))}catch{process.exit(1)}})')" \
+    || { _rg_refuse full-ci "'gh run list' printed something that is not the expected JSON (fails closed)"; return 1; }
+  while IFS=$'\t' read -r sha url; do
+    [ -n "$sha" ] || continue; n=$((n + 1))
+    git cat-file -e "$sha^{commit}" 2>/dev/null || git fetch -q origin "$sha" 2>/dev/null || continue
+    norm="$(rg_norm_tree "$sha")" || continue
+    if [ "$norm" = "$want" ]; then
+      echo "full rig run PASS: $url (ci.yml workflow_dispatch on ${sha:0:8}, tree ${want:0:12}, package.json version line masked)"; return 0
+    fi
+  done <<<"$lines"
+  _rg_refuse full-ci "no green workflow_dispatch run of ci.yml (every rig, no path selection) on a commit with this tree (${want:0:12}; $n recent green dispatch run(s) checked). A pull-request run is path-selected and never counts. Run it, wait for green, then release again: gh workflow run ci.yml --ref <branch-or-master> ; gh run watch — or --skip-release-gate \"<reason>\" (recorded in the release notes)."
+  return 1
 }
 
 # After the suite (node ABI 127) and before the packaged build (Electron ABI 130).

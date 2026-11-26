@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "run": "corrections-author-dies",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [],
+        "spec": "spec/T2.md"
+      }
+    ]
+  },
+  "agents": {
+    "T1": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        },
+        {
+          "do": "die",
+          "afterMs": 1500000
+        }
+      ],
+      "respawn": [
+        {
+          "do": "fix",
+          "afterMs": 120000
+        }
+      ],
+      "reviewer": [
+        {
+          "do": "changes",
+          "findings": [
+            "F1"
+          ],
+          "afterMs": 1000
+        },
+        {
+          "do": "approve"
+        }
+      ]
+    }
+  }
+}

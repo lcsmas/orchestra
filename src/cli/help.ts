@@ -114,6 +114,7 @@ with "--" after a "--" separator; --body-file <path> (- = stdin) reads a long bo
     group: 'Workspaces',
     summary: 'Spawn a new worktree + agent',
     detail: `usage: orchestra spawn --name <name> --task <text> [--repo <path>] [--base <branch>] [--model <model>] [--effort <level>] [--profile <id|name>] [--account <id|label|default>] [--detached]
+       orchestra spawn --no-agent --name ops-<object> --run-command "<cmd>" [--repo <path>] [--base <branch>] [--detached]
 
 Spawn a new worktree + agent, nested under the caller by default.
   --name <name>     the child's name (required): ${NAME_CONVENTION}.
@@ -137,7 +138,17 @@ Spawn a new worktree + agent, nested under the caller by default.
   --account <id|label|default>
                     the child's Claude account ('orchestra accounts' lists them); omitted = YOUR
                     account (not the default login), else the repo's. 'default' = the default login.
-  --detached        top-level, not nested under the caller`,
+  --detached        top-level, not nested under the caller
+  --no-agent        (#612) NO agent session, ever: the host starts --run-command DETACHED (it survives the
+                    app's quit; the host vouches for it again at the next start) and the command owns a
+                    fan-out run as its coordinator — 'orchestra fanout …' verbs it runs are vouched by
+                    '/identity'. No --task/--model/--effort/--profile/--account (nothing reads them).
+                    Mail to it is read by the command ('orchestra check'), never wakes an agent.
+                    Refused ([noagent-no-display]) when the host has no display: Orchestra cannot run
+                    without one — use a virtual display (xvfb-run, headless sway).
+  --run-command <cmd>  the shell command of a --no-agent workspace (required with it). Run as /bin/sh -c with the
+                    orchestra bin dir first on PATH and the app's own PATH after it — NO login shell, so
+                    nvm / pnpm / user shims are absent unless the command names them by absolute path.`,
   },
   {
     name: 'rename',

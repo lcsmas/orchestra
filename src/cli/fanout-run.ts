@@ -1,10 +1,10 @@
 // #605 (spec #601, ledger #613) — `orchestra fanout run`: the Boucle. Leads a vague from its plan to its closing report (src/shared/fanout-loop.ts); `--scenario` swaps in the dummy fleet (src/shared/fanout-loop-dummy.ts).
-// Exit codes (FROZEN): 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (resumable: run again) · 2 refusal ([run-…]) · 1 could not run.
+// Exit codes (FROZEN): 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (lift it with `orchestra fanout state set --run <id> --resume-run`, then run again) · 2 refusal ([run-…]) · 1 could not run.
 import fs from 'node:fs';
 import { FanoutStateError, SeatRefusal, assertRunId, stateFile, readState } from '../shared/fanout-state.ts';
 import type { LoopOptions } from '../shared/fanout-loop.ts';
 import { parseScenario, runDummyLoop } from '../shared/fanout-loop-dummy.ts';
-import type { Plan } from '../shared/fanout-loop-compat.ts';
+import type { Plan } from '../shared/fanout-plan.ts';
 import { homeOf, parseArgs, type FanoutDeps, type RunResult } from './fanout-state.ts';
 import type { Host } from '../shared/fanout-loop-live-fleet.ts';
 import { runLive } from './fanout-run-live.ts';
@@ -15,12 +15,12 @@ export const RUN_USAGE = `usage: orchestra fanout run [--run <id>] [--tickets a,
   seatRecords=on, verifier=off, minorPolicy=demonstrated (the loop's default; \`state init\` is done for its own run when none exists). The loop never types a verdict and never waits for a person: a parked ticket parks its dependents.
   An agent's question gets the fixed answer ("take the reversible option, record it under ## Choices in your PR body, continue") and is listed in the report; a first line "NO SAFE OPTION: <reason>" parks the ticket.
   Prints the closing report as JSON on stdout (merged, parked {ticket,cause,reason}, choices, findingsLeft, flaky, costPerTicket, paused) and a text summary on stderr.
-  Exit: 0 every ticket merged · 3 the run ended with at least one parked ticket · 4 paused (resumable: run again) · 2 refusal ([run-…]) · 1 could not run.
+  Exit: 0 every ticket merged · 3 the run ended with at least one parked ticket · 4 paused (lift it with \`orchestra fanout state set --run <id> --resume-run\`, then run again) · 2 refusal ([run-…]) · 1 could not run.
   --scenario <file> runs the DUMMY fleet (scripted agents, git, PR host and CI on a virtual clock) and judges its event log; refused unless ORCHESTRA_FANOUT_DUMMY=1 ([run-scenario-gated]).
   Without --scenario it runs on the LIVE ports as the run's coordinator (a no-agent workspace, #612: \`orchestra spawn --no-agent --run-command "orchestra fanout run …"\`): fleet = the shipped verbs (fanout start|review, check, ack, send) + the host,
   forge = gh (the merge goes through the shipped \`fanout deliver\`, so its refusals are the loop's), git = git. Refused [run-caller] unless the host vouches the caller as the run's coordinator.`;
 
-const reportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
+const runReportText = (r: { merged: string[]; parked: Array<{ ticket: string; cause: string; reason: string }>; choices: unknown[] }): string =>
   `merged ${r.merged.length}${r.merged.length ? ` (${r.merged.join(', ')})` : ''} · parked ${r.parked.length}${r.parked.map((p) => ` ${p.ticket} [${p.cause}] ${p.reason}`).join(';')} · choices ${r.choices.length}\n`;
 
 export async function runFanoutRun(args: string[], deps: FanoutDeps, host?: Host): Promise<RunResult> {
@@ -57,7 +57,7 @@ export async function runFanoutRun(args: string[], deps: FanoutDeps, host?: Host
     const d = await runDummyLoop({ home, run, scenario, options });
     const { result } = d;
     const out = { exit: result.exit, passes: result.passes, ...(result.reason ? { reason: result.reason } : {}), report: result.report, dummy: { run, events: d.world.events.length, violations: d.violations } };
-    return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: `${d.log.join('\n')}\n${reportText(result.report)}${d.violations.length ? `JUDGE: ${d.violations.length} violation(s): ${d.violations.map((v) => v.rule).join(', ')}\n` : 'JUDGE: clean\n'}` };
+    return { code: result.exit, stdout: `${JSON.stringify(out)}\n`, stderr: `${d.log.join('\n')}\n${runReportText(result.report)}${d.violations.length ? `JUDGE: ${d.violations.length} violation(s): ${d.violations.map((v) => v.rule).join(', ')}\n` : 'JUDGE: clean\n'}` };
   } catch (e) {
     if (e instanceof SeatRefusal) return { code: 2, stdout: '', stderr: `${e.message}\n` };
     if (e instanceof FanoutStateError) return { code: 1, stdout: '', stderr: `${e.message}\n` };

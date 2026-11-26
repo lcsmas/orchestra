@@ -1,7 +1,7 @@
 // #553 — the close-out: one ready-to-file ticket text per MEASURED, non-process MINOR recorded on a vague's tickets. Pure and read-only (the CLI is src/cli/fanout-closeout.ts).
 // Never lost: a measured MINOR on product code without a spec sentence has no follow-up (ledger #555 D3) — this list is its route. argued MINORs and `kind: process` findings create nothing.
 import crypto from 'node:crypto';
-import { REPORT_PARTS, demonstratedFindings, refusedDemonstrations, type DemonstratedEnd, type FanoutState, type FindingRecord, type FindingReport } from './fanout-state.ts';
+import { REPORT_PARTS, parkedTickets, pausedOf, demonstratedFindings, refusedDemonstrations, type ChoiceRecord, type DemonstratedEnd, type FanoutState, type FindingRecord, type FindingReport, type ParkRecord, type PauseRecord } from './fanout-state.ts';
 
 /** Why a finding produces no ticket text. `settled-fixed` = already fixed (a follow-up landed it): filing it would duplicate a closed defect. */
 export type CloseoutSkip = 'not-minor' | 'argued' | 'no-evidence' | 'process' | 'settled-fixed';
@@ -129,4 +129,22 @@ export function decidedCloseout(state: FanoutState): DecidedFinding[] {
 export function renderDecidedCloseout(d: DecidedFinding[]): string {
   const head = `decided NOT fixed (#589): ${d.length} finding(s) the coordinator closed with a written reason${d.length ? ' — each is a merge the reviewer did not clear' : ''}`;
   return [head, ...d.map((x) => `  ${x.ticket}/${x.finding}  ${x.severity}${x.raisedOn ? ` @${x.raisedOn.slice(0, 8)}` : ''}  decided by ${x.by} at ${x.at}: ${oneLine(x.text, 300)}`)].join('\n') + '\n';
+}
+
+// ── #603 — what the loop set aside, what the agents chose, why the run stopped: printed by `state show` and `fanout closeout`; '' when there is nothing (every other output stays byte-identical). ──
+export interface HoldCloseout { parked: Array<{ ticket: string } & ParkRecord>; situations: Array<{ ticket: string; rounds: number; repeated: boolean }>; choices: ChoiceRecord[]; pause: PauseRecord | null }
+export function holdCloseout(state: FanoutState): HoldCloseout {
+  const situations = Object.entries(state.tickets).filter(([, t]) => (t.rounds ?? []).length).map(([ticket, t]) => ({ ticket, rounds: t.rounds!.length, repeated: new Set(t.rounds!.map((r) => r.fingerprint)).size < t.rounds!.length }));
+  return { parked: parkedTickets(state), situations, choices: state.choices ?? [], pause: pausedOf(state) };
+}
+export const holdEmpty = (h: HoldCloseout): boolean => !h.parked.length && !h.situations.length && !h.choices.length && !h.pause;
+export function renderHold(state: FanoutState): string {
+  const h = holdCloseout(state);
+  if (holdEmpty(h)) return '';
+  const out: string[] = [];
+  if (h.pause) out.push(`run PAUSED (#603): ${oneLine(h.pause.reason, 300)}${h.pause.check ? ` — check ${h.pause.check}` : ''}${h.pause.prs.length ? ` red on ${h.pause.prs.map((n) => `PR #${n}`).join(', ')}` : ''} (since ${h.pause.at}) — lift it: orchestra fanout state set --resume-run`);
+  if (h.parked.length) out.push(`parked (#603): ${h.parked.length} ticket(s) set aside, never counted merged`, ...h.parked.map((p) => `  ${p.ticket}  ${p.cause}${p.blockedBy ? ` ← ${p.blockedBy}` : ''}  ${oneLine(p.reason, 300)}  (since ${p.at})`));
+  if (h.situations.length) out.push(`situations seen (#603): ${h.situations.map((s) => `${s.ticket} ${s.rounds} round(s)${s.repeated ? ' (SAME situation twice)' : ''}`).join(' · ')}`);
+  if (h.choices.length) out.push(`choices taken by agents (#603): ${h.choices.length}`, ...h.choices.map((c) => `  ${c.n}. ${c.ticket}  ${c.rule}  Q: ${oneLine(c.question, 160)}  → ${oneLine(c.answer, 160)}  (${c.at})`));
+  return `${out.join('\n')}\n`;
 }

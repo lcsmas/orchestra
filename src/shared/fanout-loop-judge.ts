@@ -11,7 +11,7 @@ export const RULES = [
   'merge-no-approval', 'merge-ci-not-green', 'merge-upstream-unmerged', 'merge-order', 'question-unanswered', 'mail-read-by-other',
 ] as const;
 
-const sameSha = (a: unknown, b: unknown): boolean => typeof a === 'string' && typeof b === 'string' && (a.startsWith(b) || b.startsWith(a));
+const judgeSameSha = (a: unknown, b: unknown): boolean => typeof a === 'string' && typeof b === 'string' && (a.startsWith(b) || b.startsWith(a));
 
 export function judgeRun(i: JudgeInput): Violation[] {
   const out: Violation[] = [];
@@ -35,14 +35,15 @@ export function judgeRun(i: JudgeInput): Violation[] {
   // decision 12 — never a second agent / PR for a ticket
   for (const tk of i.tickets) {
     const spawns = i.events.filter((e) => e.ev === 'spawn' && e.ticket === tk).length;
-    if (spawns > 1) v('duplicate-agent', `${tk}: ${spawns} implementers were started`, tk);
+    const died = i.events.filter((e) => e.ev === 'impl-died' && e.ticket === tk).length; // a DEAD implementer is replaced (decision 12 forbids a second agent beside a live one, not after a death)
+    if (spawns > 1 + died) v('duplicate-agent', `${tk}: ${spawns} implementers were started (${died} died)`, tk);
     const prs = i.events.filter((e) => e.ev === 'pr-open' && e.ticket === tk).length;
     if (prs > 1) v('duplicate-agent', `${tk}: ${prs} pull requests were opened`, tk);
   }
   // decision 4 — asked to connect once the upstream's reviewer approved it, never before, never after the merge
   for (const e of i.events.filter((x) => x.ev === 'connect-ask')) {
     const up = String(e.up);
-    const approved = i.events.some((x) => x.ev === 'review-record' && x.ticket === up && x.verdict === 'approve' && sameSha(x.head, e.head) && idx(x) < idx(e));
+    const approved = i.events.some((x) => x.ev === 'review-record' && x.ticket === up && x.verdict === 'approve' && judgeSameSha(x.head, e.head) && idx(x) < idx(e));
     if (!approved) v('connected-before-approval', `${e.ticket} was asked to connect to ${up} at ${String(e.head).slice(0, 12)} before any approval of it`, e.ticket);
     const m = mergeOf(up);
     if (m && idx(m) < idx(e)) v('connected-after-merge', `${e.ticket} was asked to connect to ${up} after ${up} merged`, e.ticket);
@@ -57,12 +58,12 @@ export function judgeRun(i: JudgeInput): Violation[] {
   const readiness: Array<{ tk: string; at: number; i: number }> = [];
   for (const m of merges) {
     const tk = String(m.ticket);
-    const records = i.events.filter((x) => x.ev === 'review-record' && x.ticket === tk && sameSha(x.head, m.head) && idx(x) < idx(m));
+    const records = i.events.filter((x) => x.ev === 'review-record' && x.ticket === tk && judgeSameSha(x.head, m.head) && idx(x) < idx(m));
     const approvals = records.length && records[records.length - 1].verdict === 'approve' ? records.filter((x) => x.verdict === 'approve') : []; // the LAST record on this head decides: a later changes-requested voids an earlier approve
     if (!approvals.length) v('merge-no-approval', `${tk} merged at ${String(m.head).slice(0, 12)} with no recorded approval on that head`, tk);
     if (m.ci !== 'green') v('merge-ci-not-green', `${tk} merged with its CI at "${String(m.ci)}"`, tk);
     for (const up of i.deps[tk] ?? []) { const um = mergeOf(up); if (!um || idx(um) > idx(m)) v('merge-upstream-unmerged', `${tk} merged before its upstream ${up}`, tk); }
-    const ci = [...i.events].reverse().find((x) => x.ev === 'ci-start' && x.ticket === tk && sameSha(x.head, m.head));
+    const ci = [...i.events].reverse().find((x) => x.ev === 'ci-start' && x.ticket === tk && judgeSameSha(x.head, m.head));
     const upAt = Math.max(0, ...(i.deps[tk] ?? []).map((up) => mergeOf(up)?.t ?? 0));
     readiness.push({ tk, at: Math.max(approvals.length ? Math.min(...approvals.map((a) => a.t)) : 0, typeof ci?.doneAt === 'number' ? ci.doneAt : 0, upAt), i: idx(m) });
   }

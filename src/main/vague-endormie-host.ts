@@ -24,6 +24,7 @@ import { asleepMarks, relanceVagueNow, startVagueEndormie, stopVagueEndormie, sw
 import { platform } from './platform';
 import { getVagueDelays, setVagueDelaysChangedHook } from './vague-delays-setting.ts';
 import { delaysToMs, notificationOf, type VagueMarks } from '../shared/vague-human.ts';
+import { noAgentRunner } from './noagent.ts';
 import { vagueFacts, vagueFactsOf, type VagueRosterDeps } from './vague-roster.ts';
 
 const busOrThrow = () => {
@@ -48,6 +49,7 @@ const roster: VagueRosterDeps = {
   seenThisRun: (ws) => seenThisRun(ws.id),
   backgroundTask: (ws) => sdkHasBackgroundTasks(ws.id),
   wakeable: (ws) => wakeRosterEntry(ws).wakeable,
+  commandAlive: (ws) => noAgentRunner().running(ws.id), // #612
 };
 
 export const productionVagueDeps: VagueDeps = {

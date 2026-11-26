@@ -6,7 +6,7 @@ import type { StartResult } from './fanout-start.ts';
 export interface LoopMail { seq: number; kind: string; sender: string; ticket: string | null; body: string }
 
 export interface FleetPort {
-  /** The shipped `startRun`: one implementer per ticket that has none live. A start held by Admission comes back in `waiting` — a wait, never a fault. */
+  /** The shipped `startRun` WITH `loop: true` (the briefs carry the loop section whether or not the plan came from #604): one implementer per ticket that has none live. A start held by Admission comes back in `waiting` — a wait, never a fault. */
   start(): Promise<StartResult>;
   live(ws: string): boolean;
   /** Start a turn of an agent with `text` (the loop's ask to connect to an upstream). */

@@ -23,7 +23,7 @@ function mkHome(t: { after: (fn: () => void) => void }): string {
   t.after(() => fs.rmSync(d, { recursive: true, force: true }));
   return d;
 }
-const mkDeps = (home: string, stdin = ''): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' }, vouchedCaller: 'r1', cwd: home, runner: offline, now: () => NOW, readStdin: () => stdin }); // vouchedCaller: the host vouched ORCHESTRA_WS_ID (index.ts sets it only on a host answer)
+const mkDeps = (home: string, stdin = ''): FanoutDeps => ({ env: { ORCHESTRA_HOME: home, ORCHESTRA_WS_ID: 'r1' }, vouchedCaller: 'r1', identity: { source: 'host', runId: 'r1', generation: null }, cwd: home, runner: offline, now: () => NOW, readStdin: () => stdin }); // vouchedCaller / identity: the host vouched ORCHESTRA_WS_ID (index.ts sets them only on a host answer; #612: `--status merged` reads the identity)
 const sh = (d: FanoutDeps, ...a: string[]) => runFanout(['state', ...a], d);
 const set = (d: FanoutDeps, ...a: string[]) => sh(d, 'set', '--run', 'r1', ...a);
 const show = (d: FanoutDeps): string => sh(d, 'show', '--run', 'r1').stdout;
@@ -502,4 +502,33 @@ test('index.ts hands `--run-decision` the HOST-vouched id only (fail closed): pi
   assert.match(blk, /args\.includes\('--run-decision'\)\) \{[^\n]*\n\s+await settleHostIdentity\(\);\n\s+fanoutDeps\.vouchedCaller/, 'the host is asked IN this block, right before the id is taken');
   assert.match(blk, /fanoutDeps\.vouchedCaller = hostIdentity\?\.source === 'host' \? \(process\.env\.ORCHESTRA_WS_ID \|\| process\.env\.ORCHESTRA_WS_ID_IDENTITY \|\| ''\)\.trim\(\) \|\| null : null;/);
   assert.doesNotMatch(src.slice(0, i), /vouchedCaller = process\.env/);
+});
+
+// ── #612: `state set --status merged` is the run OWNER's, host-vouched (the spike found it open to any member) ─────────────────────────────
+const asCaller = (d: FanoutDeps, id: string, identity: FanoutDeps['identity']): FanoutDeps => ({ ...d, env: { ...d.env, ORCHESTRA_WS_ID: id }, vouchedCaller: id, identity });
+
+test('#612 on: --status merged by a member (vouched) is refused [state-caller]; the state is unchanged', (t) => {
+  const d = onRun(t);
+  const member = asCaller(d, 'impl-a', { source: 'host', runId: 'r1', generation: null });
+  refused(set(member, 'A', '--status', 'merged'), 'state-caller');
+  assert.equal(load(d).tickets.A.status, 'todo', 'nothing was written');
+  refused(set(member, 'A', '--json', JSON.stringify({ status: 'merged' })), 'state-caller'); // the --json door too
+  assert.equal(set(d, 'A', '--status', 'merged').code, 0, 'control: the owner still can');
+});
+
+test('#612 on: --status merged by the owner\'s id WITHOUT the host\'s word (env only / host unreachable / not asked) is refused (fail closed)', (t) => {
+  const d = onRun(t);
+  for (const identity of [{ source: 'env', why: 'unreachable' }, { source: 'env', why: 'no-key' }, undefined] as Array<FanoutDeps['identity']>) {
+    const r = set(asCaller(d, 'r1', identity), 'A', '--status', 'merged');
+    refused(r, 'state-caller');
+    assert.match(r.stderr, /host did not vouch/);
+  }
+  assert.equal(load(d).tickets.A.status, 'todo');
+});
+
+test('#612 off (the unfixed arm): with seatRecords off a member can still mark merged — the v1 flow is untouched', (t) => {
+  const d = mkDeps(mkHome(t));
+  assert.equal(sh(d, 'init', '--run', 'r1').code, 0);
+  const member = asCaller(d, 'impl-a', { source: 'env', why: 'unreachable' });
+  assert.equal(set(member, 'A', '--status', 'merged').code, 0);
 });

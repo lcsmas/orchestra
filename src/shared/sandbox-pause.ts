@@ -16,9 +16,14 @@ export const SANDBOX_PAUSED_MESSAGE =
   `Sandbox agents are paused pending ${SANDBOX_PAUSED_TICKET}. ` +
   'This workspace is hosted on a sandbox, so its agent cannot be started until then.';
 
-/** The refusal for `ws`, or null when its agent may start (local workspace, unknown workspace). */
+/** #612 — what every refused start of a `noAgent` workspace says: it has no agent session BY DESIGN (its command is the coordinator). */
+export const NO_AGENT_MESSAGE =
+  'This workspace has no agent session by design (#612): its run command is the coordinator, so an agent is never started, woken or restarted here.';
+
+/** The refusal for `ws`, or null when its agent may start (local workspace, unknown workspace). A `noAgent` workspace (#612) never has one. */
 export function sandboxPausedMessage(
-  ws: { host?: { kind: string } } | null | undefined,
+  ws: { host?: { kind: string }; noAgent?: boolean } | null | undefined,
 ): string | null {
+  if (ws?.noAgent === true) return NO_AGENT_MESSAGE;
   return ws?.host?.kind === 'sandbox' ? SANDBOX_PAUSED_MESSAGE : null;
 }

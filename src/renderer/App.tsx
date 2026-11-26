@@ -503,11 +503,17 @@ export function App() {
     const offExit = window.orchestra.onPtyExit((id) => {
       if (id === `${activeId}:run`) setRunLive(false);
     });
+    // #612: a no-agent workspace's command is detached — no PTY exit event ever tells the button it ended: re-ask the host while that workspace is active
+    const poll = active?.noAgent === true
+      ? setInterval(() => void window.orchestra.runScriptStatus(activeId).then((live) => { if (!cancelled) setRunLive(live); }).catch(() => {}), 3000)
+      : null;
     return () => {
       cancelled = true;
       offExit();
+      if (poll) clearInterval(poll);
     };
-  }, [activeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, active?.noAgent]);
 
   const onToggleRun = async () => {
     if (!active) return;
@@ -812,7 +818,7 @@ export function App() {
                     key={`run-${active.id}`}
                     workspaceId={active.id}
                     isActive={true}
-                    hasRunScript={!!findRepo(active.repoPath)?.scripts?.run}
+                    hasRunScript={!!findRepo(active.repoPath)?.scripts?.run || active.noAgent === true}
                   />
                 )}
               </div>

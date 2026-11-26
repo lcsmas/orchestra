@@ -1,22 +1,32 @@
 # Pull-request CI (#568): tsc + the full suite + the rig matrix, no silent green. No secret, read-only token.
-# The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the suite job when a rig is in neither.
+# The rig list is .github/ci-rigs.json (RUNS_IN_CI | LOCAL_ONLY + reason); src/shared/ci-rigs.test.ts fails the `tests` jobs when a rig is in neither.
+# #594: 20 jobs per PR = typecheck + 2 suite shards (`tests`) + 16 rig groups (`rigs`) + `suite` (the verdict over all of them). The matrices are STATIC
+# (no inventory job); src/shared/ci-rigs.test.ts pins them to `suiteShards` / `groups` of .github/ci-rigs.json — change a number in both.
 # How to add a rig / the local-only list: docs/codebase-map/build-release.md § Pull-request CI.
 name: CI
 
 # pull_request ONLY (#586): a `push` trigger ran a second copy per head on every PR branch and the two shared the concurrent-job limit; a push with no PR starts none.
+# workflow_dispatch (#595) = the FULL run: every rig, no path selection. scripts/release.sh refuses a tag whose tree has no green dispatch run (the release gate runs every rig once).
 on:
   pull_request:
     branches: [master]
+    # `labeled`: adding `ci-full` after the push re-runs the CI with every rig (the label is read from the event payload). Another label also starts a run — same selection, the old run is cancelled.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('dispatch-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # #595 path selection: a pull_request runs the rigs its changed files select (src/shared/ci-paths.ts); the label `ci-full` (read from the run's event payload — add it BEFORE the push, or
+  # close + reopen the PR) and every non-PR event run every rig. All jobs of a run derive the selection from the same inputs (scripts/ci/selection.mjs).
+  CI_PATH_SELECTION: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+  CI_FULL_REASON: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && 'the ci-full label forces every rig' || '' }}
 
 jobs:
   typecheck:
@@ -37,19 +47,28 @@ jobs:
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
           if-no-files-found: warn
 
-  suite:
+  tests:
+    name: tests (shard ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+        shards: [2]
+    env:
+      SUITE_SHARD: ${{ matrix.shard }}
+      SUITE_SHARDS: ${{ matrix.shards }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
       - run: echo "SUITE_T0=$(date +%s)" >> "$GITHUB_ENV"
       # continue-on-error: the NEXT step is the verdict (it reads this step's `outcome`, and tolerates only the knownFail tests of .github/ci-skips.json).
-      # Consequence: `orchestra fanout gate` cannot DERIVE this job as the suite check (it refuses a continue-on-error step): pin it with `--require-check suite`.
-      - name: Run the suite
+      # `node --test --test-shard=$SUITE_SHARD/$SUITE_SHARDS` over the same `src/**/*.test.ts` (package.json `suite:shard`).
+      - name: Run suite shard
         id: suite
         continue-on-error: true
-        run: pnpm run test > "$RUNNER_TEMP/suite.tap" 2>&1
+        run: pnpm run suite:shard > "$RUNNER_TEMP/suite.tap" 2>&1
       - name: Verdict — tests run / passed / failed / skipped (a skip or a zero fails)
         if: always()
         run: node --experimental-strip-types --no-warnings scripts/ci/run-job.mjs suite "$RUNNER_TEMP/suite.tap"
@@ -58,7 +77,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: result-suite
+          name: result-tests-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/ci-result
           retention-days: 1
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
@@ -66,46 +85,39 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: suite-tap
+          name: suite-tap-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/suite.tap
           retention-days: 3
           overwrite: true
 
-  inventory:
+  rigs:
+    # each group installs once and runs its rigs in sequence (D5, ledger #569); the rigs of a group total ~15 min (.github/ci-rigs.json, `rigs.mjs assign`)
+    timeout-minutes: 150
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.m.outputs.matrix }}
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    name: rigs (group ${{ matrix.group }})
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit; also the selection's `git diff HEAD^1 HEAD`
+      # #595: decide BEFORE the install + bundles whether this group has a selected rig — a group with none ends green here (summary says so).
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - id: m
-        run: |
-          m="$(node --experimental-strip-types --no-warnings scripts/ci/rigs.mjs matrix)"
-          echo "matrix=$m" >> "$GITHUB_OUTPUT"
-
-  rigs:
-    needs: inventory
-    runs-on: ubuntu-latest
-    # each group installs once and runs its rigs in sequence (D5, ledger #569); the longest group is ~45 min of rigs
-    timeout-minutes: 150
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.inventory.outputs.matrix) }}
-    name: rigs (group ${{ matrix.group }}, ${{ matrix.count }} rigs)
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # pause-trap and others build scratch worktrees from a real commit
+      - id: plan
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}" --plan
       - uses: ./.github/actions/setup
+        if: steps.plan.outputs.run == 'true'
         with:
           bundles: 'true'
           desktop: 'true'
-      - run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
+      - if: steps.plan.outputs.run == 'true'
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.plan.outputs.run == 'true'
         with:
           name: result-group-${{ matrix.group }}
           path: ${{ runner.temp }}/ci-result
@@ -113,13 +125,17 @@ jobs:
           overwrite: true # "Re-run failed jobs" re-uploads the same artifact name
           if-no-files-found: warn
 
-  summary:
-    needs: [typecheck, suite, inventory, rigs]
+  # THE check named `suite` (`orchestra fanout deliver --require-check suite` pins this exact name): red when ANY suite shard is red, missing, cancelled or ran 0 tests,
+  # and when typecheck or a rig group is. It also prints the per-job table and the LOCAL-ONLY rig list.
+  suite:
+    needs: [typecheck, tests, rigs]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # the merge commit AND its parents: the same `git diff HEAD^1 HEAD` the rig jobs selected from
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

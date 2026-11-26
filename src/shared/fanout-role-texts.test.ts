@@ -211,7 +211,7 @@ const RULES: ReadonlyArray<readonly [string, string, string?]> = [
   ["You are an implementer (impl- name, set by y", 'I', 'n'],
   ["Rebase onto current master BEFORE nominating", 'I'],
   ["Two standing roles. N implementers work in f", 'C'],
-  ["The PR's CI is the build and the full suite;", 'C'],
+  ["The PR's CI is the build, the full suite and the rigs", 'C'],
   ["Review merge candidates, not pushes. The rev", 'C'],
   ["## 3. No gating seat: the CI and the reviewe", 'CI'],
   ["No agent runs a gate for you: the build and ", 'C'],

@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const v1 = process.argv[2];
 if (!v1 || !fs.existsSync(v1)) { console.error('usage: verified-fanout-v1-vs-v2-diff.mjs <v1 SKILL.md>'); process.exit(2); }
-const { VERIFIED_FANOUT_SKILL } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
+// the FULL render (every feature on) — what src/shared/verified-fanout-skill.test.ts compares the artifact to since #559 changed the defaults
+const { renderVerifiedFanoutSkill } = await import(`${REPO}/src/shared/verified-fanout-skill.ts`);
+const VERIFIED_FANOUT_SKILL = renderVerifiedFanoutSkill({ acceptance: 'on', minorPolicy: 'spec' });
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vf-diff-'));
 const v2 = path.join(dir, 'v2.md');
 fs.writeFileSync(v2, VERIFIED_FANOUT_SKILL);

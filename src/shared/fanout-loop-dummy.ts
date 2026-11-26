@@ -5,12 +5,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { FleetPort, ForgeCheck, ForgePort, GitPort, LoopMail } from './fanout-loop-ports.ts';
-import { readLoopState, updateLoopState, withLoop, type Plan } from './fanout-loop-compat.ts';
+import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
+import type { Plan } from './fanout-plan.ts';
 import { decideReview, claimReviewer, recordWake, reviewerName, nthReviewer, settleReviewer } from './fanout-review.ts';
 import { recordReview, reviewHeadOf } from './fanout-record.ts';
 import { LOOP_BRIEF } from './fanout-implementer-brief.ts';
 import { implementerName, startRun, type StartResult } from './fanout-start.ts';
-import { applyTicketPatch, FanoutStateError, stateFile } from './fanout-state.ts';
+import { applyPlan } from './fanout-plan.ts';
+import { applyTicketPatch, FanoutStateError, newState, stateFile } from './fanout-state.ts';
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
@@ -23,42 +25,47 @@ export interface Scenario {
   repo: { tickets: Array<{ id: string; dependsOn: string[]; spec: string }>; plan?: Plan };
   agents?: Record<string, { implementer?: Step[]; /** the script of the 2nd+ implementer of the ticket (a respawn); default = `implementer` */ respawn?: Step[]; reviewer?: Step[] }>;
   ci?: Record<string, string[]>;
+  /** #607's start check: what the checks of the EMPTY probe PR say — `green` (default) | `red:<check>` | `missing` (no check at all) */
+  startCheck?: string;
   admissionHold?: Record<string, number>;
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
+  /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
+  prePlanned?: boolean;
   faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[] };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const dummyIsObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 export function parseScenario(raw: unknown): Scenario {
   const bad = (m: string): never => { throw new FanoutStateError(`scenario: ${m}`); };
-  if (!isObj(raw) || raw.version !== 1) return bad('version must be 1');
-  if (!isObj(raw.repo) || !Array.isArray(raw.repo.tickets) || raw.repo.tickets.length === 0) return bad('repo.tickets must be a non-empty list');
+  if (!dummyIsObj(raw) || raw.version !== 1) return bad('version must be 1');
+  if (!dummyIsObj(raw.repo) || !Array.isArray(raw.repo.tickets) || raw.repo.tickets.length === 0) return bad('repo.tickets must be a non-empty list');
   const ids = new Set<string>();
   for (const t of raw.repo.tickets as unknown[]) {
-    if (!isObj(t) || typeof t.id !== 'string' || !Array.isArray(t.dependsOn) || typeof t.spec !== 'string') return bad('a repo ticket is {id, dependsOn[], spec}');
+    if (!dummyIsObj(t) || typeof t.id !== 'string' || !Array.isArray(t.dependsOn) || typeof t.spec !== 'string') return bad('a repo ticket is {id, dependsOn[], spec}');
     ids.add(t.id);
   }
   for (const t of raw.repo.tickets as Array<{ id: string; dependsOn: string[] }>) for (const d of t.dependsOn) if (!ids.has(d)) return bad(`${t.id} depends on unknown ${d}`);
   const steps = (v: unknown, kinds: readonly string[], where: string): void => {
     if (v === undefined) return;
     if (!Array.isArray(v)) return bad(`${where} must be a list of steps`);
-    for (const s of v) if (!isObj(s) || typeof s.do !== 'string' || !kinds.includes(s.do)) bad(`${where}: a step is {do: ${kinds.join('|')}, afterMs?, findings?, head?}`);
+    for (const s of v) if (!dummyIsObj(s) || typeof s.do !== 'string' || !kinds.includes(s.do)) bad(`${where}: a step is {do: ${kinds.join('|')}, afterMs?, findings?, head?}`);
   };
-  for (const [tk, a] of Object.entries(isObj(raw.agents) ? raw.agents : {})) {
+  for (const [tk, a] of Object.entries(dummyIsObj(raw.agents) ? raw.agents : {})) {
     if (!ids.has(tk)) return bad(`agents.${tk} is not a ticket`);
-    if (!isObj(a)) return bad(`agents.${tk} must be an object`);
+    if (!dummyIsObj(a)) return bad(`agents.${tk} must be an object`);
     steps(a.implementer, STEP_KINDS_IMPLEMENTER, `agents.${tk}.implementer`);
     steps(a.respawn, STEP_KINDS_IMPLEMENTER, `agents.${tk}.respawn`);
     steps(a.reviewer, STEP_KINDS_REVIEWER, `agents.${tk}.reviewer`);
   }
-  for (const [tk, list] of Object.entries(isObj(raw.ci) ? raw.ci : {})) {
+  if (raw.startCheck !== undefined && !(typeof raw.startCheck === 'string' && /^(green|missing|red:\S+)$/.test(raw.startCheck))) return bad('startCheck is "green" | "missing" | "red:<check>"');
+  for (const [tk, list] of Object.entries(dummyIsObj(raw.ci) ? raw.ci : {})) {
     if (tk !== '*' && !ids.has(tk)) return bad(`ci.${tk} is not a ticket`);
     if (!Array.isArray(list) || list.some((x) => x !== 'green' && !(typeof x === 'string' && /^red:\S+$/.test(x)))) return bad(`ci.${tk} is a list of "green" | "red:<check>"`);
   }
-  for (const [tk, list] of Object.entries(isObj(raw.events) ? raw.events : {})) {
+  for (const [tk, list] of Object.entries(dummyIsObj(raw.events) ? raw.events : {})) {
     if (!ids.has(tk)) return bad(`events.${tk} is not a ticket`);
-    if (!Array.isArray(list) || list.some((e) => !isObj(e) || typeof e.at !== 'string' || (e.kind !== 'question' && e.kind !== 'no-safe-option'))) return bad(`events.${tk} is a list of {at, kind: question|no-safe-option}`);
+    if (!Array.isArray(list) || list.some((e) => !dummyIsObj(e) || typeof e.at !== 'string' || (e.kind !== 'question' && e.kind !== 'no-safe-option'))) return bad(`events.${tk} is a list of {at, kind: question|no-safe-option}`);
   }
   return raw as unknown as Scenario;
 }
@@ -70,11 +77,11 @@ export function planOf(sc: Scenario): Plan {
   return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — the names ${d} provides`])) };
 }
 
-const DEFAULT_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };
-const EPOCH = Date.parse('2026-01-01T00:00:00Z');
-const CHECK_NAMES = ['build', 'test', 'lint'];
-const sha = (label: string): string => crypto.createHash('sha1').update(label).digest('hex');
-const sameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
+const DUMMY_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };
+const DUMMY_EPOCH = Date.parse('2026-01-01T00:00:00Z');
+const DUMMY_CHECK_NAMES = ['build', 'test', 'lint'];
+const dummySha = (label: string): string => crypto.createHash('sha1').update(label).digest('hex');
+const dummySameSha = (a: string, b: string): boolean => a.startsWith(b) || b.startsWith(a);
 
 interface Commit { parents: string[]; tree: string; at: number }
 interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
@@ -82,7 +89,7 @@ interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx:
 interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
 
 export class DummyWorld {
-  t = EPOCH;
+  t = DUMMY_EPOCH;
   events: Ev[] = [];
   readonly commits = new Map<string, Commit>();
   readonly branches = new Map<string, string>();
@@ -103,12 +110,12 @@ export class DummyWorld {
     const root = this.commit([], 'root', 'root');
     this.branches.set(target, root);
   }
-  get timing(): typeof DEFAULT_TIMING { return { ...DEFAULT_TIMING, ...(this.sc.timing ?? {}) }; }
+  get timing(): typeof DUMMY_TIMING { return { ...DUMMY_TIMING, ...(this.sc.timing ?? {}) }; }
   iso(t = this.t): string { return new Date(t).toISOString(); }
   ev(ev: string, ticket: string | undefined, extra: Record<string, unknown> = {}): void { this.events.push({ t: this.t, ev, ...(ticket ? { ticket } : {}), ...extra }); }
   commit(parents: string[], label: string, tree: string): string {
-    const id = sha(`${this.counter++}:${label}`);
-    this.commits.set(id, { parents, tree: sha(`tree:${parents.map((p) => this.commits.get(p)?.tree ?? '').join(',')}:${tree}`), at: this.t });
+    const id = dummySha(`${this.counter++}:${label}`);
+    this.commits.set(id, { parents, tree: dummySha(`tree:${parents.map((p) => this.commits.get(p)?.tree ?? '').join(',')}:${tree}`), at: this.t });
     return id;
   }
   resolve(ref: string): string | null { return this.branches.get(ref) ?? (this.commits.has(ref) ? ref : null); }
@@ -229,6 +236,8 @@ export class DummyWorld {
   wakeImpl(ws: string, text: string): void {
     const a = this.impls.get(ws);
     if (!a) return;
+    if (/^Corrections for /.test(text)) { this.ev('corrections-batch', a.ticket, { ws, text }); return; } // #606: ONE batch to the author (the dummy author's script says what it does next)
+    if (/^CI is red on your pull request/.test(text)) { this.ev('ci-told', a.ticket, { ws, text }); return; } // #607: the author is told which check is red (the dummy author does not react: its script says what it does next)
     const m = /^CONNECT (\S+) ([0-9a-f]{40})/.exec(text);
     if (!m) return;
     this.ev('connect-ask', a.ticket, { up: m[1], head: m[2], to: ws });
@@ -300,6 +309,7 @@ export class DummyWorld {
     return n;
   }
   private ciResult(p: Pr): string {
+    if (p.branch.startsWith('orchestra-start-check-')) return this.sc.startCheck ?? 'green';
     const list = this.sc.ci?.[p.ticket] ?? this.sc.ci?.['*'] ?? [];
     return list[p.created++] ?? 'green';
   }
@@ -316,13 +326,13 @@ export class DummyWorld {
     const p = this.prs.get(n)!;
     const run = this.runFor(p, head);
     const steps = this.sc.faults?.zeroStepCi?.includes(p.ticket) ? 0 : 3;
-    if (this.sc.faults?.noChecks?.includes(p.ticket)) return []; // the forge shows no check at all
+    if (this.sc.faults?.noChecks?.includes(p.ticket) || (p.branch.startsWith('orchestra-start-check-') && this.sc.startCheck === 'missing')) return []; // the forge shows no check at all
     const late = this.sc.faults?.lateCheck?.[p.ticket];
     const lint: ForgeCheck = { name: 'lint', jobId: `job-${p.n}-${p.runs.indexOf(run)}-lint`, status: 'green', steps, at: this.iso(run.startedAt) };
     if (late !== undefined && this.t < run.startedAt + late) return [lint]; // the workflow has not registered its other checks yet
-    if (this.t < run.doneAt) return CHECK_NAMES.map((name) => (name === 'lint' ? lint : { name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: 'pending' as const }));
+    if (this.t < run.doneAt) return DUMMY_CHECK_NAMES.map((name) => (name === 'lint' ? lint : { name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, status: 'pending' as const }));
     const red = run.result.startsWith('red:') ? run.result.slice(4) : null;
-    return CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
+    return DUMMY_CHECK_NAMES.map((name) => ({ name, jobId: `job-${p.n}-${p.runs.indexOf(run)}-${name}`, steps, status: name === red || (red && !DUMMY_CHECK_NAMES.includes(red) && name === 'test') ? ('red' as const) : ('green' as const), at: this.iso(run.doneAt), ...(name === red ? { logExtract: `FAIL ${name}` } : {}) }));
   }
   closePr(n: number): void { const p = this.prs.get(n); if (p && p.state === 'open') { p.state = 'closed'; this.ev('pr-close', p.ticket, { n }); } }
   rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }
@@ -331,7 +341,7 @@ export class DummyWorld {
     if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
     if (p.state !== 'open') return { ok: false, reason: `the PR is ${p.state}` };
-    if (!sameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
+    if (!dummySameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
     const run = [...p.runs].reverse().find((r) => r.head === head);
     const ci = !run ? 'none' : this.t < run.doneAt ? 'pending' : run.result;
     const c = this.commit([this.branches.get(this.target)!, head], `merge:${p.ticket}`, `merge:${p.ticket}`);
@@ -390,7 +400,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
     async tree(s) { return w.commits.get(w.resolve(s) ?? '')?.tree ?? null; },
     async isMerged(branch, base) { return w.contains(branch, base); },
     async emptyBranch(branch, base) { const h = w.resolve(base)!; w.branches.set(branch, h); return { head: h }; },
-    async deleteBranch(branch) { w.branches.delete(branch); },
+    async deleteBranch(branch) { w.branches.delete(branch); w.ev('branch-delete', undefined, { branch }); },
   };
   return { world: w, fleet, forge, git, now: () => w.iso(), plan, async sleep(ms) { w.tickHolds(); w.advance(ms); } };
 }
@@ -401,13 +411,17 @@ export async function runDummyLoop(i: { home: string; run?: string; scenario: Sc
   const run = i.run ?? i.scenario.run ?? 'dummy-run';
   let d = buildDummy({ home: i.home, run, scenario: i.scenario });
   if (i.wrap) d = i.wrap(d);
+  if (i.scenario.prePlanned) { // a plan written by hand (#587 `state set`), not by #604: complete, with NO `loopPlan` marker
+    updateLoopState(i.home, run, () => { const { loopPlan: _m, ...hand } = applyPlan(newState(run, { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), d.plan, d.now()); return withLoop(hand); });
+  }
   const log: string[] = [];
-  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 5000, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
+  const options: LoopOptions = { ...DEFAULT_OPTIONS, maxPasses: 2500, plan: d.plan, tickets: i.scenario.repo.tickets.map((t) => t.id), ...(i.options ?? {}) };
   const result = await runLoop({ home: i.home, run, caller: run, fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: (l) => log.push(`${d.now()} ${l}`), options });
   d.world.dump();
   const s = readLoopState(i.home, run);
   const startAt: Record<string, number | null> = {};
-  for (const t of i.scenario.repo.tickets) startAt[t.id] = s?.tickets[t.id]?.start?.at ? Date.parse(s.tickets[t.id].start!.at) : null;
+  // the FIRST launch of each ticket (a respawn overwrites the state's `start.at`, which would read as a start AFTER the first merge)
+  for (const t of i.scenario.repo.tickets) { const first = d.world.events.find((e) => e.ev === 'spawn' && e.ticket === t.id); startAt[t.id] = first ? Date.parse(d.world.iso(first.t)) : s?.tickets[t.id]?.start?.at ? Date.parse(s.tickets[t.id].start!.at) : null; }
   const violations = judgeRun({ events: d.world.events, deps: Object.fromEntries(i.scenario.repo.tickets.map((t) => [t.id, t.dependsOn])), tickets: i.scenario.repo.tickets.map((t) => t.id), startAt });
   return { result, violations, world: d.world, log };
 }

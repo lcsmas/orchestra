@@ -24,7 +24,25 @@
   },
   "ci": {
     "T1": [
+      "red:test",
+      "red:test",
       "red:test"
     ]
+  },
+  "agents": {
+    "T1": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        },
+        {
+          "do": "fix",
+          "afterMs": 1500000
+        }
+      ]
+    }
   }
 }
