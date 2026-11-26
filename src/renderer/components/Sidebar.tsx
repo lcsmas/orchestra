@@ -295,6 +295,28 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
 /** Hover toggle for the manual unread tag. Rendered on every non-archived
  * row's action strip; the always-visible indicator (accent dot by the name)
  * is rendered separately so it shows without hovering. */
+/** #640 — a no-agent workspace's row: start its command again (the same host action as `orchestra restart <id>`; a live command is left alone). */
+function NoAgentRestart({ w, onDone }: { w: Workspace; onDone: () => void }) {
+  if (w.noAgent !== true) return null;
+  return (
+    <button
+      className="ws-icon-btn"
+      title="Start its command again (a command that is still running is left alone)"
+      aria-label={`Restart the command of ${w.name}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onDone();
+        void window.orchestra.restartAgent(w.id).catch((err) => console.error('restart of a no-agent command failed', err));
+      }}
+    >
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        <path d="M21 12a9 9 0 1 1-3.18-6.86" />
+        <polyline points="21 4 21 9 16 9" />
+      </svg>
+    </button>
+  );
+}
+
 function UnreadToggle({
   w,
   onToggle,
@@ -1516,6 +1538,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                 content: (
                   <>
                     <UnreadToggle w={w} onToggle={onToggleUnread} />
+                    <NoAgentRestart w={w} onDone={rowActions.hideNow} />
                     <PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />
                     {childIsGit ? (
                       <button
@@ -2232,6 +2255,7 @@ export function Sidebar({ onNewFromRepo, onNewScratch, onNewOrchestrator }: Prop
                       content: (
                         <>
                           <UnreadToggle w={w} onToggle={onToggleUnread} />
+                          <NoAgentRestart w={w} onDone={rowActions.hideNow} />
                     <PauseRowActions wsId={w.id} rect={{ top: r.top, bottom: r.bottom, right: r.right }} />
                           {!w.host ? (
                             <button

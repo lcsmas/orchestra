@@ -148,7 +148,7 @@ function saveShot(name, buf) { fs.mkdirSync(OUT, { recursive: true }); const f =
 // `also` = clauses that legitimately go red as a consequence (the removed guard feeds them); every OTHER clause must stay green.
 const MUTANTS = {
   clip: { clause: 'C1', dir: 'dist/assets', re: /const (\w+)=(\w+)>(\w+),(\w+)=\1&&!(\w+)&&!(\w+);/g, to: 'const $1=$2>$3,$4=!1&&!$5&&!$6;', also: ['C3', 'C3b'], only: ['C'] },
-  source: { clause: 'S1', dir: 'dist/assets', re: /(\w+)\?h\.jsx\((\w+),\{source:(\w+)\}\):h\.jsxs\(h\.Fragment/g, to: '$1?null:h.jsxs(h.Fragment', also: ['S2', 'S3'] },
+  source: { clause: 'S1', dir: 'dist/assets', re: /(\w+)\?(\w+)\.jsx\((\w+),\{source:(\w+)\}\):\2\.jsxs\(\2\.Fragment/g, to: '$1?null:$2.jsxs($2.Fragment', also: ['S2', 'S3'] },
   label: { clause: 'A1', dir: 'dist/assets', re: /"aria-label":`Agrandir : \$\{(\w+)\}`/g, to: '"data-x":`Agrandir : ${$1}`', also: [] },
   esc: { clause: 'E1', dir: 'dist/assets', re: /(\w+)\.key==="Escape"&&\((\w+)\.preventDefault\(\),\2\.stopPropagation\(\),(\w+)\(\)\)/g, to: '$1.key==="EscapeX"&&($2.preventDefault(),$2.stopPropagation(),$3())', also: ['E5'] },
   leak: { clause: 'E5', dir: 'dist/assets', re: /(\w+)\.key==="Escape"&&\((\w+)\.preventDefault\(\),\2\.stopPropagation\(\),(\w+)\(\)\)/g, to: '$1.key==="Escape"&&($2.preventDefault(),$3())', also: [] },
@@ -165,7 +165,7 @@ const MUTANTS = {
   pane: { clause: 'P3', dir: 'dist/assets', re: /\(!(\w+)\.classList\.contains\("active"\)\|\|/g, to: '(', also: [] },
   srccap: { clause: 'S3', dir: 'dist/assets', re: /done:(\w+)\.length<=(\w+)\}\)/g, to: 'done:!0})', also: [] },
   trap: { clause: 'E7', dir: 'dist/assets', re: /onFocus:(\w+)\("close"\)/g, to: 'onFocus:void 0', also: [] },
-  single: { clause: 'L1', dir: 'dist/assets', re: /(\w+)\?h\.jsx\("div",\{style:\{height:(\w+)\},"aria-hidden":!0\}\):h\.jsx\((\w+),\{title:(\w+),source:(\w+),mode:"inline"/g, to: '$1?h.jsx($3,{title:$4,source:$5,mode:"inline",onHeight:()=>{}}):h.jsx($3,{title:$4,source:$5,mode:"inline"', also: [] },
+  single: { clause: 'L1', dir: 'dist/assets', re: /(\w+)\?(\w+)\.jsx\("div",\{style:\{height:(\w+)\},"aria-hidden":!0\}\):\2\.jsx\((\w+),\{title:(\w+),source:(\w+),mode:"inline"/g, to: '$1?$2.jsx($4,{title:$5,source:$6,mode:"inline",onHeight:()=>{}}):$2.jsx($4,{title:$5,source:$6,mode:"inline"', also: [] },
 };
 function makeMutantCopy(armDir, m) {
   const copy = path.join(armDir, 'app'); fs.mkdirSync(copy, { recursive: true });
