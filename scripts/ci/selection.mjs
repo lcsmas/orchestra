@@ -5,9 +5,15 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { selectRigs } from '../../src/shared/ci-paths.ts';
+import { isPostMergeRig } from '../../src/shared/ci-rigs.ts';
 import { createWalker, repoTree } from '../../src/shared/ci-closure.ts';
 
 export const pathSelectionOn = () => process.env.CI_PATH_SELECTION === '1';
+/** Post-merge rigs (mutants, role-guard matrices): `CI_SKIP_POST_MERGE=1` (ci.yml, pull_request only) drops them; `CI_ONLY_POST_MERGE=1` (ci-mutants.yml) keeps ONLY them. A dispatch sets neither: every rig. */
+export const skipPostMergeOn = () => process.env.CI_SKIP_POST_MERGE === '1';
+export const onlyPostMergeOn = () => process.env.CI_ONLY_POST_MERGE === '1';
+/** The rig ids of `ids` this run executes under the two switches above. */
+export const postMergeFilter = (ids) => ids.filter((id) => (!skipPostMergeOn() || !isPostMergeRig(id)) && (!onlyPostMergeOn() || isPostMergeRig(id)));
 
 /** @returns {import('../../src/shared/ci-paths.ts').Selection} */
 export function currentSelection(root, file, o = {}) {

@@ -12,9 +12,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, judgeShards, readRigFile, requiredRigIds, suiteShardsOf, validateRigs } from '../../src/shared/ci-rigs.ts';
+import { assignGroups, isPostMergeRig, judgeShards, readRigFile, requiredRigIds, suiteShardsOf, validateRigs } from '../../src/shared/ci-rigs.ts';
 import { repoTree } from '../../src/shared/ci-closure.ts';
-import { currentSelection, pathSelectionOn } from './selection.mjs';
+import { currentSelection, onlyPostMergeOn, pathSelectionOn, skipPostMergeOn } from './selection.mjs';
 import { generatePaths, renderSelection, selectRigs, toWire } from '../../src/shared/ci-paths.ts';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -72,20 +72,23 @@ if (cmd === 'select') {
   const file = readRigFile(root);
   const sel = pathSelectionOn() ? toWire(currentSelection(root, file)) : null;
   const allCi = file.rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
-  const rigsExpected = sel ? allCi.filter((id) => sel.ids.includes(id)) : allCi;
+  const postMerge = allCi.filter(isPostMergeRig);
+  const only = onlyPostMergeOn(); // ci-mutants.yml: ONLY the post-merge rigs ran (no typecheck, no suite shard)
+  const skipPost = skipPostMergeOn(); // a pull_request: they did NOT run, and the table says so (never green, never red)
+  const rigsExpected = only ? postMerge : (sel ? allCi.filter((id) => sel.ids.includes(id)) : allCi).filter((id) => !skipPost || !isPostMergeRig(id));
   const lines = []; let bad = 0;
   const row = (r) => { const t = r.tolerated ?? []; const failed = t.length ? `${r.counts.fail + t.length} (tolerated: ${t.map((x) => x.slice(0, 60)).join(' · ')} — NOT covered by CI)` : r.counts.fail; return `| ${r.ok ? '✅' : '❌'} | ${r.name} | ${r.counts.run} | ${r.counts.pass} | ${failed} | ${r.counts.skipped}${r.attempts > 1 || r.armRetries > 0 ? ` (${r.attempts > 1 ? `${r.attempts} attempts` : ''}${r.armRetries > 0 ? ` ${r.armRetries} arm re-runs` : ''})` : ''} | ${r.wallSec}s |${r.ok ? '' : ` ${r.why}`}`; };
-  lines.push('## PR CI — per job', '', '| | job | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|');
+  lines.push(only ? '## Post-merge rigs (mutants, role-guard matrices) — per rig' : '## PR CI — per job', '', '| | job | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|');
   const tc = results.find((x) => x.name === 'typecheck');
-  if (!tc) { bad++; lines.push('| ❌ | typecheck | — | — | — | — | — | NO RESULT (job failed before reporting, or was cancelled/skipped)'); } else { if (!tc.ok) bad++; lines.push(row(tc)); }
+  if (only) { /* no typecheck / suite in this workflow */ } else if (!tc) { bad++; lines.push('| ❌ | typecheck | — | — | — | — | — | NO RESULT (job failed before reporting, or was cancelled/skipped)'); } else { if (!tc.ok) bad++; lines.push(row(tc)); }
   // The suite shards (#594): each shard's own row, then ONE verdict over all of them — a missing / cancelled / red / empty shard is red.
   const nShards = suiteShardsOf(file);
   const shardRes = results.filter((x) => /^suite shard /.test(x.name));
-  for (let i = 1; i <= nShards; i++) {
+  for (let i = 1; i <= (only ? 0 : nShards); i++) {
     const r = shardRes.find((x) => x.shard === i);
     if (r) lines.push(row(r)); else lines.push(`| ❌ | suite shard ${i}/${nShards} | — | — | — | — | — | NO RESULT (job failed before reporting, or was cancelled/skipped)`);
   }
-  const sv = judgeShards(shardRes, nShards);
+  const sv = only ? { ok: true, tests: 0, problems: [] } : judgeShards(shardRes, nShards);
   if (!sv.ok) bad += sv.problems.length;
   const suiteLine = sv.ok ? `suite: ${sv.tests} tests over ${nShards} shard(s), every shard present and green` : `suite RED:\n- ${sv.problems.join('\n- ')}`;
   const rigRes = new Map(results.filter((x) => x.name.startsWith('rig:')).map((x) => [x.id, x]));
@@ -94,12 +97,14 @@ if (cmd === 'select') {
     if (!r) { bad++; lines.push(`| ❌ | rig:${id} | — | — | — | — | — | NO RESULT`); } else { if (!r.ok) bad++; lines.push(row(r)); }
   }
   for (const [id] of rigRes) if (!rigsExpected.includes(id)) { bad++; lines.push(`| ❌ | rig:${id} | | | | | | ran but is not RUNS_IN_CI in ci-rigs.json`); }
+  if (skipPost) for (const id of postMerge) lines.push(`| ⏭ | rig:${id} | — | — | — | — | — | skipped (post-merge)`);
   const badNeeds = Object.entries(needs).filter(([, v]) => v.result !== 'success');
   for (const [k, v] of badNeeds) { bad++; lines.push('', `**needs.${k}.result = ${v.result}** (must be success)`); }
   const local = file.rigs.filter((r) => r.class === 'LOCAL_ONLY');
-  if (sel) lines.unshift(renderSelection(sel, allCi.length));
+  if (sel && !only) lines.unshift(renderSelection(sel, allCi.length));
   lines.push('', `## LOCAL-ONLY rigs (${local.length}) — NOT run by CI; the verifier / owner runs them locally`, '', '| rig | reason |', '|---|---|', ...local.map((r) => `| \`${r.id}\` | ${String(r.reason).replace(/\|/g, '\\|').replace(/\n/g, ' ')} |`));
-  lines.push('', suiteLine, '', bad ? `**❌ ${bad} problem(s)**` : `**✅ typecheck + ${nShards} suite shard(s) + ${rigsExpected.length} rigs green${sel && sel.mode === 'paths' ? ` (${sel.skipped.length} rigs SKIPPED BY PATH — see the selection above; the release gate runs them all)` : ''}; ${local.length} local-only rigs listed above**`);
+  if (!only) lines.push('', suiteLine);
+  lines.push('', bad ? `**❌ ${bad} problem(s)**` : only ? `**✅ ${rigsExpected.length} post-merge rigs green**` : `**✅ typecheck + ${nShards} suite shard(s) + ${rigsExpected.length} rigs green${skipPost ? ` (${postMerge.length} post-merge rigs skipped: they run after the merge)` : ''}${sel && sel.mode === 'paths' ? ` (${sel.skipped.length} rigs SKIPPED BY PATH — see the selection above; the release gate runs them all)` : ''}; ${local.length} local-only rigs listed above**`);
   const md = lines.join('\n') + '\n';
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
   console.log(md);

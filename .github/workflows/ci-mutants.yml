@@ -1,0 +1,100 @@
+# Post-merge mutant rigs: a PR merges without them (ci.yml skips `isPostMergeRig` rigs on pull_request); they run here on every push to master and nightly.
+# Same rig groups as ci.yml, filtered to the post-merge rigs (CI_ONLY_POST_MERGE). A red run opens ONE issue per commit, label `ci-mutants`.
+name: CI mutants
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push replaces the one pending run; a running one is never cancelled (the nightly covers a skipped commit)
+concurrency:
+  group: ci-mutants
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  CI_ONLY_POST_MERGE: '1'
+
+jobs:
+  rigs:
+    timeout-minutes: 150
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+    name: mutant rigs (group ${{ matrix.group }})
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: plan
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}" --plan
+      - uses: ./.github/actions/setup
+        if: steps.plan.outputs.run == 'true'
+        with:
+          bundles: 'true'
+          desktop: 'true'
+      - if: steps.plan.outputs.run == 'true'
+        run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs "${{ matrix.group }}"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.plan.outputs.run == 'true'
+        with:
+          name: result-group-${{ matrix.group }}
+          path: ${{ runner.temp }}/ci-result
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: warn
+
+  verdict:
+    needs: [rigs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - id: summary
+        run: |
+          set +e
+          node --experimental-strip-types --no-warnings scripts/ci/rigs.mjs summary "$RUNNER_TEMP/results" | tee "$RUNNER_TEMP/summary.md"
+          echo "code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+      # one issue per commit: an open issue whose title names this sha is reused (a re-run or the nightly on the same commit adds nothing)
+      - name: Open an issue when a mutant rig is red
+        if: steps.summary.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          short="${SHA:0:12}"
+          title="ci-mutants red on ${short}"
+          gh label create ci-mutants --color B60205 --description "post-merge mutant rigs red" 2>/dev/null || true
+          if [ -n "$(gh issue list --label ci-mutants --state all --search "\"${title}\" in:title" --json number --jq '.[0].number')" ]; then echo "issue for ${short} already exists"; exit 0; fi
+          { echo "Commit: ${SHA}"; echo "Run: ${RUN_URL}"; echo; echo "Failing rigs:"; grep -E '^\| ❌|needs\.' "$RUNNER_TEMP/summary.md" || echo "(none listed: see the run)"; } > "$RUNNER_TEMP/issue.md"
+          gh issue create --title "$title" --label ci-mutants --body-file "$RUNNER_TEMP/issue.md"
+      - name: Fail the run when a mutant rig is red
+        if: steps.summary.outputs.code != '0'
+        run: exit 1

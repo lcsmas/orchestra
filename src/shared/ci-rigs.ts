@@ -135,6 +135,12 @@ export function validateRigs(file: RigFile, required: string[]): string[] {
   return problems;
 }
 
+/** Owner decision 2026-11-26: a PR merges on typecheck + suite + the non-mutant rigs; these run after the merge (ci-mutants.yml) — every `*-mutants` / `*-mutants-*` rig (extension ignored) + the two role-guard matrices. */
+export function isPostMergeRig(id: string): boolean {
+  const stem = id.replace(/\.(mjs|sh)$/, '');
+  return /-mutants(-|$)/.test(stem) || /^test:role-guard-matrix(-|$)/.test(stem);
+}
+
 export const DEFAULT_GROUPS = 4;
 export const DEFAULT_SUITE_SHARDS = 1;
 /** GitHub's free-account concurrent-job limit: the jobs of ONE pull request must fit in it (#594). */

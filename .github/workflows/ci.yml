@@ -26,6 +26,8 @@ env:
   # #595 path selection: a pull_request runs the rigs its changed files select (src/shared/ci-paths.ts); the label `ci-full` (read from the run's event payload — add it BEFORE the push, or
   # close + reopen the PR) and every non-PR event run every rig. All jobs of a run derive the selection from the same inputs (scripts/ci/selection.mjs).
   CI_PATH_SELECTION: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+  # Owner decision 2026-11-26: a PR skips the post-merge rigs (`isPostMergeRig`: every *-mutants rig + the role-guard matrices; the summary lists them `skipped (post-merge)`); they run after the merge in ci-mutants.yml. A dispatch runs every rig.
+  CI_SKIP_POST_MERGE: ${{ github.event_name == 'pull_request' && '1' || '0' }}
   CI_FULL_REASON: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && 'the ci-full label forces every rig' || '' }}
 
 jobs:

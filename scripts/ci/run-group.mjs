@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assignGroups, readRigFile } from '../../src/shared/ci-rigs.ts';
-import { currentSelection, pathSelectionOn } from './selection.mjs';
+import { currentSelection, onlyPostMergeOn, pathSelectionOn, postMergeFilter, skipPostMergeOn } from './selection.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const n = Number(process.argv[2]);
@@ -21,10 +21,13 @@ const wanted = idsArg ? idsArg.slice(6).split(',').filter(Boolean) : null;
 if (wanted && inGroup) { const stray = wanted.filter((id) => !inGroup.includes(id)); if (stray.length) { console.error(`::error::--ids names ${stray.join(', ')}, which is not in group ${n}`); process.exit(2); } }
 const sel = pathSelectionOn() || process.env.CI_FULL_REASON ? currentSelection(root, file) : null;
 const chosen = sel ? new Set(sel.ran.map((r) => r.id)) : null;
-const ids = inGroup && (wanted || chosen) ? inGroup.filter((id) => (!wanted || wanted.includes(id)) && (!chosen || chosen.has(id))) : inGroup;
+const byPath = inGroup && (wanted || chosen) ? inGroup.filter((id) => (!wanted || wanted.includes(id)) && (!chosen || chosen.has(id))) : inGroup;
+const ids = byPath && postMergeFilter(byPath); // post-merge rigs (mutants, role-guard matrices): skipped on a PR, the ONLY ones in ci-mutants.yml
 const out = (k, v) => { if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`); };
-if (sel && inGroup && inGroup.length > 0 && (ids ?? []).length === 0) {
-  const msg = `group ${n}: no rig selected by path (${sel.mode === 'paths' ? `${sel.skipped.length} rigs skipped by path across the run` : sel.fullReason}) — nothing to run, the job is green`;
+const postMergeOnly = skipPostMergeOn() || onlyPostMergeOn();
+if ((sel || postMergeOnly) && inGroup && inGroup.length > 0 && (ids ?? []).length === 0) {
+  const why = onlyPostMergeOn() && (byPath ?? []).length === 0 ? 'no post-merge rig in this group' : skipPostMergeOn() && (byPath ?? []).length > 0 ? `${byPath.length} post-merge rig(s) skipped (they run after the merge, ci-mutants.yml)` : sel ? `no rig selected by path (${sel.mode === 'paths' ? `${sel.skipped.length} rigs skipped by path across the run` : sel.fullReason})` : 'no rig to run';
+  const msg = `group ${n}: ${why} — nothing to run, the job is green`;
   console.log(msg); out('run', 'false');
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Rig group ${n}: ⏭ ${msg}\n`);
   process.exit(0);

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, groupsOf, jobCount, judgeArm, judgeShards, tapFails, judge, MAX_JOBS, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, suiteShardsOf, tapSkips, validateRigs, type RigFile, type ShardResult } from './ci-rigs.ts';
+import { assignGroups, groupsOf, isPostMergeRig, jobCount, judgeArm, judgeShards, tapFails, judge, MAX_JOBS, parseRigCounts, parseTapSummary, readRigFile, requiredRigIds, suiteShardsOf, tapSkips, validateRigs, type RigFile, type ShardResult } from './ci-rigs.ts';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 
@@ -331,4 +331,80 @@ test('a `# todo` test is red (it is neither a pass nor a listed skip)', () => {
   assert.equal(c?.todo, 1);
   assert.equal(judge(0, c!).ok, false);
   assert.equal(judge(0, { ...c!, todo: 0 }).ok, true);
+});
+
+test('post-merge rigs: every *-mutants / *-mutants-* rig and the role-guard matrices, nothing else (must-FAIL arms on the negatives)', () => {
+  for (const id of ['test:fanout-run-mutants', 'test:fanout-run-mutants-2', 'canary:pause-bars-mutants', 'scripts/e2e-browser-tabs-mutants.mjs', 'scripts/e2e-browser-design-proxy-mutants.sh', 'test:role-guard-matrix', 'test:role-guard-matrix-vf2']) assert.equal(isPostMergeRig(id), true, id);
+  for (const id of ['test:role-guard-cli', 'test:fanout-run', 'test:mutantsish', 'scripts/e2e-browser-tabs.mjs', 'test:disk-guard']) assert.equal(isPostMergeRig(id), false, id);
+  // the repo's own list: the policy selects a real, non-empty subset of the RUNS_IN_CI rigs
+  const ci = readRigFile(root).rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
+  const pm = ci.filter(isPostMergeRig);
+  assert.ok(pm.length >= 40 && pm.length < ci.length, `${pm.length} post-merge rigs of ${ci.length}`);
+});
+
+function runScript(args: string[], env: Record<string, string>) {
+  const out = path.join(os.tmpdir(), `pm-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  fs.mkdirSync(out, { recursive: true });
+  const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', ...args], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', GITHUB_OUTPUT: path.join(out, 'o'), ...env } });
+  return { ...r, output: fs.existsSync(path.join(out, 'o')) ? fs.readFileSync(path.join(out, 'o'), 'utf8') : '' };
+}
+
+test('run-group --plan: a PR group keeps its non-mutant rigs, ci-mutants only the post-merge ones, a dispatch every rig', () => {
+  const file = readRigFile(root);
+  const groups = assignGroups(file);
+  const mixed = groups.findIndex((g) => g.some(isPostMergeRig) && g.some((id) => !isPostMergeRig(id)));
+  assert.ok(mixed >= 0);
+  const plan = (g: number, env: Record<string, string>) => runScript(['scripts/ci/run-group.mjs', String(g + 1), '--plan'], env);
+  const pr = { CI_PATH_SELECTION: '1', CI_SKIP_POST_MERGE: '1', CI_FULL_REASON: 'the ci-full label forces every rig' };
+  // ci-full on a PR still skips them (the brief: on pull_request, skip); the mixed group keeps its non-mutant rigs
+  const m = plan(mixed, pr);
+  const nonPm = groups[mixed].filter((id) => !isPostMergeRig(id)).length;
+  assert.match(m.stdout, new RegExp(`${nonPm} rig\\(s\\) selected`));
+  // ci-mutants: only the post-merge ones
+  const mu = plan(mixed, { CI_ONLY_POST_MERGE: '1' });
+  assert.match(mu.stdout, new RegExp(`${groups[mixed].filter(isPostMergeRig).length} rig\\(s\\) selected`));
+  // dispatch: every rig of the group
+  const d = plan(mixed, {});
+  assert.match(d.stdout, new RegExp(`${groups[mixed].length} rig\\(s\\) selected`));
+});
+
+test('summary: a PR lists the post-merge rigs as skipped (not green, not red) and a missing non-mutant rig is still red; ci-mutants needs only the mutant rigs', () => {
+  const file = readRigFile(root);
+  const ci = file.rigs.filter((r) => r.class === 'RUNS_IN_CI').map((r) => r.id);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-sum-'));
+  const res = (name: string, extra: object = {}) => ({ name, ok: true, why: 'ok', counts: { run: 1, pass: 1, fail: 0, skipped: 0 }, wallSec: 1, attempts: 1, armRetries: 0, ...extra });
+  const put = (r: { name: string }, f: string) => fs.writeFileSync(path.join(dir, `${f}.json`), JSON.stringify(r));
+  put(res('typecheck'), 'tc');
+  for (let i = 1; i <= suiteShardsOf(file); i++) put(res(`suite shard ${i}/${suiteShardsOf(file)}`, { shard: i, shards: suiteShardsOf(file), counts: { run: 5, pass: 5, fail: 0, skipped: 0 } }), `s${i}`);
+  for (const id of ci.filter((x) => !isPostMergeRig(x))) put(res(`rig:${id}`, { id }), `r_${id.replace(/\W/g, '_')}`);
+  const pr = { CI_PATH_SELECTION: '0', CI_SKIP_POST_MERGE: '1', CI_FULL_REASON: 'x', NEEDS_JSON: '{}' };
+  const ok = runScript(['scripts/ci/rigs.mjs', 'summary', dir], pr);
+  assert.equal(ok.status, 0, ok.stdout);
+  assert.match(ok.stdout, /\| ⏭ \| rig:test:fanout-run-mutants \|.*skipped \(post-merge\)/);
+  assert.match(ok.stdout, /post-merge rigs skipped/);
+  // must-FAIL: a non-mutant rig with no result is still red (no silent green for the rigs that do run)
+  const victim = ci.find((x) => !isPostMergeRig(x)) as string;
+  fs.rmSync(path.join(dir, `r_${victim.replace(/\W/g, '_')}.json`));
+  assert.equal(runScript(['scripts/ci/rigs.mjs', 'summary', dir], pr).status, 1);
+  // ci-mutants.yml mode: nothing but the post-merge rigs expected; none reported ⇒ red, all reported ⇒ green
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'pm-sum2-'));
+  const mu = { CI_ONLY_POST_MERGE: '1', NEEDS_JSON: '{}' };
+  assert.equal(runScript(['scripts/ci/rigs.mjs', 'summary', dir2], mu).status, 1);
+  for (const id of ci.filter(isPostMergeRig)) fs.writeFileSync(path.join(dir2, `${id.replace(/\W/g, '_')}.json`), JSON.stringify(res(`rig:${id}`, { id })));
+  assert.equal(runScript(['scripts/ci/rigs.mjs', 'summary', dir2], mu).status, 0);
+});
+
+test('ci-mutants.yml: master push + nightly, only post-merge rigs, the same 17 groups as ci.yml, an issue per commit labelled ci-mutants; ci.yml skips them on a PR only', () => {
+  const wf = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci-mutants.yml'), 'utf8');
+  const pr = fs.readFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
+  assert.match(wf, /^on:\n  push:\n    branches: \[master\]\n  schedule:\n    - cron:/m);
+  assert.ok(!/^\s*pull_request:/m.test(wf), 'a PR must not run the post-merge workflow');
+  assert.match(wf, /CI_ONLY_POST_MERGE: '1'/);
+  assert.match(wf, /issues: write/);
+  assert.match(wf, /gh issue create --title "\$title" --label ci-mutants/);
+  assert.match(wf, /gh issue list --label ci-mutants/);
+  const iota = (n: number): number[] => Array.from({ length: n }, (_, i) => i + 1);
+  assert.deepEqual((/group: \[([\d, ]+)\]/.exec(wf)?.[1] ?? '').split(',').map((x) => Number(x.trim())), iota(groupsOf(readRigFile(root))), 'ci-mutants.yml group list != groups of .github/ci-rigs.json');
+  assert.match(pr, /CI_SKIP_POST_MERGE: \$\{\{ github\.event_name == 'pull_request' && '1' \|\| '0' \}\}/);
+  assert.ok(!/CI_ONLY_POST_MERGE/.test(pr));
 });
