@@ -273,7 +273,7 @@ try {
     clause('caller/stranger-merged-refused-state-unchanged', bm.code === 2 && /\[state-caller\]/.test(bm.stderr) && !JSON.parse(fs.readFileSync(stateFile, 'utf8')).tickets.B, `rc ${bm.code} «${bm.stderr.trim().slice(0, 140)}»; B in state: ${!!JSON.parse(fs.readFileSync(stateFile, 'utf8')).tickets.B}`);
     const bj = await job('stranger', ['fanout', 'state', 'set', '--run', O.id, 'B', '--json', '{"status":"merged"}']);
     clause('caller/stranger-merged-via-json-refused', bj.code === 2 && /\[state-caller\]/.test(bj.stderr), `rc ${bj.code} «${bj.stderr.trim().slice(0, 100)}»`);
-    const bo = await job('stranger', ['fanout', 'open', '--branch', 'impl-a', '--into', 'main', '--ticket', 'A'], { ORCHESTRA_RUN_ID: O.id });
+    const bo = await job('stranger', ['fanout', 'open', '--branch', 'impl-a', '--into', 'main', '--ticket', 'A', '--run', O.id], { ORCHESTRA_RUN_ID: O.id });
     clause('caller/stranger-open-refused', bo.code === 2 && /\[open-caller\]/.test(bo.stderr), `rc ${bo.code} «${bo.stderr.trim().slice(0, 120)}»`);
     const bg = await job('stranger', ['fanout', 'gate', '--branch', 'impl-a', '--into', 'main', '--head', 'a'.repeat(40), '--ticket', 'A', '--run', O.id]);
     clause('caller/stranger-gate-refused', bg.code === 2 && /\[gate-caller\]/.test(bg.stderr), `rc ${bg.code} «${bg.stderr.trim().slice(0, 120)}»`);
