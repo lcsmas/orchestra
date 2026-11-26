@@ -180,13 +180,21 @@ export function renderSelection(w: SelectionWire, totalCi: number): string {
 }
 
 // ---- recall check + path generation (uses the closure walker) ---------------------------------------------------------------------
+/** #644: the fanout family (Boucle, freeze, review, plan …) is carried by the app/cli bundles but exercised only by the fanout rigs; the other bundle-booting rigs negate it in their `paths`. */
+export const OMIT_FANOUT: readonly string[] = ['src/shared/fanout-*.ts', 'src/shared/verified-fanout-*.ts', 'src/cli/fanout-*.ts', 'src/main/fanout-*.ts', 'src/main/verified-fanout-*.ts'];
+/** The globs a rig's declared paths negate as a whole family (every `!` entry of OMIT_FANOUT present); [] otherwise. */
+export function omittedGlobs(paths: readonly string[] | undefined): string[] {
+  return paths && OMIT_FANOUT.every((g) => paths.includes(`!${g}`)) ? [...OMIT_FANOUT] : [];
+}
+
 /** The recall check: a rig's declared paths (or the shared paths) must cover every file its own command can reach. A rig with no `paths` runs always and cannot miss. */
 export function recallProblems(file: RigFile, tree: Tree, pkgScripts: Record<string, string>): string[] {
   const w = createWalker(tree, pkgScripts); const out: string[] = [];
   for (const r of file.rigs) {
     if (!r.paths) continue;
     const pats = expandPaths(file, r.paths);
-    const missed = [...w.closure(r.command).files].filter((f) => !matchPaths(pats, f) && !matchPaths(file.sharedPaths ?? [], f)).sort();
+    const omit = omittedGlobs(r.paths); // #644: a family this rig's paths negate on purpose (generatePaths wrote the `!` entries)
+    const missed = [...w.closure(r.command).files].filter((f) => !matchPaths(pats, f) && !matchPaths(file.sharedPaths ?? [], f) && !matchPaths(omit, f)).sort();
     for (const d of w.closure(r.command).walked) { const probe = `${d}/__any_file__.ts`; if (!matchPaths(pats, probe) && !matchPaths(file.sharedPaths ?? [], probe)) missed.push(`${d}/** (a script of its command walks ${d}/)`); }
     if (missed.length) out.push(`${r.id}: its own command reaches ${missed.length} file(s) its declared paths do not cover — e.g. ${missed.slice(0, 4).join(', ')} (add them to its \`paths\` in .github/ci-rigs.json, or run \`node --experimental-strip-types scripts/ci/rigs.mjs paths ${r.id}\`)`);
   }
@@ -207,7 +215,9 @@ export function generatePaths(file: RigFile, tree: Tree, pkgScripts: Record<stri
     const rest = new Set(closure); for (const s of used) for (const f of s.files) rest.delete(f);
     const cl = w.closure(r.command);
     const walked = [...cl.walked].sort().map((d) => `${d}/**`); // a gate that WALKS a directory depends on every file in it
-    paths[r.id] = [...used.map((s) => `@${s.name}`), ...compressPaths(rest, tree.files), ...walked, ...(r.pathsExtra ?? [])];
+    // #644: a rig that only BOOTS the Electron app bundle (its own scripts/tests import nothing of the family) is not selected by a change to the family's files the bundle merely carries.
+    const family = used.some((s) => s.name === 'bundle:app') && !/fanout/.test(`${r.id} ${r.command}`) && ![...rest].some((f) => matchPaths(OMIT_FANOUT, f)) ? OMIT_FANOUT.map((g) => `!${g}`) : [];
+    paths[r.id] = [...used.map((s) => `@${s.name}`), ...compressPaths(rest, tree.files), ...walked, ...family, ...(r.pathsExtra ?? [])];
   }
   return { pathSets, paths };
 }
