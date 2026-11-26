@@ -141,8 +141,8 @@ const mutants = [
   ['decision 10: a CI still running is merged', [[L, "state: c.status === 'green' ? 'success' : c.status === 'red' ? 'failure' : 'pending'", "state: c.status === 'red' ? 'failure' : 'success'"]]],
   ['decision 10: a ticket merges before its upstream', [[L, "    if (t.dependsOn.some((u) => !isMerged(s0, u))) return; // an unmerged upstream: never first\n", ""], [L, "if (!upDecision.ok) {", "if (false as boolean && !upDecision.ok) {"]]],
   ['decision 10: merges in DECLARATION order', [[L, "ready.sort((x, y) => x.readyAt - y.readyAt || x.order - y.order);", "ready.sort((x, y) => x.order - y.order);"]]],
-  ['exit codes: a run with parked tickets exits 0', [[L, "return finish(parkedTickets(s).length ? 3 : 0);", "return finish(0);"]]],
-  ['exit codes: a pause is ignored', [[L, "if (pausedOf(s)) return finish(4,", "if (false as boolean && pausedOf(s)) return finish(4,"]]],
+  ['exit codes: a run with parked tickets exits 0', [[L, "return await finish(parkedTickets(s).length ? 3 : 0);", "return await finish(0);"]]],
+  ['exit codes: a pause is ignored', [[L, "if (pausedOf(s)) return await finish(4,", "if (false as boolean && pausedOf(s)) return await finish(4,"]]],
   ['the judge: a merge on a red CI is not a violation', [[J, "if (m.ci !== 'green') v(", "if (false as boolean) v("]]],
   ['the judge: a merge with no approval is not a violation', [[J, "if (!approvals.length) v(", "if (false as boolean) v("]]],
   ['the judge: readiness order is not checked', [[J, "if (readiness[b].at < readiness[a].at) v(", "if (false as boolean) v("]]],
@@ -152,6 +152,12 @@ const mutants = [
   ['the dummy: a second openPr for the same branch opens a second PR', [[DM, "for (const p of this.prs.values()) if (p.branch === branch) return p.n;\n", ""]]],
   ['the dummy: a re-run creates no new run (the jobId does not change)', [[DM, "rerun(n: number): void { const p = this.prs.get(n)!; this.runFor(p, this.branches.get(p.branch)!, true); }", "rerun(_n: number): void { /* nothing re-runs */ }"]]],
   ['the dummy: the world answers the question with anything (the fixed answer is not what unblocks)', [[DM, "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text });", "this.ev('send', a?.ticket, { to: ws, kind: 'answer', text: 'whatever' });"]]],
+  ['stack C connect (#607): stepCi does nothing (red CI is never re-run, told, parked or paused)', [[L, "const r = await runCi(ciCtxOf(ctx));", "const r = { reran: [], told: [], parked: [], flaky: [], paused: false } as Awaited<ReturnType<typeof runCi>>;"]]],
+  ['stack C connect (#607): a red or missing start check does not refuse the start', [[L, "if (!r.ok) throw new LoopRefusal(`run-${r.code}`, r.detail);", "if (false as boolean) throw new LoopRefusal(`run-${r.code}`, r.detail);"]]],
+  ['stack C connect (#608): a paused run goes on through the steps', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (false as boolean) { const cur"]]],
+  ['stack C connect (#608): reconcile adopts nothing (git does not overrule the state)', [[L, "  if (!readLoopState(deps.home, deps.run)) return;\n  // `readReality`", "  return;\n  // `readReality`"]]],
+  ['stack C connect (#608, story 21): the report costs are not read from the fleet', [[L, "await collectCosts(s, (t) => deps.fleet.costOf(t))", "{}"]]],
+  ['stack C connect (#606): stepCorrections does nothing', [[L, "const out = await runCorrections({ deps: ctx.deps });", "const out = [] as Awaited<ReturnType<typeof runCorrections>>;"]]],
 ];
 const control = run();
 console.log(`control (unpatched copy): ${control.pass} pass / ${control.fail} fail / ${control.skipped} skipped`);

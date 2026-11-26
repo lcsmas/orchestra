@@ -295,7 +295,7 @@ test('decision 12: killed between reading the mail and writing the nomination, t
   const home = tmp();
   const d = buildDummy({ home, run: 'rts7', scenario: load('rts7') });
   let crashed = false;
-  const git = { ...d.git, async head(b: string) { if (!crashed && b === 'impl-T1' && d.world.events.some((e) => e.ev === 'mail-posted' && e.ticket === 'T1')) { crashed = true; throw new LoopKilled('killed mid-pass'); } return d.git.head(b); } };
+  const git = { ...d.git, async head(b: string) { if (!crashed && b === 'impl-T1' && d.world.events.some((e) => e.ev === 'mail-read' && e.ticket === 'T1')) { crashed = true; throw new LoopKilled('killed mid-pass'); } return d.git.head(b); } };
   const deps = { home, run: 'rts7', caller: 'rts7', fleet: d.fleet, forge: d.forge, git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
   await assert.rejects(runLoop(deps), /killed mid-pass/);
   const again = await runLoop(deps);
@@ -629,4 +629,58 @@ test('swap MINOR: past CHOICES_MAX the loop still ANSWERS a question and still P
     if (name === 'question') { assert.equal(r.exit, 0, r.reason); assert.ok(d.world.events.some((e) => e.ev === 'answered'), 'the question was answered'); }
     else assert.deepEqual(r.report.parked.map((p) => [p.ticket, p.cause]), [['T3', 'question'], ['T5', 'upstream'], ['T7', 'upstream']]);
   }
+});
+
+// ── the connect of stack C (#606 / #607 / #608 steps filled in the loop) ───────────────────────────────────────────
+test('#608 (composed): a merge the state forgot is adopted from git at the next start — no second agent, no second PR, no second merge', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'readiness', scenario: load('readiness') });
+  const deps = { home, run: 'readiness', caller: 'readiness', fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  assert.equal((await runLoop(deps)).exit, 0);
+  const before = { spawn: d.world.events.filter((e) => e.ev === 'spawn').length, pr: d.world.events.filter((e) => e.ev === 'pr-open').length, merge: d.world.events.filter((e) => e.ev === 'merge').length };
+  updateLoopState(home, 'readiness', (cur) => withLoop({ ...cur!, tickets: { ...cur!.tickets, A: { ...cur!.tickets.A, status: 'started', mergedHead: null, mergedTree: null } } }, cur!.loop)); // the state lost A's merge (a kill before it was written)
+  const again = await runLoop(deps);
+  assert.equal(again.exit, 0);
+  assert.deepEqual(again.report.merged.sort(), ['A', 'B']);
+  assert.equal(readLoopState(home, 'readiness')!.tickets.A.status, 'merged');
+  assert.deepEqual({ spawn: d.world.events.filter((e) => e.ev === 'spawn').length, pr: d.world.events.filter((e) => e.ev === 'pr-open').length, merge: d.world.events.filter((e) => e.ev === 'merge').length }, before);
+});
+
+test('decision 8 (composed): a run that is already paused starts, merges and asks nothing — it ends exit 4 with the reason in the report', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'readiness', scenario: load('readiness') });
+  updateLoopState(home, 'readiness', () => withLoop(pauseRun(newState('readiness', { target: 'main', switches: { seatRecords: 'on', minorPolicy: 'demonstrated', verifier: 'off' }, now: d.now() }), { reason: 'check "build" is red on #1, #2', check: 'build', prs: [1, 2] }, d.now())));
+  const r = await runLoop({ home, run: 'readiness', caller: 'readiness', fleet: d.fleet, forge: d.forge, git: d.git, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } });
+  assert.equal(r.exit, 4);
+  assert.equal(r.report.paused?.check, 'build');
+  assert.equal(d.world.events.filter((e) => e.ev === 'spawn').length, 0, 'nothing was started under a pause');
+});
+
+test('#606 (composed): the reviewer asks for changes → ONE batch to the same author → its fix → the SAME reviewer approves the new head → merged (no second agent)', async () => {
+  const r = await go('corrections-fix');
+  assert.equal(r.result.exit, 0);
+  assert.deepEqual(r.result.report.merged.sort(), ['T1', 'T2']);
+  const batches = r.world.events.filter((e) => e.ev === 'corrections-batch');
+  assert.equal(batches.length, 1, 'one batch, not one per finding');
+  assert.match(String(batches[0].text), /F1/);
+  assert.equal(r.world.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T1').length, 1, 'the SAME author');
+  assert.ok(r.world.events.some((e) => e.ev === 'review-wake' && e.ticket === 'T1'), 'the same reviewer is woken on the fix, not a new one');
+  assert.deepEqual(r.violations, []);
+});
+
+test('#608 (composed): a ticket whose branch vanished is parked by the reconcile step at the next start — no second agent is started on it', async () => {
+  const home = tmp();
+  const d = buildDummy({ home, run: 'readiness', scenario: load('readiness') });
+  const base = { home, run: 'readiness', caller: 'readiness', fleet: d.fleet, forge: d.forge, now: d.now, sleep: d.sleep, log: () => {}, options: { ...DEFAULT_OPTIONS, plan: d.plan, stallMs: 30 * 60_000 } };
+  assert.equal((await runLoop({ ...base, git: d.git })).exit, 0);
+  const spawns = d.world.events.filter((e) => e.ev === 'spawn').length;
+  updateLoopState(home, 'readiness', (cur) => withLoop({ ...cur!, tickets: { ...cur!.tickets, A: { ...cur!.tickets.A, status: 'started', mergedHead: null, mergedTree: null } } }, cur!.loop));
+  const git = { ...d.git, head: async (b: string) => (b === readLoopState(home, 'readiness')!.tickets.A.branch ? null : d.git.head(b)), isMerged: async (b: string, base2: string) => (b === readLoopState(home, 'readiness')!.tickets.A.branch ? false : d.git.isMerged(b, base2)) };
+  const prA = readLoopState(home, 'readiness')!.tickets.A.pr!;
+  const forge = { ...d.forge, prState: async (n: number) => (n === prA ? { state: 'open' as const, head: 'a'.repeat(40) } : d.forge.prState(n)) };
+  const again = await runLoop({ ...base, forge, git });
+  assert.equal(again.exit, 3);
+  assert.deepEqual(again.report.parked.map((p) => [p.ticket, p.cause]), [['A', 'situation']]);
+  assert.match(again.report.parked[0].reason, /is gone/);
+  assert.equal(d.world.events.filter((e) => e.ev === 'spawn').length, spawns, 'no second agent');
 });

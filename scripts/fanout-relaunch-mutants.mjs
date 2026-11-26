@@ -32,7 +32,7 @@ const MUTANTS = [
   ['tokens-dedupe-per-file', RP, [["    collect(text, byId, anon);\n  }\n  return any ? total(byId) : null;", "    const own = new Map(); collect(text, own, anon); for (const [k, v] of own) byId.set(`${f}:${k}`, v);\n  }\n  return any ? total(byId) : null;"]]],
   ['ungated-hand-merge-not-parked', RL, [["if (d.kind === 'merged-at-ungated-head') return", "if (false) return"]]],
   ['park-a-merged-ticket', RL, [[" && !isParked(state0.tickets[x.d.ticket]) && !TERMINAL.has(state0.tickets[x.d.ticket].status));", " && !isParked(state0.tickets[x.d.ticket]));"]]],
-  ['park-twice-writes-again', RL, [[" x.why !== null && !isParked(state0.tickets[x.d.ticket]) &&", " x.why !== null &&"]]],
+  ['equiv-park-twice-writes-again', RL, [[" x.why !== null && !isParked(state0.tickets[x.d.ticket]) &&", " x.why !== null &&"]], 'equivalent'],  // since #603 (stack C) reconcile adds no divergence for a parked ticket (`claimsWork` is false), so the `!isParked` filter here is redundant
   ['always-write', RL, [["if (!writeBack.length && !toPark.length) {", "if (false) {"]]],
   ['writeback-dropped', RL, [["let s = writeBack.length ? applyWriteBack(cur, writeBack, now) : cur;", "let s = cur;"]]],
   ['adopted-always-empty', RL, [["out.adopted = Object.keys(s.tickets).filter((id) => s.tickets[id].status === 'merged' && before.tickets[id].status !== 'merged');", "out.adopted = [];"]]],

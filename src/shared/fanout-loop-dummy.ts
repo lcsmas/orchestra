@@ -236,6 +236,7 @@ export class DummyWorld {
   wakeImpl(ws: string, text: string): void {
     const a = this.impls.get(ws);
     if (!a) return;
+    if (/^Corrections for /.test(text)) { this.ev('corrections-batch', a.ticket, { ws, text }); return; } // #606: ONE batch to the author (the dummy author's script says what it does next)
     if (/^CI is red on your pull request/.test(text)) { this.ev('ci-told', a.ticket, { ws, text }); return; } // #607: the author is told which check is red (the dummy author does not react: its script says what it does next)
     const m = /^CONNECT (\S+) ([0-9a-f]{40})/.exec(text);
     if (!m) return;
