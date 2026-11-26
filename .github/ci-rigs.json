@@ -10531,6 +10531,17 @@
     "src/shared/fanout-review.ts",
     "src/shared/fanout-state.ts"
    ]
+  },
+  {
+   "id": "scripts/e2e-fanout-run-live-scratch.mjs",
+   "command": "node --experimental-strip-types scripts/e2e-fanout-run-live-scratch.mjs",
+   "class": "LOCAL_ONLY",
+   "reason": "needs `gh` auth, the network and a PRIVATE SCRATCH repository (ORCHESTRA_SCRATCH_REPO=<owner>/<…scratch…>); it refuses a public one and exits 1 without it. The built CLI `fanout run` on the live ports, fake host + scripted implementer, real gh/git/bus.",
+   "paths": [
+    "@bundle:cli",
+    "scripts/e2e-fanout-run-live-scratch.mjs",
+    "src/shared/fanout-acceptance-host.ts"
+   ]
   }
  ]
 }
