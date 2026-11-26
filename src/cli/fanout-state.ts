@@ -1,5 +1,6 @@
 // #469 — `orchestra fanout state init|set|show` and `orchestra fanout resume`. Pure of process globals: argv + deps in, {code,stdout,stderr} out,
 // so index.ts only forwards and the tests drive it with a fake git/gh runner. Resume = 5 steps: load, reconcile, classify, next action, write back.
+import { LOOP_USAGE } from './fanout-loop-help.ts';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -346,6 +347,7 @@ export function runFanout(args: string[], deps: FanoutDeps): RunResult {
     if (sub === 'resume') return runResume(rest, deps);
     if (sub === 'seat-help') return { code: 0, stdout: `${SEAT_USAGE}\n`, stderr: '' };
     if (sub === 'park-help') return { code: 0, stdout: `${PARK_USAGE}\n`, stderr: '' };
+    if (sub === 'loop-help') return { code: 0, stdout: `${LOOP_USAGE}\n`, stderr: '' }; // #609: the Boucle's help (fanout-loop-help.ts)
     return { code: 1, stdout: '', stderr: `unknown fanout verb "${sub}"\n${FANOUT_USAGE}\n` };
   } catch (e) {
     if (e instanceof SeatRefusal) return { code: 2, stdout: '', stderr: `${e.message}\n` }; // #587: a seatRecords refusal exits 2
