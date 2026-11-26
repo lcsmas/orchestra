@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { selectRigs } from '../../src/shared/ci-paths.ts';
+import { isMutantRig } from '../../src/shared/ci-rigs.ts';
 import { createWalker, repoTree } from '../../src/shared/ci-closure.ts';
 
 export const pathSelectionOn = () => process.env.CI_PATH_SELECTION === '1';
@@ -26,5 +27,12 @@ export function currentSelection(root, file, o = {}) {
       return walker.closure(rig.command).scripts;
     },
   };
-  return selectRigs(file, changed, full, ctx);
+  const sel = selectRigs(file, changed, full, ctx);
+  // #623: on a pull_request a mutant rig never runs or blocks (it runs on push to master + nightly, mutants.yml); only an explicit full run (`ci-full` label) keeps it.
+  if (pathSelectionOn() && !process.env.CI_FULL_REASON && !o.full) {
+    const why = 'mutant rig: runs on push to master + nightly (mutants.yml), never on a pull_request (#623)';
+    const moved = sel.ran.filter((r) => isMutantRig(r.id));
+    if (moved.length) return { ...sel, mode: 'paths', ran: sel.ran.filter((r) => !isMutantRig(r.id)), skipped: [...sel.skipped.filter((r) => !isMutantRig(r.id)), ...moved.map((r) => ({ id: r.id, why }))] };
+  }
+  return sel;
 }

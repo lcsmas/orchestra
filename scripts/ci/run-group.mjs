@@ -7,19 +7,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assignGroups, readRigFile } from '../../src/shared/ci-rigs.ts';
+import { assignGroups, mutantParts, readRigFile } from '../../src/shared/ci-rigs.ts';
 import { currentSelection, pathSelectionOn } from './selection.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const n = Number(process.argv[2]);
 const file = readRigFile(root);
-const inGroup = assignGroups(file)[n - 1];
+// #623: `run-group.mjs mutants --part=i/N` runs part i of the N mutant parts (mutants.yml: push to master + nightly) — every mutant rig, no path selection.
+const partArg = process.argv.find((a) => a.startsWith('--part='));
+const MUT = process.argv[2] === 'mutants';
+const [partI, partN] = partArg ? partArg.slice(7).split('/').map(Number) : [0, 0];
+const n = MUT ? partI : Number(process.argv[2]);
+const inGroup = MUT ? mutantParts(file, partN)[partI - 1] : assignGroups(file)[n - 1];
 // #595: under `CI_PATH_SELECTION=1` (a pull_request run) only the rigs the changed files select run; `--plan` just prints the verdict and sets the step output `run` so the job can skip its
 // install + bundles when nothing of this group is selected. `--ids=a,b` runs a subset of the group (an id outside it is an error, never a silent drop).
 const idsArg = process.argv.find((a) => a.startsWith('--ids='));
 const wanted = idsArg ? idsArg.slice(6).split(',').filter(Boolean) : null;
 if (wanted && inGroup) { const stray = wanted.filter((id) => !inGroup.includes(id)); if (stray.length) { console.error(`::error::--ids names ${stray.join(', ')}, which is not in group ${n}`); process.exit(2); } }
-const sel = pathSelectionOn() || process.env.CI_FULL_REASON ? currentSelection(root, file) : null;
+const sel = !MUT && (pathSelectionOn() || process.env.CI_FULL_REASON) ? currentSelection(root, file) : null;
 const chosen = sel ? new Set(sel.ran.map((r) => r.id)) : null;
 const ids = inGroup && (wanted || chosen) ? inGroup.filter((id) => (!wanted || wanted.includes(id)) && (!chosen || chosen.has(id))) : inGroup;
 const out = (k, v) => { if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`); };
@@ -49,7 +53,7 @@ for (const id of ids) {
   else console.log(`[group ${n}] RED ${id} — no result file (the rig runner itself failed)`);
 }
 const bad = rows.filter((r) => !r.ok);
-const md = [`### Rig group ${n}: ${bad.length ? `❌ ${bad.length} of ${rows.length} red` : `✅ ${rows.length} rigs green`} (${Math.round((Date.now() - t0) / 60000)} min)`, '', '| | rig | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|',
+const md = [`### ${MUT ? `Mutant part ${n}/${partN}` : `Rig group ${n}`}: ${bad.length ? `❌ ${bad.length} of ${rows.length} red` : `✅ ${rows.length} rigs green`} (${Math.round((Date.now() - t0) / 60000)} min)`, '', '| | rig | run | passed | failed | skipped | wall |', '|---|---|---|---|---|---|---|',
   ...rows.map((r) => `| ${r.ok ? '✅' : '❌'} | \`${r.id}\` | ${r.res?.counts.run ?? '—'} | ${r.res?.counts.pass ?? '—'} | ${r.res?.counts.fail ?? '—'} | ${r.res?.counts.skipped ?? '—'} | ${r.res ? `${r.res.wallSec}s${r.res.attempts > 1 ? ` (${r.res.attempts} attempts)` : ''}${r.res.armRetries > 0 ? ` (${r.res.armRetries} arm re-runs)` : ''}` : '—'} |${r.ok ? '' : ` ${r.res?.why ?? 'no result'}`}`), ''].join('\n');
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
 console.log(md);

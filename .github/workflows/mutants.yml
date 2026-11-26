@@ -1,0 +1,87 @@
+# #623: the mutant rigs (ids containing `mutants`, the role-guard matrices — `isMutantRig` in src/shared/ci-rigs.ts) never block a pull_request (ci.yml skips them). They run HERE: on every push to master,
+# nightly, and by hand. A red run opens a GitHub issue labelled `ci-mutants` naming the failing rigs and the merge commit. The parts are `mutantParts(file, 8)` of .github/ci-rigs.json.
+name: Mutants
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutants-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8]
+    name: mutants (part ${{ matrix.part }}/8)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/setup
+        with:
+          bundles: 'true'
+          desktop: 'true'
+      - run: node --experimental-strip-types --no-warnings scripts/ci/run-group.mjs mutants --part=${{ matrix.part }}/8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-mutants-${{ matrix.part }}
+          path: ${{ runner.temp }}/ci-result
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: warn
+
+  report:
+    needs: [mutants]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: result-mutants-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - id: verdict
+        run: |
+          set +e
+          node --experimental-strip-types --no-warnings scripts/ci/mutants-report.mjs "$RUNNER_TEMP/results" > "$RUNNER_TEMP/body.md"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+          [ "${{ needs.mutants.result }}" = success ] || echo "rc=1" >> "$GITHUB_OUTPUT"
+      - name: Open a ci-mutants issue
+        if: steps.verdict.outputs.rc != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create ci-mutants --color B60205 --description "a mutant rig is red (#623)" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh issue create --repo "$GITHUB_REPOSITORY" --label ci-mutants --title "ci-mutants: mutant rig(s) red at ${GITHUB_SHA::8} (${GITHUB_EVENT_NAME})" --body-file "$RUNNER_TEMP/body.md"
+      - name: Verdict
+        if: steps.verdict.outputs.rc != '0'
+        run: exit 1
