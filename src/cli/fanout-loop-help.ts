@@ -5,8 +5,10 @@ export const LOOP_USAGE = `The Boucle (#601, slice 1) — no model leads a vague
         lead the run: plan → start every implementer at once on the frozen names → mail → nominations → open the PR → review → approvals → connect a dependent to its approved upstream → CI → corrections → deliver in readiness order → end.
         Prints the closing report (JSON on stdout, text on stderr): merged · parked (ticket, cause, reason) · the irreversible choices (FIRST, --taken "irreversible: …") · choices the agents took · findings left · flaky checks · re-connects and extra review rounds (#649) · cost per ticket · the pause.
         Exit 0 every ticket merged · 3 the run ended with ≥1 parked ticket · 4 paused (lift it with \`orchestra fanout state set --run <id> --resume-run\`, then run again) · 2 refused ([run-…]) · 1 could not run.
+        A pause the loop sets itself (one check still red on several pull requests after its re-run) never ends the run: it orders nobody, re-runs the red checks 2, 5, 10, 20 min then every 20, lifts itself on the first green, and the report says how long it waited — exit 4 is only a pause set by hand (\`state set --pause\`).
+        A red check (a pull request's, or the --start-check's) is re-run ONCE before any verdict; green on the re-run = listed flaky in the report.
         It is the ONLY reader of the run's mail and never waits for a person. Killed and started again it adopts every live agent and opens no second agent, pull request or merge.
-        --start-check: before the start, open an EMPTY pull request into the target, await its checks, close it; a red check there = the run does not start.
+        --start-check: before the start, open an EMPTY pull request into the target, await its checks, close it; a red check there is re-run once; red twice = the run does not start.
   orchestra fanout loop-help                                     this text
   orchestra fanout plan --tickets <id,id,…> [--run <id>]       (coordinator) spawn the single-use plan agent (explo-plan-<run8>); returns when a plan is accepted
   orchestra fanout plan submit <plan.json>                      (the plan agent) check the plan and answer with the reasons; refused twice = plan-refused-twice, exit 2, the run does not start

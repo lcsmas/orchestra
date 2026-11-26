@@ -9,12 +9,15 @@ import type { FanoutState, FindingRecord, TicketState } from './fanout-state.ts'
 export type ParkCauseView = 'question' | 'situation' | 'ci' | 'upstream';
 export interface ParkedView { cause: ParkCauseView; reason: string; at?: string; blockedBy?: string }
 export interface ChoiceView { n: number; ticket: string; question: string; rule: 'reversible-default' | 'no-safe-option'; answer: string; at: string }
-export interface PauseInfo { at: string; reason: string; check: string | null; prs: number[] }
+export interface PauseInfo { at: string; reason: string; check: string | null; prs: number[]; /** #655: the loop's own pause — it waits and lifts it by itself */ auto?: { tries: number; nextAt: string } }
+/** #655: an automatic pause that lifted itself. */
+export interface WaitedInfo { at: string; until: string; ms: number; check: string | null; prs: number[]; reruns: number }
 
 export const parkedOf = (t: TicketState | undefined): ParkedView | null => t?.parked ?? null;
 export const choicesOf = (s: FanoutState): ChoiceView[] => s.choices ?? [];
 /** #645: a choice recorded with `--taken "irreversible: <what>"` (case-insensitive, leading space ignored). */
 export const isIrreversibleChoice = (c: { answer: string }): boolean => /^\s*irreversible\s*:/i.test(c.answer);
+const fmtWait = (ms: number): string => { const m = Math.max(0, Math.round(ms / 60_000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
 export const pauseOf = (s: FanoutState): PauseInfo | null => s.pause ?? null;
 /** #607 (ledger v1.2): `TicketState.ci.flaky` = the check names that went red, then green on the one re-run — read per ticket (delete the cast when #607 is merged). */
 const flakyOf = (t: TicketState): string[] => t.ci?.flaky ?? [];
@@ -44,6 +47,8 @@ export interface Report {
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
   paused: PauseInfo | null;
+  /** #655 — the environment pauses the loop waited out (how long, how many re-runs). */
+  waited: WaitedInfo[];
   /** #649 — per ticket: CONNECTs sent again because the upstream moved (null = not measured: only the loop's sidecar knows) and review rounds beyond the first (derived from the recorded reviews). `total` sums the tickets. */
   moves: { reconnects: { total: number; perTicket: Record<string, number> } | null; extraReviewRounds: { total: number; perTicket: Record<string, number> } };
 }
@@ -92,9 +97,10 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
   return {
     run: state.run, irreversible, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
-    flaky: ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`)),
+    flaky: [...(state.startFlaky ?? []).map((c) => `start-check/${c}`), ...ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`))],
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
     paused: pauseOf(state),
+    waited: state.waited ?? [],
     moves: {
       reconnects: reconnects ? (() => { const perTicket = Object.fromEntries(ids.map((id) => [id, reconnects[id] ?? 0])); return { total: sumOf(perTicket), perTicket }; })() : null,
       extraReviewRounds: (() => { const perTicket = Object.fromEntries(ids.map((id) => [id, extraReviewRoundsOf(state.tickets[id])])); return { total: sumOf(perTicket), perTicket }; })(),
@@ -117,7 +123,9 @@ export function renderReport(r: Report): string {
   const L: string[] = [];
   const total = Object.values(r.costPerTicket).reduce((n, c) => n + (c?.tokens ?? 0), 0);
   L.push(`fanout run ${r.run}: ${r.merged.length} merged, ${r.parked.length} parked${r.dropped.length ? `, ${r.dropped.length} dropped` : ''}${r.unfinished.length ? `, ${r.unfinished.length} unfinished` : ''}${r.paused ? ' — PAUSED' : ''}`);
-  if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — lift the pause with \`orchestra fanout state set --run ${r.run} --resume-run\`, then run \`orchestra fanout run --run ${r.run}\` again`);
+  if (r.paused?.auto) L.push(`WAITING since ${r.paused.at} (${r.paused.auto.tries} re-run${r.paused.auto.tries === 1 ? '' : 's'} so far): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — the loop re-runs the red checks (2, 5, 10, 20 min, then every 20) and lifts the pause by itself on the first green`);
+  else if (r.paused) L.push(`PAUSED (${r.paused.at}): ${oneLine(r.paused.reason)}${r.paused.check ? ` — check ${r.paused.check}` : ''}${r.paused.prs.length ? ` — red on PR ${r.paused.prs.map((n) => `#${n}`).join(', ')}` : ''} — lift the pause with \`orchestra fanout state set --run ${r.run} --resume-run\`, then run \`orchestra fanout run --run ${r.run}\` again`);
+  for (const w of r.waited) L.push(`waited ${fmtWait(w.ms)} on the environment (check ${w.check ?? '(any)'}${w.prs.length ? `, red on PR ${w.prs.map((n) => `#${n}`).join(', ')}` : ''}), ${w.reruns} re-run${w.reruns === 1 ? '' : 's'}, lifted by itself at ${w.until}`);
   if (r.irreversible.length) {
     L.push(`IRREVERSIBLE — the PR carries a script nobody has run; run it by hand (${r.irreversible.length}):`);
     for (const c of r.irreversible) L.push(`  #${c.n} ${c.ticket} ${oneLine(c.question, 200)} → ${oneLine(c.answer, 300)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
@@ -135,7 +143,7 @@ export function renderReport(r: Report): string {
     L.push(`findings left (${r.findingsLeft.length}):`);
     for (const f of r.findingsLeft) L.push(`  ${f.ticket}/${f.finding}  ${f.severity}  ${f.end}${f.note ? `: ${f.note}` : ''}`);
   }
-  if (r.flaky.length) L.push(`flaky (red, then green on the one re-run): ${r.flaky.join(', ')}`);
+  if (r.flaky.length) L.push(`flaky (red, then green on the re-run): ${r.flaky.join(', ')}`);
   const per = (m: Record<string, number>): string => Object.entries(m).filter(([, n]) => n > 0).map(([id, n]) => `${id} ${n}`).join(' · ');
   const rc = r.moves.reconnects, rr = r.moves.extraReviewRounds;
   L.push(`re-connects (a CONNECT sent again because the upstream moved): ${rc ? `${rc.total}${rc.total ? ` — ${per(rc.perTicket)}` : ''}` : 'not measured'}`);

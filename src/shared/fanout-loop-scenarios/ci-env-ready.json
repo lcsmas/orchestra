@@ -22,9 +22,11 @@
   },
   "ci": {
     "T1": [
+      "red:build",
       "red:build"
     ],
     "T2": [
+      "red:build",
       "red:build"
     ]
   },
@@ -43,7 +45,7 @@
       "reviewer": [
         {
           "do": "approve",
-          "afterMs": 330000
+          "afterMs": 600000
         }
       ]
     }

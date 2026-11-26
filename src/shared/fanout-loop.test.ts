@@ -179,14 +179,19 @@ test('decision 8 (#607, composed): a flaky red goes green on the re-run → merg
   assert.deepEqual(r.violations, []);
 });
 
-test('decision 8 (#607, composed): the same check red on two pull requests → the run PAUSES (exit 4): no message, no re-run, no merge, the reason in the report', async () => {
+test('decision 8 (#607 + #655, composed): the same check red on two pull requests AFTER their re-run → the run PAUSES and stays alive: no author told, no merge while paused, it re-runs with backoff, lifts itself on the first green and finishes (never exit 4)', async () => {
   const r = await go('ci-env');
-  assert.equal(r.result.exit, 4);
-  assert.equal(r.result.report.paused?.check, 'build');
-  assert.equal(r.result.report.paused?.prs.length, 2);
+  assert.equal(r.result.exit, 0, 'a pause no longer ends the run');
+  assert.equal(r.result.report.paused, null, 'lifted by itself');
+  const w = r.result.report.waited;
+  assert.equal(w.length, 1);
+  assert.equal(w[0].check, 'build');
+  assert.equal(w[0].prs.length, 2);
+  assert.ok(w[0].reruns >= 1 && w[0].ms >= 2 * 60_000, `waited ${w[0].ms} ms, ${w[0].reruns} re-run(s)`);
   assert.equal(r.world.events.filter((e) => e.ev === 'ci-told').length, 0);
-  assert.equal(r.world.events.filter((e) => e.ev === 'ci-start').length, 2, 'one run per red PR (T1, T2), no re-run');
-  assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0, 'a paused run merges nothing');
+  const firstMerge = Math.min(...r.world.events.filter((e) => e.ev === 'merge').map((e) => Number(e.t)));
+  assert.ok(firstMerge >= Date.parse(w[0].until), 'a paused run merges nothing');
+  assert.match(renderReport(r.result.report), /waited \d+ min on the environment/);
   assert.deepEqual(r.violations, []);
 });
 
@@ -824,12 +829,14 @@ test('608 m2 (decision 11, composed): a ticket behind a DROPPED upstream is park
 
 test('607 c1 (decision 8, composed): a READY ticket (approved, green) in the very pass that pauses the run is NOT merged — nothing merges while the run is paused', async () => {
   const r = await go('ci-env-ready');
-  assert.equal(r.result.exit, 4);
-  assert.equal(r.result.report.paused?.check, 'build');
+  const w = r.result.report.waited;
+  assert.equal(w.length, 1);
+  assert.equal(w[0].check, 'build');
   const approved = r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T4' && e.verdict === 'approve');
   assert.equal(approved.length, 1, 'T4 was approved (its CI is green) before the pause');
-  assert.equal(r.world.events.filter((e) => e.ev === 'merge').length, 0, 'yet nothing merged');
-  assert.equal(r.result.report.merged.length, 0);
+  const t4 = r.world.events.filter((e) => e.ev === 'merge' && e.ticket === 'T4').map((e) => Number(e.t));
+  assert.ok(t4.length === 1 && t4[0] >= Date.parse(w[0].until), 'T4 (approved before the pause began) merged only after the pause lifted');
+  assert.ok(Number(approved[0].t) < Date.parse(w[0].at) + 60_000, 'T4 was ready when the run paused');
 });
 
 // ── stack C connect fix round 2 (review 606 of ledger #613, MAJOR-3 + its minor) ────────────────────────────────────

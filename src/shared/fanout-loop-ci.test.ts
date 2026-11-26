@@ -2,8 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyTicketPatch, newState, parseState, type FanoutState } from './fanout-state.ts';
-import { renderCiMessage, startCheckBranch, stepCi, stepStartCheck, type CiCtx, type CiOptions } from './fanout-loop-ci.ts';
-import { pausedOf, resumeRun } from './fanout-state.ts';
+import { flakyAtMerge, renderCiMessage, startCheckBranch, stepCi, stepPauseWatch, stepStartCheck, type CiCtx, type CiOptions } from './fanout-loop-ci.ts';
+import { pausedOf, pauseRun, resumeRun } from './fanout-state.ts';
 import type { ForgeCheck as CheckInfo } from './fanout-loop-ports.ts';
 type CiState = FanoutState;
 
@@ -47,6 +47,12 @@ function world(opts: { tickets?: Array<{ id: string; pr: number; head: string; d
     push(id: string, head: string) { w.state = { ...w.state, tickets: { ...w.state.tickets, [id]: { ...w.state.tickets[id], head } } }; },
   };
   return w;
+}
+/** #655: a red is re-run once before any verdict — two passes make a pause: the first re-runs, the second reads the re-run's red (a new job id). */
+async function toPause(w: ReturnType<typeof world>, afterFirst = false) {
+  if (!afterFirst) await w.pass();
+  for (const pr of Object.keys(w.script)) w.script[+pr] = w.script[+pr].map((c) => (c.status === 'red' && c.jobId ? { ...c, jobId: `${c.jobId}+` } : c));
+  return w.pass();
 }
 const red = (name: string, extra: Partial<CheckInfo> = {}): CheckInfo => ({ name, status: 'red', jobId: `${name}-1`, logExtract: `FAIL ${name}`, ...extra });
 const green = (name: string): CheckInfo => ({ name, status: 'green' });
@@ -183,17 +189,20 @@ test('the same check red on two pull requests → the run pauses: no message, no
   w.script[1] = [red('build'), green('lint')];
   w.script[2] = [red('build')];
   w.script[3] = [green('build')];
-  const r = await w.pass();
+  const first = await w.pass(); // a first red is never the environment: both PRs are re-run first
+  assert.equal(first.paused, false);
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 2]);
+  const r = await toPause(w, true);
   assert.equal(r.paused, true);
   const p = pausedOf(w.state);
   assert.equal(p?.check, 'build');
   assert.deepEqual(p?.prs, [1, 2]);
   assert.match(p?.reason ?? '', /build/);
   assert.equal(w.wakes.length, 0, 'no message to an author');
-  assert.equal(w.reruns.length, 0);
+  assert.equal(w.reruns.length, 2, 'only the two re-runs made before the pause');
   const again = await w.pass(); // a paused run does nothing
   assert.equal(again.paused, true);
-  assert.equal(w.reruns.length + w.wakes.length, 0);
+  assert.equal(w.reruns.length + w.wakes.length, 2);
 });
 
 test('MUST-FAIL: one pull request red on a check is NOT the environment (the run goes through the re-run path)', async () => {
@@ -218,11 +227,11 @@ test('resume: the paused PRs are re-run once (the human fixed the environment), 
   const w = two();
   w.script[1] = [red('build')];
   w.script[2] = [red('build')];
-  await w.pass();
+  await toPause(w);
   w.state = resumeRun(w.state, T);
   const r = await w.pass(); // checks still show the stale reds, same job ids
   assert.equal(r.paused, false, 'the acknowledged red is not counted again');
-  assert.deepEqual(w.reruns.map((x) => x.n).sort(), [1, 2]);
+  assert.deepEqual(w.reruns.map((x) => x.n).sort(), [1, 1, 2, 2], 'the re-run before the pause + one environment re-run each');
   w.script[1] = [green('build')];
   w.script[2] = [green('build')];
   await w.pass();
@@ -339,15 +348,17 @@ test('MAJOR 1: A\'s re-run (in flight when B went red) finishes red AFTER the re
   w.script[1] = [red('unit', { jobId: 'A1' })];
   await w.pass(); // A re-run
   w.script[2] = [red('unit', { jobId: 'B1' })];
+  await w.pass(); // B re-run
+  w.script[1] = [red('unit', { jobId: 'A2' })]; // A's re-run result
+  w.script[2] = [red('unit', { jobId: 'B2' })]; // B's re-run result
   assert.equal((await w.pass()).paused, true);
   w.state = resumeRun(w.state, T);
-  w.script[1] = [red('unit', { jobId: 'A2' })]; // A's re-run result
   const r = await w.pass();
   assert.equal(r.paused, false);
   assert.equal(w.wakes.length, 0, 'the environment is not told to an author');
-  assert.deepEqual(w.reruns.map((x) => x.n), [1, 1, 2], 'A (its re-run was spent) and B each get ONE environment re-run');
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 2, 1, 2], 'A and B each get ONE environment re-run after the one before the pause');
   w.script[1] = [red('unit', { jobId: 'A3' })];
-  w.script[2] = [red('unit', { jobId: 'B2' })];
+  w.script[2] = [red('unit', { jobId: 'B3' })];
   assert.equal((await w.pass()).paused, true);
   assert.equal(w.wakes.length, 0);
 });
@@ -356,7 +367,7 @@ test('MAJOR 1: the environment mark is forgotten once the check is green (a late
   const w = two();
   w.script[1] = [red('unit')];
   w.script[2] = [red('unit')];
-  await w.pass();
+  await toPause(w);
   w.state = resumeRun(w.state, T);
   await w.pass(); // both re-run
   w.script[1] = [green('unit')];
@@ -366,10 +377,8 @@ test('MAJOR 1: the environment mark is forgotten once the check is green (a late
   w.push('A', sha('1'));
   w.script[1] = [red('unit', { jobId: 'n1' })];
   await w.pass();
-  assert.equal(w.reruns.length, 3, 'its own re-run was never spent (the environment one does not count): a normal red gets it');
-  w.script[1] = [red('unit', { jobId: 'n2' })];
-  await w.pass();
-  assert.equal(w.wakes.length, 1, 'then told: it is no longer the environment');
+  assert.equal(w.reruns.length, 4, 'no further re-run: the ticket spent its own before the pause');
+  assert.equal(w.wakes.length, 1, 'told at once: it is no longer the environment');
 });
 
 test('MAJOR A: a ticket that spent its re-run BEFORE the pause is not stuck after the resume — environment re-run, then green (4 passes)', async () => {
@@ -377,11 +386,14 @@ test('MAJOR A: a ticket that spent its re-run BEFORE the pause is not stuck afte
   w.script[1] = [red('unit', { jobId: 'A1' })];
   await w.pass(); // A: its one re-run
   w.script[2] = [red('unit', { jobId: 'B1' })];
+  await w.pass(); // B: its one re-run
+  w.script[1] = [red('unit', { jobId: 'A1+' })];
+  w.script[2] = [red('unit', { jobId: 'B1+' })];
   assert.equal((await w.pass()).paused, true);
   w.state = resumeRun(w.state, T);
   w.script[1] = [red('unit', { jobId: 'A2' })]; // A's own re-run finished red (the environment was still broken)
   await w.pass(); // A and B: environment re-run
-  assert.deepEqual(w.reruns.map((x) => x.n), [1, 1, 2]);
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 2, 1, 2]);
   w.script[1] = [green('unit')]; // the environment was fixed
   w.script[2] = [green('unit')];
   for (let i = 0; i < 4; i++) { w.clock += 20 * 60_000; await w.pass(); }
@@ -395,7 +407,10 @@ test('MAJOR A: the environment re-run is spent once — if A stays red alone (no
   w.script[1] = [red('unit', { jobId: 'A1' })];
   await w.pass();
   w.script[2] = [red('unit', { jobId: 'B1' })];
-  await w.pass(); // pause
+  await w.pass(); // B: its one re-run
+  w.script[1] = [red('unit', { jobId: 'A1+' })];
+  w.script[2] = [red('unit', { jobId: 'B1+' })];
+  assert.equal((await w.pass()).paused, true);
   w.state = resumeRun(w.state, T);
   w.script[1] = [red('unit', { jobId: 'A2' })];
   await w.pass(); // env re-runs
@@ -404,7 +419,7 @@ test('MAJOR A: the environment re-run is spent once — if A stays red alone (no
   for (let i = 0; i < 4; i++) { w.clock += 20 * 60_000; await w.pass(); }
   assert.equal(w.wakes.length, 1);
   assert.equal(w.wakes[0].ws, 'ws-A');
-  assert.equal(w.reruns.length, 3, 'no further re-run');
+  assert.equal(w.reruns.length, 4, 'no further re-run');
 });
 
 test('an environment re-run stands in for the ticket\'s own: red alone after it, the author is told, no second re-run', async () => {
@@ -459,11 +474,11 @@ test('MAJOR 2 MUST-FAIL: the same check red on two UNRELATED pull requests of a 
   w.script[1] = [green('unit')];
   w.script[2] = [red('unit')]; // B red, its upstream A green: its own fault
   w.script[4] = [red('unit')];
-  assert.equal((await w.pass()).paused, true);
+  assert.equal((await toPause(w)).paused, true);
 });
 
 test('m1: no job id from the forge → no re-run path (bounded): the author is told at once, the message says why', async () => {
-  const w = world();
+  const w = world({ options: { rerunSettleMs: 0 } });
   w.script[1] = [red('unit', { jobId: undefined })];
   await w.pass();
   assert.equal(w.reruns.length, 0);
@@ -648,7 +663,7 @@ test('c2: a dependent whose red was only CARRIED at the pause is not reported fl
   w.script[1] = [red('unit', { jobId: 'A1' })];
   w.script[2] = [red('unit', { jobId: 'B1' })];
   w.script[3] = [red('unit', { jobId: 'C1' })];
-  assert.equal((await w.pass()).paused, true, 'A and C: the environment (B is carried, not counted)');
+  assert.equal((await toPause(w)).paused, true, 'A and C: the environment (B is carried, not counted)');
   w.state = resumeRun(w.state, T);
   w.script[1] = [green('unit')];
   w.script[3] = [green('unit')];
@@ -657,4 +672,182 @@ test('c2: a dependent whose red was only CARRIED at the pause is not reported fl
   await w.pass();
   assert.deepEqual(w.state.tickets.B.ci?.flaky ?? [], [], 'the environment fault is not a flaky test');
   assert.equal(w.state.tickets.B.ci?.reruns, 0, 'its own re-run was never spent (an environment re-run does not count)');
+});
+
+// ── #654: the start check re-runs a red once ────────────────────────────────────────────────────────────────────
+test('#654 start check: a red is re-run ONCE; green on the re-run passes and is listed flaky', async () => {
+  const { ctx, calls } = probe({ startCheck: true, pollMs: 10 }, [[red('ci', { jobId: 'j1' })], [red('ci', { jobId: 'j1' })], [green('ci')]]);
+  const reruns: Array<{ n: number; names: string[] }> = [];
+  ctx.deps.forge.rerun = async (n, names) => { reruns.push({ n, names }); };
+  const r = await stepStartCheck(ctx);
+  assert.deepEqual(r, { ok: true, flaky: ['ci'] });
+  assert.deepEqual(reruns, [{ n: 50, names: ['ci'] }], 'ONE re-run (the old run still showing is waited out, not re-run again)');
+  assert.deepEqual(calls.closed, [50]);
+});
+
+test('#654 start check: red again after the one re-run refuses the start (never a second re-run); the PR and branch are removed', async () => {
+  const { ctx, calls } = probe({ startCheck: true, pollMs: 10 }, [[red('ci', { jobId: 'j1' })], [red('ci', { jobId: 'j2' })]]);
+  let n = 0;
+  ctx.deps.forge.rerun = async () => { n++; };
+  const r = await stepStartCheck(ctx);
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, 'start-check-red');
+  assert.equal(n, 1);
+  assert.deepEqual(calls.closed, [50]);
+});
+
+test('#654 start check: a re-run the forge cannot make leaves the red standing (refused, not hung)', async () => {
+  const { ctx } = probe({ startCheck: true, pollMs: 10 }, [[red('ci')]]);
+  ctx.deps.forge.rerun = async () => { throw new Error('no re-runnable Actions job'); };
+  const r = await stepStartCheck(ctx);
+  assert.equal(r.ok, false);
+});
+
+// ── #655: flaky is listed for EVERY re-run that went green ──────────────────────────────────────────────────────
+test('#655 flaky: a ticket that merges while its re-run is still unjudged is listed flaky all the same', () => {
+  const w = world();
+  w.script[1] = [red('unit')];
+  return w.pass().then(() => {
+    assert.equal(w.state.tickets.A.ci?.flaky.length, 0);
+    const merged = flakyAtMerge(w.state, 'A', T);
+    assert.deepEqual(merged.tickets.A.ci?.flaky, ['unit']);
+    assert.equal(merged.tickets.A.ci?.rerun, null);
+    assert.equal(flakyAtMerge(merged, 'A', T), merged, 'nothing more to list once judged');
+  });
+});
+
+test('#655 flaky: the check was never re-run → nothing listed at merge', () => {
+  const w = world();
+  assert.equal(flakyAtMerge(w.state, 'A', T), w.state);
+});
+
+test('#655 no job id from the forge: the red is STILL re-run once; the old run showing within the settle window is not judged; the author is told only after it', async () => {
+  const w = world();
+  w.script[1] = [red('unit', { jobId: undefined })];
+  await w.pass();
+  assert.deepEqual(w.reruns, [{ n: 1, names: ['unit'] }]);
+  await w.pass();
+  assert.equal(w.wakes.length, 0, 'inside the settle window the red is the old run');
+  w.clock += 61_000;
+  await w.pass();
+  assert.equal(w.wakes.length, 1);
+  assert.match(w.wakes[0].text, /after one automatic re-run/);
+  assert.equal(w.reruns.length, 1);
+});
+
+test('#655 the new attempt\'s job id is read: a red with a NEW job id after the re-run is "red again", never the old run', async () => {
+  const w = world();
+  w.script[1] = [red('unit', { jobId: 'j1' })];
+  await w.pass();
+  w.script[1] = [red('unit', { jobId: 'j2' })];
+  await w.pass();
+  assert.equal(w.wakes.length, 1);
+  assert.equal(w.reruns.length, 1);
+});
+
+// ── #655: a pause never ends the run ────────────────────────────────────────────────────────────────────────────
+async function paused() {
+  const w = two();
+  w.script[1] = [red('build')];
+  w.script[2] = [red('build')];
+  await toPause(w);
+  return w;
+}
+const watch = (w: ReturnType<typeof world>) => stepPauseWatch(w.ctx());
+
+test('#655 the environment pause is automatic: the record carries the backoff, no author told', async () => {
+  const w = await paused();
+  const p = pausedOf(w.state);
+  assert.ok(p?.auto);
+  assert.equal(p?.auto?.tries, 0);
+  assert.equal(Date.parse(p!.auto!.nextAt) - w.clock, 2 * 60_000);
+  assert.equal(w.wakes.length, 0);
+});
+
+test('#655 the paused run re-runs the red checks with backoff 2, 5, 10, 20, 20 min — never earlier, never an order to an author', async () => {
+  const w = await paused();
+  const base = w.reruns.length; // the two re-runs made before the pause
+  await watch(w);
+  assert.equal(w.reruns.length, base, 'not due yet');
+  const waits = [2, 5, 10, 20, 20, 20];
+  const tries: number[] = [];
+  for (const m of waits) {
+    w.clock += m * 60_000 - 1000;
+    await watch(w);
+    const before = w.reruns.length;
+    assert.equal(before, base + 2 * tries.length, `${m} min: not due 1 s early`);
+    w.clock += 1000;
+    await watch(w);
+    assert.equal(w.reruns.length, before + 2, `${m} min: both PRs re-run`);
+    tries.push(m);
+    // the re-run finished red again (new job id): the next try waits for the next due time
+    for (const pr of [1, 2]) w.script[pr] = [red('build', { jobId: `x${tries.length}-${pr}` })];
+  }
+  assert.ok(pausedOf(w.state), 'still paused: the run is alive');
+  assert.equal(pausedOf(w.state)?.auto?.tries, waits.length);
+  assert.equal(w.wakes.length, 0);
+});
+
+test('#655 a re-run still going (a pending check) is waited for, not re-run again', async () => {
+  const w = await paused();
+  w.clock += 3 * 60_000;
+  w.script[1] = [pend('build')];
+  const before = w.reruns.length;
+  await watch(w);
+  assert.equal(w.reruns.length, before);
+  assert.equal(pausedOf(w.state)?.auto?.tries, 0);
+});
+
+test('#655 the first green re-run lifts the pause BY ITSELF and the wait is recorded; the loop then goes on (A merges, B is judged normally)', async () => {
+  const w = await paused();
+  w.clock += 7 * 60_000;
+  w.script[1] = [green('build')];
+  const r = await watch(w);
+  assert.equal(r.lifted, true);
+  assert.equal(pausedOf(w.state), null);
+  assert.equal(w.state.waited?.length, 1);
+  assert.equal(w.state.waited?.[0].ms, 7 * 60_000);
+  assert.equal(w.state.waited?.[0].check, 'build');
+  assert.deepEqual(w.state.waited?.[0].prs, [1, 2]);
+  parseState(JSON.parse(JSON.stringify(w.state))); // the record round-trips the state file
+  // B is still red on the SAME run the pause blamed: acknowledged, not a second pause, not told — it gets its one environment re-run
+  const before = w.reruns.length;
+  const s = await w.pass();
+  assert.equal(s.paused, false);
+  assert.equal(w.wakes.length, 0);
+  assert.deepEqual(w.reruns.slice(before).map((x) => x.n), [2]);
+});
+
+test('#655 a pause set by hand has NO auto record: the watch never touches it (the loop ends exit 4, --resume-run lifts it)', async () => {
+  const w = world();
+  w.state = pauseRun(w.state, { reason: 'maintenance window', check: null, prs: [] }, T);
+  w.script[1] = [green('build')];
+  const r = await watch(w);
+  assert.equal(r.lifted, false);
+  assert.ok(pausedOf(w.state));
+  assert.equal(pausedOf(w.state)?.auto, undefined);
+});
+
+test('#655 MUST-FAIL: a first red is never the environment — two PRs red for the first time are re-run, not paused', async () => {
+  const w = two();
+  w.script[1] = [red('build')];
+  w.script[2] = [red('build')];
+  const r = await w.pass();
+  assert.equal(r.paused, false);
+  assert.equal(pausedOf(w.state), null);
+  assert.deepEqual(w.reruns.map((x) => x.n), [1, 2]);
+});
+
+test('#655 two PRs red on the first run but GREEN on the re-run: no pause, both listed flaky', async () => {
+  const w = two();
+  w.script[1] = [red('build')];
+  w.script[2] = [red('build')];
+  await w.pass();
+  w.script[1] = [green('build')];
+  w.script[2] = [green('build')];
+  const r = await w.pass();
+  assert.equal(r.paused, false);
+  assert.deepEqual(r.flaky.sort(), ['A:build', 'B:build']);
+  assert.deepEqual(w.state.tickets.A.ci?.flaky, ['build']);
+  assert.deepEqual(w.state.tickets.B.ci?.flaky, ['build']);
 });
