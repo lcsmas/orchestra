@@ -1,0 +1,201 @@
+{
+ "_doc": "#665 — where each mutant rig script keeps its mutant list (top-level const names), read by scripts/ci/mutant-anchors.mjs without running the rig. `dir`: directory of bare file names; `file`: the file every entry edits. A mutant rig of .github/ci-rigs.json must reach a script here or be in `exempt` with a reason (guard: src/shared/mutant-anchors.test.ts).",
+ "scripts": {
+  "scripts/attach-any-agent-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/command-output-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ]
+  },
+  "scripts/e2e-browser-tabs-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ]
+  },
+  "scripts/e2e-contained-rig-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ],
+   "file": "scripts/e2e-contained-rig.sh"
+  },
+  "scripts/e2e-fanout-acceptance-forced.mjs": {
+   "lists": [
+    {
+     "name": "BUNDLE_MUTANTS",
+     "file": "dist-electron/cli.js"
+    },
+    {
+     "name": "HOST_MUTANTS",
+     "dir": "src/shared"
+    }
+   ],
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-checks.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-closeout.mjs": {
+   "lists": [
+    "mutants"
+   ],
+   "file": "dist-electron/cli.js",
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-freeze-check.mjs": {
+   "lists": [
+    "mutants"
+   ],
+   "file": "dist-electron/cli.js",
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-harness-amend.mjs": {
+   "lists": [
+    {
+     "name": "BUNDLE_MUTANTS",
+     "file": "dist-electron/cli.js"
+    },
+    {
+     "name": "HOST_MUTANTS",
+     "dir": "src/shared"
+    }
+   ],
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-harness-brief.mjs": {
+   "lists": [
+    {
+     "name": "BUNDLE_MUTANTS",
+     "file": "dist-electron/cli.js"
+    },
+    {
+     "name": "HOST_MUTANTS",
+     "dir": "src/shared"
+    }
+   ],
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-jest-config.mjs": {
+   "lists": [
+    "mutants"
+   ],
+   "file": "dist-electron/cli.js",
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-open.mjs": {
+   "lists": [
+    "mutants"
+   ],
+   "file": "dist-electron/cli.js",
+   "build": "build:cli"
+  },
+  "scripts/e2e-fanout-plan.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-record.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-run.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-seat-records.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-start.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/e2e-fanout-tree-verdict.mjs": {
+   "lists": [
+    "mutants"
+   ],
+   "file": "dist-electron/cli.js",
+   "build": "build:cli"
+  },
+  "scripts/fanout-loop-skill-mutants.mjs": {
+   "lists": [
+    "mutants"
+   ]
+  },
+  "scripts/fanout-park-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/fanout-relaunch-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ]
+  },
+  "scripts/fanout-review-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/mail-strangers-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/migrate-transcripts-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ]
+  },
+  "scripts/old-channel-closed-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/pause-canary/memhog-bars.mutants.mjs": {
+   "lists": [
+    "MEMHOG_MUTANTS",
+    "MEMHOG_FACTS_MUTANTS",
+    "MEMHOG_OS_MUTANTS",
+    "MEMHOG_ARMS_MUTANTS"
+   ],
+   "dir": "scripts/pause-canary",
+   "file": "scripts/pause-canary/memhog-bars.mjs"
+  },
+  "scripts/pause-canary/mutate-bars.mjs": {
+   "lists": [
+    "PAUSE_MUTANTS"
+   ],
+   "dir": "scripts/pause-canary",
+   "file": "scripts/pause-canary/bars.mjs"
+  },
+  "scripts/plain-parent-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/reliquats-memory-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/run-close-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/scope-net-mutants.mjs": {
+   "lists": [
+    "MUTANTS"
+   ]
+  },
+  "scripts/session-identity-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/spawn-dispatch-mutants.mjs": {
+   "check": "own"
+  },
+  "scripts/top-level-run-mutants.mjs": {
+   "check": "own"
+  }
+ },
+ "exempt": {
+  "test:release-receipt-mutants": "bash rig: it clause-mutates copies of scripts/*.sh with inline sed edits, no list to load",
+  "scripts/e2e-browser-design-proxy-mutants.sh": "bash driver: its mutants live in scripts/e2e-browser-design-proxy.sh (--mutant <name>) and patch the BUILT bundle",
+  "test:role-guard-matrix": "not an anchor mutant rig: a matrix test of the role-guard hook (the `matrix` name only)",
+  "test:role-guard-matrix-vf2": "not an anchor mutant rig: a matrix test of the role-guard hook (the `matrix` name only)"
+ }
+}

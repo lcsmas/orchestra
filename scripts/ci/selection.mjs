@@ -29,7 +29,7 @@ export function currentSelection(root, file, o = {}) {
   };
   const sel = selectRigs(file, changed, full, ctx);
   // #623: on a pull_request a mutant rig never runs or blocks (it runs on push to master + nightly, mutants.yml); only an explicit full run (`ci-full` label) keeps it.
-  if (pathSelectionOn() && !process.env.CI_FULL_REASON && !o.full) {
+  if (pathSelectionOn() && !process.env.CI_FULL_REASON && !o.full && !o.keepMutants) { // `keepMutants`: the anchor check (#665) wants the mutant rigs the paths select
     const why = 'mutant rig: runs on push to master + nightly (mutants.yml), never on a pull_request (#623)';
     const moved = sel.ran.filter((r) => isMutantRig(r.id));
     if (moved.length) return { ...sel, mode: 'paths', ran: sel.ran.filter((r) => !isMutantRig(r.id)), skipped: [...sel.skipped.filter((r) => !isMutantRig(r.id)), ...moved.map((r) => ({ id: r.id, why }))] };
