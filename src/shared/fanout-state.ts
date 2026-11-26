@@ -172,7 +172,11 @@ export const CHOICE_RULES = ['reversible-default', 'no-safe-option'] as const;
 export type ChoiceRule = (typeof CHOICE_RULES)[number];
 export interface ChoiceRecord { n: number; ticket: string; question: string; rule: ChoiceRule; answer: string; at: string }
 /** The ONLY pause of slice 1: `prs` = the pull requests red on the same `check` (null = no single check named). */
-export interface PauseRecord { at: string; reason: string; check: string | null; prs: number[] }
+export interface PauseRecord { at: string; reason: string; check: string | null; prs: number[];
+  /** #655 — set ONLY by the loop's environment pause: the loop stays alive, reruns the red checks (`tries` so far, next at `nextAt`) and lifts it by itself on the first green. A human `--pause` has none: exit 4. */
+  auto?: { tries: number; nextAt: string } }
+/** #655 — an automatic pause that lifted itself: the report says how long the run waited. */
+export interface WaitRecord { at: string; until: string; ms: number; check: string | null; prs: number[]; reruns: number }
 
 /** #607 — what `stepCi` remembers between two (disposable) passes: the ONE re-run per head, the author told, the flaky checks (report), the checks the run attributed to the environment. `head` resets `rerun`/`told`/`env`, never `reruns`/`seen`/`tells`/`flaky`. */
 export interface CiRecord {
@@ -228,6 +232,10 @@ export interface FanoutState {
   choices?: ChoiceRecord[];
   /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
   pause?: PauseRecord;
+  /** #655 — the automatic pauses already lifted (oldest first). */
+  waited?: WaitRecord[];
+  /** #654 — checks of the start check (the empty pull request) that were red, then green on the one re-run: listed `flaky` in the report. */
+  startFlaky?: string[];
   /** #604 (ledger #613 FROZEN v1) — set ONLY by `applyPlan` (src/shared/fanout-plan.ts): the run's plan came from the plan step of the Boucle (hash = sha256 of the normalised plan JSON, attempts = submissions it took). From then on `--run-decision` is refused `decision-after-plan`. Not settable by `state set`. */
   loopPlan?: { at: string; hash: string; attempts: number };
   /** #604 (review r1 m3) — set ONLY by the plan step when it ENDS without a plan (`plan-refused-twice` | `plan-apply-failed`): `fanout start` / `applyPlan` refuse while it stands, so deleting the plan record does not reopen the run. Not settable by `state set`. */
@@ -287,6 +295,8 @@ TICKET_KEYS.add('parked'); // #603
 TICKET_KEYS.add('rounds'); // #603
 TOP_KEYS.add('choices'); // #603
 TOP_KEYS.add('pause'); // #603
+TOP_KEYS.add('waited'); // #655
+TOP_KEYS.add('startFlaky'); // #654
 TICKET_KEYS.add('ci'); // #607
 /** The fields a `state set` may change (updatedAt is the writer's). `tree` / `builtOnTree` / `specText` are DERIVED (#512/#552): the CLI fills them, `state set --json` cannot. `forgetMerge` / `settle` / `decide` are verbs (#514/#552), not stored fields. */
 export const SETTABLE_KEYS = ['branch', 'pr', 'head', 'verdict', 'dependsOn', 'builtOn', 'frozenInterface', 'mergedAccepted', 'status', 'findings', 'followUpOf', 'fixes', 'forgetMerge', 'settle', 'decide', 'spec', 'implementer', 'verifier'] as const;
@@ -1139,6 +1149,8 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
     ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
+    ...(raw.waited !== undefined ? { waited: waitedOf(raw.waited) } : {}), // #655
+    ...(raw.startFlaky !== undefined ? { startFlaky: startFlakyOf(raw.startFlaky) } : {}), // #654
     ...(raw.loopPlan !== undefined ? { loopPlan: loopPlanOf(raw.loopPlan) } : {}),
     ...(raw.planRefusal !== undefined ? { planRefusal: planRefusalOf(raw.planRefusal) } : {}),
     tickets,
@@ -1607,12 +1619,25 @@ function choicesOf(v: unknown): ChoiceRecord[] {
 }
 function pauseOf(v: unknown): PauseRecord {
   if (!isObj(v)) throw new FanoutStateError('pause must be {at, reason, check, prs}');
-  refuseUnknown(v, new Set(['at', 'reason', 'check', 'prs']), 'pause');
+  refuseUnknown(v, new Set(['at', 'reason', 'check', 'prs', 'auto']), 'pause');
   if (typeof v.reason !== 'string' || !v.reason.trim()) throw parkRefusal('pause-no-reason', 'pause has no reason — a paused run says why');
   const reason = lineOf(v.reason, 'pause.reason', PARK_REASON_MAX);
   if (v.check !== null && (typeof v.check !== 'string' || !v.check.trim() || v.check.length > PAUSE_CHECK_MAX || CTRL.test(v.check))) throw new FanoutStateError('pause.check must be a check name or null');
   if (!Array.isArray(v.prs) || v.prs.some((n) => !Number.isInteger(n) || (n as number) < 1)) throw new FanoutStateError('pause.prs must be a list of pull request numbers');
-  return { at: isoOf(v.at, 'pause.at'), reason, check: v.check as string | null, prs: [...new Set(v.prs as number[])].sort((a, b) => a - b) };
+  const auto = v.auto === undefined ? null : v.auto;
+  if (auto !== null && (!isObj(auto) || !Number.isInteger(auto.tries) || (auto.tries as number) < 0)) throw new FanoutStateError('pause.auto must be {tries, nextAt}');
+  return { at: isoOf(v.at, 'pause.at'), reason, check: v.check as string | null, prs: [...new Set(v.prs as number[])].sort((a, b) => a - b), ...(auto ? { auto: { tries: (auto as { tries: number }).tries, nextAt: isoOf((auto as { nextAt: unknown }).nextAt, 'pause.auto.nextAt') } } : {}) };
+}
+function waitedOf(v: unknown): WaitRecord[] {
+  if (!Array.isArray(v)) throw new FanoutStateError('waited must be a list of {at, until, ms, check, prs, reruns}');
+  return v.map((e, i) => {
+    if (!isObj(e) || !Number.isFinite(e.ms) || !Number.isInteger(e.reruns) || !Array.isArray(e.prs)) throw new FanoutStateError(`waited[${i}] must be {at, until, ms, check, prs, reruns}`);
+    return { at: isoOf(e.at, `waited[${i}].at`), until: isoOf(e.until, `waited[${i}].until`), ms: e.ms as number, check: typeof e.check === 'string' ? e.check : null, prs: (e.prs as unknown[]).filter((n): n is number => Number.isInteger(n)), reruns: e.reruns as number };
+  });
+}
+function startFlakyOf(v: unknown): string[] {
+  if (!Array.isArray(v) || v.some((x) => typeof x !== 'string' || !x.trim())) throw new FanoutStateError('startFlaky must be a list of check names');
+  return [...new Set(v as string[])];
 }
 /** status `parked` ⇔ a `parked` record (a half-written parking is refused when read AND when written); `blockedBy` names a ticket of the state. */
 function assertParkedCoherent(state: FanoutState): void {
@@ -1734,9 +1759,9 @@ export function recordChoice(state: FanoutState, entry: { ticket: string; questi
 }
 
 /** Pause the run: the same check is red on several pull requests, which is the environment, not a ticket. `[pause-no-reason]` without a reason. A second call while paused keeps the first record and adds the pull requests. */
-export function pauseRun(state: FanoutState, input: { reason: string; check: string | null; prs: number[] }, now: string): FanoutState {
+export function pauseRun(state: FanoutState, input: { reason: string; check: string | null; prs: number[]; auto?: { tries: number; nextAt: string } }, now: string): FanoutState {
   if (typeof input.reason !== 'string' || !input.reason.trim()) throw parkRefusal('pause-no-reason', 'a pause needs a reason (--pause <reason>): the report says why the run stopped');
-  const next = pauseOf({ at: now, reason: clip(input.reason.trim(), PARK_REASON_MAX), check: typeof input.check === 'string' ? clip(input.check, PAUSE_CHECK_MAX) : input.check ?? null, prs: input.prs ?? [] });
+  const next = pauseOf({ at: now, reason: clip(input.reason.trim(), PARK_REASON_MAX), check: typeof input.check === 'string' ? clip(input.check, PAUSE_CHECK_MAX) : input.check ?? null, prs: input.prs ?? [], ...(input.auto ? { auto: input.auto } : {}) });
   if (state.pause) return { ...state, pause: { ...state.pause, prs: [...new Set([...state.pause.prs, ...next.prs])].sort((a, b) => a - b) }, updatedAt: now };
   return { ...state, pause: next, updatedAt: now };
 }

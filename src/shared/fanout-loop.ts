@@ -6,7 +6,7 @@ import { readLoopState, updateLoopState, withLoop, type LoopState } from './fano
 import { applyPlan, type Plan } from './fanout-plan.ts';
 import { buildReport, collectCosts, reportExit, type Report } from './fanout-report.ts';
 import { LoopKilled } from './fanout-loop-kill.ts';
-import { stepCi as runCi, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
+import { flakyAtMerge, stepCi as runCi, stepPauseWatch as runPauseWatch, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
 import { runCorrections } from './fanout-loop-corrections.ts';
 import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
@@ -137,6 +137,11 @@ const ciCtxOf = (ctx: LoopCtx): Parameters<typeof runCi>[0] => ({
 export async function stepStartCheck(ctx: LoopCtx): Promise<void> {
   const r = await runStartCheck(ciCtxOf(ctx));
   if (!r.ok) throw new LoopRefusal(`run-${r.code}`, r.detail);
+  if (r.ok && r.flaky?.length) { // #654: red, then green on the one re-run — listed for the report
+    const names = r.flaky;
+    ctx.update((x) => ({ ...x, startFlaky: [...new Set([...(x.startFlaky ?? []), ...names])], updatedAt: ctx.deps.now() }));
+    for (const n of names) ctx.did(`flaky: start-check/${n}`);
+  }
   if (!r.skipped) ctx.did('start check passed (an empty pull request, its checks green, closed)');
 }
 /** #607 (decision 8) — red CI: one re-run of the red jobs, then the author gets the check name and the log extract, the same failure after its fix parks the ticket; the same check red on several PRs pauses the run (the loop stops after this step). */
@@ -148,6 +153,12 @@ export async function stepCi(ctx: LoopCtx): Promise<void> {
   for (const f of r.flaky) ctx.did(`flaky: ${f}`);
   const pause = pausedOf(ctx.st());
   if (pause && r.paused) ctx.did(`PAUSED: ${pause.reason}`);
+}
+/** #655 — an automatic pause: the loop stays alive, re-runs the red checks with backoff and lifts the pause on the first green (a pause set by hand is untouched). */
+export async function stepPauseWatch(ctx: LoopCtx): Promise<void> {
+  const r = await runPauseWatch(ciCtxOf(ctx));
+  for (const n of r.reran) ctx.did(`pause: re-ran the red checks of #${n}`);
+  if (r.lifted) ctx.did(`pause lifted by itself after ${Math.round(r.waitedMs / 60_000)} min: the red check is green again`);
 }
 /** #606 — findings in ONE batch to the same author, the same reviewer reads the fix, the same situation (open findings + tree) twice parks the ticket. */
 export async function stepCorrections(ctx: LoopCtx): Promise<void> {
@@ -474,7 +485,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
     const pr = await deps.forge.prState(t.pr);
     if (pr.state === 'closed') return;
     if (pr.state === 'merged') { // merged by hand: git and the forge overrule the state (#608 does the general case)
-      ctx.update((x) => withLoop(applyTicketPatch(x, id, { status: 'merged' }, deps.now()), x.loop));
+      ctx.update((x) => withLoop(applyTicketPatch(flakyAtMerge(x, id, deps.now()), id, { status: 'merged' }, deps.now()), x.loop));
       ctx.did(`${id} was already merged on the forge: adopted`);
       return;
     }
@@ -522,7 +533,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
   for (const r of sortReady(ready)) await ctx.guard(`${r.id} merge`, async () => {
     const res = await deps.forge.merge(r.pr, r.head, 'merge'); // a MERGE COMMIT, never a squash (decision 3: dependents connect by merge commit)
     if (!res.ok) { ctx.note(`${r.id}: merge refused by the forge — ${res.reason ?? 'unknown'}${res.detail ? `: ${res.detail}` : ''}`); await orderImplementer(ctx, r.id, res.reason ?? 'unknown', res.detail ?? ''); return; }
-    ctx.update((x) => withLoop(applyTicketPatch(x, r.id, { status: 'merged' }, deps.now()), x.loop));
+    ctx.update((x) => withLoop(applyTicketPatch(flakyAtMerge(x, r.id, deps.now()), r.id, { status: 'merged' }, deps.now()), x.loop));
     ctx.did(`merged ${r.id} (PR #${r.pr})`);
   });
 }
@@ -602,7 +613,9 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     }
     if (ctx.progress.length || ctx.busy) lastProgress = loopMs(deps.now());
     const s = ctx.st();
-    if (pausedOf(s)) return await finish(4, `paused: ${pausedOf(s)!.reason}`);
+    // #655: an automatic pause is waited out (the wait is progress, never a stall); only a pause set by hand ends the run
+    if (pausedOf(s)?.auto) { await stepPauseWatch(ctx); lastProgress = loopMs(deps.now()); if (!pausedOf(ctx.st())) continue; }
+    else if (pausedOf(s)) return await finish(4, `paused: ${pausedOf(s)!.reason}`);
     if (ctx.finished) return await finish(parkedTickets(s).length ? 3 : 0);
     const stalled = loopMs(deps.now()) - lastProgress > deps.options.stallMs;
     if (stalled || passes >= deps.options.maxPasses) {

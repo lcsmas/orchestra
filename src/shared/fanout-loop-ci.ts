@@ -7,7 +7,7 @@
 //   red again ─ the author gets the check name + the log extract (once per head) ─ the same failure after its fix → ticket parked (cause `ci`)
 //   the same check red on ≥2 pull requests of the run → the run pauses (`pauseRun`), NO message to an author, no re-run.
 import crypto from 'node:crypto';
-import { parkTicket, pausedOf, pauseRun, situationFingerprint, type CiRecord, type FanoutState, type TicketState } from './fanout-state.ts';
+import { parkTicket, pausedOf, pauseRun, resumeRun, situationFingerprint, type CiRecord, type FanoutState, type TicketState } from './fanout-state.ts';
 import type { FleetPort, ForgeCheck, ForgePort, GitPort } from './fanout-loop-ports.ts';
 
 type CheckInfo = ForgeCheck;
@@ -23,7 +23,7 @@ export interface CiOptions {
   startCheckMissingMs?: number;
   /** Start check polling interval (default 15 s). */
   pollMs?: number;
-  /** A re-run's red check whose `jobId` is unchanged is the OLD run; with no job id, wait this long after the re-run before trusting a red (default 0). */
+  /** A re-run's red check whose `jobId` is unchanged is the OLD run; with no job id, wait this long after the re-run before trusting a red (default 60 s, #655: a check with no job id is still re-run). */
   rerunSettleMs?: number;
   /** A re-run whose red is STILL the old run after this long is given up (it is NOT retried: one re-run per ticket): the red then counts as "red again" (default 10 min). */
   rerunExpireMs?: number;
@@ -54,6 +54,12 @@ export interface CiCtx {
 }
 
 export const CI_LOG_MAX = 1500;
+/** #655 — a check the forge gives no job id for is still re-run once; its red is trusted only this long after the re-run. */
+export const NO_JOB_SETTLE_MS = 60_000;
+const settleOf = (o: CiOptions): number => o.rerunSettleMs ?? NO_JOB_SETTLE_MS;
+/** #655 — the wait between two re-runs of a paused run's red checks: 2, 5, 10, 20 min, then every 20 min. */
+export const PAUSE_BACKOFF_MS = [2, 5, 10, 20].map((m) => m * 60_000);
+export const pauseBackoffMs = (tries: number): number => PAUSE_BACKOFF_MS[Math.min(tries, PAUSE_BACKOFF_MS.length - 1)];
 export interface CiResult { paused: boolean; reran: string[]; told: string[]; parked: string[]; flaky: string[] }
 
 const OPEN_STATUSES = new Set(['started', 'nominated', 'gated']);
@@ -82,6 +88,21 @@ const withCi = (s: CiState, id: string, f: (r: CiRecord) => CiRecord, now: strin
 const uniq = (xs: string[]): string[] => [...new Set(xs)];
 /** A red the human already looked at when resuming: the SAME run (same job id; with no job id, until the re-run happens). A fresh red after the re-run counts again. */
 const acknowledged = (rc: CiRecord, c: CheckInfo, now: string, settleMs: number): boolean => rc.env.some((e) => e.name === c.name && (c.jobId ? e.job === c.jobId : e.job === null && (rc.rerun === null || Date.parse(now) - Date.parse(rc.rerun.at) < settleMs)));
+
+/** A red that is still the OLD run: the re-run was made on this head, the check shows the same job id (no id: the settle time has not passed) and the re-run is not given up. */
+const staleRed = (rc: CiRecord, c: CheckInfo, deps: CiDeps): boolean => {
+  if (c.status !== 'red' || rc.rerun === null) return false;
+  const expired = Date.parse(deps.now()) - Date.parse(rc.rerun.at) >= (deps.options.rerunExpireMs ?? 600_000);
+  return !expired && ((c.jobId !== undefined && rc.rerun.jobs[c.name] === c.jobId) || (!c.jobId && Date.parse(deps.now()) - Date.parse(rc.rerun.at) < settleOf(deps.options)));
+};
+
+/** #655 — a ticket that merges while its re-run is still unjudged (the checks turned green between the CI read and the merge) was flaky all the same: listed for EVERY ticket where a re-run went green. */
+export function flakyAtMerge(state: CiState, id: string, now: string): CiState {
+  const rc = state.tickets[id]?.ci;
+  if (!rc || rc.rerun === null) return state;
+  const names = rc.rerun.names.filter((n) => !rc.env.some((e) => e.name === n) && !rc.flaky.includes(n));
+  return { ...state, tickets: { ...state.tickets, [id]: { ...state.tickets[id], ci: { ...rc, flaky: uniq([...rc.flaky, ...names]), rerun: null }, updatedAt: now } } };
+}
 
 /** The author's message: rendered by code, check name + log extract, nothing else to read. */
 export function renderCiMessage(pr: number, head: string, reds: CheckInfo[], noRerun = false): string {
@@ -124,15 +145,17 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
   const byCheck = new Map<string, Array<{ id: string; pr: number }>>();
   for (const r of rows) {
     const rc0 = rec(r.id, r.head);
-    for (const c of r.checks) if (c.status === 'red' && !acknowledged(rc0, c, deps.now(), deps.options.rerunSettleMs ?? 0) && !carried(r.id)) byCheck.set(c.name, [...(byCheck.get(c.name) ?? []), { id: r.id, pr: r.pr }]);
+    // #655: a red is judged only after its ONE re-run — a first red (or the old run still showing) is never the environment yet
+    const judged = (c: CheckInfo): boolean => (rc0.rerun !== null && !staleRed(rc0, c, deps)) || (!c.jobId && settleOf(deps.options) === 0);
+    for (const c of r.checks) if (c.status === 'red' && judged(c) && !acknowledged(rc0, c, deps.now(), settleOf(deps.options)) && !carried(r.id)) byCheck.set(c.name, [...(byCheck.get(c.name) ?? []), { id: r.id, pr: r.pr }]);
   }
   const shared = [...byCheck.entries()].filter(([, v]) => v.length >= 2).sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
   if (shared.length > 0) {
     const [name, hit] = shared[0];
     const prs = hit.map((h) => h.pr).sort((a, b) => a - b);
-    const reason = `check "${name}" is red on ${prs.map((n) => `#${n}`).join(', ')}${shared.length > 1 ? ` (also: ${shared.slice(1).map(([n]) => `"${n}"`).join(', ')})` : ''} — the environment, not a ticket; no author was told`;
+    const reason = `check "${name}" is red on ${prs.map((n) => `#${n}`).join(', ')}${shared.length > 1 ? ` (also: ${shared.slice(1).map(([n]) => `"${n}"`).join(', ')})` : ''} — red again after its re-run: the environment, not a ticket; no author was told, the run waits and re-runs`;
     state = ctx.update((s) => {
-      let n = pauseRun(s, { reason, check: name, prs }, deps.now());
+      let n = pauseRun(s, { reason, check: name, prs, auto: { tries: 0, nextAt: new Date(Date.parse(deps.now()) + pauseBackoffMs(0)).toISOString() } }, deps.now());
       // the mark goes to EVERY ticket red on a blamed check — a dependent whose red is only carried too (it never counted toward the pause): whatever turns green later is the environment, not a flaky test
       for (const [cn] of shared) for (const r of rows) {
         const c = r.checks.find((x) => x.status === 'red' && x.name === cn);
@@ -151,9 +174,7 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
     const id = r.id;
     const t = state.tickets[id];
     const rc = rec(id, r.head);
-    const expired = rc.rerun !== null && Date.parse(deps.now()) - Date.parse(rc.rerun.at) >= (deps.options.rerunExpireMs ?? 600_000);
-    const stale = (c: CheckInfo): boolean => c.status === 'red' && rc.rerun !== null && !expired
-      && ((c.jobId !== undefined && rc.rerun.jobs[c.name] === c.jobId) || (!c.jobId && Date.parse(deps.now()) - Date.parse(rc.rerun.at) < (deps.options.rerunSettleMs ?? 0)));
+    const stale = (c: CheckInfo): boolean => staleRed(rc, c, deps);
     const pending = r.checks.length === 0 || r.checks.some((c) => c.status === 'pending' || stale(c));
     if (pending) continue;
     const reds = r.checks.filter((c) => c.status === 'red');
@@ -172,9 +193,9 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
     const own = reds;
 
     const names = own.map((c) => c.name).sort();
-    // The ONE automatic re-run of the TICKET (never again, whatever the head) — recorded first, so a crash can never re-run twice.
+    // The ONE automatic re-run of the TICKET (#655: a red is rerun before any verdict; never again, whatever the head) — recorded first, so a crash can never re-run twice.
     // Without a job id on every red a new run cannot be told from the old one: no re-run path (bounded), the author is told straight away.
-    const canTell = own.every((c) => c.jobId) || (deps.options.rerunSettleMs ?? 0) > 0;
+    const canTell = own.every((c) => c.jobId) || settleOf(deps.options) > 0;
     // An environment red (marked at a pause) gets ONE more re-run once the run resumed — it never counts against the ticket's own re-run — so a ticket never sits on it without a next step.
     const envOpen = own.filter((c) => rc.env.some((e) => e.name === c.name && !e.reran));
     if (envOpen.length > 0) {
@@ -222,9 +243,57 @@ export async function stepCi(ctx: CiCtx): Promise<CiResult> {
   return res;
 }
 
+// ── #655: a pause never ends the run ───────────────────────────────────────────────────────────────────────────
+export interface PauseWatchResult { lifted: boolean; reran: number[]; waitedMs: number }
+/**
+ * An automatic (environment) pause keeps the loop alive: no order to authors; at each due time (2, 5, 10, 20 min, then every 20) the red
+ * checks the pause blamed are re-run; the first green one lifts the pause by itself, and the wait goes to `state.waited` (the report says how long).
+ * A pause set by hand has no `auto` record: nothing here touches it (exit 4, `--resume-run`).
+ */
+export async function stepPauseWatch(ctx: CiCtx): Promise<PauseWatchResult> {
+  const { deps } = ctx;
+  const out: PauseWatchResult = { lifted: false, reran: [], waitedMs: 0 };
+  const pause = pausedOf(ctx.state);
+  if (!pause?.auto) return out;
+  const auto = pause.auto;
+  const mine = (c: CheckInfo): boolean => pause.check === null || c.name === pause.check;
+  const rows: Array<{ id: string; pr: number; checks: CheckInfo[] }> = [];
+  for (const id of ciTicketIds(ctx.state)) {
+    const t = ctx.state.tickets[id];
+    if (pause.prs.length && !pause.prs.includes(t.pr as number)) continue;
+    try { rows.push({ id, pr: t.pr as number, checks: (await deps.forge.checks(t.pr as number, t.head as string)).filter(mine) }); }
+    catch (e) { deps.log(`pause: #${t.pr} checks unreadable (${(e as Error).message}) — next pass`); }
+  }
+  const now = deps.now();
+  const waitedMs = Date.parse(now) - Date.parse(pause.at);
+  if (rows.some((r) => r.checks.some((c) => c.status === 'green'))) { // the first green re-run: the environment is back
+    ctx.update((s) => {
+      const p = pausedOf(s);
+      if (!p?.auto) return s;
+      const lifted = resumeRun(s, now);
+      return { ...lifted, waited: [...(lifted.waited ?? []), { at: p.at, until: now, ms: waitedMs, check: p.check, prs: p.prs, reruns: p.auto.tries }] };
+    });
+    deps.log(`pause: lifted by itself after ${Math.round(waitedMs / 60_000)} min and ${auto.tries} re-run(s) — check ${pause.check ?? '(any)'} is green`);
+    return { lifted: true, reran: [], waitedMs };
+  }
+  if (Date.parse(now) < Date.parse(auto.nextAt)) return out;
+  if (rows.some((r) => r.checks.some((c) => c.status === 'pending'))) return out; // a re-run is going: its result is read next pass
+  const tries = auto.tries + 1;
+  const nextAt = new Date(Date.parse(now) + pauseBackoffMs(tries)).toISOString();
+  ctx.update((s) => { const p = pausedOf(s); return p?.auto ? { ...s, pause: { ...p, auto: { tries, nextAt } }, updatedAt: now } : s; }); // recorded BEFORE the calls
+  for (const r of rows) {
+    const reds = r.checks.filter((c) => c.status === 'red').map((c) => c.name).sort();
+    if (!reds.length) continue;
+    try { await deps.forge.rerun(r.pr, reds); out.reran.push(r.pr); deps.log(`pause: #${r.pr} re-run ${reds.join(', ')} (try ${tries}, next in ${Math.round(pauseBackoffMs(tries) / 60_000)} min)`); }
+    catch (e) { deps.log(`pause: #${r.pr} re-run failed (${(e as Error).message}) — next try in ${Math.round(pauseBackoffMs(tries) / 60_000)} min`); }
+  }
+  out.waitedMs = waitedMs;
+  return out;
+}
+
 // ── decision 9: the optional start check ───────────────────────────────────────────────────────────────────────
 export type StartCheckCode = 'start-check-red' | 'start-check-missing' | 'start-check-timeout' | 'start-check-unsupported';
-export type StartCheckResult = { ok: true; skipped?: 'off' | 'already-started' } | { ok: false; code: StartCheckCode; detail: string; checks: string[] };
+export type StartCheckResult = { ok: true; skipped?: 'off' | 'already-started'; /** #654: red, then green on the one re-run */ flaky?: string[] } | { ok: false; code: StartCheckCode; detail: string; checks: string[] };
 
 /** The probe branch of a run (one per run: a restarted loop adopts it, never opens a second). */
 export const startCheckBranch = (run: string): string => `orchestra-start-check-${run.replace(/[^A-Za-z0-9._-]/g, '').slice(0, 8) || 'run'}`;
@@ -251,12 +320,24 @@ export async function stepStartCheck(ctx: CiCtx): Promise<StartCheckResult> {
     deps.log(`start-check: #${pr} (${branch} → ${base}) opened, waiting for its checks`);
     let waited = 0;
     let lastError: string | null = null;
+    // #654: a red is re-run ONCE before it refuses the start; the old run still showing is waited out (same job id; no id: the settle time)
+    let rerun: { names: string[]; at: number; jobs: Record<string, string> } | null = null;
     for (;;) {
       let checks: CheckInfo[] = [];
       try { checks = await deps.forge.checks(pr, head); lastError = null; } catch (e) { lastError = (e as Error).message; deps.log(`start-check: checks unreadable (${lastError})`); }
       const red = checks.filter((c) => c.status === 'red');
+      const stale = (c: CheckInfo): boolean => rerun !== null && waited - rerun.at < (deps.options.rerunExpireMs ?? 600_000) && ((c.jobId !== undefined && rerun.jobs[c.name] === c.jobId) || (!c.jobId && waited - rerun.at < settleOf(deps.options)));
+      if (red.length > 0 && red.every(stale)) { await deps.sleep(poll); waited += poll; continue; }
+      if (red.length > 0 && rerun === null) {
+        const names = red.map((c) => c.name).sort();
+        const jobs: Record<string, string> = {};
+        for (const c of red) if (c.jobId) jobs[c.name] = c.jobId;
+        rerun = { names, at: waited, jobs };
+        try { await deps.forge.rerun(pr, names); deps.log(`start-check: #${pr} red on ${names.join(', ')} — re-run once before any verdict`); await deps.sleep(poll); waited += poll; continue; }
+        catch (e) { deps.log(`start-check: re-run failed (${(e as Error).message}) — the red stands`); }
+      }
       if (red.length > 0) return { ok: false, code: 'start-check-red', detail: `check ${red.map((c) => `"${c.name}"`).join(', ')} is red on the empty pull request #${pr} into ${base}${red[0].logExtract ? `\n${red[0].logExtract.slice(-500)}` : ''}`, checks: red.map((c) => c.name) };
-      if (checks.length > 0 && checks.every((c) => c.status === 'green')) return { ok: true };
+      if (checks.length > 0 && checks.every((c) => c.status === 'green')) return rerun ? { ok: true, flaky: rerun.names } : { ok: true };
       if (checks.length === 0 && waited >= missingAfter) return { ok: false, code: 'start-check-missing', detail: `no check ran on the empty pull request #${pr} into ${base} after ${Math.round(waited / 1000)} s${lastError ? ` — the forge could not be read: ${lastError}` : ''}`, checks: [] };
       if (waited >= timeout) return { ok: false, code: 'start-check-timeout', detail: `checks still pending on #${pr} after ${Math.round(waited / 1000)} s: ${checks.filter((c) => c.status === 'pending').map((c) => c.name).join(', ')}${lastError ? ` — last forge error: ${lastError}` : ''}`, checks: checks.filter((c) => c.status === 'pending').map((c) => c.name) };
       await deps.sleep(poll);

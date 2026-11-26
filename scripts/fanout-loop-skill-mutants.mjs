@@ -34,7 +34,7 @@ const mutants = [
   ['609 on: the section is never shown (switch inverted)', K, '<!--sw seatRecords=on-->\n## The Boucle', '<!--sw seatRecords=off-->\n## The Boucle'],
   ['609 on: a stray blank line outside the block changes the off render', K, 'parks.\n\n<!--/sw-->\n<!--sw verifier=on-->', 'parks.\n<!--/sw-->\n\n<!--sw verifier=on-->'],
   ['609 text: exit 3 is said to be exit 4', K, '**3** ≥1 parked', '**4** ≥1 parked'],
-  ['609 text: the paused exit is dropped', K, ' · **4** paused: one check red on several PRs is the environment — fix it, ¤orchestra fanout state set --run <id> --resume-run¤, run the same command again (it adopts every live agent, opens no second PR)', ''],
+  ['609 text: the paused exit is dropped', K, ' · **4** paused by hand (an environment pause is waited out, never exit 4) — ¤orchestra fanout state set --run <id> --resume-run¤, run the same command again (it adopts every live agent, opens no second PR)', ''],
   ['609 text: a park cause is dropped', K, ' / ¤upstream¤', ''],
   ['609 text: plan-refused-twice is dropped', K, '(¤plan-refused-twice¤: exit 2, nothing starts)', ''],
   ['609 text: the run-decision refusal is dropped', K, '; a ¤--run-decision¤ after the plan is refused (¤decision-after-plan¤)', ''],
