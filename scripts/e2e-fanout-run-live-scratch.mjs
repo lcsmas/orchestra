@@ -74,7 +74,7 @@ await new Promise((r) => server.listen(sock, r));
 
 const planFile = path.join(dir, 'plan.json');
 fs.writeFileSync(planFile, JSON.stringify({ version: 1, tickets: [{ id: 'T1', title: 'one', spec: 'spec/T1.md', dependsOn: [] }], interfaces: {} }));
-const envFor = (ws, key) => ({ PATH: process.env.PATH, HOME: dir, ORCHESTRA_HOME: home, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: ws, ORCHESTRA_SESSION_KEY: key, ORCHESTRA_RUN_ID: RUN });
+const envFor = (ws, key) => ({ PATH: process.env.PATH, HOME: process.env.HOME, ORCHESTRA_HOME: home, ORCHESTRA_SOCK: sock, ORCHESTRA_WS_ID: ws, ORCHESTRA_SESSION_KEY: key, ORCHESTRA_RUN_ID: RUN });
 
 // ── the loop: the BUILT CLI, no --scenario ──
 let stderr = '';
