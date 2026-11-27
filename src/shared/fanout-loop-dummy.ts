@@ -14,11 +14,12 @@ import { contractsOf } from './fanout-contracts.ts';
 import { LOOP_BRIEF } from './fanout-implementer-brief.ts';
 import { implementerName, startRun, type StartResult } from './fanout-start.ts';
 import { applyPlan } from './fanout-plan.ts';
+import { recordOpenPoint } from './fanout-open-point.ts';
 import { applyTicketPatch, effectiveSpec, FanoutStateError, newState, stateFile } from './fanout-state.ts';
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
-export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'retree', 'wait', 'die', 'choice'] as const; // die = the implementer's workspace ends (its branch stays); choice = `fanout choice` (#675: with `narrows` when the option cuts a ticket sentence)
+export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'retree', 'wait', 'die', 'choice', 'point', 'address'] as const; // die = the implementer's workspace ends (its branch stays); choice = `fanout choice` (#675: with `narrows` when the option cuts a ticket sentence)
 export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
 export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string;
   /** `choice` step (#675): the recorded question / option / narrowed ticket sentence */
@@ -26,7 +27,9 @@ export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof ST
   /** `changes` step (#675): the findings' severity (default BLOCKING), the ticket sentence they quote (`specSentence`) and the choice number the record cites with `--on-choice` */
   severity?: string; sentence?: string; onChoice?: number;
   /** `changes` step (#680): the contracts of the plan this reviewer finds UNMET (the others it answers met) */
-  unmet?: string[] }
+  unmet?: string[];
+  /** `point` step (#691): the ticket the open point is about and its text; `approve` step: the open point numbers this approval lists as addressed */
+  about?: string; text?: string; addressed?: number[] }
 export interface Scenario {
   version: 1;
   run?: string;
@@ -96,7 +99,7 @@ const dummySameSha = (a: string, b: string): boolean => a.startsWith(b) || b.sta
 
 interface Commit { parents: string[]; tree: string; at: number }
 interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
-interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; syncs: number; fired: Set<string>; heldTicks: number }
+interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; syncs: number; points: number; fired: Set<string>; heldTicks: number }
 interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
 
 export class DummyWorld {
@@ -184,7 +187,7 @@ export class DummyWorld {
     const ws = `ws-${branch}`;
     if (!this.branches.has(branch)) this.branches.set(branch, this.branches.get(this.target)!);
     const hold = this.sc.admissionHold?.[ticket] ?? 0;
-    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], syncs: 0, fired: new Set(), heldTicks: hold };
+    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], syncs: 0, points: 0, fired: new Set(), heldTicks: hold };
     this.impls.set(ws, a);
     this.ev('spawn', ticket, { ws, branch, held: hold > 0, briefHasLoop });
     if (!hold) this.begin(a);
@@ -194,7 +197,7 @@ export class DummyWorld {
   private arm(a: Impl): void {
     const step = a.steps[a.idx];
     if (!step) { a.mode = 'done'; return; }
-    const dflt = step.do === 'code' || step.do === 'fix' ? this.timing.codeMs : step.do === 'connect' || step.do === 'sync' ? this.timing.connectMs : this.timing.nominateMs;
+    const dflt = step.do === 'code' || step.do === 'fix' || step.do === 'address' ? this.timing.codeMs : step.do === 'connect' || step.do === 'sync' ? this.timing.connectMs : this.timing.nominateMs;
     this.after(step.afterMs ?? dflt, () => this.runStep(a));
   }
   private commitOn(a: Impl, label: string): string {
@@ -242,6 +245,19 @@ export class DummyWorld {
         this.post('status', a.ws, a.ticket, `connected to ${ask.up} — head ${c}`);
         break;
       }
+      case 'point': { // #691: `fanout open-point <this ticket> --about <about> --text <t>`, raised by the ticket's own implementer
+        updateLoopState(this.home, this.run, (cur) => withLoop(recordOpenPoint(cur!, a.ticket, { about: step.about ?? '', text: step.text ?? `${a.ticket} needs ${step.about} to do the thing`, callerId: a.ws, callerVouched: true, now: this.iso() }).state, cur!.loop));
+        this.ev('point', a.ticket, { ws: a.ws, about: step.about });
+        break;
+      }
+      case 'address': { // #691: waits for the loop's OPEN POINT order, then pushes the head that addresses it
+        if (a.points <= 0) { a.mode = 'connect'; return; }
+        a.points--;
+        const c = this.commitOn(a, `address${a.idx}`);
+        this.ev('point-fix', a.ticket, { head: c });
+        this.post('status', a.ws, a.ticket, `addressed the open point — head ${c}`);
+        break;
+      }
       case 'retree': { // #637: a new commit that adds NOTHING (a merge of what the branch already holds): another sha, the SAME git tree — the recorded verdict still covers it (#512)
         const head = this.branches.get(a.branch)!;
         const c = this.commit([head], `${a.branch}:retree${a.idx}`, 'retree');
@@ -276,6 +292,12 @@ export class DummyWorld {
     if (/^(SYNC|FIX) /.test(text)) { // #628: a delivery refusal order — the author acts on it only when its script has a `sync` step left
       this.ev('sync-order', a.ticket, { ws, text: text.split('\n')[0] });
       a.syncs++;
+      if (a.mode === 'connect') { a.mode = 'running'; this.after(1_000, () => this.runStep(a)); }
+      return;
+    }
+    if (/^OPEN POINT /.test(text)) { // #676: the order to the `about` ticket's implementer — it acts on it only when its script has an `address` step left
+      this.ev('point-order', a.ticket, { ws, text: text.split('\n')[0] });
+      a.points++;
       if (a.mode === 'connect') { a.mode = 'running'; this.after(1_000, () => this.runStep(a)); }
       return;
     }
@@ -341,7 +363,7 @@ export class DummyWorld {
     const onChoice = step.do === 'changes' && step.onChoice !== undefined ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, step.onChoice!])) : undefined;
     const tree = this.commits.get(head)?.tree ?? null;
     try {
-      updateLoopState(this.home, this.run, (cur) => withLoop(recordReview(cur!, r.ticket, { head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve', input: { findings: findings as never, fixed: step.do === 'approve' ? open : [], ...(criteria ? { criteria } : {}), ...(contracts ? { contracts } : {}), ...(contractEvidence && Object.keys(contractEvidence).length ? { contractEvidence } : {}) }, callerId: r.ws, callerVouched: true, tree, now: this.iso(), ...(onChoice ? { onChoice } : {}) }), cur!.loop));
+      updateLoopState(this.home, this.run, (cur) => withLoop(recordReview(cur!, r.ticket, { head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve', input: { findings: findings as never, fixed: step.do === 'approve' ? open : [], ...(step.do === 'approve' && step.addressed?.length ? { addressed: step.addressed } : {}), ...(criteria ? { criteria } : {}), ...(contracts ? { contracts } : {}), ...(contractEvidence && Object.keys(contractEvidence).length ? { contractEvidence } : {}) }, callerId: r.ws, callerVouched: true, tree, now: this.iso(), ...(onChoice ? { onChoice } : {}) }), cur!.loop));
       this.ev('review-record', r.ticket, { ws: r.ws, head, tree, verdict: step.do === 'changes' ? 'changes-requested' : 'approve' });
       this.post('worker_done', r.ws, r.ticket, `recorded ${step.do} on ${head}`);
     } catch (e) { this.ev('review-error', r.ticket, { error: e instanceof Error ? e.message : String(e) }); }

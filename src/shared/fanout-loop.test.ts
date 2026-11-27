@@ -982,6 +982,26 @@ test('#689: a port that cannot tell (no `mergeable`) or answers UNKNOWN is not a
     assert.equal(r.world.events.filter((e) => e.ev === 'sync-order').length, 0, String(word));
   }
 });
+// ── #691 (full loop): the open-point DEADLOCK of host 2, attempt 4 — A raises a point about B (B dependsOn A) before A is approved; the raiser must not be held by it ──
+const pointFlow = (evs: Ev[], about: string): { raised: number; order: number; fix: number; record: number } => {
+  const at = (f: (e: Ev) => boolean): number => evs.findIndex(f);
+  return { raised: at((e) => e.ev === 'point'), order: at((e) => e.ev === 'point-order' && e.ticket === about), fix: at((e) => e.ev === 'point-fix' && e.ticket === about), record: at((e) => e.ev === 'review-record' && e.ticket === about && e.verdict === 'approve') };
+};
+for (const [name, about, via] of [['open-point-deadlock', 'T2', 'direct'], ['open-point-deadlock-transitive', 'T3', 'transitive']] as const) {
+  test(`#691: ${via} shape — a point raised by T1 about ${about} (which depends on T1) does not hold T1: noted "deadlock:", T1 merges, ${about} connects, gets the order, its reviewer addresses it, all merged, nothing parked`, async () => {
+    const r = await go(name);
+    assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+    assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2', 'T3']);
+    assert.deepEqual(r.result.report.parked, []);
+    assert.deepEqual(r.violations, []);
+    assert.equal(r.log.filter((l) => new RegExp(`deadlock: point 1 \\(T1 → ${about}\\)`).test(l)).length, 1, 'the deadlock is said once');
+    assert.ok(!r.log.some((l) => /decided by the fixed rule/.test(l)), 'the point was ADDRESSED by its reviewer, not closed by the fixed rule');
+    const f = pointFlow(r.world.events, about);
+    assert.ok(f.raised >= 0 && f.order >= 0 && f.fix >= 0 && f.record >= 0, JSON.stringify(f));
+    assert.ok(f.raised < f.order && f.order < f.fix && f.fix < f.record, `raise → order → pushed head → approval: ${JSON.stringify(f)}`);
+    assert.equal(r.world.events.filter((e) => e.ev === 'point-order' && e.ticket === about).length, 1, 'one order was enough');
+  });
+}
 test('loop log: a refusal note that repeats is printed again on a later pass — at most once per NOTE_REPEAT_PASSES', () => {
   const lines: string[] = [];
   const seen = new Map<string, number>();
