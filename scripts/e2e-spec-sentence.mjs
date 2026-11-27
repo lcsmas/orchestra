@@ -346,7 +346,7 @@ const mutants = [
   { name: 'block: a MINOR blocks on the sentence even when it is not in the spec (accepted ⇒ any sentence)', find: 'f.severity === "MINOR" && sentenceAccepted(effectiveSpec(state, t), f);', put: () => 'f.severity === "MINOR" && f.specSentence !== void 0;' },
   { name: 'block: every MINOR blocks (the sentence requirement is dropped)', find: 'f.severity === "MINOR" && sentenceAccepted(effectiveSpec(state, t), f);', put: () => 'f.severity === "MINOR";' },
   { name: 'process: a process finding may be settled as a code fix (and a code one as a PR-body edit)', find: 'const how = f.kind === "process" ? "pr-body" : "fixed";', put: () => 'const how = v.how;' },
-  { name: 'follow-up: a process finding may be named in --fixes', find: 'const proc = t.fixes.filter((f) => base.findings[f].kind === "process");', put: () => 'const proc = t.fixes.filter(() => false);' },
+  { name: 'follow-up: a process finding may be named in --fixes', find: 'const proc = t.fixes.filter((f) => base.findings[f]?.kind === "process");', put: () => 'const proc = t.fixes.filter(() => false);' },
   { name: 'follow-up: a MINOR with an accepted sentence is not enough', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ';' },
   { name: 'follow-up: every MINOR is enough', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ' || true;' },
   { name: 'follow-up: a MINOR\'s sentence is not re-checked against the spec', find: ' || policy === "spec" && sentenceAccepted(effectiveSpec(state, base), base.findings[f]);', put: () => ' || base.findings[f].specSentence !== void 0;' },
