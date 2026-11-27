@@ -2,7 +2,7 @@
 // Pure (no fs, no Electron). The form is the whole contract: every ticket present, no cycle, each depended-on ticket carries an interface with at least one exact name in backticks,
 // and NO free text (any key beyond the schema is refused `plan-free-text`): a run decision ("wait for X") cannot ride in a plan. The submit flow (attempts, the agent) is fanout-plan-host.ts.
 import { createHash } from 'node:crypto';
-import { SeatRefusal, applyTicketPatchCore, planMissing, setPlan, stampDefaults, switchesLockedWhy, type FanoutState } from './fanout-state.ts';
+import { SPEC_TEXT_MAX, SeatRefusal, applyTicketPatchCore, planMissing, setPlan, stampDefaults, switchesLockedWhy, type FanoutState } from './fanout-state.ts';
 
 export const PLAN_VERSION = 1;
 export const PLAN_TITLE_MAX = 120;
@@ -13,11 +13,12 @@ export const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL_LINE = /[\x00-\x1f\x7f]/;
 const CTRL_TEXT = /[\x00-\x08\x0b-\x1f\x7f]/;
 
-export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency'] as const;
+export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short'] as const;
 export type PlanReasonCode = (typeof PLAN_REASON_CODES)[number];
 export interface PlanReason { code: PlanReasonCode; detail: string }
 
-export interface PlanTicket { id: string; title: string; spec: string; dependsOn: string[] }
+/** `specText` (#675) = the ticket's FULL description, verbatim (its sentences and numbered criteria are what the review is held to): recorded as `tickets.<id>.specText`. */
+export interface PlanTicket { id: string; title: string; spec: string; specText: string; dependsOn: string[] }
 export interface Plan { version: 1; tickets: PlanTicket[]; interfaces: Record<string, string> }
 
 /** parsePlan's refusal: every structural reason found, not only the first (the agent fixes them in ONE retry). */
@@ -39,12 +40,12 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
   if (!isObj(v)) return { plan: null, reasons: [{ code: 'plan-bad-json', detail: 'the plan must be a JSON object {version, tickets, interfaces}' }] };
   for (const k of Object.keys(v)) if (!['version', 'tickets', 'interfaces'].includes(k)) free(`unknown key "${k}" at the top of the plan — the plan holds only version, tickets, interfaces (no decisions, notes or order)`);
   if (v.version !== PLAN_VERSION) bad(`version must be ${PLAN_VERSION}`);
-  if (!Array.isArray(v.tickets)) { bad('tickets must be a list of {id, title, spec, dependsOn}'); return { plan: null, reasons }; }
+  if (!Array.isArray(v.tickets)) { bad('tickets must be a list of {id, title, spec, specText, dependsOn}'); return { plan: null, reasons }; }
   const tickets: PlanTicket[] = [];
   v.tickets.forEach((t, i) => {
     const at = `tickets[${i}]`;
-    if (!isObj(t)) { bad(`${at} must be an object {id, title, spec, dependsOn}`); return; }
-    for (const k of Object.keys(t)) if (!['id', 'title', 'spec', 'dependsOn'].includes(k)) free(`${at}: unknown key "${k}" — a ticket holds only id, title, spec, dependsOn`);
+    if (!isObj(t)) { bad(`${at} must be an object {id, title, spec, specText, dependsOn}`); return; }
+    for (const k of Object.keys(t)) if (!['id', 'title', 'spec', 'specText', 'dependsOn'].includes(k)) free(`${at}: unknown key "${k}" — a ticket holds only id, title, spec, specText, dependsOn`);
     const id = typeof t.id === 'string' ? t.id : '';
     if (!TICKET_ID.test(id)) { bad(`${at}.id must be a ticket id (letters, digits, . _ # : -), got ${JSON.stringify(t.id)}`); return; }
     const where = `ticket ${id}`;
@@ -56,10 +57,15 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
     if (typeof t.spec !== 'string' || !t.spec.trim()) bad(`${where}: spec must name where the ticket's text is (a file, a URL, a ledger section)`);
     else if (t.spec.length > PLAN_SPEC_MAX || CTRL_LINE.test(t.spec)) free(`${where}: spec must be one printable line of at most ${PLAN_SPEC_MAX} characters (a file, a URL, a ledger section)`);
     else spec = t.spec.trim();
+    let specText = '';
+    if (typeof t.specText !== 'string' || !t.specText.trim()) reasons.push({ code: 'plan-spec-text-missing', detail: `${where}: specText must be the ticket's full description, verbatim (the reviewer is held to its sentences and numbered criteria) — it is empty or absent` });
+    else if (t.specText.length > SPEC_TEXT_MAX || CTRL_TEXT.test(t.specText)) free(`${where}: specText must be printable text of at most ${SPEC_TEXT_MAX} characters`);
+    else if (title && t.specText.trim().length < title.length) reasons.push({ code: 'plan-spec-text-short', detail: `${where}: specText (${t.specText.trim().length} characters) is shorter than the title you give (${title.length}): copy the ticket's whole description, not a summary` });
+    else specText = t.specText.replace(/\r\n/g, '\n');
     let dependsOn: string[] = [];
     if (!Array.isArray(t.dependsOn) || t.dependsOn.some((d) => typeof d !== 'string')) bad(`${where}: dependsOn must be a list of ticket ids ([] = none)`);
     else dependsOn = [...new Set((t.dependsOn as string[]).map((d) => d.trim()))];
-    tickets.push({ id, title, spec, dependsOn });
+    tickets.push({ id, title, spec, specText, dependsOn });
   });
   const ifaceEntries: Array<[string, string]> = [];
   if (v.interfaces === undefined) bad('interfaces must be an object {<ticket id>: <text>} ({} when no ticket is depended on)');
@@ -154,7 +160,7 @@ export function validatePlan(raw: unknown, ticketIds: string[]): { ok: boolean; 
 
 /** sha256 of the normalised plan (tickets in the plan's order, fixed key order): the `loopPlan.hash`. */
 export function planHash(plan: Plan): string {
-  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])) };
+  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, specText: t.specText, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])) };
   return createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -174,7 +180,7 @@ export function applyPlan(state: FanoutState, plan: Plan, now: string, attempts 
   const checked = checkPlan(plan, ids);
   if (!checked.ok) throw new SeatRefusal('plan-invalid', checked.reasons.map((r) => `[${r.code}] ${r.detail}`).join('; '));
   let st = setPlan(state, ids, 'declare', now); // seat-records-off / plan-frozen
-  for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: [], spec: t.spec }, now); // pass 1: every ticket exists (a dependency may name a later one)
+  for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: [], spec: t.spec }, now, { specText: t.specText }); // #675: the full text rides with the reference, as `state set --spec-text` does by hand. pass 1: every ticket exists (a dependency may name a later one)
   for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: t.dependsOn }, now);
   for (const [id, text] of Object.entries(plan.interfaces)) st = applyTicketPatchCore(st, id, { interface: text }, now);
   const missing = planMissing(st);

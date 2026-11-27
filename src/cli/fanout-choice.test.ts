@@ -63,16 +63,15 @@ test('choice must-FAIL: coordinator / another ticket\'s implementer / the review
   assert.equal(fs.readFileSync(stateFile(home, 'r1'), 'utf8'), before, 'a refusal writes nothing');
 });
 
-test('reviewer brief: lists the ticket\'s recorded choices under the run decisions (and only that ticket\'s); no choice ⇒ no section', (t) => {
+test('reviewer brief (#675): lists EVERY choice of the run under `## Choices of the run` — the ticket\'s own marked, the other tickets\' shown; no choice ⇒ no section', (t) => {
   const home = mkHome(t); seed(home);
   const none = renderBriefOf(load(home), 'T1', { kind: 'spawn', head: A, base: null }).text;
-  assert.doesNotMatch(none, /Choices recorded/);
+  assert.doesNotMatch(none, /Choices of the run|Choices recorded/);
   assert.equal(choose(home, 'impl1').code, 0);
   assert.equal(choose(home, 'impl2', 'T2', 'other question', 'other option').code, 0);
   const text = renderBriefOf(load(home), 'T1', { kind: 'spawn', head: A, base: null }).text;
-  assert.match(text, /Choices recorded for T1[\s\S]*1\. page size 0: error or default\? → TAKEN: default to 20 \(reversible\)/);
+  assert.match(text, /## Choices of the run\n[^\n]*\n1\. \[T1 — this ticket\] page size 0: error or default\? → TAKEN: default to 20 \(reversible\)\n   Choice 1 narrows: none declared\n2\. \[T2\] other question → TAKEN: other option\n   Choice 2 narrows: none declared/);
   assert.match(text, /--on-choice <finding>=<n>/);
-  assert.doesNotMatch(text, /other question/);
 });
 
 test('record --on-choice: a finding about the choice does not block — approve is accepted, the report lists the finding and the choice; a code-vs-choice finding (no flag) still blocks', (t) => {

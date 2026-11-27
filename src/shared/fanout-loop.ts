@@ -8,6 +8,7 @@ import { buildReport, collectCosts, reportExit, type Report } from './fanout-rep
 import { LoopKilled } from './fanout-loop-kill.ts';
 import { flakyAtMerge, stepCi as runCi, stepPauseWatch as runPauseWatch, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
 import { runCorrections } from './fanout-loop-corrections.ts';
+import { renderRunChoices } from './fanout-brief-common.ts';
 import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
 import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, CHOICES_MAX, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
@@ -105,11 +106,12 @@ export const ticketParked = (s: LoopState, id: string): boolean => s.tickets[id]
 export const activeTickets = (s: LoopState): string[] => (s.plan?.tickets ?? []).filter((id) => { const t = s.tickets[id]; return !!t && t.status !== 'merged' && t.status !== 'dropped' && t.status !== 'parked'; });
 const implementerTicket = (s: LoopState, ws: string): string | null => Object.entries(s.tickets).find(([, t]) => t.implementer === ws)?.[0] ?? null;
 
-export function renderConnectAsk(i: { ticket: string; upstream: string; branch: string | null; head: string }): string {
+export function renderConnectAsk(i: { ticket: string; upstream: string; branch: string | null; head: string; /** #675 — `renderRunChoices(state)`: '' / absent = none (the message is byte-identical) */ choices?: string }): string {
   return [
     `CONNECT ${i.upstream} ${i.head}`,
     `${i.ticket}: your upstream ${i.upstream}${i.branch ? ` (branch ${i.branch})` : ''} was approved at ${i.head}. Connect once: merge it into your branch with a MERGE COMMIT (git merge --no-ff ${i.head} — never rebase, never squash),`,
     'rebuild on its real names, push, then send a status. Keep going on your own ticket meanwhile; do not wait for anything else.',
+    ...(i.choices ? ['', '## Choices of the run', i.choices] : []),
   ].join('\n');
 }
 
@@ -402,7 +404,7 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
       const asked = s.loop.asked[id]?.[up];
       if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue; // once per (dependent, upstream, head, AUTHOR): a respawned author is asked again
       if (t.builtOn[up] && loopSameSha(t.builtOn[up], a.head)) continue;
-      await deps.fleet.wake(t.implementer, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head }));
+      await deps.fleet.wake(t.implementer, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head, choices: renderRunChoices(ctx.st()) }));
       const moved = !!asked && !loopSameSha(asked, a.head); // #649: a CONNECT sent again because the upstream moved (a respawned author re-asked on the SAME head is not one)
       ctx.update((x) => ({ ...x, loop: { ...x.loop, ...(moved ? { reconnects: { ...x.loop.reconnects, [id]: (x.loop.reconnects[id] ?? 0) + 1 } } : {}), asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } }, askedTo: { ...x.loop.askedTo, [id]: { ...(x.loop.askedTo[id] ?? {}), [up]: t.implementer! } } } }));
       ctx.did(`asked ${id} to connect to ${up} at ${a.head.slice(0, 12)}`);

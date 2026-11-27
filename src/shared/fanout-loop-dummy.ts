@@ -8,21 +8,26 @@ import type { FleetPort, ForgeCheck, ForgePort, GitPort, LoopMail } from './fano
 import { readLoopState, updateLoopState, withLoop } from './fanout-loop-side.ts';
 import type { Plan } from './fanout-plan.ts';
 import { decideReview, claimReviewer, recordWake, reviewerName, nthReviewer, settleReviewer } from './fanout-review.ts';
-import { recordReview, reviewHeadOf } from './fanout-record.ts';
+import { recordImplementerChoice, recordReview, reviewHeadOf } from './fanout-record.ts';
+import { criteriaLines } from './fanout-criteria.ts';
 import { LOOP_BRIEF } from './fanout-implementer-brief.ts';
 import { implementerName, startRun, type StartResult } from './fanout-start.ts';
 import { applyPlan } from './fanout-plan.ts';
-import { applyTicketPatch, FanoutStateError, newState, stateFile } from './fanout-state.ts';
+import { applyTicketPatch, effectiveSpec, FanoutStateError, newState, stateFile } from './fanout-state.ts';
 import { judgeRun, type Ev, type Violation } from './fanout-loop-judge.ts';
 import { DEFAULT_OPTIONS, runLoop, type LoopOptions, type LoopResult } from './fanout-loop.ts';
 
-export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'retree', 'wait', 'die'] as const; // die = the implementer's workspace ends (its branch stays)
+export const STEP_KINDS_IMPLEMENTER = ['code', 'nominate', 'fix', 'connect', 'sync', 'retree', 'wait', 'die', 'choice'] as const; // die = the implementer's workspace ends (its branch stays); choice = `fanout choice` (#675: with `narrows` when the option cuts a ticket sentence)
 export const STEP_KINDS_REVIEWER = ['approve', 'changes', 'die', 'silent'] as const; // die = the reviewer's workspace ends with no record; silent = alive, never records
-export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string }
+export interface Step { do: (typeof STEP_KINDS_IMPLEMENTER)[number] | (typeof STEP_KINDS_REVIEWER)[number]; afterMs?: number; findings?: string[]; head?: string;
+  /** `choice` step (#675): the recorded question / option / narrowed ticket sentence */
+  question?: string; taken?: string; narrows?: string;
+  /** `changes` step (#675): the findings' severity (default BLOCKING), the ticket sentence they quote (`specSentence`) and the choice number the record cites with `--on-choice` */
+  severity?: string; sentence?: string; onChoice?: number }
 export interface Scenario {
   version: 1;
   run?: string;
-  repo: { tickets: Array<{ id: string; dependsOn: string[]; spec: string }>; plan?: Plan };
+  repo: { tickets: Array<{ id: string; dependsOn: string[]; spec: string; /** #675: the ticket's description the plan carries (default: one line, no criteria) */ specText?: string }>; plan?: Plan };
   agents?: Record<string, { implementer?: Step[]; /** the script of the 2nd+ implementer of the ticket (a respawn); default = `implementer` */ respawn?: Step[]; reviewer?: Step[] }>;
   ci?: Record<string, string[]>;
   /** #607's start check: what the checks of the EMPTY probe PR say — `green` (default) | `red:<check>` | `missing` (no check at all) */
@@ -74,7 +79,7 @@ export function parseScenario(raw: unknown): Scenario {
 export function planOf(sc: Scenario): Plan {
   if (sc.repo.plan) return sc.repo.plan;
   const depended = new Set(sc.repo.tickets.flatMap((t) => t.dependsOn));
-  return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — the names ${d} provides`])) };
+  return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, specText: t.specText ?? `Dummy ticket ${t.id} (${t.spec}).`, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — the names ${d} provides`])) };
 }
 
 const DUMMY_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };
@@ -210,6 +215,11 @@ export class DummyWorld {
         break;
       }
       case 'die': { this.impls.delete(a.ws); this.ev('impl-died', a.ticket, { ws: a.ws }); return; }
+      case 'choice': {
+        updateLoopState(this.home, this.run, (cur) => withLoop(recordImplementerChoice(cur!, a.ticket, { question: step.question ?? 'which option?', taken: step.taken ?? 'the reversible one', ...(step.narrows !== undefined ? { narrows: step.narrows } : {}), callerId: a.ws, callerVouched: true, now: this.iso() }), cur!.loop));
+        this.ev('choice', a.ticket, { ws: a.ws, narrows: step.narrows ?? null });
+        break;
+      }
       case 'code': { const c = this.commitOn(a, `code${a.idx}`); this.ev('code', a.ticket, { head: c }); break; }
       case 'fix': { const c = this.commitOn(a, `fix${a.idx}`); this.ev('fix', a.ticket, { head: c }); this.post('status', a.ws, a.ticket, `fixed — head ${c}`); break; }
       case 'nominate': {
@@ -316,10 +326,13 @@ export class DummyWorld {
     if (step.do === 'die') { this.revs.delete(r.ws); this.ev('review-died', r.ticket, { ws: r.ws }); return; }
     if (step.do === 'silent') { this.ev('review-silent', r.ticket, { ws: r.ws }); return; }
     const open = Object.entries(t.findings).filter(([, f]) => !f.settled && !f.decision && f.onChoice === undefined).map(([id]) => id);
-    const findings = step.do === 'changes' ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, { severity: 'BLOCKING', evidence: 'argued', report: { input: 'the scripted input', happens: 'the scripted failure', where: 'src/x.ts:1', proof: 'scripted' } }])) : {};
+    const findings = step.do === 'changes' ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, { severity: step.severity ?? 'BLOCKING', evidence: 'argued', ...(step.sentence !== undefined ? { text: 'the scripted challenge of a choice', specSentence: step.sentence } : {}), ...(step.severity === undefined || step.severity === 'BLOCKING' || step.severity === 'MAJOR' ? { report: { input: 'the scripted input', happens: 'the scripted failure', where: 'src/x.ts:1', proof: 'scripted' } } : {}) }])) : {};
+    const nCriteria = criteriaLines(effectiveSpec(s, t).specText).length;
+    const criteria = nCriteria ? Object.fromEntries(Array.from({ length: nCriteria }, (_, k) => [String(k + 1), 'met' as const])) : undefined; // the dummy reviewer finds every numbered criterion met (a scenario that needs `unmet` scripts findings instead)
+    const onChoice = step.do === 'changes' && step.onChoice !== undefined ? Object.fromEntries((step.findings ?? ['F1']).map((id) => [id, step.onChoice!])) : undefined;
     const tree = this.commits.get(head)?.tree ?? null;
     try {
-      updateLoopState(this.home, this.run, (cur) => withLoop(recordReview(cur!, r.ticket, { head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve', input: { findings: findings as never, fixed: step.do === 'approve' ? open : [] }, callerId: r.ws, callerVouched: true, tree, now: this.iso() }), cur!.loop));
+      updateLoopState(this.home, this.run, (cur) => withLoop(recordReview(cur!, r.ticket, { head, verdict: step.do === 'changes' ? 'changes-requested' : 'approve', input: { findings: findings as never, fixed: step.do === 'approve' ? open : [], ...(criteria ? { criteria } : {}) }, callerId: r.ws, callerVouched: true, tree, now: this.iso(), ...(onChoice ? { onChoice } : {}) }), cur!.loop));
       this.ev('review-record', r.ticket, { ws: r.ws, head, tree, verdict: step.do === 'changes' ? 'changes-requested' : 'approve' });
       this.post('worker_done', r.ws, r.ticket, `recorded ${step.do} on ${head}`);
     } catch (e) { this.ev('review-error', r.ticket, { error: e instanceof Error ? e.message : String(e) }); }

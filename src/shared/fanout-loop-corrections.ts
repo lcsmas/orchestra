@@ -3,6 +3,7 @@
 // Built on the FROZEN NAMES v1 of ledger #613 (LoopDeps / FleetPort / GitPort, #603's rounds + parkTicket): the narrow `CorrectionsDeps` below is a structural SUBSET of LoopDeps, so the real LoopCtx assigns to it.
 import { countsThrough } from './fanout-record.ts';
 import { LoopKilled } from './fanout-loop-kill.ts';
+import { renderRunChoices } from './fanout-brief-common.ts';
 import {
   applyTicketPatch, blockingMinors, parkTicket, readState, recordRound, sameContent, situationFingerprint, stateFile, switchesOf, updateState,
   type FanoutState, type FindingRecord, type ReviewEntry, type TicketState,
@@ -67,6 +68,7 @@ export function renderBatch(state: FanoutState, ticket: string, c: { r: ReviewEn
     ...(fresh ? ['You replace the previous author of this ticket: the branch already holds its work — read it before changing anything.'] : []),
     `Fix ALL ${c.fix.length} in ONE push to ${t.branch ?? 'your branch'}, then stop; your reviewer reads the fix. Do not message anyone and do not record a verdict.`,
     ...lines,
+    ...(renderRunChoices(state) ? ['', '## Choices of the run', renderRunChoices(state)] : []),
     ...(c.fix.some((id) => t.findings[id].kind === 'process') ? ['For a "process" finding: edit the PR body, then push a commit (`git commit --allow-empty` if nothing else changes) and send ONE `orchestra send --type status` saying it is done — a finding is only closed on a later head than the one it was raised on.'] : []),
   ].join('\n');
 }

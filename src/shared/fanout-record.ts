@@ -1,7 +1,8 @@
 // #589 (I4, switch seatRecords=on) — the reviewer RECORDS its verdict and findings; `gate` and `deliver` read nothing else. Pure; the verb is src/cli/fanout-record.ts.
 // Every refusal is a FanoutStateError whose message STARTS with its name in brackets. Who the caller is = `resolveCaller` (#588, src/shared/fanout-caller.ts) — this file never judges identity itself.
-import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, findingClosed, recordChoice, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
+import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, effectiveSpec, findingClosed, recordChoice, sameContent, seatRecordsOn, sentenceAccepted, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
 import type { FileOnHead } from './fanout-demonstration.ts';
+import { criteriaLines, quotesCriterion } from './fanout-criteria.ts';
 
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
@@ -12,7 +13,7 @@ const recordRefuse = (name: string, msg: string): never => { throw new SeatRefus
 export const recordCommand = (ticket: string, head: string): string => `orchestra fanout record ${ticket} --head ${head} --verdict approve|changes-requested --json <file|->`;
 
 // ── the --json of `fanout record` ──────────────────────────────────────────────────────────────────────────────
-export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[] }
+export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[]; /** #675 — `{"<n>":"met|unmet"}` per numbered acceptance criterion of the ticket text */ criteria?: Record<string, 'met' | 'unmet'> }
 const INPUT_FINDING_KEYS = new Set(['severity', 'evidence', 'text', 'demonstration', 'report', 'specSentence', 'kind']);
 
 /** `{"findings":{"<id>":{severity, evidence, text, demonstration?, report?, specSentence?, kind?}},"fixed":["<id>",…]}` — shape only; the finding rules (severity, report, specSentence, demonstration) are the state's own, applied by `recordReview`. */
@@ -21,7 +22,7 @@ export function parseRecordJson(text: string): RecordInput {
   try { raw = JSON.parse(text); } catch { return recordRefuse('record-json', 'the --json is not valid JSON'); }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return recordRefuse('record-json', 'the --json must be {"findings":{<id>:{…}},"fixed":[<id>,…]}');
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed') recordRefuse('record-json', `unknown key "${k}" (only findings and fixed)`);
+  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed' && k !== 'criteria') recordRefuse('record-json', `unknown key "${k}" (only findings, fixed and criteria)`);
   const findings: RecordInput['findings'] = {};
   if (o.findings !== undefined) {
     if (typeof o.findings !== 'object' || o.findings === null || Array.isArray(o.findings)) recordRefuse('record-json', '"findings" must be an object {<id>: {severity, evidence, text, …}}');
@@ -40,7 +41,16 @@ export function parseRecordJson(text: string): RecordInput {
     if (!Array.isArray(o.fixed) || o.fixed.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) recordRefuse('record-json', '"fixed" must be an array of finding ids');
     fixed = [...new Set(o.fixed as string[])];
   }
-  return { findings, fixed };
+  let criteria: RecordInput['criteria'];
+  if (o.criteria !== undefined) {
+    if (typeof o.criteria !== 'object' || o.criteria === null || Array.isArray(o.criteria)) recordRefuse('record-json', '"criteria" must be {"<n>":"met|unmet"} — one entry per numbered acceptance criterion of the brief');
+    criteria = {};
+    for (const [k, v] of Object.entries(o.criteria as Record<string, unknown>)) {
+      if (!/^[1-9][0-9]{0,3}$/.test(k) || (v !== 'met' && v !== 'unmet')) recordRefuse('record-json', `"criteria" entry ${JSON.stringify(k)}: ${JSON.stringify(v)} — the key is a criterion number, the value "met" or "unmet"`);
+      criteria[k] = v as 'met' | 'unmet';
+    }
+  }
+  return { findings, fixed, ...(criteria ? { criteria } : {}) };
 }
 
 // ── derived counts ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -94,6 +104,19 @@ export interface RecordArgs {
   onChoice?: Record<string, number>;
 }
 
+/** #675 — why `--on-choice` does NOT exempt this finding (null = it does): its accepted `specSentence` is the sentence the choice narrows, or the choice declared none and the finding quotes an acceptance criterion. */
+export function onChoiceDenial(state: FanoutState, ticketId: string, finding: Record<string, unknown>, choice: { n: number; narrows?: string }): string | null {
+  const t = state.tickets[ticketId];
+  const sentence = typeof finding.specSentence === 'string' ? finding.specSentence.replace(/\r\n/g, '\n') : null;
+  const spec = effectiveSpec(state, t);
+  if (sentence === null || !sentenceAccepted({ specText: spec.specText }, { severity: 'MINOR', specSentence: sentence })) return null; // no accepted quote of the ticket: nothing to hold the choice against
+  if (choice.narrows !== undefined) {
+    const n = choice.narrows.trim();
+    return n && (sentence.includes(n) || n.includes(sentence.trim())) ? `its specSentence is the sentence choice ${choice.n} narrows` : null;
+  }
+  return quotesCriterion(sentence, criteriaLines(spec.specText)) ? `choice ${choice.n} declared nothing it narrows and the finding quotes an acceptance criterion` : null;
+}
+
 /** `orchestra fanout record <ticket>`: the recorded reviewer's verdict + findings on the exact head it read. Pure: returns the new state or throws a named refusal. */
 export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs): FanoutState {
   if (!seatRecordsOn(state)) return recordRefuse('record-off', `seatRecords is off for run ${state.run} — nothing is recorded; the coordinator's verdict file (deliver --review-verdict) stays the way`);
@@ -112,13 +135,29 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
     return recordRefuse('record-head-mismatch', `--head ${a.head.slice(0, 12)} is not the head you were briefed to read (${expected.slice(0, 12)}): a verdict speaks about the exact head it read — read ${expected.slice(0, 12)} (or ask the coordinator to wake you on the new head: \`orchestra fanout review ${ticketId}\`), then record`);
   }
   const head = expected.length >= a.head.length ? expected : a.head; // the longer of the two spellings of one sha
+  const criteria = criteriaLines(effectiveSpec(state, t).specText);
   // #672: a record on a head is FINAL — a second one by the same reviewer on the same head (approve then changes-requested) would leave the loop holding an approval the reviewer retracts
   const prior = (t.reviews ?? []).find((r) => r.reviewer === reviewer && sameSha(r.head, head));
   if (prior) return recordRefuse('record-final', `you already recorded review ${prior.n} (${prior.verdict}) on ${head.slice(0, 12)}: a verdict on a head is final — raise the new finding on the next head (ask the coordinator to wake you on it: \`orchestra fanout review ${ticketId}\`)`);
   if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return recordRefuse('record-verdict', `--verdict must be approve or changes-requested (got ${JSON.stringify(a.verdict)}) — the counts are derived from your findings, not typed`);
 
+  // #675 — the numbered acceptance criteria of the ticket text: an approve answers every one; an `unmet` one is a BLOCKING finding (`criterion-<n>`), made here so no reviewer can leave it out
+  const answers = a.input.criteria ?? {};
+  for (const k of Object.keys(answers)) if (Number(k) > criteria.length) recordRefuse('criteria-unknown', `"criteria" names ${k}, but the ticket text has ${criteria.length} numbered criteri${criteria.length === 1 ? 'on' : 'a'}${criteria.length ? ` (1..${criteria.length})` : ''}`);
+  if (criteria.length && a.verdict === 'approve') {
+    const missing = criteria.map((_, k) => String(k + 1)).filter((k) => answers[k] === undefined);
+    if (missing.length) recordRefuse('criteria-missing', `approve without an answer for criterion ${missing.join(', ')} of ${criteria.length}: add "criteria":{${criteria.map((_, k) => `"${k + 1}":"met|unmet"`).join(',')}} to the --json — judged on the head, for the input you traced, against the TICKET's sentence (not a recorded choice)`);
+  }
+  const fin: Record<string, Record<string, unknown>> = { ...a.input.findings };
+  for (const [k, v] of Object.entries(answers)) {
+    if (v !== 'unmet') continue;
+    const id = `criterion-${k}`;
+    if (fin[id]) recordRefuse('criteria-finding-clash', `finding ${id} is the finding code makes for an unmet criterion ${k}: drop yours (or rename it) — it is recorded BLOCKING from your "criteria"`);
+    fin[id] = { severity: 'BLOCKING', evidence: 'argued', text: `acceptance criterion ${k} is unmet on this head: ${criteria[Number(k) - 1]}` };
+  }
+
   // findings: new ids only; `fixed` ids must be open findings that a reviewer of this ticket raised, on ANOTHER head than this one
-  const ids = Object.keys(a.input.findings);
+  const ids = Object.keys(fin);
   for (const id of ids) if (t.findings[id]) recordRefuse('finding-exists', `finding ${id} is already recorded on ${ticketId} (${t.findings[id].severity}): a recorded finding is not rewritten — close it with "fixed" on a later head, or give the new problem a new id`);
   const reviewers = reviewersOf(t);
   for (const id of a.input.fixed) {
@@ -131,10 +170,12 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
 
   // the reviewer's findings go through the state's own transition (severity / report / specSentence / demonstration rules), as the head THEY read
   const patch: Record<string, unknown> = {};
-  if (ids.length) patch.findings = Object.fromEntries(ids.map((id) => [id, { ...a.input.findings[id], by: a.callerId, raisedOn: head }]));
+  if (ids.length) patch.findings = Object.fromEntries(ids.map((id) => [id, { ...fin[id], by: a.callerId, raisedOn: head }]));
   for (const [id, n] of Object.entries(a.onChoice ?? {})) {
     if (!ids.includes(id)) recordRefuse('on-choice-finding', `--on-choice names ${id}, which is not a finding of this record (raised now: ${ids.join(', ') || 'none'})`);
     if (!(state.choices ?? []).some((c) => c.n === n && c.ticket === ticketId)) recordRefuse('on-choice-unknown', `--on-choice ${id}=${n}: ${ticketId} has no recorded choice ${n} (its choices: ${choicesOfTicket(state, ticketId).map((c) => c.n).join(', ') || 'none'})`);
+    const choice = (state.choices ?? []).find((c) => c.n === n)!;
+    if (onChoiceDenial(state, ticketId, fin[id], choice) !== null) continue; // #675: the finding keeps its severity (the CLI says so)
     (patch.findings as Record<string, Record<string, unknown>>)[id].onChoice = n;
   }
   if (a.input.fixed.length) patch.settle = Object.fromEntries(a.input.fixed.map((id) => [id, t.findings[id].kind === 'process' ? { how: 'pr-body', ref: `read by the reviewer on ${head}` } : { how: 'fixed', ref: head }]));
@@ -147,7 +188,7 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   const nt0 = next.tickets[ticketId];
   const findings: Record<string, FindingRecord> = { ...nt0.findings };
   for (const id of a.input.fixed) findings[id] = { ...findings[id], fixedBy: { by: a.callerId, head, at: a.now } };
-  const entry: ReviewEntry = { n: (t.reviews?.length ?? 0) + 1, reviewer, head, tree: a.tree, verdict: a.verdict, findings: ids, closed: a.input.fixed, at: a.now };
+  const entry: ReviewEntry = { n: (t.reviews?.length ?? 0) + 1, reviewer, head, tree: a.tree, verdict: a.verdict, findings: ids, closed: a.input.fixed, at: a.now, ...(a.input.criteria ? { criteria: a.input.criteria } : {}) };
   const nt: TicketState = { ...nt0, findings, reviews: [...(t.reviews ?? []), entry], ...(t.head && sameSha(head, t.head) ? { verdict: a.verdict } : {}), updatedAt: a.now };
   const out: FanoutState = { ...next, tickets: { ...next.tickets, [ticketId]: nt }, updatedAt: a.now };
 
@@ -164,7 +205,7 @@ export const choicesOfTicket = (state: FanoutState, ticket: string) => (state.ch
 
 /** `orchestra fanout choice <ticket> --question <q> --taken <option>`: the ticket's implementer records the reversible option it took. The rule is fixed (reversible-default): no coordinator, no ruling afterwards.
  *  Under seatRecords=on only the ticket's own implementer, vouched by the host, may; the choice is numbered run-wide (`--on-choice` cites that number). */
-export function recordImplementerChoice(state: FanoutState, ticketId: string, a: { question: string; taken: string; callerId: string | null; callerVouched?: boolean; now: string }): FanoutState {
+export function recordImplementerChoice(state: FanoutState, ticketId: string, a: { question: string; taken: string; narrows?: string; callerId: string | null; callerVouched?: boolean; now: string }): FanoutState {
   const t = state.tickets[ticketId];
   if (!t) return recordRefuse('choice-unknown-ticket', `${ticketId} is not in the state of run ${state.run} (tickets: ${Object.keys(state.tickets).join(', ') || 'none'})`);
   if (t.status === 'merged' || t.status === 'dropped') return recordRefuse('choice-closed', `${ticketId} is ${t.status}: a choice is recorded before the push, while the ticket is open`);
@@ -172,7 +213,12 @@ export function recordImplementerChoice(state: FanoutState, ticketId: string, a:
     if (a.callerVouched !== true) return recordRefuse('choice-caller', `the host could not vouch for ${a.callerId ?? 'this session'}: only ${ticketId}'s implementer, from its live session, records its choice`);
     if (!t.implementer || a.callerId !== t.implementer) return recordRefuse('choice-caller', `only ${ticketId}'s implementer (${t.implementer ?? 'none recorded'}) records its choice; you are ${a.callerId ?? 'not identified'}`);
   }
-  return recordChoice(state, { ticket: ticketId, question: a.question, rule: 'reversible-default', answer: a.taken }, a.now);
+  if (a.narrows !== undefined) { // #675: the sentence it cuts is the TICKET's, verbatim — the same literal check as a finding's specSentence
+    const spec = effectiveSpec(state, t).specText;
+    if (spec === null) return recordRefuse('choice-narrows-no-text', `${ticketId} has no captured ticket text: --narrows cannot be checked (the plan's specText, or \`state set ${ticketId} --spec-text <file|->\`, records it)`);
+    if (!spec.includes(a.narrows.replace(/\r\n/g, '\n'))) return recordRefuse('choice-narrows-not-in-text', `--narrows is not a literal substring of ${ticketId}'s ticket text (no trim, no case-fold): quote the sentence verbatim`);
+  }
+  return recordChoice(state, { ticket: ticketId, question: a.question, rule: 'reversible-default', answer: a.taken, ...(a.narrows !== undefined ? { narrows: a.narrows } : {}) }, a.now);
 }
 
 // ── what gate and deliver read ─────────────────────────────────────────────────────────────────────────────────

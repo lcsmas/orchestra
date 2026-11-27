@@ -93,7 +93,9 @@ export interface AcceptFlow {
 }
 
 /** #589 (I4) — one recorded verdict: who, the exact head (+ its tree) it read, the finding ids it raised / closed as fixed. */
-export interface ReviewEntry { n: number; reviewer: string; head: string; tree: string | null; verdict: 'approve' | 'changes-requested'; findings: string[]; closed: string[]; at: string }
+export interface ReviewEntry { n: number; reviewer: string; head: string; tree: string | null; verdict: 'approve' | 'changes-requested'; findings: string[]; closed: string[]; at: string;
+  /** #675 — the reviewer's answer per numbered acceptance criterion of the ticket text (`fanout record --json criteria`); absent = the ticket text has none. */
+  criteria?: Record<string, 'met' | 'unmet'> }
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -170,7 +172,9 @@ export interface ParkRecord { cause: ParkCause; reason: string; at: string; bloc
 export interface RoundRecord { n: number; fingerprint: string; at: string }
 export const CHOICE_RULES = ['reversible-default', 'no-safe-option'] as const;
 export type ChoiceRule = (typeof CHOICE_RULES)[number];
-export interface ChoiceRecord { n: number; ticket: string; question: string; rule: ChoiceRule; answer: string; at: string }
+export interface ChoiceRecord { n: number; ticket: string; question: string; rule: ChoiceRule; answer: string; at: string;
+  /** #675 — the verbatim sentence of the ticket text this choice narrows (`fanout choice --narrows`); absent = none declared. */
+  narrows?: string }
 /** The ONLY pause of slice 1: `prs` = the pull requests red on the same `check` (null = no single check named). */
 export interface PauseRecord { at: string; reason: string; check: string | null; prs: number[];
   /** #655 — set ONLY by the loop's environment pause: the loop stays alive, reruns the red checks (`tries` so far, next at `nextAt`) and lifts it by itself on the first green. A human `--pause` has none: exit 4. */
@@ -755,16 +759,25 @@ function ciRecordOf(v: unknown, where: string): CiRecord {
   return { head: v.head, rerun, told, reruns: (v.reruns as number | undefined) ?? 0, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
 }
 
+function criteriaOf(v: unknown, where: string): Record<string, 'met' | 'unmet'> {
+  if (!isObj(v)) throw new FanoutStateError(`${where} must be {"<n>":"met|unmet"}`);
+  const out: Record<string, 'met' | 'unmet'> = {};
+  for (const [k, x] of Object.entries(v)) {
+    if (!/^[1-9][0-9]{0,3}$/.test(k) || (x !== 'met' && x !== 'unmet')) throw new FanoutStateError(`${where} must be {"<n>":"met|unmet"} (got ${JSON.stringify(k)}: ${JSON.stringify(x)})`);
+    out[k] = x;
+  }
+  return out;
+}
 function reviewsOf(v: unknown, where: string): ReviewEntry[] {
   if (!Array.isArray(v)) throw new FanoutStateError(`${where}: reviews must be an array`);
   return v.map((e, i) => {
     const at = `${where}: reviews[${i}]`;
     if (!isObj(e)) throw new FanoutStateError(`${at} must be an object`);
-    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at']), at);
+    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at', 'criteria']), at);
     if (!Number.isInteger(e.n) || (e.n as number) !== i + 1) throw new FanoutStateError(`${at}.n must be ${i + 1} (reviews are numbered 1.. in order)`);
     if (typeof e.head !== 'string' || !HEX_SHA.test(e.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
     const ids = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of finding ids`); return x as string[]; };
-    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`) };
+    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`), ...(e.criteria !== undefined ? { criteria: criteriaOf(e.criteria, `${at}.criteria`) } : {}) };
   });
 }
 function findingsOf(v: unknown): Record<string, FindingRecord> {
@@ -1607,10 +1620,10 @@ function choiceFieldOf(v: unknown, where: string): string {
 }
 function choiceOf(e: unknown, n: number, at: string | null, where: string): ChoiceRecord {
   if (!isObj(e)) throw parkRefusal('choice-bad', `${where} must be an object {ticket, question, rule, answer}`);
-  refuseUnknown(e, new Set(['n', 'ticket', 'question', 'rule', 'answer', 'at']), where);
+  refuseUnknown(e, new Set(['n', 'ticket', 'question', 'rule', 'answer', 'at', 'narrows']), where);
   if (typeof e.ticket !== 'string' || !SAFE_TICKET.test(e.ticket)) throw parkRefusal('choice-bad', `${where}.ticket must be a ticket id`);
   if (typeof e.rule !== 'string' || !(CHOICE_RULES as readonly string[]).includes(e.rule)) throw parkRefusal('choice-bad', `${where}.rule must be ${CHOICE_RULES.join('|')}`);
-  return { n, ticket: e.ticket, question: choiceFieldOf(e.question, `${where}.question`), rule: e.rule as ChoiceRule, answer: choiceFieldOf(e.answer, `${where}.answer`), at: at ?? isoOf(e.at, `${where}.at`) };
+  return { n, ticket: e.ticket, question: choiceFieldOf(e.question, `${where}.question`), rule: e.rule as ChoiceRule, answer: choiceFieldOf(e.answer, `${where}.answer`), at: at ?? isoOf(e.at, `${where}.at`), ...(e.narrows !== undefined ? { narrows: specSentenceOf(e.narrows, `${where}.narrows`) } : {}) };
 }
 function choicesOf(v: unknown): ChoiceRecord[] {
   if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('choices must be a non-empty list of {n, ticket, question, rule, answer, at}');
@@ -1753,10 +1766,10 @@ export function recordRound(state: FanoutState, id: string, fingerprint: string,
 }
 
 /** Record what an agent chose when it asked (`[choice-bad]` on a blank / unknown-rule / oversized entry). Numbered from 1, never edited. */
-export function recordChoice(state: FanoutState, entry: { ticket: string; question: string; rule: ChoiceRule | string; answer: string; n?: number; at?: string }, now: string): FanoutState {
+export function recordChoice(state: FanoutState, entry: { ticket: string; question: string; rule: ChoiceRule | string; answer: string; narrows?: string; n?: number; at?: string }, now: string): FanoutState {
   const list = state.choices ?? [];
   if (list.length >= CHOICES_MAX) throw parkRefusal('choice-bad', `the run already holds ${list.length} choices (at most ${CHOICES_MAX})`);
-  const rec = choiceOf({ ticket: entry.ticket, question: entry.question, rule: entry.rule, answer: entry.answer }, list.length + 1, now, 'choice');
+  const rec = choiceOf({ ticket: entry.ticket, question: entry.question, rule: entry.rule, ...(entry.narrows !== undefined ? { narrows: entry.narrows } : {}), answer: entry.answer }, list.length + 1, now, 'choice');
   return { ...state, choices: [...list, rec], updatedAt: now };
 }
 

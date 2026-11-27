@@ -12,9 +12,9 @@ const ids = ['A', 'B', 'C'];
 const good = (): Plan => ({
   version: 1,
   tickets: [
-    { id: 'A', title: 'orders table', spec: 'ledger #1 §A', dependsOn: [] },
-    { id: 'B', title: 'orders API', spec: 'ledger #1 §B', dependsOn: ['A'] },
-    { id: 'C', title: 'unrelated', spec: 'ledger #1 §C', dependsOn: [] },
+    { id: 'A', title: 'orders table', spec: 'ledger #1 §A', specText: 'The orders table.\n\n## Acceptance criteria\n- [ ] has a status column', dependsOn: [] },
+    { id: 'B', title: 'orders API', spec: 'ledger #1 §B', specText: 'The orders API, built on the table.', dependsOn: ['A'] },
+    { id: 'C', title: 'unrelated', spec: 'ledger #1 §C', specText: 'Something unrelated to the orders.', dependsOn: [] },
   ],
   interfaces: { A: 'column `orders.status`, event `OrderCreated`' },
 });
@@ -38,7 +38,7 @@ test('must-fail: a ticket of the run missing from the plan', () => {
 });
 
 test('must-fail: a ticket in the plan that is not in the run', () => {
-  const p = good(); p.tickets.push({ id: 'Z', title: 'extra', spec: 's', dependsOn: [] });
+  const p = good(); p.tickets.push({ id: 'Z', title: 'extra', spec: 's', specText: 'extra ticket text', dependsOn: [] });
   const r = checkPlan(p, ids);
   assert.deepEqual(codes(r), ['plan-ticket-unknown']);
   assert.match(r.reasons[0].detail, /ticket Z/);
@@ -101,7 +101,7 @@ test('must-fail: free text — a decision, a note, an order at the top or on a t
   assert.ok(codes(validatePlan(onTicket, ids)).includes('plan-free-text'));
   const long = clone(good()); long.tickets[0].title = 'x'.repeat(121);
   assert.ok(codes(validatePlan(long, ids)).includes('plan-free-text'));
-  const ok120 = clone(good()); ok120.tickets[0].title = 'x'.repeat(120);
+  const ok120 = clone(good()); ok120.tickets[0].title = 'x'.repeat(120); ok120.tickets[0].specText = 'y'.repeat(130);
   assert.equal(validatePlan(ok120, ids).ok, true);
   const multi = clone(good()); multi.tickets[0].spec = 'ledger\nand wait for B';
   assert.ok(codes(validatePlan(multi, ids)).includes('plan-free-text'));
@@ -120,13 +120,44 @@ test('every reason code of the frozen list is reachable (no dead code)', () => {
   const feed = (raw: unknown, want = ids): void => { for (const c of codes(validatePlan(raw, want))) seen.add(c); };
   feed('nope'); feed({ ...good(), notes: 'x' });
   const miss = good(); miss.tickets.pop(); feed(miss);
-  const unk = good(); unk.tickets.push({ id: 'Z', title: 't', spec: 's', dependsOn: [] }); feed(unk);
+  const unk = good(); unk.tickets.push({ id: 'Z', title: 't', spec: 's', specText: 'text', dependsOn: [] }); feed(unk);
+  const nost = good(); nost.tickets[0].specText = ''; feed(nost);
+  const shortt = good(); shortt.tickets[0].specText = 'x'; feed(shortt);
   const dup = good(); dup.tickets.push({ ...dup.tickets[0] }); feed(dup);
   const cyc = good(); cyc.tickets[0].dependsOn = ['B']; feed(cyc);
   const noi = good(); noi.interfaces = {}; feed(noi);
   const non = good(); non.interfaces.A = 'prose'; feed(non);
   const bad = good(); bad.tickets[1].dependsOn = ['Q']; feed(bad);
   assert.deepEqual([...seen].sort(), [...PLAN_REASON_CODES].sort());
+});
+
+test('#675 must-fail: an empty / absent / blank specText is refused plan-spec-text-missing; one shorter than the title, plan-spec-text-short; free text in it is no key', () => {
+  for (const v of ['', '   \n ', undefined, 7]) {
+    const p = clone(good()) as { tickets: Array<Record<string, unknown>> }; if (v === undefined) delete p.tickets[1].specText; else p.tickets[1].specText = v;
+    assert.deepEqual(codes(validatePlan(p, ids)), ['plan-spec-text-missing'], String(v));
+  }
+  const short = clone(good()); short.tickets[0].specText = 'orders'; // 6 chars < the 12 of its title
+  assert.deepEqual(codes(validatePlan(short, ids)), ['plan-spec-text-short']);
+  const exact = clone(good()); exact.tickets[0].specText = 'orders table'; // as long as its title: accepted
+  assert.equal(validatePlan(exact, ids).ok, true);
+  const ctl = clone(good()); ctl.tickets[0].specText = 'text with a \u0000 control char';
+  assert.ok(codes(validatePlan(ctl, ids)).includes('plan-free-text'));
+});
+
+test('#675: applyPlan stores specText verbatim in tickets.<id>.specText (CRLF → LF) next to the spec reference; planHash covers it', () => {
+  const st = applyPlan(seatState(), good(), NOW);
+  assert.equal(st.tickets.A.specText, 'The orders table.\n\n## Acceptance criteria\n- [ ] has a status column');
+  assert.equal(st.tickets.A.spec, 'ledger #1 §A');
+  const crlf = clone(good()); crlf.tickets[0].specText = 'The orders table.\r\n- [ ] has a status column';
+  assert.equal(applyPlan(seatState(), crlf, NOW).tickets.A.specText, 'The orders table.\n- [ ] has a status column');
+  const other = clone(good()); other.tickets[1].specText = 'a different description of B';
+  assert.notEqual(planHash(other), planHash(good()), 'a changed ticket text is a different plan');
+});
+
+test('#675: the plan brief asks for specText verbatim', () => {
+  const b = renderPlanBrief(['A', 'B'], { run: 'r1' });
+  assert.match(b, /"specText": "<the ticket's FULL description, verbatim>"/);
+  assert.match(b, /refuses an empty one or one shorter than the title/);
 });
 
 test('validatePlan reports ALL reasons at once (one retry can fix them all)', () => {

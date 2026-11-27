@@ -20,7 +20,7 @@ import * as busRuns from '../main/bus-runs.ts';
 import { withReceipt } from '../main/bus-receipts.ts';
 import { applyTicketPatch, newState, readState, setPlan, stateFile, switchesOf, writeStateAtomic, type FanoutState, type TicketState } from '../shared/fanout-state.ts';
 import { renderBriefOf } from '../shared/fanout-review.ts';
-import { recordReview, reviewCounts, reviewerDoneRefusal, unrecordedReviewers } from '../shared/fanout-record.ts';
+import { recordReview, recordedVerdictOf, reviewCounts, reviewerDoneRefusal, unrecordedReviewers } from '../shared/fanout-record.ts';
 
 const NOW = '2026-11-25T10:00:00.000Z';
 const A = 'a'.repeat(40);
@@ -219,6 +219,17 @@ function round2(home: string): void {
   const s = load(home);
   writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] } } } });
 }
+
+test('#674 (M28): across a same-tree rebase two records exist on two heads — the verdict read for the new head is the LATEST one (approve, MAJOR fixed), not the first (changes-requested, MAJOR open)', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR(), trees({ [A]: TREE_A })).code, 0);
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] } } } });
+  assert.equal(rec(home, 'rev1', 'T1', B, 'approve', { fixed: ['F1'] }, trees({ [B]: TREE_A })).code, 0); // B is a rebase of A: the SAME tree
+  const r = recordedVerdictOf(load(home), 'T1', B, TREE_A);
+  assert.ok(r.ok && r.recorded.round === 2 && r.recorded.verdict === 'approve' && r.recorded.major === 0, JSON.stringify(r));
+});
 
 test('fixed must-PASS: the reviewer closes its MAJOR on a later head it read — settled + fixedBy written, the counts fall to 0, approve accepted', (t) => {
   const home = mkHome(t);

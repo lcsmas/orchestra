@@ -121,7 +121,7 @@ const mutants = [
   ['closeout: the decided list drops the written reason', 'src/shared/fanout-closeout.ts', "decided by ${x.by} at ${x.at}: ${oneLine(x.text, 300)}", "decided by ${x.by} at ${x.at}"],
   // wiring
   ['brief: "How to end" does not name `fanout record`', 'src/shared/fanout-review-brief.ts', "`  orchestra fanout record ${i.ticket} --run ${i.run} --head ${i.head} --verdict approve|changes-requested --json <file|->`", "`  (record your verdict)`"],
-  ['brief: the json shape (findings / fixed) is not given', 'src/shared/fanout-review-brief.ts', "\"fixed\":[\"<id of an open finding you raised on an earlier head and have now read FIXED on this head>\"]}'", "\"fixed\":[]}'"],
+  ['brief: the json shape (findings / fixed) is not given', 'src/shared/fanout-review-brief.ts', "\"fixed\":[\"<id of an open finding you raised on an earlier head and have now read FIXED on this head>\"]${criteria.length", "\"fixed\":[]${criteria.length"],
   ['wiring: `fanout record` is not routed', I, "args[0] === 'record' ? runRecord(args.slice(1), fanoutDeps) :", ""],
   ['wiring: the send verb gets no completionRefusal', I, "completionRefusal: (sender, runId) => fanoutCompletionRefusal(sender, runId)", "completionRefusalOff: (sender, runId) => fanoutCompletionRefusal(sender, runId)"],
 ];
