@@ -59,15 +59,18 @@ const loopKind = (kind: string): string => (kind === 'question' ? 'ask' : kind);
 
 export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
   let liveSet = new Set<string>();
+  let idleOf = new Map<string, number>(); // idle-rule: ms idle per live workspace the host reported (running / unknown = absent)
   let skip = 0; // seqs ≤ skip were acked PARTIALLY (the loop is past them, a later message of the same lot is not): they are not handed out again
   let held: { lot: number; last: number } | null = null; // the lot `mail()` handed out: acked by `ack(upToSeq)` once the loop has handled every message of it (a kill, or a failed message, before that replays it — at-least-once, never lost)
 
   const refresh = async (): Promise<void> => {
     const ids = workspacesOfRun(deps.readState());
-    if (!ids.length) { liveSet = new Set(); return; }
+    if (!ids.length) { liveSet = new Set(); idleOf = new Map(); return; }
     const r = await deps.host({ op: 'live', run: deps.run, from: deps.caller, key: deps.key, ids });
     if (!r.ok || !Array.isArray(r.live)) throw new FanoutStateError(`the host could not tell which workspaces are alive: ${String(r.error ?? 'no answer')}`);
     liveSet = new Set((r.live as unknown[]).filter((x): x is string => typeof x === 'string'));
+    const idle = typeof r.idle === 'object' && r.idle !== null ? (r.idle as Record<string, unknown>) : {};
+    idleOf = new Map(Object.entries(idle).filter(([id, ms]) => liveSet.has(id) && typeof ms === 'number' && Number.isFinite(ms)).map(([id, ms]) => [id, ms as number]));
   };
   /** A transient failure of a shipped verb (exit 1: the host busy, the bus locked) is retried twice; a refusal (exit 2, `[name]`) never is. */
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -91,6 +94,7 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
       return parsed;
     },
     live: (ws) => liveSet.has(ws),
+    idleFor: (ws) => (liveSet.has(ws) ? idleOf.get(ws) ?? null : null),
     wake: (ws, text) => say(ws, text),
     send: (to, text, _kind) => say(to, text), // the bus has no `answer` kind: the fixed answer is an ordinary status the agent reads on its next turn
     async mail() { // never acks (FleetPort.ack does): until it is acked, the same lot comes back — `check` replays an outstanding lot
@@ -128,6 +132,21 @@ export async function createLiveFleet(deps: LiveFleetDeps): Promise<LiveFleet> {
       if (!id) return;
       const r = await deps.host({ op: 'release', run: deps.run, from: deps.caller, key: deps.key, ids: [id] });
       if (!r.ok) throw new FanoutStateError(`the host could not release ${id}: ${String(r.error ?? 'no answer')}`);
+      await refresh();
+    },
+    async runPause() { // the host's pause of the run, read from `run status --json` (store-less: the bus); an unreadable answer throws — unknown is never "not paused"
+      const r = await retried(['run', 'status', '--run', deps.run, '--json']);
+      if (r.code !== 0) throw verbError('run status', r);
+      let st: { pause?: { pausedAt?: number; pausedBy?: string | null; resumeStartedAt?: number | null } | null };
+      try { st = JSON.parse(r.stdout) as typeof st; } catch { throw new FanoutStateError(`orchestra run status: not JSON: ${r.stdout.slice(0, 120)}`); }
+      const p = st.pause;
+      return p ? { by: p.pausedBy ?? null, since: typeof p.pausedAt === 'number' ? p.pausedAt : 0, resuming: typeof p.resumeStartedAt === 'number' } : null;
+    },
+    async replaceReviewer(ticket) { // idle-rule: the host archives the ticket's recorded reviewer; the next `fanout review` finds it gone and spawns a replacement
+      const id = deps.readState()?.tickets[ticket]?.review?.reviewer?.id;
+      if (!id) return;
+      const r = await deps.host({ op: 'release', run: deps.run, from: deps.caller, key: deps.key, ids: [id] });
+      if (!r.ok) throw new FanoutStateError(`the host could not release the reviewer ${id}: ${String(r.error ?? 'no answer')}`);
       await refresh();
     },
     refresh,

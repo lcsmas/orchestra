@@ -28,6 +28,12 @@ test('live: answers for the run\'s own workspaces only — a stranger is not pro
   alive.delete('ws-impl');
   assert.deepEqual(await ask(deps, { op: 'live' }), { ok: true, op: 'live', live: [] });
 });
+test('idle-rule live: idle times only when the host has an idle clock — an idle workspace gets its ms, a running one (null) none, a dead one none; no clock = no `idle` key', async () => {
+  const { deps } = host();
+  const withClock = { ...deps, idleMs: (id: string) => (id === 'ws-impl' ? 754_321.4 : null) } as AcceptanceHostDeps;
+  assert.deepEqual(await ask(withClock, { op: 'live', ids: ['ws-impl', 'ws-rev'] }), { ok: true, op: 'live', live: ['ws-impl', 'ws-rev'], idle: { 'ws-impl': 754_321 } });
+  assert.equal('idle' in ((await ask(deps, { op: 'live', ids: ['ws-impl'] })) as object), false);
+});
 test('transcripts: the directory of each of the run\'s workspaces, nothing for a stranger', async () => {
   const { deps } = host();
   assert.deepEqual(await ask(deps, { op: 'transcripts', ids: ['ws-impl', 'ws-stranger'] }), { ok: true, op: 'transcripts', dirs: { 'ws-impl': '/t/ws-impl' } });
@@ -43,12 +49,12 @@ test('MUST-FAIL: a caller the host cannot vouch (no key, a wrong key, another wo
   }
 });
 
-test('#628 release: archives a LIVE implementer of the run (its branch stays) — never a stranger, never a dead one; an unvouched caller is refused [release-caller]', async () => {
+test('#628 release: archives a LIVE implementer of the run (idle-rule: or its recorded reviewer; its branch stays) — never a stranger, never a dead one; an unvouched caller is refused [release-caller]', async () => {
   const { deps, alive, archived } = host();
-  assert.deepEqual(await ask(deps, { op: 'release', ids: ['ws-stranger', 'ws-rev', 'ws-impl'] }), { ok: true, op: 'release', released: ['ws-impl'] });
-  assert.deepEqual(archived, ['ws-impl'], 'neither the stranger nor the run\'s reviewer was touched');
+  assert.deepEqual(await ask(deps, { op: 'release', ids: ['ws-stranger', 'ws-rev', 'ws-impl'] }), { ok: true, op: 'release', released: ['ws-rev', 'ws-impl'] });
+  assert.deepEqual(archived, ['ws-rev', 'ws-impl'], 'the stranger was not touched');
   assert.ok(alive.has('ws-stranger'));
   assert.deepEqual(await ask(deps, { op: 'release', ids: ['ws-impl'] }), { ok: true, op: 'release', released: [] }, 'already gone');
   for (const bad of [{ key: undefined }, { key: 'k-other' }, { from: 'ws-stranger' }]) assert.match(String(((await ask(deps, { op: 'release', ...bad })) as { error: string }).error), /^\[release-caller\]/);
-  assert.deepEqual(archived, ['ws-impl']);
+  assert.deepEqual(archived, ['ws-rev', 'ws-impl']);
 });

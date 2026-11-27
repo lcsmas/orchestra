@@ -31,6 +31,8 @@ export interface AcceptanceHostDeps {
   verifyCaller?: ReviewHostDeps['verifyCaller'];
   /** #588 — is this workspace alive (exists and is not archived)? Absent = `isWorkspace`: the review host wakes a LIVE reviewer and replaces a dead one. */
   isLive?: (id: string) => boolean;
+  /** idle-rule — ms since this workspace went idle (its status is idle; the host's idle clock); null = running / waiting / unknown. Absent = the `live` op reports no idle times and the loop's idle rule never fires. */
+  idleMs?: (id: string) => number | null;
   /** #587 PR B — `fanout start`: is this implementer workspace live (exists, not archived)? Absent = `start` is not wired in this host. */
   implementerLive?: (id: string) => boolean;
   /** #587 PR B — the implementer spawn of `fanout start` (the ONLY door `handSpawnRefusal` leaves open for an `impl-` name of a seatRecords run). */
@@ -104,15 +106,20 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const asked = Array.isArray(input.ids) ? (input.ids as unknown[]).filter((x): x is string => typeof x === 'string') : [];
       const ofRun = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).flatMap((t) => [t.implementer, t.review?.reviewer?.id, ...(t.review?.briefs ?? []).map((b) => b.reviewer)].filter((x): x is string => !!x)));
       const ids = asked.filter((id) => ofRun.has(id));
-      if (input.op === 'release') { // #628: only an IMPLEMENTER of this run's state, only a live one: its branch stays, `fanout start` puts a fresh agent on it
+      if (input.op === 'release') { // #628: only an IMPLEMENTER of this run's state (idle-rule: or a ticket's recorded REVIEWER), only a live one: its branch stays, `fanout start` puts a fresh agent on it
         if (!deps.archive) return { ok: false, error: 'this host does not archive agents (release is not wired)' };
-        const impls = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).map((t) => t.implementer).filter((x): x is string => !!x));
+        const impls = new Set(Object.values(readState(stateFile(deps.home, run))?.tickets ?? {}).flatMap((t) => [t.implementer, t.review?.reviewer?.id]).filter((x): x is string => !!x));
         const live = deps.isLive ?? deps.isWorkspace;
         const released: string[] = [];
         for (const id of ids.filter((x) => impls.has(x) && live(x))) { await deps.archive(id); released.push(id); }
         return { ok: true, op: 'release', released };
       }
-      if (input.op === 'live') { const live = deps.isLive ?? deps.isWorkspace; return { ok: true, op: 'live', live: ids.filter((id) => live(id)) }; }
+      if (input.op === 'live') {
+        const live = deps.isLive ?? deps.isWorkspace;
+        const alive = ids.filter((id) => live(id));
+        const idle = deps.idleMs ? Object.fromEntries(alive.flatMap((id) => { const ms = deps.idleMs!(id); return ms === null || !Number.isFinite(ms) ? [] : [[id, Math.max(0, Math.round(ms))]]; })) : null; // idle-rule
+        return { ok: true, op: 'live', live: alive, ...(idle ? { idle } : {}) };
+      }
       if (!deps.transcriptDirOf) return { ok: false, error: 'this host does not report transcript directories' };
       return { ok: true, op: 'transcripts', dirs: Object.fromEntries(ids.map((id) => [id, deps.transcriptDirOf!(id)])) };
     }

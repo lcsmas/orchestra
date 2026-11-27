@@ -18,6 +18,7 @@ export function fakeBus(d: Dummy, run: string, home: string): { cli: Cli; host: 
     const [a, b] = args;
     if (a === 'fanout' && b === 'start') { if (fail.start) return fail.start; const r = await d.fleet.start(); return out(`${JSON.stringify(r)}\n`, r.failed.length ? 2 : 0); }
     if (a === 'fanout' && b === 'review') { const t = readState(stateFile(home, run))!.tickets[args[2]]; await d.fleet.spawnReviewer(args[2], t.head!); return out(`${args[2]}: asking Orchestra for its reviewer\n`); }
+    if (a === 'run' && b === 'status') return out(`${JSON.stringify({ runId: run, runExists: true, pause: d.world.paused ? { runId: run, pausedAt: d.world.pauseSince, pausedBy: d.world.pauseBy, mode: 'hard', trapAt: null, resumeStartedAt: null } : null, inherited: false, bilan: [], lastPause: null, reprise: null, stillPausedBy: null })}\n`); // #idle: `orchestra run status --json`
     if (a === 'check') {
       const limit = Number(args[args.indexOf('--limit') + 1]) || 100;
       if (!state.held) {
@@ -42,8 +43,8 @@ export function fakeBus(d: Dummy, run: string, home: string): { cli: Cli; host: 
     return out('', 1, `fake cli: unsupported: ${args.join(' ')}`);
   };
   const host: Host = async (body) => {
-    if (body.op === 'live') return { ok: true, op: 'live', live: (body.ids as string[]).filter((id) => d.world.impls.has(id) || d.world.revs.has(id)) };
-    if (body.op === 'release') { const released = (body.ids as string[]).filter((id) => d.world.impls.has(id)); for (const id of released) { const a = d.world.impls.get(id)!; d.world.impls.delete(id); d.world.ev('impl-replaced', a.ticket, { ws: id }); } return { ok: true, op: 'release', released }; } // #628: the host archives an implementer
+    if (body.op === 'live') { const live = (body.ids as string[]).filter((id) => d.world.impls.has(id) || d.world.revs.has(id)); return { ok: true, op: 'live', live, idle: Object.fromEntries(live.flatMap((id) => { const ms = d.world.idleFor(id); return ms === null ? [] : [[id, ms]]; })) }; } // idle-rule: the host's idle clock
+    if (body.op === 'release') { const released = (body.ids as string[]).filter((id) => d.world.impls.has(id) || d.world.revs.has(id)); for (const id of released) { const a = d.world.impls.get(id); if (a) { d.world.impls.delete(id); d.world.ev('impl-replaced', a.ticket, { ws: id }); } else d.world.releaseReviewer(d.world.revs.get(id)!.ticket); } return { ok: true, op: 'release', released }; } // #628: the host archives an implementer (idle-rule: or a reviewer)
     return { ok: false, error: 'unsupported' };
   };
   return { cli, host, lots, calls, fail };

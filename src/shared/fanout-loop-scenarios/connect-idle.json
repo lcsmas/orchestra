@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "run": "connect-idle",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [
+          "T1"
+        ],
+        "spec": "spec/T2.md"
+      }
+    ]
+  },
+  "agents": {
+    "T2": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        }
+      ],
+      "respawn": [
+        {
+          "do": "connect"
+        }
+      ]
+    }
+  },
+  "timing": {
+    "ciMs": 2400000
+  }
+}

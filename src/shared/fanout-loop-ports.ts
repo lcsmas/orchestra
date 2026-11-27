@@ -9,6 +9,8 @@ export interface FleetPort {
   /** The shipped `startRun` WITH `loop: true` (the briefs carry the loop section whether or not the plan came from #604): one implementer per ticket that has none live. A start held by Admission comes back in `waiting` — a wait, never a fault. */
   start(): Promise<StartResult>;
   live(ws: string): boolean;
+  /** idle-rule — ms since the agent's session went idle / last wrote (the host's idle clock); null = running, or unknown. Absent = unknown for every agent: the idle rule (`fanout-loop-idle.ts`) never fires. */
+  idleFor?(ws: string): number | null;
   /** Start a turn of an agent with `text` (the loop's ask to connect to an upstream). */
   wake(ws: string, text: string): Promise<void>;
   /** Mail to an agent (`answer` = the fixed answer to a question). */
@@ -20,8 +22,12 @@ export interface FleetPort {
   /** The shipped `review` verb's host op: spawn the ticket's reviewer on `head`, or wake the live one on a new head, or replace a dead one; a no-op when it is already briefed on this head. */
   spawnReviewer(ticket: string, head: string): Promise<{ id: string }>;
   costOf(ticket: string): Promise<{ tokens: number } | null>;
+  /** The HOST's pause of this run (hard or douce, an ancestor's included), or null = not paused. Absent = never paused. While it lasts every member is frozen (turns interrupted, tool trees killed, messages parked), so the loop acts on nothing: no stall clock, no order counted, no decision, no replacement, no spawn. A failed read THROWS (unknown is never "not paused"). */
+  runPause?(): Promise<{ by: string | null; since: number; resuming: boolean } | null>;
   /** #628 — end the ticket's implementer ON PURPOSE (its branch stays): the next `start()` puts a fresh one on the same branch. */
   replace(ticket: string): Promise<void>;
+  /** idle-rule — end the ticket's recorded REVIEWER on purpose (a silent one that is alive): the next `spawnReviewer` finds it gone and replaces it, as for a dead one. Absent = a port that cannot. */
+  replaceReviewer?(ticket: string): Promise<void>;
 }
 
 export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red'; /** Interface log v1.1: MUST change on a re-run (#607's one-re-run-per-ticket rule reads it) */ jobId?: string; /** MAJOR-2: job step count when the forge knows it; 0 = a green that ran nothing (refused), absent = unknown (refused too: nothing proves it ran) */ steps?: number; logExtract?: string; /** additive: ISO time the check reached its status (the loop's readiness order reads it) */ at?: string }

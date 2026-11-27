@@ -12,6 +12,7 @@ import {
   answerableKind,
   clearPendingAnswerable,
   makeUserMessage,
+  poolResetSeconds,
   makeLocalCommand,
   stamp,
   clearPendingPermission,
@@ -2383,6 +2384,19 @@ test('classifyTurnError: 429 is a rate limit, 529 an overload, everything else a
   assert.equal(classifyTurnError(undefined), 'error');
 });
 
+test('pool 429: "the earliest resets in 266s" becomes the notice\'s resetsAt (epoch seconds, from the event clock) so the paused run\'s auto-Reprise has a timer; no hint = no resetsAt', () => {
+  const at = 1_800_000_000_000;
+  const c = { ...ctx(), now: () => at };
+  const body = (result: string) => ({ type: 'result', subtype: 'error', is_error: true, api_error_status: 429, result, session_id: 'S' }) as never;
+  const hinted = normalizeSdkMessage(body('API Error: Request rejected (429) · All 7 pool seats are over their rate-limit windows; the earliest resets in 266s'), c).find((e) => e.type === 'notice') as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal(hinted.resetsAt, at / 1000 + 266);
+  assert.equal(hinted.rejected, true);
+  const plain = normalizeSdkMessage(body('rate limited'), c).find((e) => e.type === 'notice') as Extract<AgentEvent, { type: 'notice' }>;
+  assert.equal('resetsAt' in plain, false);
+  assert.equal(poolResetSeconds('the earliest resets in 5 s'), 5);
+  assert.equal(poolResetSeconds('resets in 266s'), null, 'only the pool wording');
+  assert.equal(poolResetSeconds(undefined), null);
+});
 test('normalize: a 429 result emits the rate-limit notice feeding the usage-limit UX', () => {
   const evs = normalizeSdkMessage(
     {

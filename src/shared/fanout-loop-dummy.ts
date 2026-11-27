@@ -42,7 +42,7 @@ export interface Scenario {
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
   /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
   prePlanned?: boolean;
-  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[]; /** #628: tickets whose merge the forge refuses with `merge-conflict` while their branch lacks the target's tip (until their `sync` step merges it in) */ conflictOnStale?: string[]; /** #689: tickets whose PR READS `mergeable: CONFLICTING` while their branch lacks the target's tip — and, as on GitHub, no Actions run starts on it (only an external check shows) */ conflictVisible?: string[]; /** #625: the plan is NOT handed to the loop — the planner port (the plan agent) writes it */ viaPlanner?: boolean };
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[]; /** #628: tickets whose merge the forge refuses with `merge-conflict` while their branch lacks the target's tip (until their `sync` step merges it in) */ conflictOnStale?: string[]; /** #689: tickets whose PR READS `mergeable: CONFLICTING` while their branch lacks the target's tip — and, as on GitHub, no Actions run starts on it (only an external check shows) */ conflictVisible?: string[]; /** #625: the plan is NOT handed to the loop — the planner port (the plan agent) writes it */ viaPlanner?: boolean; /** the HOST's hard pause of the run (a 429 on the pool, a human): from `afterMs` every agent is frozen (steps and reviews wait, a message to it is parked) until `afterMs + forMs` (the auto-resume); `forMs` null = never lifted */ pause?: Array<{ afterMs: number; forMs: number | null; by?: string }> };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -99,8 +99,8 @@ const dummySameSha = (a: string, b: string): boolean => a.startsWith(b) || b.sta
 
 interface Commit { parents: string[]; tree: string; at: number }
 interface Pr { n: number; ticket: string; branch: string; state: 'open' | 'merged' | 'closed'; mergedHead?: string; openedAt: number; runs: Array<{ head: string; startedAt: number; doneAt: number; result: string }>; created: number }
-interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; syncs: number; points: number; fired: Set<string>; heldTicks: number }
-interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean }
+interface Impl { ws: string; ticket: string; branch: string; steps: Step[]; idx: number; mode: 'held' | 'running' | 'asking' | 'connect' | 'stuck' | 'done'; asks: Array<{ up: string; head: string }>; syncs: number; points: number; fired: Set<string>; heldTicks: number; /** idle-rule: the last time the agent did anything (a step, a wake it read) — its idle clock when no step is pending */ lastActive: number }
+interface Rev { ws: string; ticket: string; steps: Step[]; idx: number; armed: boolean; lastActive: number }
 
 export class DummyWorld {
   t = DUMMY_EPOCH;
@@ -123,7 +123,18 @@ export class DummyWorld {
     this.home = home; this.run = run; this.sc = sc; this.target = target;
     const root = this.commit([], 'root', 'root');
     this.branches.set(target, root);
+    for (const p of sc.faults?.pause ?? []) {
+      this.after(p.afterMs, () => { this.paused = true; this.pauseBy = p.by ?? 'host:usage_limit'; this.pauseSince = this.t; this.ev('host-pause', undefined, { by: this.pauseBy }); });
+      if (p.forMs !== null) this.after(p.afterMs + p.forMs, () => { this.paused = false; this.ev('host-resume', undefined, {}); const parked = this.parked.splice(0); for (const f of parked) f(); });
+    }
   }
+  /** the host pause of the run: agents are frozen, messages to them parked until the lift */
+  paused = false;
+  pauseBy = 'host:usage_limit';
+  pauseSince = 0;
+  private parked: Array<() => void> = [];
+  /** the loop acted on the fleet while the run was paused (spawn / wake / replace / release): the rule says it never does */
+  private actedWhilePaused(what: string, ticket: string | undefined): void { if (this.paused) this.ev('act-while-paused', ticket, { what }); }
   get timing(): typeof DUMMY_TIMING { return { ...DUMMY_TIMING, ...(this.sc.timing ?? {}) }; }
   iso(t = this.t): string { return new Date(t).toISOString(); }
   ev(ev: string, ticket: string | undefined, extra: Record<string, unknown> = {}): void { this.events.push({ t: this.t, ev, ...(ticket ? { ticket } : {}), ...extra }); }
@@ -184,16 +195,17 @@ export class DummyWorld {
     return [{ do: 'code' }, { do: 'nominate' }, ...deps.map((): Step => ({ do: 'connect' }))];
   }
   spawnImpl(ticket: string, branch: string, briefHasLoop = false): { ws: string; held: boolean } {
+    this.actedWhilePaused('spawn', ticket);
     const ws = `ws-${branch}`;
     if (!this.branches.has(branch)) this.branches.set(branch, this.branches.get(this.target)!);
     const hold = this.sc.admissionHold?.[ticket] ?? 0;
-    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], syncs: 0, points: 0, fired: new Set(), heldTicks: hold };
+    const a: Impl = { ws, ticket, branch, steps: this.scriptOf(ticket), idx: 0, mode: hold > 0 ? 'held' : 'running', asks: [], syncs: 0, points: 0, fired: new Set(), heldTicks: hold, lastActive: this.t };
     this.impls.set(ws, a);
     this.ev('spawn', ticket, { ws, branch, held: hold > 0, briefHasLoop });
     if (!hold) this.begin(a);
     return { ws, held: hold > 0 };
   }
-  begin(a: Impl): void { a.mode = 'running'; this.ev('begin', a.ticket, { ws: a.ws }); this.arm(a); }
+  begin(a: Impl): void { a.lastActive = this.t; a.mode = 'running'; this.ev('begin', a.ticket, { ws: a.ws }); this.arm(a); }
   private arm(a: Impl): void {
     const step = a.steps[a.idx];
     if (!step) { a.mode = 'done'; return; }
@@ -208,6 +220,7 @@ export class DummyWorld {
   }
   runStep(a: Impl): void {
     if (a.mode !== 'running') return;
+    if (this.paused) { this.after(10_000, () => this.runStep(a)); return; } // frozen by the host pause
     const step = a.steps[a.idx];
     if (!step) { a.mode = 'done'; return; }
     const evt = this.sc.events?.[a.ticket]?.find((e) => e.at === step.do && !a.fired.has(`${e.at}:${e.kind}`));
@@ -281,12 +294,36 @@ export class DummyWorld {
     }
     a.idx++;
     a.mode = 'running';
+    a.lastActive = this.t;
     this.arm(a);
   }
+  /** idle-rule: ms the agent has been idle (alive, no step pending, nothing running) — null while it is running a step; the loop's `idleFor`. */
+  idleFor(ws: string): number | null {
+    const a = this.impls.get(ws);
+    if (a) {
+      if ((a.mode === 'running' && !this.paused) || a.mode === 'held') return null; // a paused member's turn was interrupted: it reads idle (the bug this rig pins is the loop acting on that)
+      const rest = a.steps.slice(a.idx).map((x) => x.do);
+      if ((a.syncs > 0 && rest.includes('sync')) || (a.points > 0 && rest.includes('address')) || (a.asks.length > 0 && rest.includes('connect'))) return null; // an order its script will act on is QUEUED for it, as a real host reads it (idleReading)
+      return this.t - a.lastActive;
+    }
+    const r = this.revs.get(ws);
+    return r ? (r.armed && !this.paused ? null : this.t - r.lastActive) : null;
+  }
+  /** idle-rule: the loop ends a silent reviewer on purpose (the host archives it). */
+  releaseReviewer(ticket: string): void { this.actedWhilePaused('release-reviewer', ticket); for (const [ws, r] of this.revs) if (r.ticket === ticket) { this.revs.delete(ws); this.ev('review-released', ticket, { ws }); } }
   /** The loop's ask to connect (a wake) reaches the agent. */
   wakeImpl(ws: string, text: string): void {
+    if (this.paused) { this.actedWhilePaused('wake', this.impls.get(ws)?.ticket ?? this.revs.get(ws)?.ticket); this.parked.push(() => this.wakeImpl(ws, text)); return; } // a message to a paused member is parked until the lift
+    const rv = this.revs.get(ws);
+    if (rv) { // idle-rule: the loop's REMINDER to a silent reviewer: it reads it (its idle clock restarts) and goes on with its next scripted step
+      rv.lastActive = this.t;
+      this.ev('review-reminder', rv.ticket, { ws, text: text.split('\n')[0] });
+      this.armReview(rv);
+      return;
+    }
     const a = this.impls.get(ws);
     if (!a) return;
+    a.lastActive = this.t;
     if (/^Corrections for /.test(text)) { this.ev('corrections-batch', a.ticket, { ws, text }); return; } // #606: ONE batch to the author (the dummy author's script says what it does next)
     if (/^CI is red on your pull request/.test(text)) { this.ev('ci-told', a.ticket, { ws, text }); return; } // #607: the author is told which check is red (the dummy author does not react: its script says what it does next)
     if (/^(SYNC|FIX) /.test(text)) { // #628: a delivery refusal order — the author acts on it only when its script has a `sync` step left
@@ -315,6 +352,7 @@ export class DummyWorld {
 
   // ── reviewers ──
   spawnReviewer(ticket: string, head: string): { id: string } {
+    this.actedWhilePaused('review-spawn', ticket);
     const now = this.iso();
     const res: { id: string; act: 'spawn' | 'replace' | 'wake' | 'noop' } = { id: '', act: 'noop' };
     updateLoopState(this.home, this.run, (cur) => {
@@ -331,7 +369,7 @@ export class DummyWorld {
     const { id, act } = res;
     if (act === 'spawn' || act === 'replace') {
       const steps = this.sc.agents?.[ticket]?.reviewer ?? [];
-      this.revs.set(id, { ws: id, ticket, steps, idx: this.revCursor.get(ticket) ?? 0, armed: false }); // a replacement reviewer carries on the ticket's script
+      this.revs.set(id, { ws: id, ticket, steps, idx: this.revCursor.get(ticket) ?? 0, armed: false, lastActive: this.t }); // a replacement reviewer carries on the ticket's script
       this.ev('review-spawn', ticket, { ws: id, head, action: act });
     } else if (act === 'wake') this.ev('review-wake', ticket, { ws: id, head });
     const r = this.revs.get(id);
@@ -341,7 +379,8 @@ export class DummyWorld {
   private armReview(r: Rev): void {
     if (r.armed) return;
     r.armed = true;
-    this.after(r.steps[r.idx]?.afterMs ?? this.timing.reviewMs, () => { r.armed = false; this.reviewStep(r); });
+    const fire = (): void => { if (this.paused) { this.after(10_000, fire); return; } r.armed = false; r.lastActive = this.t; this.reviewStep(r); }; // frozen by the host pause: the review waits
+    this.after(r.steps[r.idx]?.afterMs ?? this.timing.reviewMs, fire);
   }
   private reviewStep(r: Rev): void {
     const s = readLoopState(this.home, this.run)!;
@@ -455,13 +494,16 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
       });
     },
     live: (ws) => w.impls.has(ws) || w.revs.has(ws),
+    idleFor: (ws) => w.idleFor(ws),
+    async replaceReviewer(ticket) { w.releaseReviewer(ticket); },
     async wake(ws, text) { w.wakeImpl(ws, text); },
     async send(to, text, kind) { if (kind === 'answer') w.answerImpl(to, text); else w.ev('send', undefined, { to, kind, text }); },
     async mail() { return w.drainMail(); },
     async ack(upTo) { w.ackMail(upTo); },
     async spawnReviewer(ticket, head) { return w.spawnReviewer(ticket, head); },
     async costOf(ticket) { return { tokens: 1000 * w.events.filter((e) => e.ticket === ticket).length }; },
-    async replace(ticket) { for (const [ws, a] of w.impls) if (a.ticket === ticket) { w.impls.delete(ws); w.ev('impl-replaced', ticket, { ws }); } },
+    async replace(ticket) { for (const [ws, a] of w.impls) if (a.ticket === ticket) { w.impls.delete(ws); w.ev('impl-replaced', ticket, { ws }); w.paused && w.ev('act-while-paused', ticket, { what: 'replace' }); } },
+    async runPause() { return w.paused ? { by: w.pauseBy, since: w.pauseSince, resuming: false } : null; },
   };
   const forge: ForgePort = {
     async openPr({ branch, title }) { const t = ticketOfBranch(branch) ?? title.split(':')[0]; return { n: w.openPr(branch, t) }; },

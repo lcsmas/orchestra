@@ -294,6 +294,31 @@ const fleetArms: Array<[string, (h: FleetH) => Promise<void>]> = [
     assert.deepEqual(r.started, [], '[replace.not-a-first-start]');
     assert.ok(h.fleet.live(wsOf(h, 'T1')), '[replace.fresh-live]');
   }],
+  ['idleFor (idle-rule): null while an agent runs a step (and for a stranger), the ms since its last act once it is idle; replaceReviewer ends the ticket\'s recorded reviewer at once', async (h) => {
+    await h.fleet.start();
+    const w1 = wsOf(h, 'T1');
+    assert.equal(h.fleet.idleFor?.(w1), null, '[idle.running]');
+    assert.equal(h.fleet.idleFor?.('ws-not-ours'), null, '[idle.stranger]');
+    h.world.advance(10 * 3_600_000); // the scripted steps are done: the agent is alive and has nothing to do
+    await (h.fleet as { refresh?: () => Promise<void> }).refresh?.(); // the live port answers from a snapshot
+    const idle = h.fleet.idleFor?.(w1);
+    assert.ok(typeof idle === 'number' && idle >= 3_600_000, `[idle.idle] ${String(idle)}`);
+    updateState(stateFile(h.home, h.run), (s) => applyTicketPatch(s!, 'T1', { head: 'a'.repeat(40), pr: 1 }, NOW));
+    const rv = await h.fleet.spawnReviewer('T1', 'a'.repeat(40));
+    await (h.fleet as { refresh?: () => Promise<void> }).refresh?.();
+    assert.ok(h.fleet.live(rv.id), '[reviewer.live]');
+    await h.fleet.replaceReviewer?.('T1');
+    assert.equal(h.fleet.live(rv.id), false, '[replaceReviewer.gone]');
+    assert.ok(h.fleet.live(w1), '[replaceReviewer.only-the-reviewer]');
+  }],
+  ['runPause: null while the run is active, the host\'s pause (who, since when) while it lasts, null again after the lift', async (h) => {
+    assert.equal(await h.fleet.runPause?.(), null, '[pause.none]');
+    h.world.paused = true; h.world.pauseBy = 'host:usage_limit'; h.world.pauseSince = 1234;
+    const p = await h.fleet.runPause?.();
+    assert.deepEqual(p && { by: p.by, since: p.since, resuming: p.resuming }, { by: 'host:usage_limit', since: 1234, resuming: false }, '[pause.paused]');
+    h.world.paused = false;
+    assert.equal(await h.fleet.runPause?.(), null, '[pause.lifted]');
+  }],
   ['mail: the run\'s messages in order, `ask` as `ask`; unread until `ack`; an ack below the last message loses nothing after it; acked ones never come back', async (h) => {
     await h.fleet.start();
     const w1 = wsOf(h, 'T1'), w2 = wsOf(h, 'T2');
@@ -349,6 +374,8 @@ const fleetBreakers: Array<[string, string, (f: FleetPort) => FleetPort]> = [
   ['mail.ack.partial', 'mail:', (f) => ({ ...f, ack: async (n) => { await f.ack(n + 1000); } })], // an ack of one acks everything
   ['wake.reaches', 'wake / send', (f) => ({ ...f, wake: async () => undefined })],
   ['send.reaches', 'wake / send', (f) => ({ ...f, send: async () => undefined })],
+  ['pause.paused', 'runPause', (f) => ({ ...f, runPause: async () => null })],
+  ['idle.idle', 'idleFor', (f) => ({ ...f, idleFor: () => null })],
   ['review.same', 'spawnReviewer', (f) => ({ ...f, spawnReviewer: async (t, h) => { const a = await f.spawnReviewer(t, h); return { id: `${a.id}-${Math.random()}` }; } })],
 ];
 test('FleetPort MUST-FAIL: one rule broken per port, and the arm fails on THAT rule\'s assertion (dummy and live)', async () => {
