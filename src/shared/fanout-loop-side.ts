@@ -25,11 +25,13 @@ export interface LoopSide {
   /** #649 — dependent → how many times a CONNECT was sent again because its upstream moved (the report counts them). */
   reconnects: Record<string, number>;
   orders: Record<string, { head: string; n: number; at: string; reason: string; replacing?: true }>;
+  /** #676 — open point id → the orders sent for it: `head` the `about` ticket had, `n` orders for that head, `at` the last, `total` over every head (the fixed rule decides at the cap). */
+  pointOrders: Record<string, { head: string; n: number; at: string; total: number }>;
 }
 /** `FanoutState` + the sidecar.  */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {}, reconnects: {} });
+const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {}, pointOrders: {}, reconnects: {} });
 const sideFilePath = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function sideRead(file: string): LoopSide {

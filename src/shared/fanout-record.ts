@@ -2,6 +2,7 @@
 // Every refusal is a FanoutStateError whose message STARTS with its name in brackets. Who the caller is = `resolveCaller` (#588, src/shared/fanout-caller.ts) — this file never judges identity itself.
 import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, findingClosed, recordChoice, sameContent, seatRecordsOn, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
 import type { FileOnHead } from './fanout-demonstration.ts';
+import { settleAddressed } from './fanout-open-point.ts';
 
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL = /[\x00-\x08\x0b-\x1f\x7f]/;
@@ -12,16 +13,16 @@ const recordRefuse = (name: string, msg: string): never => { throw new SeatRefus
 export const recordCommand = (ticket: string, head: string): string => `orchestra fanout record ${ticket} --head ${head} --verdict approve|changes-requested --json <file|->`;
 
 // ── the --json of `fanout record` ──────────────────────────────────────────────────────────────────────────────
-export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[] }
+export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[]; /** #676 — open points (numbers) the approved head addresses; only the reviewer of the `about` ticket (or its follow-up) */ addressed?: number[] }
 const INPUT_FINDING_KEYS = new Set(['severity', 'evidence', 'text', 'demonstration', 'report', 'specSentence', 'kind']);
 
-/** `{"findings":{"<id>":{severity, evidence, text, demonstration?, report?, specSentence?, kind?}},"fixed":["<id>",…]}` — shape only; the finding rules (severity, report, specSentence, demonstration) are the state's own, applied by `recordReview`. */
+/** `{"findings":{"<id>":{severity, evidence, text, demonstration?, report?, specSentence?, kind?}},"fixed":["<id>",…],"addressed":[<open point n>,…]}` — shape only; the finding rules (severity, report, specSentence, demonstration) are the state's own, applied by `recordReview`. */
 export function parseRecordJson(text: string): RecordInput {
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { return recordRefuse('record-json', 'the --json is not valid JSON'); }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return recordRefuse('record-json', 'the --json must be {"findings":{<id>:{…}},"fixed":[<id>,…]}');
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed') recordRefuse('record-json', `unknown key "${k}" (only findings and fixed)`);
+  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed' && k !== 'addressed') recordRefuse('record-json', `unknown key "${k}" (only findings, fixed and addressed)`);
   const findings: RecordInput['findings'] = {};
   if (o.findings !== undefined) {
     if (typeof o.findings !== 'object' || o.findings === null || Array.isArray(o.findings)) recordRefuse('record-json', '"findings" must be an object {<id>: {severity, evidence, text, …}}');
@@ -40,7 +41,12 @@ export function parseRecordJson(text: string): RecordInput {
     if (!Array.isArray(o.fixed) || o.fixed.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) recordRefuse('record-json', '"fixed" must be an array of finding ids');
     fixed = [...new Set(o.fixed as string[])];
   }
-  return { findings, fixed };
+  let addressed: number[] | undefined;
+  if (o.addressed !== undefined) {
+    if (!Array.isArray(o.addressed) || o.addressed.length === 0 || o.addressed.some((n) => !Number.isInteger(n) || (n as number) < 1)) recordRefuse('record-json', '"addressed" must be a non-empty array of open point numbers (orchestra fanout open-point numbers each point)');
+    addressed = [...new Set(o.addressed as number[])];
+  }
+  return { findings, fixed, ...(addressed ? { addressed } : {}) };
 }
 
 // ── derived counts ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -156,7 +162,7 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   const heldIds = [...new Set([...c.open.filter((id) => nt.findings[id].severity !== 'MINOR'), ...blockingMinors(out, ticketId).filter((id) => c.open.includes(id))])];
   if (a.verdict === 'approve' && heldIds.length) recordRefuse('approve-open-finding', `approve with ${heldIds.length} open finding(s) that block the merge (${heldIds.map((id) => `${id} ${nt.findings[id].severity}`).join(', ')}) — record changes-requested, or close them with "fixed" if you read their fix on this head (policy: minorPolicy=${switchesOf(state).minorPolicy})`);
   if (a.verdict === 'changes-requested' && heldIds.length === 0) recordRefuse('changes-no-finding', 'changes-requested with no open BLOCKING / MAJOR finding (nor a blocking MINOR under this run\'s minorPolicy): list the finding that stops the merge in "findings", or record approve');
-  return out;
+  return a.input.addressed?.length ? settleAddressed(out, ticketId, a.input.addressed, { head, tree: a.tree, verdict: a.verdict, by: a.callerId!, now: a.now }) : out; // #676: the approved head addresses these open points
 }
 
 // ── #641 — the implementer's choice: a run decision of ITS ticket, recorded before it pushes ─────────────────────

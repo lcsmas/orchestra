@@ -20,6 +20,9 @@ export function renderTicketChoices(state: FanoutState, ticket: string): string 
   return `Choices recorded for ${ticket} (decisions of the run: the implementer took the reversible option — the rule is fixed, no coordinator rules on it afterwards):\n${cs.map((c) => `${c.n}. ${c.question} → TAKEN: ${c.answer}`).join('\n')}\nA finding whose subject is one of these choices does not block the merge: record it with \`--on-choice <finding>=<n>\`. A finding that the code does NOT do what the choice says is a normal finding.`;
 }
 
+/** #676 — the ONE line of every implementer and reviewer brief about a point left open on ANOTHER ticket: it goes in the state (the loop reads it), never in prose. */
+export const OPEN_POINT_LINE = 'A point your ticket leaves open ABOUT ANOTHER ticket is never written in prose (no report, no PR text): run `orchestra fanout open-point <your ticket> --about <that ticket> --text "<the point>"` — it blocks both tickets until the point is settled, and the loop acts on it.';
+
 /** The switches in force (all of them, with their value) on ONE line. */
 export function renderSwitchesLine(state: FanoutState): string {
   const sw = switchesOf(state);

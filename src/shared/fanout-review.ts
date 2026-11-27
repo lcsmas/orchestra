@@ -2,6 +2,7 @@
 // The CLI half is src/cli/fanout-review.ts; the host half (spawn / wake) is src/shared/fanout-review-host.ts. Every refusal message STARTS with its bracketed name.
 import { FANOUT_REVIEWER_SKILL_PATH } from './fanout-reviewer-skill.ts';
 import { briefHash, renderReviewerBrief, type BriefFinding, type BriefInput, type BriefKind } from './fanout-review-brief.ts';
+import { renderPointsForReviewer } from './fanout-open-point.ts';
 import { renderDecisions, renderInterfaces, renderSwitchesLine, renderTicketChoices } from './fanout-brief-common.ts';
 import { isVouched, type Caller } from './fanout-caller.ts';
 import { claimIsStale } from './fanout-acceptance.ts';
@@ -91,6 +92,7 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     interfacesText: renderInterfaces(state, [...(own ? [ticket] : []), ...t.dependsOn]),
     decisionsText: renderDecisions(state),
     choicesText: renderTicketChoices(state, ticket),
+    pointsText: renderPointsForReviewer(state, ticket),
     switchesLine: renderSwitchesLine(state),
     follows: t.dependsOn.flatMap((id) => { const i = interfaceOf(state, id); return i ? [{ id, current: i.version, followed: follows[id] ?? null }] : []; }),
     switches: switchesOf(state),

@@ -3,7 +3,8 @@
 // The `parked` / `choices` / `pause` / `flaky` fields are written by #603 / #607 (stack C connect: read straight from the state, no casts).
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FanoutState, FindingRecord, TicketState } from './fanout-state.ts';
+import type { FanoutState, FindingRecord, OpenPoint, TicketState } from './fanout-state.ts';
+import { reportPointLine } from './fanout-open-point.ts';
 
 // ── the views of #603's records (shapes kept; the casts are gone since the connect) ──
 export type ParkCauseView = 'question' | 'situation' | 'ci' | 'upstream';
@@ -43,6 +44,8 @@ export interface Report {
   irreversible: ReportChoice[];
   choices: ReportChoice[];
   findingsLeft: ReportFinding[];
+  /** #676 — the open points the tickets raised about each other, and how each settled (`addressed` on a head its reviewer approved | `decided` — the loop's fixed rule or the coordinator's | still open). Absent = none were raised. */
+  openPoints?: OpenPoint[];
   /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607: `TicketState.ci.flaky`). */
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
@@ -97,6 +100,7 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
   return {
     run: state.run, irreversible, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
+    ...(state.openPoints?.length ? { openPoints: state.openPoints } : {}),
     flaky: [...(state.startFlaky ?? []).map((c) => `start-check/${c}`), ...ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`))],
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
     paused: pauseOf(state),
@@ -138,6 +142,10 @@ export function renderReport(r: Report): string {
   if (plain.length) {
     L.push(`choices taken by the agents (${plain.length}) — each the reversible option the implementer recorded (\`orchestra fanout choice\`):`);
     for (const c of plain) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)} → TAKEN: ${oneLine(c.answer, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+  }
+  if (r.openPoints?.length) {
+    L.push(`open points (${r.openPoints.length}) — each a point a ticket left open about another (\`orchestra fanout open-point\`), and how it settled:`);
+    for (const p of r.openPoints) L.push(reportPointLine(p));
   }
   if (r.findingsLeft.length) {
     L.push(`findings left (${r.findingsLeft.length}):`);
