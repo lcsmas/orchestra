@@ -163,6 +163,23 @@ test('record must-FAIL [record-head-mismatch]: a verdict on another head than th
   assert.equal(T(home2).reviews![0].head, A);
 });
 
+test('record must-FAIL [record-final] (#672): a second record by the same reviewer on the SAME head (approve then changes-requested) is refused, nothing written; the next head records normally', (t) => {
+  const home = mkHome(t);
+  seed(home);
+  assert.equal(rec(home, 'rev1', 'T1', A, 'approve', {}).code, 0);
+  const r = rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR());
+  refused(r, 'record-final');
+  assert.match(r.stderr, /already recorded review 1 \(approve\) on aaaaaaaaaaaa/);
+  assert.equal(T(home).reviews!.length, 1);
+  assert.equal(T(home).verdict, 'approve');
+  assert.equal(T(home).findings.F1, undefined, 'the refused record raised nothing');
+  // the coordinator wakes the reviewer on B: the new finding goes on the next head
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] } } } });
+  assert.equal(rec(home, 'rev1', 'T1', B, 'changes-requested', MAJOR()).code, 0);
+  assert.equal(T(home).reviews!.length, 2);
+});
+
 test('record must-FAIL: bad verdict / malformed json / a finding the state\'s own rules refuse / a finding id already recorded', (t) => {
   const home = mkHome(t);
   seed(home);
@@ -178,7 +195,9 @@ test('record must-FAIL: bad verdict / malformed json / a finding the state\'s ow
   const noRep = rec(home, 'rev1', 'T1', A, 'approve', { findings: { F1: { severity: 'MINOR', evidence: 'measured', text: 'a measured one with no report' } } });
   assert.match(noRep.stderr, /needs report/);
   assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR()).code, 0);
-  refused(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR()), 'finding-exists');
+  const s = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] } } } });
+  refused(rec(home, 'rev1', 'T1', B, 'changes-requested', MAJOR()), 'finding-exists');
 });
 
 test('record: a record is in the state the moment it returns; two reviewers\' records on two tickets do not touch each other', (t) => {
@@ -219,7 +238,10 @@ test('fixed must-FAIL: [fixed-same-head] the head it was raised on · [fixed-not
   const home = mkHome(t);
   seed(home);
   assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', { findings: { ...MAJOR().findings, F2: { severity: 'MAJOR', evidence: 'argued', text: 'a second real problem' } } }).code, 0);
-  refused(rec(home, 'rev1', 'T1', A, 'changes-requested', { fixed: ['F1'] }), 'fixed-same-head');
+  const s0 = load(home);
+  writeStateAtomic(stateFile(home, 'r1'), { ...s0, tickets: { ...s0.tickets, T1: { ...s0.tickets.T1, review: { ...s0.tickets.T1.review!, reviewer: { id: 'rev1b', name: 'review-T1-2', at: NOW }, briefs: [...s0.tickets.T1.review!.briefs, brief(2, 'replace', A, 'rev1b')] } } } });
+  refused(rec(home, 'rev1b', 'T1', A, 'changes-requested', { fixed: ['F1'] }), 'fixed-same-head'); // a replacement on the SAME head cannot close what was raised on it
+  writeStateAtomic(stateFile(home, 'r1'), s0);
   const s = load(home);
   writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B, review: { ...s.tickets.T1.review!, head: B, briefs: [...s.tickets.T1.review!.briefs, brief(2, 'wake', B, 'rev1')] }, findings: { ...s.tickets.T1.findings, LEGACY: { severity: 'MAJOR' } } } } });
   refused(rec(home, 'rev1', 'T1', B, 'approve', { fixed: ['NOPE'] }), 'fixed-not-open');
@@ -234,7 +256,9 @@ test('fixed must-FAIL: [fixed-same-head] the head it was raised on · [fixed-not
   const home2 = mkHome(t);
   round2(home2);
   assert.equal(rec(home2, 'rev1', 'T1', B, 'approve', { fixed: ['F1'] }).code, 0);
-  refused(rec(home2, 'rev1', 'T1', B, 'approve', { fixed: ['F1'] }), 'fixed-not-open');
+  const s2 = load(home2); // woken on C: F1 is already closed, not closable twice
+  writeStateAtomic(stateFile(home2, 'r1'), { ...s2, tickets: { ...s2.tickets, T1: { ...s2.tickets.T1, head: C, review: { ...s2.tickets.T1.review!, head: C, briefs: [...s2.tickets.T1.review!.briefs, brief(3, 'wake', C, 'rev1')] } } } });
+  refused(rec(home2, 'rev1', 'T1', C, 'approve', { fixed: ['F1'] }), 'fixed-not-open');
 });
 
 test('fixed: a REPLACEMENT reviewer (the first died) closes the open findings of the first one; a process finding is closed as pr-body', (t) => {
@@ -641,16 +665,16 @@ test('record-head: the ticket moving to B WITHOUT waking the reviewer does not l
   writeStateAtomic(stateFile(home, 'r1'), { ...s, tickets: { ...s.tickets, T1: { ...s.tickets.T1, head: B } } }); // the coordinator recorded the new head; nobody woke the reviewer
   refused(rec(home, 'rev1', 'T1', B, 'approve', {}), 'record-head-mismatch');
   assert.equal(rec(home, 'rev1', 'T1', A, 'changes-requested', MAJOR()).code, 0); // what it read is what it may record
-  // the same head twice: the coordinator decides the MAJOR, the reviewer records again — the LATEST review on A speaks
+  // the same head twice is refused (#672: a verdict on a head is final); the coordinator's --decide closes the MAJOR, the recorded round 1 then reads 0 open
   const home2 = mkHome(t);
   seed(home2);
   assert.equal(rec(home2, 'rev1', 'T1', A, 'changes-requested', MAJOR()).code, 0);
   assert.equal(setT(home2, 'r1', 'T1', '--decide', 'F1=accepted by the product owner').code, 0);
-  assert.equal(rec(home2, 'rev1', 'T1', A, 'approve', {}).code, 0);
-  assert.deepEqual(T(home2).reviews!.map((r) => [r.n, r.verdict]), [[1, 'changes-requested'], [2, 'approve']]);
+  refused(rec(home2, 'rev1', 'T1', A, 'approve', {}), 'record-final');
+  assert.deepEqual(T(home2).reviews!.map((r) => [r.n, r.verdict]), [[1, 'changes-requested']]);
   const out = await withEnv(home2, () => deliver(dopts(), rig(A).dd));
-  assert.equal(out.result.recorded?.round, 2, 'round 2, not round 1');
-  assert.equal(out.result.recorded?.verdict, 'approve');
+  assert.equal(out.result.recorded?.round, 1);
+  assert.equal(out.result.recorded?.major, 0, 'the decided finding is not counted');
   // recorded at A, woken on B: its worker_done waits for B's verdict, not A's
   const home3 = mkHome(t);
   round2(home3);

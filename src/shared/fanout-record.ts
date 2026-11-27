@@ -112,6 +112,9 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
     return recordRefuse('record-head-mismatch', `--head ${a.head.slice(0, 12)} is not the head you were briefed to read (${expected.slice(0, 12)}): a verdict speaks about the exact head it read — read ${expected.slice(0, 12)} (or ask the coordinator to wake you on the new head: \`orchestra fanout review ${ticketId}\`), then record`);
   }
   const head = expected.length >= a.head.length ? expected : a.head; // the longer of the two spellings of one sha
+  // #672: a record on a head is FINAL — a second one by the same reviewer on the same head (approve then changes-requested) would leave the loop holding an approval the reviewer retracts
+  const prior = (t.reviews ?? []).find((r) => r.reviewer === reviewer && sameSha(r.head, head));
+  if (prior) return recordRefuse('record-final', `you already recorded review ${prior.n} (${prior.verdict}) on ${head.slice(0, 12)}: a verdict on a head is final — raise the new finding on the next head (ask the coordinator to wake you on it: \`orchestra fanout review ${ticketId}\`)`);
   if (a.verdict !== 'approve' && a.verdict !== 'changes-requested') return recordRefuse('record-verdict', `--verdict must be approve or changes-requested (got ${JSON.stringify(a.verdict)}) — the counts are derived from your findings, not typed`);
 
   // findings: new ids only; `fixed` ids must be open findings that a reviewer of this ticket raised, on ANOTHER head than this one
