@@ -85,7 +85,7 @@ export function planOf(sc: Scenario): Plan {
   const contracts = sc.repo.contracts ?? [];
   const shared = (a: string, b: string): boolean => contracts.some((c) => [c.owner, ...c.consumers].includes(a) && [c.owner, ...c.consumers].includes(b));
   const none = sc.repo.tickets.flatMap((t) => t.dependsOn.filter((d) => !shared(d, t.id)).map((d) => `${d}-${t.id}`)); // #682: a dummy edge with no contract is stated to share none
-  return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, specText: t.specText ?? `Dummy ticket ${t.id} (${t.spec}).`, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — kind: function; shape: () => void`])), ...(contracts.length ? { contracts } : {}), ...(none.length ? { noSharedBehaviour: [...new Set(none)] } : {}) };
+  return { version: 1, tickets: sc.repo.tickets.map((t) => ({ id: t.id, title: t.id, spec: t.spec, specText: t.specText ?? `Dummy ticket ${t.id} (${t.spec}).`, dependsOn: t.dependsOn })), interfaces: Object.fromEntries([...depended].map((d) => [d, `\`${d}.api\` — kind: function; shape: () => void; where: src/${d}.ts`])), ...(contracts.length ? { contracts } : {}), ...(none.length ? { noSharedBehaviour: [...new Set(none)] } : {}) };
 }
 
 const DUMMY_TIMING = { codeMs: 180_000, nominateMs: 30_000, connectMs: 120_000, reviewMs: 300_000, ciMs: 240_000 };

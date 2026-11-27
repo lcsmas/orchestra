@@ -13,7 +13,7 @@ export const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL_LINE = /[\x00-\x1f\x7f]/;
 const CTRL_TEXT = /[\x00-\x08\x0b-\x1f\x7f]/;
 
-export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short', 'plan-contract-empty', 'plan-contract-unknown-ticket', 'plan-contract-self', 'plan-contract-duplicate', 'plan-interface-no-kind', 'plan-interface-no-shape', 'plan-interface-multi-name', 'plan-contract-missing', 'plan-no-shared-bad'] as const;
+export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short', 'plan-contract-empty', 'plan-contract-unknown-ticket', 'plan-contract-self', 'plan-contract-duplicate', 'plan-interface-no-kind', 'plan-interface-no-shape', 'plan-interface-multi-name', 'plan-contract-missing', 'plan-no-shared-bad', 'plan-interface-no-where'] as const;
 export type PlanReasonCode = (typeof PLAN_REASON_CODES)[number];
 export interface PlanReason { code: PlanReasonCode; detail: string }
 
@@ -135,8 +135,14 @@ export function interfaceNames(text: string): string[] {
 
 /** #682 — what an interface entry says it IS: the kinds a dependent can build against (a table column, a field, an event, a function, a route; a query / mutation of an API). */
 export const INTERFACE_KINDS = ['field', 'column', 'event', 'function', 'route', 'query', 'mutation'] as const;
-/** One interface entry = one line holding ONE name in backticks, then `kind: <kind>; shape: <type, or the payload's fields>` (no backticks in the shape). */
-export interface InterfaceEntry { line: string; names: string[]; kind: string | null; shape: string | null }
+/** One interface entry = one line holding ONE name in backticks, then `kind: <kind>; shape: <type, or the payload's fields>; where: <path of the existing code it extends | new <module path>>` (no backticks after the name). */
+export interface InterfaceEntry { line: string; names: string[]; kind: string | null; shape: string | null; where: string | null }
+const WHERE_PATH = /^[\w@.\/-]+(?::\d+(?:-\d+)?)?$/;
+/** #682: `where` = a path (`src/orders/order.ts`, `…:42`) of the code the name extends, or `new <module path>`; `new` alone or a sentence is none. */
+export function isWhere(w: string): boolean {
+  const rest = w.trim().replace(/^new\b\s*:?\s*/i, '');
+  return rest.length > 0 && rest.length <= 200 && WHERE_PATH.test(rest) && /[/.]/.test(rest);
+}
 /** The entries of an interface text: every line that holds an exact name (a line with none is prose, ignored). `kind` null = absent or not one of {@link INTERFACE_KINDS}; `shape` null = absent or filler. */
 export function interfaceEntries(text: string): InterfaceEntry[] {
   const out: InterfaceEntry[] = [];
@@ -144,9 +150,10 @@ export function interfaceEntries(text: string): InterfaceEntry[] {
     const names = interfaceNames(raw);
     if (!names.length) continue;
     const k = /\bkind:\s*([A-Za-z]+)/.exec(raw)?.[1]?.toLowerCase() ?? null;
-    const sh = /\bshape:\s*(\S.*?)\s*$/.exec(raw)?.[1] ?? null;
+    const wm = /(?:;\s*|\s)where:\s*(\S.*?)\s*$/.exec(raw);
+    const sh = /\bshape:\s*(\S.*?)\s*$/.exec(wm ? raw.slice(0, wm.index) : raw)?.[1] ?? null;
     const shapeOk = sh !== null && sh.length >= 2 && /[A-Za-z]/.test(sh) && !NOT_A_NAME.has(sh.toLowerCase());
-    out.push({ line: raw.trim(), names, kind: k && (INTERFACE_KINDS as readonly string[]).includes(k) ? k : null, shape: shapeOk ? sh : null });
+    out.push({ line: raw.trim(), names, kind: k && (INTERFACE_KINDS as readonly string[]).includes(k) ? k : null, shape: shapeOk ? sh : null, where: wm && isWhere(wm[1]) ? wm[1].trim() : null });
   }
   return out;
 }
@@ -210,6 +217,7 @@ export function checkPlan(plan: Plan, ticketIds: string[]): { ok: boolean; reaso
         if (e.names.length > 1) reasons.push({ code: 'plan-interface-multi-name', detail: `${at} holds ${e.names.length} names on one line — ONE entry per line: \`name\` — kind: <${INTERFACE_KINDS.join('|')}>; shape: <type or payload fields>` });
         if (!e.kind) reasons.push({ code: 'plan-interface-no-kind', detail: `${at} has no kind — add \`kind: <${INTERFACE_KINDS.join('|')}>\`` });
         if (!e.shape) reasons.push({ code: 'plan-interface-no-shape', detail: `${at} has no shape — add \`shape: <the type, or the payload's fields>\` (e.g. \`shape: string\`, \`shape: { parcelId: string, at: ISO date }\`)` });
+        if (!e.where) reasons.push({ code: 'plan-interface-no-where', detail: `${at} has no where — add \`where: <path of the existing code it extends>\` or \`where: new <module path>\` (e.g. \`where: src/orders/order.ts\`, \`where: new src/orders/events.ts\`): read the target repo, do not guess` });
       }
     }
   }

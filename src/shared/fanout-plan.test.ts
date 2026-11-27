@@ -2,7 +2,7 @@
 // Each rule has a must-pass and a must-fail arm. Mutants: scripts/e2e-fanout-plan.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceEntries, interfaceNames, isExactName, parsePlan, resolveDependencyPair, planHash, validatePlan, type Plan, type PlanContract, type PlanReasonCode } from './fanout-plan.ts';
+import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceEntries, isWhere, interfaceNames, isExactName, parsePlan, resolveDependencyPair, planHash, validatePlan, type Plan, type PlanContract, type PlanReasonCode } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
 import { roleOfName } from './fleet-roles.ts';
 import { SeatRefusal, addDecision, newState, parseState, planMissing, readyTickets, setSwitches, type FanoutState } from './fanout-state.ts';
@@ -16,13 +16,13 @@ const good = (): Plan => ({
     { id: 'B', title: 'orders API', spec: 'ledger #1 §B', specText: 'The orders API, built on the table.', dependsOn: ['A'] },
     { id: 'C', title: 'unrelated', spec: 'ledger #1 §C', specText: 'Something unrelated to the orders.', dependsOn: [] },
   ],
-  interfaces: { A: `${E('orders.status', 'column', "enum('open'|'shipped')")}\n${E('OrderCreated', 'event', '{ orderId: string }')}` },
+  interfaces: { A: `${E('orders.status', 'column', "enum('open'|'shipped')")}\n${E('OrderCreated', 'event', '{ orderId: string }', 'new src/orders/events.ts')}` },
   noSharedBehaviour: ['A-B'],
 });
 const codes = (r: { reasons: Array<{ code: PlanReasonCode }> }): PlanReasonCode[] => r.reasons.map((x) => x.code);
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 /** #682: one filled interface line — `name` — kind: …; shape: … */
-const E = (name: string, kind = 'column', shape = 'string'): string => `\`${name}\` — kind: ${kind}; shape: ${shape}`;
+const E = (name: string, kind = 'column', shape = 'string', where = 'src/orders/order.ts'): string => `\`${name}\` — kind: ${kind}; shape: ${shape}; where: ${where}`;
 const seatState = (): FanoutState => newState('r1', { now: NOW, switches: { seatRecords: 'on' } });
 
 test('must-pass: a complete plan is ok, in both forms (object and JSON text)', () => {
@@ -138,6 +138,7 @@ test('every reason code of the frozen list is reachable (no dead code)', () => {
   const nk = good(); nk.interfaces.A = '`orders.status` — shape: string'; feed(nk);
   const ns = good(); ns.interfaces.A = '`orders.status` — kind: column'; feed(ns);
   const nm = good(); nm.interfaces.A = '`a.b` and `c.d` — kind: column; shape: string'; feed(nm);
+  const nw = good(); nw.interfaces.A = '`orders.status` — kind: column; shape: string'; feed(nw);
   const cm = good(); delete cm.noSharedBehaviour; feed(cm);
   const nb = good(); nb.noSharedBehaviour = ['A-C']; feed(nb);
   assert.deepEqual([...seen].sort(), [...PLAN_REASON_CODES].sort());
@@ -280,8 +281,8 @@ test('the loopPlan marker cannot be forged with an extra key or a bad hash', () 
 test('brief: ≤ 1 screen for 7 tickets, lists every ticket and the schema, names the one command, deterministic, no order to wait', () => {
   const t7 = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
   const b = renderPlanBrief(t7, { run: 'c77b2530-198b' });
-  assert.ok(b.split('\n').length <= 40, `${b.split('\n').length} lines`);
-  assert.ok(b.length <= 4_600, `${b.length} chars`);
+  assert.ok(b.split('\n').length <= 48, `${b.split('\n').length} lines`);
+  assert.ok(b.length <= 5_600, `${b.length} chars`);
   for (const id of t7) assert.match(b, new RegExp(`^- ${id}$`, 'm'));
   assert.match(b, /"version": 1/);
   assert.match(b, /orchestra fanout plan submit <file> --run c77b2530-198b/);
@@ -328,11 +329,11 @@ test('#682 must-pass: an interface line with name + kind + shape (every kind) is
     const p = good(); p.interfaces.A = `Notes for the dependents.\n${E('orders.status', kind, 'string')}`;
     assert.equal(bad682(p).ok, true, kind);
   }
-  assert.deepEqual(interfaceEntries(good().interfaces.A).map((e) => [e.kind, e.shape]), [['column', "enum('open'|'shipped')"], ['event', '{ orderId: string }']]);
+  assert.deepEqual(interfaceEntries(good().interfaces.A).map((e) => [e.kind, e.shape, e.where]), [['column', "enum('open'|'shipped')", 'src/orders/order.ts'], ['event', '{ orderId: string }', 'new src/orders/events.ts']]);
 });
 
 test('#682 must-fail: a name with no kind (absent, unknown kind) is refused plan-interface-no-kind, naming the ticket, its dependents and the line', () => {
-  for (const text of ['`orders.status` — shape: string', '`orders.status` — kind: widget; shape: string', '`orders.status` — kind: ; shape: string']) {
+  for (const text of ['`orders.status` — shape: string; where: src/a.ts', '`orders.status` — kind: widget; shape: string; where: src/a.ts', '`orders.status` — kind: ; shape: string; where: src/a.ts']) {
     const p = good(); p.interfaces.A = text;
     const r = bad682(p);
     assert.deepEqual(codes(r), ['plan-interface-no-kind'], text);
@@ -341,18 +342,18 @@ test('#682 must-fail: a name with no kind (absent, unknown kind) is refused plan
 });
 
 test('#682 must-fail: a name with no shape (absent, filler) is refused plan-interface-no-shape', () => {
-  for (const text of ['`orders.status` — kind: column', '`orders.status` — kind: column; shape:', '`orders.status` — kind: column; shape: TBD', '`orders.status` — kind: column; shape: 7']) {
+  for (const text of ['`orders.status` — kind: column; where: src/a.ts', '`orders.status` — kind: column; shape:; where: src/a.ts', '`orders.status` — kind: column; shape: TBD; where: src/a.ts', '`orders.status` — kind: column; shape: 7; where: src/a.ts']) {
     const p = good(); p.interfaces.A = text;
     assert.deepEqual(codes(bad682(p)), ['plan-interface-no-shape'], text);
   }
   const both = good(); both.interfaces.A = '`orders.status`'; // a bare name: both are missing
-  assert.deepEqual(codes(bad682(both)), ['plan-interface-no-kind', 'plan-interface-no-shape']);
+  assert.deepEqual(codes(bad682(both)), ['plan-interface-no-kind', 'plan-interface-no-shape', 'plan-interface-no-where']);
   const second = good(); second.interfaces.A = `${E('a.b')}\n\`OrderCreated\``; // ONE incomplete line among complete ones is still refused
-  assert.deepEqual(codes(bad682(second)), ['plan-interface-no-kind', 'plan-interface-no-shape']);
+  assert.deepEqual(codes(bad682(second)), ['plan-interface-no-kind', 'plan-interface-no-shape', 'plan-interface-no-where']);
 });
 
 test('#682 must-fail: two names on one line is refused plan-interface-multi-name (one entry per line)', () => {
-  const p = good(); p.interfaces.A = '`a.b` and `c.d` — kind: column; shape: string';
+  const p = good(); p.interfaces.A = '`a.b` and `c.d` — kind: column; shape: string; where: src/a.ts';
   assert.deepEqual(codes(bad682(p)), ['plan-interface-multi-name']);
 });
 
@@ -413,7 +414,7 @@ test('#682: the plan brief shows a FILLED interface entry and a FILLED contract,
   assert.match(b, /EVERY dependency needs one: for each pair of tickets joined by a dependency[^\n]*noSharedBehaviour/);
   const ex = /"interfaces": (\{ "NMC-1": ".*?" \})/.exec(b)![1];
   const iface = (JSON.parse(ex) as Record<string, string>)['NMC-1'];
-  assert.equal(interfaceEntries(iface).filter((e) => e.kind && e.shape).length, 3, 'every line of the brief\'s example is a complete entry');
+  assert.equal(interfaceEntries(iface).filter((e) => e.kind && e.shape && e.where).length, 3, 'every line of the brief\'s example is a complete entry');
 });
 
 // the bench shape of host 2 attempt 3: 7 tickets in a chain, name-only interfaces, 0 contracts — what the plan agent wrote and what is refused now
@@ -437,4 +438,40 @@ test('#682 bench shape (7 tickets, chain): name-only interfaces + 0 contracts ar
   assert.deepEqual(validatePlan(fill, ids7).reasons, []);
   const half = clone(fill); half.noSharedBehaviour = ['T2-T3', 'T3-T4', 'T4-T5', 'T5-T6']; // T6-T7 left unsaid
   assert.deepEqual(validatePlan(half, ids7).reasons.map((x) => x.detail.split(':')[0]), ['T6-T7']);
+});
+
+test('#682 where: an entry with no where (absent, empty, `new` alone, a sentence, a guess without a path) is refused plan-interface-no-where, naming the line', () => {
+  for (const where of [null, '', 'new', 'new ', 'the order entity', 'TBD', 'orders']) {
+    const p = good(); p.interfaces.A = `\`orders.status\` — kind: column; shape: string${where === null ? '' : `; where: ${where}`}`;
+    const r = bad682(p);
+    assert.deepEqual(codes(r), ['plan-interface-no-where'], String(where));
+    assert.match(r.reasons[0].detail, /interfaces\.A \(B build on it\)[^]*orders\.status[^]*no where/);
+  }
+  for (const where of ['src/orders/order.ts', 'src/orders/order.ts:42', 'src/orders/order.ts:40-60', 'new src/orders/events.ts', 'new: src/orders/events.ts', 'New libs/x/y.ts', 'schema.sql']) {
+    const p = good(); p.interfaces.A = E('orders.status', 'column', 'string', where);
+    assert.equal(bad682(p).ok, true, where);
+  }
+  assert.equal(isWhere('new'), false);
+});
+
+test('#682 where: a shape holding `;` keeps its text and the where after it is read', () => {
+  const [e] = interfaceEntries('`OrderCreated` — kind: event; shape: { id: string; at: ISO date }; where: new src/o.ts');
+  assert.deepEqual([e.shape, e.where], ['{ id: string; at: ISO date }', 'new src/o.ts']);
+});
+
+test('#682 brief: it tells the agent to READ the code the tickets name before writing interfaces, and names where', () => {
+  const b = renderPlanBrief(['A', 'B'], { run: 'r1' });
+  assert.match(b, /THEN READ THE CODE the tickets name[^\n]*BEFORE you write any interface/);
+  assert.match(b, /where: <the path of the existing code it extends, or new <module path>>/);
+  assert.match(b, /Code to READ: the target repository is your working directory/);
+});
+
+test('#682 brief: each checked-out repository is rendered with its path (a 2-repo run renders 2 paths); the brief is deterministic', () => {
+  const co = [{ repo: 'mobile-club/monorepo-loop', path: '/h/fanout/r1/plan-src/mobile-club__monorepo-loop' }, { repo: 'mobile-club/next-api', path: '/h/fanout/r1/plan-src/mobile-club__next-api' }];
+  const b = renderPlanBrief(['A', 'B'], { run: 'r1', checkouts: co });
+  assert.match(b, /Code to READ \(the target repositories, checked out for you, read-only\):\n- mobile-club\/monorepo-loop → \/h\/fanout\/r1\/plan-src\/mobile-club__monorepo-loop\n- mobile-club\/next-api → \/h\/fanout\/r1\/plan-src\/mobile-club__next-api\n/);
+  assert.equal((b.match(/→ \//g) ?? []).length, 2);
+  assert.doesNotMatch(b, /is your working directory/);
+  assert.equal(renderPlanBrief(['A', 'B'], { run: 'r1', checkouts: co }), b);
+  assert.match(renderPlanBrief(['A'], { run: 'r1', checkouts: [co[0]] }), /the target repository, checked out for you/);
 });
