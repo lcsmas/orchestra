@@ -126,7 +126,7 @@ Scripts and the Claude Code events they fire on:
   `Bash|Edit|MultiEdit|Write|NotebookEdit|AskUserQuestion` (`ROLE_GUARD_MATCHER`). Script GENERATED in
   `src/shared/role-guard.ts` (`buildRoleGuardScript()` from `roleSpec()` of `fleet-roles.ts` #465, so
   the table and the script cannot drift). **INERT without `.orchestra/role`** (the role word,
-  `writeRoleSentinel` in `src/main/role-sentinel.ts` ← `ws.spawnRole` (frozen at spawn, #489 — a rename cannot change it) else `roleOfName(ws.branch)` — the checked spawn name; `ws.name` is `<repo> · <branch>` and maps to no role; written at creation in
+  `writeRoleSentinel` in `src/main/role-sentinel.ts` (#683: also `.orchestra/ticket-branch` = the implementer's workspace branch; `role-guard.ts` then denies an implementer `git push` of any other ref name — `impl/X` for `impl-X`, `--all` — naming the right branch; a `-N` suffix twin and no file ⇒ allowed) ← `ws.spawnRole` (frozen at spawn, #489 — a rename cannot change it) else `roleOfName(ws.branch)` — the checked spawn name; `ws.name` is `<repo> · <branch>` and maps to no role; written at creation in
   `startBusRunAndWriteNotice`, on the 3 `renameWorkspaceBranch` writes and on every real `installOrchestraHooks`,
   OUTSIDE the hash gate so an app update refreshes it too; a name without a role prefix removes it). Command `HOOK_ROLE_GUARD_CMD`,
   no `|| true`. **Denies (exit 2, stderr `[orchestra] BLOCKED (role: <r>): …`)**: `AskUserQuestion` for
