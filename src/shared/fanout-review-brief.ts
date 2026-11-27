@@ -31,6 +31,10 @@ export interface BriefInput {
   choicesText?: string;
   /** #675 — the numbered acceptance criteria read from the ticket text (`criteriaLines`): absent / [] = none (nothing is printed, the verdict needs no `criteria`). */
   criteria?: string[];
+  /** #680 — `renderContracts(state, ticket)`: the contracts the ticket is part of; '' / absent = none (nothing is printed). */
+  contractsText?: string;
+  /** #680 — the ids of those contracts: the verdict must answer each. */
+  contractIds?: string[];
   /** #676 — `renderPointsForReviewer(state, ticket)`: the open points this reviewer can address ('' / absent = none: nothing is printed). */
   pointsText?: string;
   switchesLine: string;
@@ -95,6 +99,8 @@ export function renderReviewerBrief(i: BriefInput): string {
   const criteria = i.criteria ?? [];
   if (criteria.length) out.push('## Acceptance criteria', ...criteria.map((c, k) => `${k + 1}. ${c}`), '', `Your verdict MUST answer each one: \`"criteria":{${criteria.map((_, k) => `"${k + 1}":"met|unmet"`).join(',')}}\` in your record. \`unmet\` = the head does not do it, for the input you traced: it becomes a BLOCKING finding. A criterion a recorded choice narrows is judged against the TICKET's sentence, not the choice.`, '');
   out.push('## Frozen interfaces', i.interfacesText);
+  const contractIds = i.contractIds ?? [];
+  if (i.contractsText) out.push('', '## Contracts of the run', i.contractsText, '', `Your verdict MUST answer each one: \`"contracts":{${contractIds.map((c) => `"${c}":"met|unmet"`).join(',')}}\`, judged on this head, for the input you traced. \`unmet\` = the head does not provide / reach it: it becomes a BLOCKING finding. A CONSUMER\'s \`met\` also names where its code reaches the owner\'s behaviour: \`"contractEvidence":{"<id>":"<file:line>"}\`.`);
   for (const f of i.follows) out.push(f.followed === null ? `- ${f.id}: this ticket records no followed version (current v${f.current})` : f.followed === f.current ? `- ${f.id}: followed v${f.followed} = current` : `- ${f.id}: this ticket follows v${f.followed} but the current is v${f.current}: STALE`);
   out.push('', '## Run decisions', i.decisionsText, ...(i.choicesText ? ['', '## Choices of the run', i.choicesText] : []), '');
   out.push('## Switches in force', i.switchesLine);
@@ -113,7 +119,7 @@ export function renderReviewerBrief(i: BriefInput): string {
   out.push('## How to end',
     `Record your verdict and EVERY finding with ONE command — gate and deliver read nothing else (a verdict written in prose or typed by the coordinator is not read):`,
     `  orchestra fanout record ${i.ticket} --run ${i.run} --head ${i.head} --verdict approve|changes-requested --json <file|->`,
-    `  json = {"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"<the finding>","specSentence"?:"<verbatim spec text>","kind"?:"code|process","report"?:{…},"demonstration"?:{…}}},"fixed":["<id of an open finding you raised on an earlier head and have now read FIXED on this head>"]${criteria.length ? ',"criteria":{"1":"met|unmet",…}' : ''}}`,
+    `  json = {"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"<the finding>","specSentence"?:"<verbatim spec text>","kind"?:"code|process","report"?:{…},"demonstration"?:{…}}},"fixed":["<id of an open finding you raised on an earlier head and have now read FIXED on this head>"]${criteria.length ? ',"criteria":{"1":"met|unmet",…}' : ''}${contractIds.length ? ',"contracts":{"<id>":"met|unmet",…},"contractEvidence"?:{"<id>":"<file:line>"}' : ''}}`,
     'Counts are derived from the findings you list; approve is refused while a BLOCKING / MAJOR finding is open, changes-requested needs one. A finding you do not list does not exist for the merge.',
     `Then end with: orchestra send --type worker_done --to ${i.coordinator} --cap "$(orchestra token)" "<one line>" — it is refused until your verdict for ${briefShort(i.head)} is recorded.`,
     'Review this head only; if the ticket moves, the coordinator wakes you with the delta.');

@@ -3,7 +3,8 @@
 // The `parked` / `choices` / `pause` / `flaky` fields are written by #603 / #607 (stack C connect: read straight from the state, no casts).
 import fs from 'node:fs';
 import path from 'node:path';
-import type { FanoutState, FindingRecord, OpenPoint, TicketState } from './fanout-state.ts';
+import type { ContractRecord, FanoutState, FindingRecord, OpenPoint, TicketState } from './fanout-state.ts';
+import { lastContractAnswer } from './fanout-contracts.ts';
 import { reportPointLine } from './fanout-open-point.ts';
 
 // ── the views of #603's records (shapes kept; the casts are gone since the connect) ──
@@ -33,6 +34,8 @@ export interface ReportChoice { n: number; ticket: string; question: string; rul
 /** A finding that did NOT end fixed: `open` (nobody closed it), `decided` (the coordinator wrote a reason), `pr-body` (settled in the PR body, no code change). */
 export interface ReportFinding { ticket: string; finding: string; severity: FindingRecord['severity']; end: 'open' | 'decided' | 'pr-body' | 'on-choice'; note?: string }
 
+/** #680 — a contract of the plan with each party's last recorded answer (null = none recorded: the ticket never got a verdict on it). */
+export interface ReportContract { id: string; owner: string; must: string; owned: 'met' | 'unmet' | null; consumers: Array<{ ticket: string; answer: 'met' | 'unmet' | null }> }
 export interface Report {
   run: string;
   merged: string[];
@@ -46,6 +49,8 @@ export interface Report {
   findingsLeft: ReportFinding[];
   /** #676 — the open points the tickets raised about each other, and how each settled (`addressed` on a head its reviewer approved | `decided` — the loop's fixed rule or the coordinator's | still open). Absent = none were raised. */
   openPoints?: OpenPoint[];
+  /** #680 — the contracts of the plan and their final verdicts, per party. Absent = the plan had none. */
+  contracts?: ReportContract[];
   /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607: `TicketState.ci.flaky`). */
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
@@ -101,6 +106,7 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
     run: state.run, irreversible, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
     ...(state.openPoints?.length ? { openPoints: state.openPoints } : {}),
+    ...(state.contracts?.length ? { contracts: state.contracts.map((c: ContractRecord): ReportContract => ({ id: c.id, owner: c.owner, must: c.must, owned: lastContractAnswer(state, c.owner, c.id), consumers: c.consumers.map((t) => ({ ticket: t, answer: lastContractAnswer(state, t, c.id) })) })) } : {}),
     flaky: [...(state.startFlaky ?? []).map((c) => `start-check/${c}`), ...ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`))],
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
     paused: pauseOf(state),
@@ -142,6 +148,10 @@ export function renderReport(r: Report): string {
   if (plain.length) {
     L.push(`choices taken by the agents (${plain.length}) — each the reversible option the implementer recorded (\`orchestra fanout choice\`):`);
     for (const c of plain) L.push(`  #${c.n} ${c.ticket} [${c.rule}] ${oneLine(c.question, 200)} → TAKEN: ${oneLine(c.answer, 200)}${c.pr ? ` → PR #${c.pr}` : c.branch ? ` → branch ${c.branch}` : ''}`);
+  }
+  if (r.contracts?.length) {
+    L.push(`contracts of the plan (${r.contracts.length}) — each a behaviour one ticket owns and others rely on, with the last verdict recorded for each party:`);
+    for (const c of r.contracts) L.push(`  ${c.id}: ${c.owner} [${c.owned ?? 'no verdict'}] must ${oneLine(c.must, 200)} — consumers: ${c.consumers.map((x) => `${x.ticket} [${x.answer ?? 'no verdict'}]`).join(', ')}`);
   }
   if (r.openPoints?.length) {
     L.push(`open points (${r.openPoints.length}) — each a point a ticket left open about another (\`orchestra fanout open-point\`), and how it settled:`);

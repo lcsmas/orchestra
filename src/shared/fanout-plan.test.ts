@@ -2,7 +2,7 @@
 // Each rule has a must-pass and a must-fail arm. Mutants: scripts/e2e-fanout-plan.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceNames, isExactName, parsePlan, planHash, validatePlan, type Plan, type PlanReasonCode } from './fanout-plan.ts';
+import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceNames, isExactName, parsePlan, planHash, validatePlan, type Plan, type PlanContract, type PlanReasonCode } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
 import { roleOfName } from './fleet-roles.ts';
 import { SeatRefusal, addDecision, newState, parseState, planMissing, readyTickets, setSwitches, type FanoutState } from './fanout-state.ts';
@@ -123,6 +123,10 @@ test('every reason code of the frozen list is reachable (no dead code)', () => {
   const unk = good(); unk.tickets.push({ id: 'Z', title: 't', spec: 's', specText: 'text', dependsOn: [] }); feed(unk);
   const nost = good(); nost.tickets[0].specText = ''; feed(nost);
   const shortt = good(); shortt.tickets[0].specText = 'x'; feed(shortt);
+  const k1 = good(); k1.contracts = [{ id: 'c1', owner: 'A', must: '', consumers: ['B'] }]; feed(k1);
+  const k2 = good(); k2.contracts = [{ id: 'c1', owner: 'Q', must: 'does x', consumers: ['B'] }]; feed(k2);
+  const k3 = good(); k3.contracts = [{ id: 'c1', owner: 'A', must: 'does x', consumers: ['A'] }]; feed(k3);
+  const k4 = good(); k4.contracts = [{ id: 'c1', owner: 'A', must: 'does x', consumers: ['B'] }, { id: 'c1', owner: 'A', must: 'does y', consumers: ['C'] }]; feed(k4);
   const dup = good(); dup.tickets.push({ ...dup.tickets[0] }); feed(dup);
   const cyc = good(); cyc.tickets[0].dependsOn = ['B']; feed(cyc);
   const noi = good(); noi.interfaces = {}; feed(noi);
@@ -158,6 +162,46 @@ test('#675: the plan brief asks for specText verbatim', () => {
   const b = renderPlanBrief(['A', 'B'], { run: 'r1' });
   assert.match(b, /"specText": "<the ticket's FULL description, verbatim>"/);
   assert.match(b, /refuses an empty one or one shorter than the title/);
+});
+
+const withContract = (c: Partial<PlanContract> = {}): Plan => { const p = good(); p.contracts = [{ id: 'c1', owner: 'A', must: 'every path that sets the status dispatches OrderCreated through one function', consumers: ['B', 'C'], ...c }]; return p; };
+test('#680 must-pass: a contract (owner, one sentence, consumers) is a valid plan; a plan with none (absent or []) is as before', () => {
+  assert.equal(validatePlan(withContract(), ids).ok, true);
+  assert.equal(validatePlan({ ...clone(good()), contracts: [] }, ids).ok, true);
+  assert.equal(validatePlan(JSON.stringify(withContract()), ids).plan?.contracts?.[0].consumers.join(), 'B,C');
+  assert.equal(parsePlan({ ...clone(good()), contracts: [] }).contracts, undefined);
+});
+
+test('#680 must-fail: unknown owner / unknown consumer / empty must / consumer = owner / no consumer / twice the same id / free text in a contract', () => {
+  assert.deepEqual(codes(validatePlan(withContract({ owner: 'Z' }), ids)), ['plan-contract-unknown-ticket']);
+  assert.deepEqual(codes(validatePlan(withContract({ consumers: ['B', 'Z'] }), ids)), ['plan-contract-unknown-ticket']);
+  assert.deepEqual(codes(validatePlan(withContract({ must: '  ' }), ids)), ['plan-contract-empty']);
+  assert.deepEqual(codes(validatePlan(withContract({ consumers: [] }), ids)), ['plan-contract-empty']);
+  assert.deepEqual(codes(validatePlan(withContract({ consumers: ['A', 'B'] }), ids)), ['plan-contract-self']);
+  const dup = withContract(); dup.contracts!.push({ ...dup.contracts![0] });
+  assert.deepEqual(codes(validatePlan(dup, ids)), ['plan-contract-duplicate']);
+  const note = clone(withContract()) as { contracts: Array<Record<string, unknown>> }; note.contracts[0].note = 'wait for A';
+  assert.ok(codes(validatePlan(note, ids)).includes('plan-free-text'));
+  assert.ok(codes(validatePlan(withContract({ must: 'two\nlines' }), ids)).includes('plan-free-text'));
+  assert.ok(codes(validatePlan({ ...clone(good()), contracts: 'x' }, ids)).includes('plan-bad-json'));
+  assert.ok(codes(validatePlan(withContract({ id: 'a b' }), ids)).includes('plan-bad-json'));
+});
+
+test('#680: applyPlan records the contracts in the state (strict reader round-trip); planHash covers them and is unchanged for a plan with none', () => {
+  const st = applyPlan(seatState(), withContract(), NOW);
+  assert.deepEqual(st.contracts, withContract().contracts);
+  assert.deepEqual(parseState(JSON.parse(JSON.stringify(st))).contracts, st.contracts);
+  assert.equal(applyPlan(seatState(), good(), NOW).contracts, undefined);
+  assert.notEqual(planHash(withContract()), planHash(good()));
+  assert.equal(planHash({ ...good(), contracts: [] }), planHash(good()), 'an empty list is no contract');
+  assert.throws(() => parseState({ ...JSON.parse(JSON.stringify(st)), contracts: [{ id: 'c1', owner: 'A', must: 'x y', consumers: ['A'] }] }), /cannot consume its own contract/);
+});
+
+test('#680: the plan brief asks for one contract per sentence that names another ticket\'s behaviour, from a fixed text', () => {
+  const b = renderPlanBrief(['A', 'B'], { run: 'r1' });
+  assert.match(b, /"contracts": \[ \{ "id": "<short id>", "owner": "<ticket>", "must": "<the behaviour, one sentence>", "consumers": \["<ticket>"\] \} \]/);
+  assert.match(b, /write ONE contract for every sentence of a ticket that names ANOTHER ticket's behaviour/);
+  assert.equal(renderPlanBrief(['A', 'B'], { run: 'r1' }), b, 'deterministic');
 });
 
 test('validatePlan reports ALL reasons at once (one retry can fix them all)', () => {

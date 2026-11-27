@@ -1,6 +1,7 @@
 // #587 PR B (ledger #591 I6) — the implementer's brief, RENDERED BY CODE from the state: `orchestra fanout start` is its only author, the coordinator adds no free text
 // (what it must say goes in the run's decisions, which every brief carries). Pure. Its rules live in the implementer role file (#590).
 import { OPEN_POINT_LINE, renderDecisions, renderInterfaces, renderRunChoices, renderSwitchesLine } from './fanout-brief-common.ts';
+import { renderContracts } from './fanout-contracts.ts';
 import type { FanoutState } from './fanout-state.ts';
 import { FANOUT_IMPLEMENTER_SKILL_PATH } from './fanout-implementer-skill.ts';
 
@@ -55,6 +56,7 @@ export function renderImplementerBrief(input: ImplementerBriefInput): string {
     own ? `Interface you PROVIDE (frozen, v${own.version}):\n${own.text}` : 'Interface you provide: none (no other ticket depends on yours).',
     '',
     renderInterfaces(state, t.dependsOn),
+    ...(renderContracts(state, ticket) ? ['', '## Contracts of the run', renderContracts(state, ticket)] : []),
     '',
     renderDecisions(state),
     ...(renderRunChoices(state) ? ['', '## Choices of the run', renderRunChoices(state)] : []),

@@ -2,7 +2,7 @@
 // Pure (no fs, no Electron). The form is the whole contract: every ticket present, no cycle, each depended-on ticket carries an interface with at least one exact name in backticks,
 // and NO free text (any key beyond the schema is refused `plan-free-text`): a run decision ("wait for X") cannot ride in a plan. The submit flow (attempts, the agent) is fanout-plan-host.ts.
 import { createHash } from 'node:crypto';
-import { SPEC_TEXT_MAX, SeatRefusal, applyTicketPatchCore, planMissing, setPlan, stampDefaults, switchesLockedWhy, type FanoutState } from './fanout-state.ts';
+import { CONTRACT_ID, CONTRACT_MUST_MAX, SPEC_TEXT_MAX, SeatRefusal, applyTicketPatchCore, planMissing, setPlan, stampDefaults, switchesLockedWhy, type FanoutState } from './fanout-state.ts';
 
 export const PLAN_VERSION = 1;
 export const PLAN_TITLE_MAX = 120;
@@ -13,13 +13,15 @@ export const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL_LINE = /[\x00-\x1f\x7f]/;
 const CTRL_TEXT = /[\x00-\x08\x0b-\x1f\x7f]/;
 
-export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short'] as const;
+export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short', 'plan-contract-empty', 'plan-contract-unknown-ticket', 'plan-contract-self', 'plan-contract-duplicate'] as const;
 export type PlanReasonCode = (typeof PLAN_REASON_CODES)[number];
 export interface PlanReason { code: PlanReasonCode; detail: string }
 
 /** `specText` (#675) = the ticket's FULL description, verbatim (its sentences and numbered criteria are what the review is held to): recorded as `tickets.<id>.specText`. */
 export interface PlanTicket { id: string; title: string; spec: string; specText: string; dependsOn: string[] }
-export interface Plan { version: 1; tickets: PlanTicket[]; interfaces: Record<string, string> }
+/** #680 — a behaviour ONE ticket owns and others rely on (`must`, one line); the code renders it in the briefs of the owner, the consumers and their reviewers, and every approve answers it. */
+export interface PlanContract { id: string; owner: string; must: string; consumers: string[] }
+export interface Plan { version: 1; tickets: PlanTicket[]; interfaces: Record<string, string>; /** absent = none (a plan with no contract is what it was) */ contracts?: PlanContract[] }
 
 /** parsePlan's refusal: every structural reason found, not only the first (the agent fixes them in ONE retry). */
 export class PlanError extends Error {
@@ -38,7 +40,7 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
   let v = raw;
   if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return { plan: null, reasons: [{ code: 'plan-bad-json', detail: `not JSON: ${e instanceof Error ? e.message : String(e)}` }] }; } }
   if (!isObj(v)) return { plan: null, reasons: [{ code: 'plan-bad-json', detail: 'the plan must be a JSON object {version, tickets, interfaces}' }] };
-  for (const k of Object.keys(v)) if (!['version', 'tickets', 'interfaces'].includes(k)) free(`unknown key "${k}" at the top of the plan — the plan holds only version, tickets, interfaces (no decisions, notes or order)`);
+  for (const k of Object.keys(v)) if (!['version', 'tickets', 'interfaces', 'contracts'].includes(k)) free(`unknown key "${k}" at the top of the plan — the plan holds only version, tickets, interfaces, contracts (no decisions, notes or order)`);
   if (v.version !== PLAN_VERSION) bad(`version must be ${PLAN_VERSION}`);
   if (!Array.isArray(v.tickets)) { bad('tickets must be a list of {id, title, spec, specText, dependsOn}'); return { plan: null, reasons }; }
   const tickets: PlanTicket[] = [];
@@ -77,7 +79,30 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
       ifaceEntries.push([k, t.replace(/\r\n/g, '\n')]);
     }
   }
-  return { plan: { version: PLAN_VERSION, tickets, interfaces: Object.fromEntries(ifaceEntries) }, reasons };
+  const contracts: PlanContract[] = [];
+  if (v.contracts !== undefined) {
+    if (!Array.isArray(v.contracts)) bad('contracts must be a list of {id, owner, must, consumers} ([] = none)');
+    else v.contracts.forEach((c, i) => {
+      const at = `contracts[${i}]`;
+      if (!isObj(c)) { bad(`${at} must be an object {id, owner, must, consumers}`); return; }
+      for (const k of Object.keys(c)) if (!['id', 'owner', 'must', 'consumers'].includes(k)) free(`${at}: unknown key "${k}" — a contract holds only id, owner, must, consumers`);
+      const id = typeof c.id === 'string' ? c.id : '';
+      if (!CONTRACT_ID.test(id)) { bad(`${at}.id must be a short contract id (letters, digits, . _ # : -, at most 40), got ${JSON.stringify(c.id)}`); return; }
+      const where = `contract ${id}`;
+      let must = '';
+      if (typeof c.must !== 'string' || !c.must.trim()) reasons.push({ code: 'plan-contract-empty', detail: `${where}: must is empty — name the behaviour the owner provides (one sentence)` });
+      else if (c.must.length > CONTRACT_MUST_MAX || CTRL_LINE.test(c.must)) free(`${where}: must must be one printable line of at most ${CONTRACT_MUST_MAX} characters`);
+      else must = c.must.trim();
+      const owner = typeof c.owner === 'string' ? c.owner.trim() : '';
+      if (!TICKET_ID.test(owner)) bad(`${where}: owner must be a ticket id, got ${JSON.stringify(c.owner)}`);
+      let consumers: string[] = [];
+      if (!Array.isArray(c.consumers) || c.consumers.some((d) => typeof d !== 'string')) bad(`${where}: consumers must be a list of ticket ids`);
+      else if (!c.consumers.length) reasons.push({ code: 'plan-contract-empty', detail: `${where}: consumers is empty — a contract is a behaviour OTHER tickets rely on` });
+      else consumers = [...new Set((c.consumers as string[]).map((d) => d.trim()))];
+      contracts.push({ id, owner, must, consumers });
+    });
+  }
+  return { plan: { version: PLAN_VERSION, tickets, interfaces: Object.fromEntries(ifaceEntries), ...(contracts.length ? { contracts } : {}) }, reasons };
 }
 
 export const NAME_MAX = 80;
@@ -126,6 +151,16 @@ export function checkPlan(plan: Plan, ticketIds: string[]): { ok: boolean; reaso
   const cycle = findCycle(plan);
   if (cycle) reasons.push({ code: 'plan-cycle', detail: `dependency cycle: ${cycle.join(' -> ')}` });
   for (const k of Object.keys(plan.interfaces)) if (!known.has(k)) reasons.push({ code: 'plan-ticket-unknown', detail: `interfaces.${k}: ${k} is not a ticket of the plan` });
+  const cids = new Map<string, number>();
+  for (const c of plan.contracts ?? []) {
+    cids.set(c.id, (cids.get(c.id) ?? 0) + 1);
+    if (!known.has(c.owner)) reasons.push({ code: 'plan-contract-unknown-ticket', detail: `contract ${c.id}: owner ${c.owner} is not a ticket of the plan (${[...known].join(', ')})` });
+    for (const d of c.consumers) {
+      if (d === c.owner) reasons.push({ code: 'plan-contract-self', detail: `contract ${c.id}: ${d} is both the owner and a consumer` });
+      else if (known.has(d) === false) reasons.push({ code: 'plan-contract-unknown-ticket', detail: `contract ${c.id}: consumer ${d} is not a ticket of the plan (${[...known].join(', ')})` });
+    }
+  }
+  for (const [id, n] of cids) if (n >= 2) reasons.push({ code: 'plan-contract-duplicate', detail: `contract ${id} appears ${n} times` });
   const depended = [...new Set(plan.tickets.flatMap((t) => t.dependsOn).filter((d) => known.has(d)))];
   for (const d of depended) {
     const text = Object.hasOwn(plan.interfaces, d) ? plan.interfaces[d] : undefined; // a ticket named `constructor` is not an inherited member
@@ -160,7 +195,7 @@ export function validatePlan(raw: unknown, ticketIds: string[]): { ok: boolean; 
 
 /** sha256 of the normalised plan (tickets in the plan's order, fixed key order): the `loopPlan.hash`. */
 export function planHash(plan: Plan): string {
-  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, specText: t.specText, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])) };
+  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, specText: t.specText, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])), ...(plan.contracts?.length ? { contracts: plan.contracts.map((c) => ({ id: c.id, owner: c.owner, must: c.must, consumers: c.consumers })) } : {}) };
   return createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -183,6 +218,7 @@ export function applyPlan(state: FanoutState, plan: Plan, now: string, attempts 
   for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: [], spec: t.spec }, now, { specText: t.specText }); // #675: the full text rides with the reference, as `state set --spec-text` does by hand. pass 1: every ticket exists (a dependency may name a later one)
   for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: t.dependsOn }, now);
   for (const [id, text] of Object.entries(plan.interfaces)) st = applyTicketPatchCore(st, id, { interface: text }, now);
+  if (plan.contracts?.length) st = { ...st, contracts: plan.contracts.map((c) => ({ id: c.id, owner: c.owner, must: c.must, consumers: [...c.consumers] })), updatedAt: now }; // #680: rendered in the briefs, answered in every approve
   const missing = planMissing(st);
   if (missing.length) throw new SeatRefusal('plan-incomplete', `the plan leaves ${missing.length} thing(s) missing: ${missing.join('; ')}`);
   return { ...st, loopPlan: { at: now, hash, attempts }, updatedAt: now };

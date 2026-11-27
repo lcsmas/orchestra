@@ -95,7 +95,10 @@ export interface AcceptFlow {
 /** #589 (I4) — one recorded verdict: who, the exact head (+ its tree) it read, the finding ids it raised / closed as fixed. */
 export interface ReviewEntry { n: number; reviewer: string; head: string; tree: string | null; verdict: 'approve' | 'changes-requested'; findings: string[]; closed: string[]; at: string;
   /** #675 — the reviewer's answer per numbered acceptance criterion of the ticket text (`fanout record --json criteria`); absent = the ticket text has none. */
-  criteria?: Record<string, 'met' | 'unmet'> }
+  criteria?: Record<string, 'met' | 'unmet'>;
+  /** #680 — the reviewer's answer per contract the ticket is part of (`fanout record --json contracts`), and the evidence line a consumer gives for a `met`. */
+  contracts?: Record<string, 'met' | 'unmet'>;
+  contractEvidence?: Record<string, string> }
 
 export interface TicketState {
   /** Work branch (the nominated ref NAME is frozen once nominated). */
@@ -163,6 +166,11 @@ export interface TicketState {
   ci?: CiRecord;
   updatedAt: string;
 }
+
+/** #680 — `must` = the behaviour the owner provides, one printable line; `consumers` = the tickets that rely on it (never the owner). */
+export interface ContractRecord { id: string; owner: string; must: string; consumers: string[] }
+export const CONTRACT_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,39}$/;
+export const CONTRACT_MUST_MAX = 500;
 
 // ── #603 (ledger #613 FROZEN NAMES v1): parked, the situation fingerprint, the agents' recorded choices, the run's pause ──
 export const PARK_CAUSES = ['question', 'situation', 'ci', 'upstream'] as const;
@@ -237,6 +245,8 @@ export interface FanoutState {
   decisions?: Array<{ n: number; text: string; by: string; at: string }>;
   /** #603 — what the agents chose when they asked (`recordChoice`), oldest first; the closing report lists each. */
   choices?: ChoiceRecord[];
+  /** #680 — the cross-ticket contracts of the plan (`applyPlan`): a behaviour one ticket OWNS and others rely on; rendered in the briefs of the owner, the consumers and their reviewers, answered in every approve. Absent = none. */
+  contracts?: ContractRecord[];
   /** #676 — the open points the tickets raised about each other (`recordOpenPoint`), oldest first, numbered from 1; the closing report lists each with how it settled. */
   openPoints?: OpenPoint[];
   /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
@@ -304,6 +314,7 @@ TICKET_KEYS.add('parked'); // #603
 TICKET_KEYS.add('rounds'); // #603
 TOP_KEYS.add('choices'); // #603
 TOP_KEYS.add('openPoints'); // #676
+TOP_KEYS.add('contracts'); // #680
 TOP_KEYS.add('pause'); // #603
 TOP_KEYS.add('waited'); // #655
 TOP_KEYS.add('startFlaky'); // #654
@@ -765,11 +776,33 @@ function ciRecordOf(v: unknown, where: string): CiRecord {
   return { head: v.head, rerun, told, reruns: (v.reruns as number | undefined) ?? 0, seen: names(v.seen ?? [], 'seen'), tells, flaky: names(v.flaky ?? [], 'flaky'), env };
 }
 
-function criteriaOf(v: unknown, where: string): Record<string, 'met' | 'unmet'> {
-  if (!isObj(v)) throw new FanoutStateError(`${where} must be {"<n>":"met|unmet"}`);
+function contractEvidenceOf(v: unknown, where: string): Record<string, string> {
+  if (!isObj(v)) throw new FanoutStateError(`${where} must be {"<contract id>":"<evidence line>"}`);
+  return Object.fromEntries(Object.entries(v).map(([k, x]) => [checked(k, CONTRACT_ID, `${where} key`) as string, lineOf(x, `${where}.${k}`, CONTRACT_MUST_MAX)]));
+}
+/** #680 — the stored contracts: unique ids, owner / consumers ticket ids, never the owner among its consumers. */
+function contractsParse(v: unknown): ContractRecord[] {
+  if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('contracts must be a non-empty list of {id, owner, must, consumers}');
+  const seen = new Set<string>();
+  return v.map((e, i) => {
+    const where = `contracts[${i}]`;
+    if (!isObj(e)) throw new FanoutStateError(`${where} must be an object`);
+    refuseUnknown(e, new Set(['id', 'owner', 'must', 'consumers']), where);
+    const id = checked(typeof e.id === 'string' ? e.id : null, CONTRACT_ID, `${where}.id`) as string;
+    if (!id) throw new FanoutStateError(`${where}.id must be a contract id`);
+    if (seen.has(id)) throw new FanoutStateError(`${where}: contract id ${id} appears twice`);
+    seen.add(id);
+    if (typeof e.owner !== 'string' || !SAFE_TICKET.test(e.owner)) throw new FanoutStateError(`${where}.owner must be a ticket id`);
+    if (!Array.isArray(e.consumers) || e.consumers.length === 0 || e.consumers.some((c) => typeof c !== 'string' || !SAFE_TICKET.test(c))) throw new FanoutStateError(`${where}.consumers must be a non-empty list of ticket ids`);
+    if ((e.consumers as string[]).includes(e.owner)) throw new FanoutStateError(`${where}: the owner ${e.owner} cannot consume its own contract`);
+    return { id, owner: e.owner, must: lineOf(e.must, `${where}.must`, CONTRACT_MUST_MAX), consumers: [...new Set(e.consumers as string[])] };
+  });
+}
+function criteriaOf(v: unknown, where: string, keyRe: RegExp = /^[1-9][0-9]{0,3}$/): Record<string, 'met' | 'unmet'> {
+  if (!isObj(v)) throw new FanoutStateError(`${where} must be {"<key>":"met|unmet"}`);
   const out: Record<string, 'met' | 'unmet'> = {};
   for (const [k, x] of Object.entries(v)) {
-    if (!/^[1-9][0-9]{0,3}$/.test(k) || (x !== 'met' && x !== 'unmet')) throw new FanoutStateError(`${where} must be {"<n>":"met|unmet"} (got ${JSON.stringify(k)}: ${JSON.stringify(x)})`);
+    if (!keyRe.test(k) || (x !== 'met' && x !== 'unmet')) throw new FanoutStateError(`${where} must be {"<key>":"met|unmet"} (got ${JSON.stringify(k)}: ${JSON.stringify(x)})`);
     out[k] = x;
   }
   return out;
@@ -779,11 +812,11 @@ function reviewsOf(v: unknown, where: string): ReviewEntry[] {
   return v.map((e, i) => {
     const at = `${where}: reviews[${i}]`;
     if (!isObj(e)) throw new FanoutStateError(`${at} must be an object`);
-    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at', 'criteria']), at);
+    refuseUnknown(e, new Set(['n', 'reviewer', 'head', 'tree', 'verdict', 'findings', 'closed', 'at', 'criteria', 'contracts', 'contractEvidence']), at);
     if (!Number.isInteger(e.n) || (e.n as number) !== i + 1) throw new FanoutStateError(`${at}.n must be ${i + 1} (reviews are numbered 1.. in order)`);
     if (typeof e.head !== 'string' || !HEX_SHA.test(e.head)) throw new FanoutStateError(`${at}.head must be a 7-40 lowercase hex sha`);
     const ids = (x: unknown, k: string): string[] => { if (!Array.isArray(x) || x.some((d) => typeof d !== 'string' || !FINDING_ID.test(d))) throw new FanoutStateError(`${at}.${k} must be an array of finding ids`); return x as string[]; };
-    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`), ...(e.criteria !== undefined ? { criteria: criteriaOf(e.criteria, `${at}.criteria`) } : {}) };
+    return { n: e.n as number, reviewer: lineOf(e.reviewer, `${at}.reviewer`, 200), head: e.head, tree: treeOrNull(e.tree, `${at}.tree`), verdict: enumOf(e.verdict, ['approve', 'changes-requested'] as const, `${at}.verdict`), findings: ids(e.findings, 'findings'), closed: ids(e.closed, 'closed'), at: isoOf(e.at, `${at}.at`), ...(e.criteria !== undefined ? { criteria: criteriaOf(e.criteria, `${at}.criteria`) } : {}), ...(e.contracts !== undefined ? { contracts: criteriaOf(e.contracts, `${at}.contracts`, CONTRACT_ID) } : {}), ...(e.contractEvidence !== undefined ? { contractEvidence: contractEvidenceOf(e.contractEvidence, `${at}.contractEvidence`) } : {}) };
   });
 }
 function findingsOf(v: unknown): Record<string, FindingRecord> {
@@ -1170,6 +1203,7 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
     ...(raw.openPoints !== undefined ? { openPoints: openPointsParse(raw.openPoints) } : {}), // #676
+    ...(raw.contracts !== undefined ? { contracts: contractsParse(raw.contracts) } : {}), // #680
     ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
     ...(raw.waited !== undefined ? { waited: waitedOf(raw.waited) } : {}), // #655
     ...(raw.startFlaky !== undefined ? { startFlaky: startFlakyOf(raw.startFlaky) } : {}), // #654

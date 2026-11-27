@@ -1,8 +1,9 @@
 // #589 (I4, switch seatRecords=on) — the reviewer RECORDS its verdict and findings; `gate` and `deliver` read nothing else. Pure; the verb is src/cli/fanout-record.ts.
 // Every refusal is a FanoutStateError whose message STARTS with its name in brackets. Who the caller is = `resolveCaller` (#588, src/shared/fanout-caller.ts) — this file never judges identity itself.
-import { FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, effectiveSpec, findingClosed, recordChoice, sameContent, seatRecordsOn, sentenceAccepted, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
+import { CONTRACT_ID, FanoutStateError, SeatRefusal, applyTicketPatchCore, blockingMinors, effectiveSpec, findingClosed, recordChoice, sameContent, seatRecordsOn, sentenceAccepted, switchesOf, type FanoutState, type FindingRecord, type ReviewEntry, type TicketState } from './fanout-state.ts';
 import type { FileOnHead } from './fanout-demonstration.ts';
 import { criteriaLines, quotesCriterion } from './fanout-criteria.ts';
+import { contractsOf } from './fanout-contracts.ts';
 import { settleAddressed } from './fanout-open-point.ts';
 
 const FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
@@ -14,7 +15,7 @@ const recordRefuse = (name: string, msg: string): never => { throw new SeatRefus
 export const recordCommand = (ticket: string, head: string): string => `orchestra fanout record ${ticket} --head ${head} --verdict approve|changes-requested --json <file|->`;
 
 // ── the --json of `fanout record` ──────────────────────────────────────────────────────────────────────────────
-export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[]; /** #675 — `{"<n>":"met|unmet"}` per numbered acceptance criterion of the ticket text */ criteria?: Record<string, 'met' | 'unmet'>; /** #676 — open points (numbers) the approved head addresses; only the reviewer of the `about` ticket (or its follow-up) */ addressed?: number[] }
+export interface RecordInput { findings: Record<string, Record<string, unknown>>; fixed: string[]; /** #675 — `{"<n>":"met|unmet"}` per numbered acceptance criterion of the ticket text */ criteria?: Record<string, 'met' | 'unmet'>; /** #680 — `{"<contract id>":"met|unmet"}` for every contract the ticket is part of, + the evidence line of a consumer's `met` */ contracts?: Record<string, 'met' | 'unmet'>; contractEvidence?: Record<string, string>; /** #676 — open points (numbers) the approved head addresses; only the reviewer of the `about` ticket (or its follow-up) */ addressed?: number[] }
 const INPUT_FINDING_KEYS = new Set(['severity', 'evidence', 'text', 'demonstration', 'report', 'specSentence', 'kind']);
 
 /** `{"findings":{"<id>":{severity, evidence, text, demonstration?, report?, specSentence?, kind?}},"fixed":["<id>",…],"addressed":[<open point n>,…]}` — shape only; the finding rules (severity, report, specSentence, demonstration) are the state's own, applied by `recordReview`. */
@@ -23,7 +24,7 @@ export function parseRecordJson(text: string): RecordInput {
   try { raw = JSON.parse(text); } catch { return recordRefuse('record-json', 'the --json is not valid JSON'); }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return recordRefuse('record-json', 'the --json must be {"findings":{<id>:{…}},"fixed":[<id>,…]}');
   const o = raw as Record<string, unknown>;
-  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed' && k !== 'criteria' && k !== 'addressed') recordRefuse('record-json', `unknown key "${k}" (only findings, fixed, criteria and addressed)`);
+  for (const k of Object.keys(o)) if (k !== 'findings' && k !== 'fixed' && k !== 'criteria' && k !== 'contracts' && k !== 'contractEvidence' && k !== 'addressed') recordRefuse('record-json', `unknown key "${k}" (only findings, fixed, criteria, contracts, contractEvidence and addressed)`);
   const findings: RecordInput['findings'] = {};
   if (o.findings !== undefined) {
     if (typeof o.findings !== 'object' || o.findings === null || Array.isArray(o.findings)) recordRefuse('record-json', '"findings" must be an object {<id>: {severity, evidence, text, …}}');
@@ -56,7 +57,25 @@ export function parseRecordJson(text: string): RecordInput {
     if (!Array.isArray(o.addressed) || o.addressed.length === 0 || o.addressed.some((n) => !Number.isInteger(n) || (n as number) < 1)) recordRefuse('record-json', '"addressed" must be a non-empty array of open point numbers (orchestra fanout open-point numbers each point)');
     addressed = [...new Set(o.addressed as number[])];
   }
-  return { findings, fixed, ...(criteria ? { criteria } : {}), ...(addressed ? { addressed } : {}) };
+  let contracts: RecordInput['contracts'];
+  if (o.contracts !== undefined) {
+    if (typeof o.contracts !== 'object' || o.contracts === null || Array.isArray(o.contracts)) recordRefuse('record-json', '"contracts" must be {"<contract id>":"met|unmet"} — one entry per contract of the brief');
+    contracts = {};
+    for (const [k, v] of Object.entries(o.contracts as Record<string, unknown>)) {
+      if (!CONTRACT_ID.test(k) || (v !== 'met' && v !== 'unmet')) recordRefuse('record-json', `"contracts" entry ${JSON.stringify(k)}: ${JSON.stringify(v)} — the key is a contract id, the value "met" or "unmet"`);
+      contracts[k] = v as 'met' | 'unmet';
+    }
+  }
+  let contractEvidence: RecordInput['contractEvidence'];
+  if (o.contractEvidence !== undefined) {
+    if (typeof o.contractEvidence !== 'object' || o.contractEvidence === null || Array.isArray(o.contractEvidence)) recordRefuse('record-json', '"contractEvidence" must be {"<contract id>":"<one line: where the code reaches the owner\'s behaviour>"}');
+    contractEvidence = {};
+    for (const [k, v] of Object.entries(o.contractEvidence as Record<string, unknown>)) {
+      if (!CONTRACT_ID.test(k) || typeof v !== 'string' || !v.trim() || v.length > 500 || /[\x00-\x1f\x7f]/.test(v)) recordRefuse('record-json', `"contractEvidence" entry ${JSON.stringify(k)} must be one printable line (non-empty, at most 500 characters)`);
+      contractEvidence[k] = (v as string).trim();
+    }
+  }
+  return { findings, fixed, ...(criteria ? { criteria } : {}), ...(contracts ? { contracts } : {}), ...(contractEvidence ? { contractEvidence } : {}), ...(addressed ? { addressed } : {}) };
 }
 
 // ── derived counts ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -154,7 +173,23 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
     const missing = criteria.map((_, k) => String(k + 1)).filter((k) => answers[k] === undefined);
     if (missing.length) recordRefuse('criteria-missing', `approve without an answer for criterion ${missing.join(', ')} of ${criteria.length}: add "criteria":{${criteria.map((_, k) => `"${k + 1}":"met|unmet"`).join(',')}} to the --json — judged on the head, for the input you traced, against the TICKET's sentence (not a recorded choice)`);
   }
+  // #680 — the contracts of the plan the ticket is part of: an approve answers every one; `unmet` is a BLOCKING finding (`contract-<id>`); a consumer's `met` names where its code reaches the owner's behaviour
+  const mine = contractsOf(state, ticketId);
+  const cAnswers = a.input.contracts ?? {};
+  for (const k of Object.keys(cAnswers)) if (!mine.some((x) => x.c.id === k)) recordRefuse('contracts-unknown', `"contracts" names ${k}, which is not a contract ${ticketId} is part of (${mine.map((x) => x.c.id).join(', ') || 'none'})`);
+  if (mine.length && a.verdict === 'approve') {
+    const missing = mine.map((x) => x.c.id).filter((id) => cAnswers[id] === undefined);
+    if (missing.length) recordRefuse('contracts-missing', `approve without an answer for contract ${missing.join(', ')}: add "contracts":{${mine.map((x) => `"${x.c.id}":"met|unmet"`).join(',')}} to the --json — judged on this head, against the contract's sentence (${mine.filter((x) => missing.includes(x.c.id)).map((x) => `${x.c.id}: ${x.c.must}`).join(' | ').slice(0, 400)})`);
+  }
+  for (const x of mine) if (x.role === 'consumer' && cAnswers[x.c.id] === 'met' && !(a.input.contractEvidence?.[x.c.id])) recordRefuse('contracts-evidence-missing', `contract ${x.c.id}: ${ticketId} is a CONSUMER — a "met" names where its code reaches ${x.c.owner}'s behaviour: add "contractEvidence":{"${x.c.id}":"<file:line>"}`);
+  for (const k of Object.keys(a.input.contractEvidence ?? {})) if (!mine.some((x) => x.c.id === k)) recordRefuse('contracts-unknown', `"contractEvidence" names ${k}, which is not a contract ${ticketId} is part of`);
   const fin: Record<string, Record<string, unknown>> = { ...a.input.findings };
+  for (const [k, v] of Object.entries(cAnswers)) {
+    if (v !== 'unmet') continue;
+    const id = `contract-${k}`, c = mine.find((x) => x.c.id === k)!.c;
+    if (fin[id]) recordRefuse('contracts-finding-clash', `finding ${id} is the finding code makes for the unmet contract ${k}: drop yours (or rename it) — it is recorded BLOCKING from your "contracts"`);
+    fin[id] = { severity: 'BLOCKING', evidence: 'argued', text: `contract ${k} is unmet on this head: ${c.owner} must — ${c.must}` };
+  }
   for (const [k, v] of Object.entries(answers)) {
     if (v !== 'unmet') continue;
     const id = `criterion-${k}`;
@@ -194,7 +229,7 @@ export function recordReview(state: FanoutState, ticketId: string, a: RecordArgs
   const nt0 = next.tickets[ticketId];
   const findings: Record<string, FindingRecord> = { ...nt0.findings };
   for (const id of a.input.fixed) findings[id] = { ...findings[id], fixedBy: { by: a.callerId, head, at: a.now } };
-  const entry: ReviewEntry = { n: (t.reviews?.length ?? 0) + 1, reviewer, head, tree: a.tree, verdict: a.verdict, findings: ids, closed: a.input.fixed, at: a.now, ...(a.input.criteria ? { criteria: a.input.criteria } : {}) };
+  const entry: ReviewEntry = { n: (t.reviews?.length ?? 0) + 1, reviewer, head, tree: a.tree, verdict: a.verdict, findings: ids, closed: a.input.fixed, at: a.now, ...(a.input.criteria ? { criteria: a.input.criteria } : {}), ...(a.input.contracts ? { contracts: a.input.contracts } : {}), ...(a.input.contractEvidence ? { contractEvidence: a.input.contractEvidence } : {}) };
   const nt: TicketState = { ...nt0, findings, reviews: [...(t.reviews ?? []), entry], ...(t.head && sameSha(head, t.head) ? { verdict: a.verdict } : {}), updatedAt: a.now };
   const out: FanoutState = { ...next, tickets: { ...next.tickets, [ticketId]: nt }, updatedAt: a.now };
 
