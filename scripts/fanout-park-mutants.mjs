@@ -78,7 +78,7 @@ const MUTANTS = [
   { id: 'P54', name: 'the parked / status coherence is not checked', edits: [[ST, 'assertParkedCoherent(state); // #603', '']] },
   { id: 'P55', name: 'an unknown field in `parked` is accepted', edits: [[ST, "refuseUnknown(v, new Set(['cause', 'reason', 'at', 'blockedBy']), `${where} parked`);", '']] },
   { id: 'P56', name: 'an unknown field in a round is accepted', edits: [[ST, 'refuseUnknown(r, new Set([\'n\', \'fingerprint\', \'at\']), `${where} rounds[${i}]`);', '']] },
-  { id: 'P57', name: 'an unknown field in a choice is accepted', edits: [[ST, "refuseUnknown(e, new Set(['n', 'ticket', 'question', 'rule', 'answer', 'at']), where);", '']] },
+  { id: 'P57', name: 'an unknown field in a choice is accepted', edits: [[ST, "refuseUnknown(e, new Set(['n', 'ticket', 'question', 'rule', 'answer', 'at', 'narrows']), where);", '']] },
   { id: 'P58', name: 'an unknown field in the pause is accepted', edits: [[ST, "refuseUnknown(v, new Set(['at', 'reason', 'check', 'prs', 'auto']), 'pause');", '']] },
   { id: 'P59', name: 'the top-level `pause` key is unknown (v1 readers\' view)', edits: [[ST, "TOP_KEYS.add('pause'); // #603", '']] },
   { id: 'P60', name: 'unparking a ticket under a still-parked upstream leaves it live', edits: [[ST, 'if (held.length === 0) return freed;', 'if (true as boolean) return freed;']] },

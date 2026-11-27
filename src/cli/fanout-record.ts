@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FanoutStateError, SeatRefusal, readState, resolveFanoutRun, seatRecordsOn, stateFile, updateState } from '../shared/fanout-state.ts';
 import { isVouched, resolveCaller } from '../shared/fanout-caller.ts';
-import { countsThrough, parseRecordJson, recordReview, reviewerDoneRefusal } from '../shared/fanout-record.ts';
+import { countsThrough, onChoiceDenial, parseRecordJson, recordReview, reviewerDoneRefusal } from '../shared/fanout-record.ts';
 import { citationsOf, isProductPath } from '../shared/fanout-demonstration.ts';
 import { ensureHeadFetched, fileOnHead, homeOf, parseArgs, runOf, treeOfSha, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
@@ -12,9 +12,10 @@ export const RECORD_USAGE = `usage: orchestra fanout record <ticket> --head <sha
          (#589, switch seatRecords=on) the ticket's RECORDED REVIEWER records its verdict and its findings for the exact head it read — the only source of a review verdict: \`fanout gate\` and
          \`fanout deliver\` read nothing else (\`deliver --review-verdict\`, \`--no-review-gate\`, the coordinator's \`state set --finding\` / \`--finding-json\` / \`--settle\` are refused: [typed-verdict], [ungated-merge], [finding-source]).
          The --json: {"findings":{"<id>":{"severity":"BLOCKING|MAJOR|MINOR","evidence":"measured|argued","text":"<the finding>","demonstration"?:{…},"report"?:{…},"specSentence"?:"<verbatim spec text>","kind"?:"code|process"}},
-                      "fixed":["<id of an open finding you raised on an earlier head and have now read fixed on THIS head>",…]}   (the severity / report / specSentence / demonstration rules are those of \`state set --finding-json\`)
+                      "fixed":["<id of an open finding you raised on an earlier head and have now read fixed on THIS head>",…],
+                      "criteria"?:{"1":"met|unmet",…}}   (#675: when the ticket text has numbered acceptance criteria — the brief lists them — an approve answers EVERY one ([criteria-missing]); an "unmet" one is recorded as a BLOCKING finding \`criterion-<n>\`; [criteria-unknown] [criteria-finding-clash]. The severity / report / specSentence / demonstration rules are those of \`state set --finding-json\`)
          "addressed":[<n>,…] (#676): open points (\`orchestra fanout open-point\`, listed in your brief) that THIS approved head addresses — only the reviewer of the \`about\` ticket (or its follow-up), only on a NEW head, only with approve: [addressed-not-approved] [addressed-unknown] [addressed-wrong-ticket] [addressed-same-head].
-         --on-choice (#641): a finding of THIS record whose subject is the ticket's recorded choice n (\`orchestra fanout choice\`) — it is listed in the closing report and never blocks the merge. A finding that the code does not do what the choice says is a normal finding: do not pass it here.
+         --on-choice (#641): a finding of THIS record whose subject is the ticket's recorded choice n (\`orchestra fanout choice\`) — it is listed in the closing report and never blocks the merge. A finding that the code does not do what the choice says is a normal finding: do not pass it here. (#675) It does NOT exempt a finding whose accepted specSentence is the sentence the choice \`--narrows\`, nor — for a choice that declared none — a specSentence quoting an acceptance criterion: that finding keeps its severity (a note says so).
          Counts (BLOCKING / MAJOR / MINOR) are DERIVED from the open findings, never typed. approve is refused while a BLOCKING / MAJOR (or a blocking MINOR under this run's minorPolicy) finding is open; changes-requested needs one.
          Refusals (each starts with its name): [record-off] [record-wrong-ticket] (no recorded reviewer on the ticket) [record-not-reviewer] (you are not the ticket's recorded reviewer: coordinator, implementer, another ticket's reviewer)
          [on-choice-finding] [on-choice-unknown] (--on-choice names a finding not in this record / a choice the ticket has not recorded) [record-head-mismatch] (--head is not the head you were briefed on) [record-final] (#672: you already recorded a verdict on this head — it is final; raise the new finding on the next head) [record-verdict] [record-json] [finding-exists] [fixed-not-open] [fixed-same-head] [fixed-by-non-reviewer] [approve-open-finding] [changes-no-finding].
@@ -64,7 +65,12 @@ function record(args: string[], deps: FanoutDeps): RunResult {
   const t = next.tickets[ticket];
   const rv = t.reviews![t.reviews!.length - 1];
   const c = countsThrough(t, rv.n);
-  const note = tree ? '' : `note: the tree of ${head.slice(0, 8)} is unreadable (not fetched? gh?): this verdict stays keyed on the sha, not the content\n`;
+  const denied = Object.entries(onChoice ?? {}).flatMap(([id, n]) => {
+    if (t.findings[id]?.onChoice !== undefined) return [];
+    const why = onChoiceDenial(next, ticket, input.findings[id] ?? {}, (next.choices ?? []).find((c) => c.n === n) ?? { n });
+    return [`note: --on-choice ${id}=${n} NOT applied (#675): ${why ?? 'see the record'} — ${id} keeps its severity (${t.findings[id]?.severity ?? '?'}) (the exemption does not apply)\n`];
+  });
+  const note = denied.join('') + (tree ? '' : `note: the tree of ${head.slice(0, 8)} is unreadable (not fetched? gh?): this verdict stays keyed on the sha, not the content\n`);
   return { code: 0, stdout: `${ticket}: review ${rv.n} recorded by ${rv.reviewer} on ${rv.head.slice(0, 12)}: ${rv.verdict} — ${c.blocking} BLOCKING / ${c.major} MAJOR / ${c.minor} MINOR open${c.open.length ? ` (${c.open.join(', ')})` : ''}; raised ${rv.findings.length}, closed ${rv.closed.length}\n`, stderr: r.note + note };
 }
 

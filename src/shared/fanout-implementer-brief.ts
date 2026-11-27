@@ -1,6 +1,6 @@
 // #587 PR B (ledger #591 I6) — the implementer's brief, RENDERED BY CODE from the state: `orchestra fanout start` is its only author, the coordinator adds no free text
 // (what it must say goes in the run's decisions, which every brief carries). Pure. Its rules live in the implementer role file (#590).
-import { OPEN_POINT_LINE, renderDecisions, renderInterfaces, renderSwitchesLine } from './fanout-brief-common.ts';
+import { OPEN_POINT_LINE, renderDecisions, renderInterfaces, renderRunChoices, renderSwitchesLine } from './fanout-brief-common.ts';
 import type { FanoutState } from './fanout-state.ts';
 import { FANOUT_IMPLEMENTER_SKILL_PATH } from './fanout-implementer-skill.ts';
 
@@ -14,7 +14,7 @@ export const IMPLEMENTER_RULES = [
 export const LOOP_BRIEF = [
   '## The loop leads this run (this overrides anything else you were told)',
   '- Start NOW on the frozen interface names above and write code at once: never wait for an upstream to merge. Merges in this run are MERGE COMMITS.',
-  '- A question that would wait for a person gets a fixed answer from the loop: take the reversible option unless the spec imposes the action; an irreversible need is code or a script in the PR that you never run, recorded with `orchestra fanout choice <your ticket> --question "<the question>" --taken "irreversible: <what>"`. Record every other choice the same way with `--taken "<the option you took>"` BEFORE you push (your reviewer is shown it; a finding about the choice itself never blocks), continue. No ticket is ever set aside for caution: do not stop to ask.',
+  '- A question that would wait for a person gets a fixed answer from the loop: take the reversible option unless the spec imposes the action; an irreversible need is code or a script in the PR that you never run, recorded with `orchestra fanout choice <your ticket> --question "<the question>" --taken "irreversible: <what>"`. Record every other choice the same way with `--taken "<the option you took>"` BEFORE you push (every reviewer of the run is shown it). When the option cuts a sentence of your ticket, quote that sentence verbatim with `--narrows "<the sentence>"`: your reviewer judges the sentence, not your choice. Continue. No ticket is ever set aside for caution: do not stop to ask.',
   '- When the loop sends `CONNECT <upstream> <head>`: merge that exact head into your branch with a MERGE COMMIT (`git merge --no-ff <head>`; never rebase, never squash), rebuild on its real names, push, then send a `status`.',
   '- After you push a candidate, send a `status`: the loop reads git for the head, not your words.',
   `- ${OPEN_POINT_LINE}`,
@@ -57,6 +57,7 @@ export function renderImplementerBrief(input: ImplementerBriefInput): string {
     renderInterfaces(state, t.dependsOn),
     '',
     renderDecisions(state),
+    ...(renderRunChoices(state) ? ['', '## Choices of the run', renderRunChoices(state)] : []),
     '',
     renderSwitchesLine(state),
     '',

@@ -55,7 +55,7 @@ const mutants = [
   ['check: a depended-on ticket with no interface is accepted', P, "if (text === undefined || !text.trim()) reasons.push", "if (text === undefined && false as boolean) reasons.push"],
   ['check: an interface with no name in backticks is accepted', P, "else if (!interfaceNames(text).length) reasons.push", "else if (false as boolean) reasons.push"],
   ['check: a free-text key at the top of the plan is accepted', P, "if (!['version', 'tickets', 'interfaces'].includes(k)) free(", "if (false as boolean) free("],
-  ['check: a free-text key on a ticket is accepted', P, "if (!['id', 'title', 'spec', 'dependsOn'].includes(k)) free(", "if (false as boolean) free("],
+  ['check: a free-text key on a ticket is accepted', P, "if (!['id', 'title', 'spec', 'specText', 'dependsOn'].includes(k)) free(", "if (false as boolean) free("],
   ['check: a title of any length is accepted', P, "else if (t.title.length > PLAN_TITLE_MAX || CTRL_LINE.test(t.title)) free(", "else if (false as boolean) free("],
   ['check: a multi-line spec is accepted', P, "else if (t.spec.length > PLAN_SPEC_MAX || CTRL_LINE.test(t.spec)) free(", "else if (false as boolean) free("],
   ['check: the version is not checked', P, "if (v.version !== PLAN_VERSION) bad(", "if (false as boolean) bad("],

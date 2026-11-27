@@ -13,11 +13,15 @@ export function renderDecisions(state: FanoutState): string {
   return `Decisions of the run (binding, verbatim — recorded by the coordinator):\n${d.map((x) => `${x.n}. ${x.text}`).join('\n')}`;
 }
 
-/** #641 — the choices the ticket's implementer RECORDED (`orchestra fanout choice`): the run's decisions for this ticket, listed in its reviewer's brief. '' when there are none (the brief stays byte-identical). */
-export function renderTicketChoices(state: FanoutState, ticket: string): string {
-  const cs = (state.choices ?? []).filter((c) => c.ticket === ticket);
+/** #675 — EVERY choice of the run (every ticket's, not only the reader's own), numbered, with the sentence each declares it narrows: a brief that shows only its own ticket's choices hides the contract between tickets.
+ *  '' when the run holds none (the brief stays byte-identical). `forTicket` marks the reader's own choices and adds the review rule; absent = the implementer's list (no rule: the reviewer rules on it). */
+export function renderRunChoices(state: FanoutState, forTicket?: string): string {
+  const cs = state.choices ?? [];
   if (!cs.length) return '';
-  return `Choices recorded for ${ticket} (decisions of the run: the implementer took the reversible option — the rule is fixed, no coordinator rules on it afterwards):\n${cs.map((c) => `${c.n}. ${c.question} → TAKEN: ${c.answer}`).join('\n')}\nA finding whose subject is one of these choices does not block the merge: record it with \`--on-choice <finding>=<n>\`. A finding that the code does NOT do what the choice says is a normal finding.`;
+  const lines = cs.map((c) => `${c.n}. [${c.ticket}${c.ticket === forTicket ? ' — this ticket' : ''}] ${c.question} → TAKEN: ${c.answer}\n   Choice ${c.n} narrows: ${c.narrows !== undefined ? `« ${c.narrows} »` : 'none declared'}`);
+  const head = 'Choices of the run (the implementers took the reversible option; the rule is fixed, no coordinator rules on it afterwards). Read them side by side: two choices of different tickets that do not fit each other, or a choice that cuts a sentence of a ticket, are yours to raise.';
+  if (forTicket === undefined) return `${head}\n${lines.join('\n')}`;
+  return `${head}\n${lines.join('\n')}\nA finding whose subject is one of THIS ticket's choices does not block the merge: record it with \`--on-choice <finding>=<n>\` — EXCEPT a finding whose \`specSentence\` is the sentence the choice narrows, or, for a choice with "narrows: none declared", a \`specSentence\` that quotes an acceptance criterion: that exemption does not apply and the finding keeps its severity. A finding that the code does NOT do what the choice says is a normal finding.`;
 }
 
 /** #676 — the ONE line of every implementer and reviewer brief about a point left open on ANOTHER ticket: it goes in the state (the loop reads it), never in prose. */

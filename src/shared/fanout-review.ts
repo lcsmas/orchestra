@@ -3,11 +3,12 @@
 import { FANOUT_REVIEWER_SKILL_PATH } from './fanout-reviewer-skill.ts';
 import { briefHash, renderReviewerBrief, type BriefFinding, type BriefInput, type BriefKind } from './fanout-review-brief.ts';
 import { renderPointsForReviewer } from './fanout-open-point.ts';
-import { renderDecisions, renderInterfaces, renderSwitchesLine, renderTicketChoices } from './fanout-brief-common.ts';
+import { renderDecisions, renderInterfaces, renderSwitchesLine, renderRunChoices } from './fanout-brief-common.ts';
 import { isVouched, type Caller } from './fanout-caller.ts';
+import { criteriaLines } from './fanout-criteria.ts';
 import { claimIsStale } from './fanout-acceptance.ts';
 import {
-  FanoutStateError, SeatRefusal, freezeAtFirstSpawn, interfaceOf, planMissing, seatRecordsOn, stampDefaults, switchesOf,
+  FanoutStateError, SeatRefusal, effectiveSpec, freezeAtFirstSpawn, interfaceOf, planMissing, seatRecordsOn, stampDefaults, switchesOf,
   type FanoutState, type ReviewBrief, type ReviewRecord, type TicketState,
 } from './fanout-state.ts';
 
@@ -91,7 +92,8 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     prevHead: o.kind === 'wake' ? t.review?.head ?? null : null, branch: t.branch, pr: t.pr,
     interfacesText: renderInterfaces(state, [...(own ? [ticket] : []), ...t.dependsOn]),
     decisionsText: renderDecisions(state),
-    choicesText: renderTicketChoices(state, ticket),
+    choicesText: renderRunChoices(state, ticket),
+    criteria: criteriaLines(effectiveSpec(state, t).specText),
     pointsText: renderPointsForReviewer(state, ticket),
     switchesLine: renderSwitchesLine(state),
     follows: t.dependsOn.flatMap((id) => { const i = interfaceOf(state, id); return i ? [{ id, current: i.version, followed: follows[id] ?? null }] : []; }),

@@ -157,6 +157,21 @@ test('#649: the closing report counts re-connects and extra review rounds, per r
   assert.match(renderReport(cr.result.report), /extra review rounds \(beyond the first\): 1 — T1 1/);
   assert.deepEqual((await go('readiness')).result.report.moves, { reconnects: { total: 0, perTicket: { A: 0, B: 0 } }, extraReviewRounds: { total: 0, perTicket: { A: 0, B: 0 } } });
 });
+test('#675 (dummy fleet): a choice that NARROWS a ticket sentence is challenged — the reviewer\'s finding quoting it, cited `--on-choice`, is NOT exempt: it blocks, the author gets the batch with every choice of the run, the fix is read and the ticket merges', async () => {
+  const home = tmp();
+  const r = await runDummyLoop({ home, scenario: load('narrowing-choice'), options: { stallMs: 30 * 60_000, maxPasses: 1500 } });
+  assert.equal(r.result.exit, 0, r.world.events.filter((e) => e.ev === 'review-error').map((e) => String(e.error)).join('; '));
+  assert.deepEqual(r.result.report.merged, ['T1', 'T2']);
+  const recs = r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T1').map((e) => e.verdict);
+  assert.deepEqual(recs, ['changes-requested', 'approve'], 'the narrowing finding blocked once, then the fix was approved');
+  const s = readLoopState(home, 'narrowing-choice')!;
+  assert.equal(s.tickets.T1.findings.F1.onChoice, undefined, 'the exemption did not apply');
+  assert.equal(s.choices![0].narrows, 'A later manual trigger gets the same effect as the carrier status.');
+  assert.deepEqual(s.tickets.T1.reviews![1].criteria, { '1': 'met' }, 'the approve answered the numbered criterion');
+  const batch = String(r.world.events.find((e) => e.ev === 'corrections-batch' && e.ticket === 'T1')?.text ?? '');
+  assert.match(batch, /F1 MAJOR/);
+  assert.match(batch, /## Choices of the run[\s\S]*Choice 1 narrows: « A later manual trigger gets the same effect as the carrier status\. »/);
+});
 test('decision 8 (#607, composed): red CI → one re-run → the author is told the check → the same failure after its fix parks the ticket, its dependent with it; a red CI is never merged', async () => {
   const r = await go('red-ci');
   assert.equal(r.result.exit, 3);
@@ -506,7 +521,8 @@ test('MINOR-3: the loop section of the implementer brief — present for a loop-
   assert.ok(!LOOP_BRIEF.includes('NO SAFE OPTION'), '#645: the marker is gone from the brief');
   for (const needle of ['--taken "irreversible: <what>"', 'a script in the PR that you never run', 'unless the spec imposes the action', 'CONNECT <upstream> <head>', 'orchestra fanout choice', 'MERGE COMMIT', 'overrides anything else', 'never wait for an upstream']) assert.ok(LOOP_BRIEF.includes(needle) || LOOP_BRIEF.includes(needle.replace('`## Choices`', '## Choices')), needle);
   const planned = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
-  const { loopPlan: _lp, ...st } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
+  const { loopPlan: _lp, ...st0 } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
+  const st = { ...st0, tickets: Object.fromEntries(Object.entries(st0.tickets).map(([k, t]) => [k, { ...t, specText: null }])) }; // #675: the plan now carries the ticket text, which the brief prints; the pinned hashes are of the brief of a ticket with none (no choice, no text ⇒ byte-identical)
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');
   assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T1' })), 'b88073ddf1793f4e7e5254289b14f78400f52a408c2b12b7c15a942aa30aa560');
   assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: false }), renderImplementerBrief({ state: st, ticket: 'T3' }));
