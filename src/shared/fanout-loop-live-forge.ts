@@ -119,10 +119,12 @@ export function createLiveForge(deps: LiveForgeDeps): ForgePort & { /** the red-
     },
 
     async prState(n) {
-      const v = await json<{ state: string; headRefOid: string }>(['pr', 'view', String(n), '--json', 'state,headRefOid', ...repoArgs]);
+      const read = () => json<{ state: string; headRefOid: string; mergeable?: string }>(['pr', 'view', String(n), '--json', 'state,headRefOid,mergeable', ...repoArgs]);
+      let v = await read();
+      if (v.state === 'OPEN' && (v.mergeable ?? 'UNKNOWN') === 'UNKNOWN') v = await read(); // GitHub computes mergeability lazily: ask once more (the loop reads again next pass)
       const state = PR_STATES[v.state];
       if (!state) throw new ForgeGhError(`gh pr view ${n}: unknown state ${JSON.stringify(v.state)}`);
-      return { state, head: v.headRefOid };
+      return { state, head: v.headRefOid, mergeable: v.mergeable === 'MERGEABLE' || v.mergeable === 'CONFLICTING' ? v.mergeable : 'UNKNOWN' };
     },
 
     async checks(n, head) {

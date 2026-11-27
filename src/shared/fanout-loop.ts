@@ -544,7 +544,7 @@ export async function stepDeliver(ctx: LoopCtx): Promise<void> {
     const prTree = loopSameSha(pr.head, t.head) ? null : await deps.git.tree(pr.head);
     const headSameTree = !!prTree && !!t.tree && prTree === t.tree;
     const dec = decideDelivery({
-      pr: { state: 'OPEN', baseRefName: s0.target, headRefOid: pr.head, mergeable: 'MERGEABLE' }, checks: dc, into: s0.target, verifiedHead: t.head,
+      pr: { state: 'OPEN', baseRefName: s0.target, headRefOid: pr.head, mergeable: pr.mergeable ?? 'MERGEABLE' }, checks: dc, into: s0.target, verifiedHead: t.head,
       verdict: { round: rec.round, blocking: rec.blocking, major: rec.major, minor: rec.minor, head: rec.head },
       waitedMs: 0, noChecksGraceMs: Number.MAX_SAFE_INTEGER, stable, requiredChecks: deps.options.requiredChecks ?? [], verdictSameTree, headSameTree, treesDiffer: !loopSameSha(pr.head, t.head) && !!prTree && !headSameTree,
     });

@@ -159,7 +159,7 @@ const forgeArms: Array<[string, (h: ForgeH) => Promise<void>]> = [
   ['prState: open at the branch head, follows a new commit', async (h) => {
     const c1 = h.branch('T1');
     const { n } = await open(h, 'T1');
-    assert.deepEqual(await h.port.prState(n), { state: 'open', head: c1 }, '[state.open]');
+    assert.deepEqual(await h.port.prState(n), { state: 'open', head: c1, mergeable: 'MERGEABLE' }, '[state.open]');
     const c2 = h.commit('T1');
     assert.equal((await h.port.prState(n)).head, c2, '[state.head]');
   }],

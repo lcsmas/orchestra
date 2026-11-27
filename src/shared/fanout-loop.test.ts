@@ -947,6 +947,41 @@ test('#628: a refusal the loop has no rule for goes to the implementer with the 
   const ruled = await runDummyLoop({ home: tmp(), scenario: scn, options: { ...syncOpts, stallMs: 60 * 60_000 }, wrap: wrap('head-moved') });
   assert.equal(ruled.world.events.filter((e) => e.ev === 'sync-order').length, 0, 'head-moved has a rule (the nominations step reads the new head): nobody is ordered');
 });
+// ── #689: a PR that GitHub reads CONFLICTING gets no merge ref, so no Actions run — the loop must see the conflict itself ──
+test('#689: a PR that turns CONFLICTING after an upstream merged (no Actions run on its head, only an external check) gets the SYNC order at once — merged, nothing parked', async () => {
+  const r = await go('conflict-invisible', syncOpts);
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
+  const orders = r.world.events.filter((e) => e.ev === 'sync-order');
+  assert.equal(orders.length, 1, 'one order was enough');
+  assert.match(String(orders[0].text), /^SYNC main/);
+  assert.ok(!r.log.some((l) => /T2: merge refused by the forge/.test(l)), 'the loop knew BEFORE the merge call: the forge never had to refuse');
+  assert.ok(r.log.some((l) => /T2: not deliverable — merge-conflict/.test(l)), 'the refusal is the conflict, not zero-steps');
+  assert.deepEqual(r.result.report.parked, []);
+  assert.deepEqual(r.violations, []);
+});
+test('#689: 2 SYNC orders with no new head → a fresh implementer on the same branch (same escalation as #628), the run merges', async () => {
+  const r = await go('conflict-invisible-replace', { ...syncOpts, maxReplacements: 0 });
+  assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
+  assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
+  assert.equal(r.world.events.filter((e) => e.ev === 'sync-order').length, 3, 'two to the first implementer, one to its successor');
+  assert.equal(r.world.events.filter((e) => e.ev === 'impl-replaced' && e.ticket === 'T2').length, 1);
+  assert.deepEqual(r.result.report.parked, []);
+});
+test('#689: zero-steps WITHOUT a conflict stays a noted refusal — nobody is ordered', async () => {
+  const base = load('conflict-invisible');
+  const r = await runDummyLoop({ home: tmp(), scenario: { ...base, faults: { zeroStepCi: ['T2'] } }, options: { ...syncOpts, stallMs: 60 * 60_000 } });
+  assert.equal(r.world.events.filter((e) => e.ev === 'sync-order').length, 0);
+  assert.ok(r.log.some((l) => /T2: not deliverable — zero-steps/.test(l)));
+});
+test('#689: a port that cannot tell (no `mergeable`) or answers UNKNOWN is not a conflict — no SYNC order', async () => {
+  const base = load('conflict-invisible');
+  for (const word of [undefined, 'UNKNOWN'] as const) {
+    const wrap = (d: ReturnType<typeof buildDummy>) => ({ ...d, forge: { ...d.forge, async prState(n: number) { const s = await d.forge.prState(n); return { ...s, mergeable: word }; } } });
+    const r = await runDummyLoop({ home: tmp(), scenario: base, options: { ...syncOpts, stallMs: 60 * 60_000 }, wrap });
+    assert.equal(r.world.events.filter((e) => e.ev === 'sync-order').length, 0, String(word));
+  }
+});
 test('loop log: a refusal note that repeats is printed again on a later pass — at most once per NOTE_REPEAT_PASSES', () => {
   const lines: string[] = [];
   const seen = new Map<string, number>();
