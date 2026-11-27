@@ -2,7 +2,7 @@
 // Each rule has a must-pass and a must-fail arm. Mutants: scripts/e2e-fanout-plan.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceNames, isExactName, parsePlan, planHash, validatePlan, type Plan, type PlanContract, type PlanReasonCode } from './fanout-plan.ts';
+import { PLAN_REASON_CODES, PlanError, applyPlan, checkPlan, interfaceEntries, interfaceNames, isExactName, parsePlan, resolveDependencyPair, planHash, validatePlan, type Plan, type PlanContract, type PlanReasonCode } from './fanout-plan.ts';
 import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
 import { roleOfName } from './fleet-roles.ts';
 import { SeatRefusal, addDecision, newState, parseState, planMissing, readyTickets, setSwitches, type FanoutState } from './fanout-state.ts';
@@ -16,10 +16,13 @@ const good = (): Plan => ({
     { id: 'B', title: 'orders API', spec: 'ledger #1 §B', specText: 'The orders API, built on the table.', dependsOn: ['A'] },
     { id: 'C', title: 'unrelated', spec: 'ledger #1 §C', specText: 'Something unrelated to the orders.', dependsOn: [] },
   ],
-  interfaces: { A: 'column `orders.status`, event `OrderCreated`' },
+  interfaces: { A: `${E('orders.status', 'column', "enum('open'|'shipped')")}\n${E('OrderCreated', 'event', '{ orderId: string }')}` },
+  noSharedBehaviour: ['A-B'],
 });
 const codes = (r: { reasons: Array<{ code: PlanReasonCode }> }): PlanReasonCode[] => r.reasons.map((x) => x.code);
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+/** #682: one filled interface line — `name` — kind: …; shape: … */
+const E = (name: string, kind = 'column', shape = 'string'): string => `\`${name}\` — kind: ${kind}; shape: ${shape}`;
 const seatState = (): FanoutState => newState('r1', { now: NOW, switches: { seatRecords: 'on' } });
 
 test('must-pass: a complete plan is ok, in both forms (object and JSON text)', () => {
@@ -50,11 +53,11 @@ test('must-fail: a ticket named twice', () => {
 });
 
 test('must-fail: a cycle (2 and 3 tickets), and a self-dependency is a bad dependency', () => {
-  const two = good(); two.tickets[0].dependsOn = ['B']; two.interfaces.B = 'route `POST /orders`';
+  const two = good(); two.tickets[0].dependsOn = ['B']; two.interfaces.B = E('POST /orders', 'route', '{ id: string }');
   const r2 = checkPlan(two, ids);
   assert.deepEqual(codes(r2), ['plan-cycle']);
   assert.match(r2.reasons[0].detail, /A -> B -> A|B -> A -> B/);
-  const three = good(); three.tickets[0].dependsOn = ['C']; three.tickets[2].dependsOn = ['B']; three.interfaces.C = '`c.col`'; three.interfaces.B = '`b.col`';
+  const three = good(); three.tickets[0].dependsOn = ['C']; three.tickets[2].dependsOn = ['B']; three.interfaces.C = E('c.col'); three.interfaces.B = E('b.col'); three.noSharedBehaviour = ['A-B', 'B-C', 'C-A'];
   assert.deepEqual(codes(checkPlan(three, ids)), ['plan-cycle']);
   const self = good(); self.tickets[2].dependsOn = ['C'];
   assert.ok(codes(checkPlan(self, ids)).includes('plan-bad-dependency'));
@@ -68,7 +71,7 @@ test('must-fail: a dependency on a ticket that is not in the plan', () => {
 });
 
 test('must-fail: an interface keyed on a ticket that is not in the plan', () => {
-  const p = good(); p.interfaces.Q = 'column `q.col`';
+  const p = good(); p.interfaces.Q = E('q.col');
   const r = checkPlan(p, ids);
   assert.deepEqual(codes(r), ['plan-ticket-unknown']);
   assert.match(r.reasons[0].detail, /interfaces\.Q/);
@@ -132,6 +135,11 @@ test('every reason code of the frozen list is reachable (no dead code)', () => {
   const noi = good(); noi.interfaces = {}; feed(noi);
   const non = good(); non.interfaces.A = 'prose'; feed(non);
   const bad = good(); bad.tickets[1].dependsOn = ['Q']; feed(bad);
+  const nk = good(); nk.interfaces.A = '`orders.status` — shape: string'; feed(nk);
+  const ns = good(); ns.interfaces.A = '`orders.status` — kind: column'; feed(ns);
+  const nm = good(); nm.interfaces.A = '`a.b` and `c.d` — kind: column; shape: string'; feed(nm);
+  const cm = good(); delete cm.noSharedBehaviour; feed(cm);
+  const nb = good(); nb.noSharedBehaviour = ['A-C']; feed(nb);
   assert.deepEqual([...seen].sort(), [...PLAN_REASON_CODES].sort());
 });
 
@@ -164,7 +172,7 @@ test('#675: the plan brief asks for specText verbatim', () => {
   assert.match(b, /refuses an empty one or one shorter than the title/);
 });
 
-const withContract = (c: Partial<PlanContract> = {}): Plan => { const p = good(); p.contracts = [{ id: 'c1', owner: 'A', must: 'every path that sets the status dispatches OrderCreated through one function', consumers: ['B', 'C'], ...c }]; return p; };
+const withContract = (c: Partial<PlanContract> = {}): Plan => { const p = good(); p.contracts = [{ id: 'c1', owner: 'A', must: 'every path that sets the status dispatches OrderCreated through one function', consumers: ['B', 'C'], ...c }]; const m = [p.contracts[0].owner, ...p.contracts[0].consumers]; if (m.includes('A') && m.includes('B')) delete p.noSharedBehaviour; return p; };
 test('#680 must-pass: a contract (owner, one sentence, consumers) is a valid plan; a plan with none (absent or []) is as before', () => {
   assert.equal(validatePlan(withContract(), ids).ok, true);
   assert.equal(validatePlan({ ...clone(good()), contracts: [] }, ids).ok, true);
@@ -216,7 +224,7 @@ test('applyPlan: records the plan, the dependencies, the interfaces v1, the spec
   assert.deepEqual(st.tickets.B.dependsOn, ['A']);
   assert.equal(st.tickets.B.depsDeclared, true);
   assert.equal(st.tickets.C.depsDeclared, true);
-  assert.deepEqual(st.tickets.A.iface, { version: 1, text: 'column `orders.status`, event `OrderCreated`', history: [] });
+  assert.deepEqual(st.tickets.A.iface, { version: 1, text: good().interfaces.A, history: [] });
   assert.equal(st.tickets.A.spec, 'ledger #1 §A');
   assert.deepEqual(st.loopPlan, { at: NOW, hash: planHash(good()), attempts: 1 });
   assert.deepEqual(planMissing(st), []);
@@ -238,7 +246,7 @@ test('applyPlan: refused under seatRecords=off; the same plan again is a no-op; 
   assert.equal(applyPlan(st, good(), '2026-11-25T11:00:00.000Z'), st);
   const other = good(); other.tickets[0].title = 'another';
   assert.throws(() => applyPlan(st, other, NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-already-applied');
-  const otherNames = good(); otherNames.interfaces.A = 'column `orders.state`'; // same tickets, other names: another plan
+  const otherNames = good(); otherNames.interfaces.A = E('orders.state'); // same tickets, other names: another plan
   assert.throws(() => applyPlan(st, otherNames, NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-already-applied');
 });
 
@@ -248,7 +256,7 @@ test('applyPlan: refused once the run has spawned (a started ticket) — nothing
   const spawned = { ...st, loopPlan: undefined, plan: undefined, tickets: { ...st.tickets, A: { ...st.tickets.A, status: 'started' as const } } } as FanoutState;
   delete (spawned as { loopPlan?: unknown }).loopPlan; delete (spawned as { plan?: unknown }).plan;
   assert.throws(() => applyPlan(spawned, good(), NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-after-spawn');
-  const odd = good(); odd.tickets[0].id = 'constructor'; odd.tickets[1].dependsOn = ['constructor']; odd.interfaces = {};
+  const odd = good(); odd.tickets[0].id = 'constructor'; odd.tickets[1].dependsOn = ['constructor']; odd.interfaces = {}; odd.noSharedBehaviour = ['constructor-B'];
   const r = checkPlan(odd, ['constructor', 'B', 'C']);
   assert.deepEqual(codes(r), ['plan-interface-missing']); // not a TypeError on the inherited member
 });
@@ -273,7 +281,7 @@ test('brief: ≤ 1 screen for 7 tickets, lists every ticket and the schema, name
   const t7 = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
   const b = renderPlanBrief(t7, { run: 'c77b2530-198b' });
   assert.ok(b.split('\n').length <= 40, `${b.split('\n').length} lines`);
-  assert.ok(b.length <= 3_500, `${b.length} chars`);
+  assert.ok(b.length <= 4_600, `${b.length} chars`);
   for (const id of t7) assert.match(b, new RegExp(`^- ${id}$`, 'm'));
   assert.match(b, /"version": 1/);
   assert.match(b, /orchestra fanout plan submit <file> --run c77b2530-198b/);
@@ -300,7 +308,7 @@ test('names (review r1 m1): ONE token or `METHOD /path`; a backticked sentence, 
     const p = good(); p.interfaces.A = text;
     assert.deepEqual(codes(checkPlan(p, ids)), ['plan-interface-no-name'], text);
   }
-  const prose = good(); prose.interfaces.A = 'Build against `orders.status` (pending|paid) and the event `OrderCreated`; the rest is up to you.';
+  const prose = good(); prose.interfaces.A = `Build against these; the rest is up to you.\n${E('orders.status', 'column', 'pending|paid')}\n${E('OrderCreated', 'event', '{ orderId: string }')}`;
   assert.equal(checkPlan(prose, ids).ok, true);
   assert.deepEqual(interfaceNames('`orders.status`, `a long sentence about nothing`, `POST /orders`'), ['orders.status', 'POST /orders']);
 });
@@ -310,4 +318,123 @@ test('an EMPTY plan is [plan-ticket-missing] (a refusal with a reason, not "coul
   assert.deepEqual(codes(validatePlan(empty, [])), ['plan-ticket-missing']);
   assert.deepEqual(codes(validatePlan(empty, ids)), ['plan-ticket-missing', 'plan-ticket-missing', 'plan-ticket-missing', 'plan-ticket-missing']);
   assert.throws(() => applyPlan(seatState(), empty as unknown as Plan, NOW), (e) => e instanceof SeatRefusal && e.refusal === 'plan-invalid');
+});
+
+// ── #682: a name is frozen with its KIND and SHAPE; a dependency shares a contract or says it shares none ──────────────────────────────────────────────
+const bad682 = (p: Plan | unknown): ReturnType<typeof validatePlan> => validatePlan(p, ids);
+
+test('#682 must-pass: an interface line with name + kind + shape (every kind) is accepted; prose lines without a name are ignored', () => {
+  for (const kind of ['field', 'column', 'event', 'function', 'route', 'query', 'mutation']) {
+    const p = good(); p.interfaces.A = `Notes for the dependents.\n${E('orders.status', kind, 'string')}`;
+    assert.equal(bad682(p).ok, true, kind);
+  }
+  assert.deepEqual(interfaceEntries(good().interfaces.A).map((e) => [e.kind, e.shape]), [['column', "enum('open'|'shipped')"], ['event', '{ orderId: string }']]);
+});
+
+test('#682 must-fail: a name with no kind (absent, unknown kind) is refused plan-interface-no-kind, naming the ticket, its dependents and the line', () => {
+  for (const text of ['`orders.status` — shape: string', '`orders.status` — kind: widget; shape: string', '`orders.status` — kind: ; shape: string']) {
+    const p = good(); p.interfaces.A = text;
+    const r = bad682(p);
+    assert.deepEqual(codes(r), ['plan-interface-no-kind'], text);
+    assert.match(r.reasons[0].detail, /interfaces\.A \(B build on it\)[^]*orders\.status[^]*no kind/);
+  }
+});
+
+test('#682 must-fail: a name with no shape (absent, filler) is refused plan-interface-no-shape', () => {
+  for (const text of ['`orders.status` — kind: column', '`orders.status` — kind: column; shape:', '`orders.status` — kind: column; shape: TBD', '`orders.status` — kind: column; shape: 7']) {
+    const p = good(); p.interfaces.A = text;
+    assert.deepEqual(codes(bad682(p)), ['plan-interface-no-shape'], text);
+  }
+  const both = good(); both.interfaces.A = '`orders.status`'; // a bare name: both are missing
+  assert.deepEqual(codes(bad682(both)), ['plan-interface-no-kind', 'plan-interface-no-shape']);
+  const second = good(); second.interfaces.A = `${E('a.b')}\n\`OrderCreated\``; // ONE incomplete line among complete ones is still refused
+  assert.deepEqual(codes(bad682(second)), ['plan-interface-no-kind', 'plan-interface-no-shape']);
+});
+
+test('#682 must-fail: two names on one line is refused plan-interface-multi-name (one entry per line)', () => {
+  const p = good(); p.interfaces.A = '`a.b` and `c.d` — kind: column; shape: string';
+  assert.deepEqual(codes(bad682(p)), ['plan-interface-multi-name']);
+});
+
+test('#682 must-pass: a dependency pair is covered by a contract naming both, or by noSharedBehaviour (either order)', () => {
+  assert.equal(bad682(good()).ok, true); // A-B declared
+  assert.equal(bad682(withContract()).ok, true); // A-B covered by c1 (A owns, B consumes)
+  const rev = good(); rev.noSharedBehaviour = ['B-A']; assert.equal(bad682(rev).ok, true);
+  const viaConsumers = good(); delete viaConsumers.noSharedBehaviour; viaConsumers.contracts = [{ id: 'c1', owner: 'C', must: 'does x', consumers: ['A', 'B'] }]; // both are parties of one contract: they share it
+  assert.equal(bad682(viaConsumers).ok, true);
+  assert.equal(parsePlan(JSON.stringify(good())).noSharedBehaviour?.join(), 'A-B');
+});
+
+test('#682 must-fail: a dependency with no contract and no declaration is refused plan-contract-missing, naming the pair and both ways out', () => {
+  const p = good(); delete p.noSharedBehaviour;
+  const r = bad682(p);
+  assert.deepEqual(codes(r), ['plan-contract-missing']);
+  assert.match(r.reasons[0].detail, /^A-B: B depends on A and no contract names both[^]*"noSharedBehaviour": \["A-B"\]/);
+  const other = withContract({ consumers: ['C'] }); delete other.noSharedBehaviour; // a contract that does not name B does not cover A-B
+  assert.deepEqual(codes(bad682(other)), ['plan-contract-missing']);
+});
+
+test('#682 must-fail: a declaration that is no dependency pair, or that a contract contradicts, is refused plan-no-shared-bad', () => {
+  for (const entry of ['A-C', 'A', 'A-Z', 'A-A', 'B-C', '']) {
+    const p = good(); p.noSharedBehaviour = ['A-B', entry];
+    assert.ok(codes(bad682(p)).includes('plan-no-shared-bad') || entry === '', entry);
+  }
+  const contradict = withContract(); contradict.noSharedBehaviour = ['A-B'];
+  const r = bad682(contradict);
+  assert.deepEqual(codes(r), ['plan-no-shared-bad']);
+  assert.match(r.reasons[0].detail, /contradicts a contract naming both A and B/);
+  assert.ok(codes(bad682({ ...clone(good()), noSharedBehaviour: 'A-B' })).includes('plan-bad-json'));
+  assert.ok(codes(bad682({ ...clone(good()), noSharedBehaviour: [7] })).includes('plan-bad-json'));
+});
+
+test('#682: a ticket id holding "-" still resolves its pair (NMC-5066-NMC-5067)', () => {
+  const p: Plan = { version: 1, tickets: [{ id: 'NMC-1', title: 'one', spec: 's', specText: 'text of one', dependsOn: [] }, { id: 'NMC-2', title: 'two', spec: 's', specText: 'text of two', dependsOn: ['NMC-1'] }], interfaces: { 'NMC-1': E('x.y') }, noSharedBehaviour: ['NMC-1-NMC-2'] };
+  assert.equal(validatePlan(p, ['NMC-1', 'NMC-2']).ok, true);
+  assert.deepEqual(resolveDependencyPair('NMC-2-NMC-1', p), ['NMC-2', 'NMC-1']);
+  assert.equal(resolveDependencyPair('NMC-1-NMC-3', p), null);
+});
+
+test('#682: applyPlan records noSharedBehaviour (strict reader round-trip); planHash covers it; a plan with none is unchanged', () => {
+  const st = applyPlan(seatState(), good(), NOW);
+  assert.deepEqual(st.noSharedBehaviour, ['A-B']);
+  assert.deepEqual(parseState(JSON.parse(JSON.stringify(st))).noSharedBehaviour, ['A-B']);
+  assert.equal(applyPlan(seatState(), withContract(), NOW).noSharedBehaviour, undefined);
+  const other = good(); other.noSharedBehaviour = ['B-A'];
+  assert.notEqual(planHash(other), planHash(good()));
+  assert.throws(() => parseState({ ...JSON.parse(JSON.stringify(st)), noSharedBehaviour: [] }), /noSharedBehaviour/);
+});
+
+test('#682: the plan brief shows a FILLED interface entry and a FILLED contract, names kind / shape / noSharedBehaviour, and the example itself passes the check', () => {
+  const b = renderPlanBrief(['A', 'B'], { run: 'r1' });
+  assert.match(b, /A filled interface[^]*`parcels\.state` — kind: column; shape: enum/);
+  assert.match(b, /A filled contract[^]*"must": "every path that sets parcels\.state/);
+  assert.match(b, /kind: field\|column\|event\|function\|route\|query\|mutation/);
+  assert.match(b, /"noSharedBehaviour": \["A-B"\]/);
+  assert.match(b, /EVERY dependency needs one: for each pair of tickets joined by a dependency[^\n]*noSharedBehaviour/);
+  const ex = /"interfaces": (\{ "NMC-1": ".*?" \})/.exec(b)![1];
+  const iface = (JSON.parse(ex) as Record<string, string>)['NMC-1'];
+  assert.equal(interfaceEntries(iface).filter((e) => e.kind && e.shape).length, 3, 'every line of the brief\'s example is a complete entry');
+});
+
+// the bench shape of host 2 attempt 3: 7 tickets in a chain, name-only interfaces, 0 contracts — what the plan agent wrote and what is refused now
+const chain7 = (): Plan => {
+  const t = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+  return { version: 1, tickets: t.map((id, i) => ({ id, title: `ticket ${id}`, spec: `linear:${id}`, specText: `Description of ${id}.\n- [ ] it works`, dependsOn: i ? [t[i - 1]] : [] })), interfaces: Object.fromEntries(t.slice(0, 6).map((id) => [id, `\`${id}.api\`, \`${id}Done\``])), contracts: [] };
+};
+const ids7 = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+test('#682 bench shape (7 tickets, chain): name-only interfaces + 0 contracts are refused per ticket and per pair; the filled plan passes', () => {
+  const r = validatePlan(chain7(), ids7);
+  assert.equal(r.ok, false);
+  const c = r.reasons.map((x) => x.code);
+  assert.equal(c.filter((x) => x === 'plan-interface-no-kind').length, 6, 'one bare line per depended-on ticket');
+  assert.equal(c.filter((x) => x === 'plan-interface-no-shape').length, 6);
+  assert.equal(c.filter((x) => x === 'plan-interface-multi-name').length, 6);
+  assert.deepEqual(r.reasons.filter((x) => x.code === 'plan-contract-missing').map((x) => x.detail.split(':')[0]), ['T1-T2', 'T2-T3', 'T3-T4', 'T4-T5', 'T5-T6', 'T6-T7']);
+  const fill = chain7();
+  fill.interfaces = Object.fromEntries(ids7.slice(0, 6).map((id) => [id, `${E(`${id}.api`, 'function', '() => void')}\n${E(`${id}Done`, 'event', '{ ticket: string }')}`]));
+  fill.contracts = [{ id: 'c1', owner: 'T1', must: 'every path of T1 emits T1Done through T1.api', consumers: ['T2'] }];
+  fill.noSharedBehaviour = ['T2-T3', 'T3-T4', 'T4-T5', 'T5-T6', 'T6-T7'];
+  assert.deepEqual(validatePlan(fill, ids7).reasons, []);
+  const half = clone(fill); half.noSharedBehaviour = ['T2-T3', 'T3-T4', 'T4-T5', 'T5-T6']; // T6-T7 left unsaid
+  assert.deepEqual(validatePlan(half, ids7).reasons.map((x) => x.detail.split(':')[0]), ['T6-T7']);
 });

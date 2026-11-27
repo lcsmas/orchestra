@@ -187,7 +187,8 @@ test('briefs: the implementer\'s loop section and the reviewer\'s rules carry th
 
 test('the report lists every open point and how it settled — addressed (ticket, head), decided (who, why), still open', (t) => {
   const home = mkHome(t); seed(home);
-  assert.doesNotMatch(renderReport(buildReport(load(home))), /open points/);
+  assert.doesNotMatch(renderReport(buildReport(load(home))), /open points \(/); // no list when none were raised; #682: the count line (0) is still a fact
+  assert.match(renderReport(buildReport(load(home))), /^open points raised: 0 /m);
   assert.equal(op(home, 'impl-b').code, 0);
   assert.equal(op(home, 'impl-b', 'B1', 'A1', 'second point').code, 0);
   assert.equal(op(home, 'impl-b', 'B1', 'C1', 'third point').code, 0);

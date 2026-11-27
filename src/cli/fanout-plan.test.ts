@@ -17,7 +17,7 @@ import type { Plan } from '../shared/fanout-plan.ts';
 const NOW = '2026-11-25T10:00:00.000Z';
 const RUN = 'c77b2530-198b-4dc9-bc1b-ef387ad5efdf';
 const offline = () => ({ code: 1, stdout: '', stderr: 'offline' });
-const goodPlan = (): Plan => ({ version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: 'column `orders.status`' } });
+const goodPlan = (): Plan => ({ version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: '`orders.status` — kind: column; shape: string' }, noSharedBehaviour: ['A-B'] });
 const TICKETS = ['A', 'B'];
 
 function mkHome(t: { after: (fn: () => void) => void }): string {

@@ -23,7 +23,7 @@ const AGENT = 'b6040000-0000-4000-8000-0000000000b2'; // the plan agent (the hos
 const KEY_RUN = 'a1'.repeat(32);
 const KEY_AGENT = 'b2'.repeat(32);
 const NOW = '2026-11-25T10:00:00.000Z';
-const PLAN = { version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: 'column `orders.status`' } };
+const PLAN = { version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: '`orders.status` — kind: column; shape: string' }, noSharedBehaviour: ['A-B'] };
 
 interface Cli { code: number; stdout: string; stderr: string }
 type Stop = { after: (fn: () => void) => void };
