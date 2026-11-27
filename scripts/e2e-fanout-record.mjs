@@ -40,6 +40,7 @@ const I = 'src/cli/index.ts';
 const F = 'false as boolean';
 const mutants = [
   // the record: who, which ticket, which head
+  ['record-final: a second record by the same reviewer on the same head is accepted (#672)', R, "if (prior) return recordRefuse('record-final'", `if (${F} && prior) return recordRefuse('record-final'`],
   ['record: the switch is not checked (off records)', R, "if (!seatRecordsOn(state)) return recordRefuse('record-off'", `if (${F}) return recordRefuse('record-off'`],
   ['record: a ticket with no recorded reviewer is not refused', R, "if (!t || !reviewer) {", `if (${F}) {`],
   ['record: an id the host did not vouch records (env-asserted identity accepted)', R, "|| a.callerVouched !== true) {\n    if (a.callerId === reviewer", "|| false as boolean) {\n    if (a.callerId === reviewer"],
