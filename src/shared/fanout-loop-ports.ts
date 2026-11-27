@@ -45,4 +45,6 @@ export interface GitPort {
   /** Interface log v1.1 (#607's start check): a branch holding nothing over `base`. */
   emptyBranch(branch: string, base: string): Promise<{ head: string }>;
   deleteBranch(branch: string): Promise<void>;
+  /** #683 — the remote branch that is `branch` under other separators (`impl/X` for `impl-X`), null = none. Absent = no adoption (a port that cannot list the remote). */
+  twin?(branch: string): Promise<string | null>;
 }

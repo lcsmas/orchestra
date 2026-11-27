@@ -17,6 +17,8 @@ export interface StartDeps {
   /** The coordinator's checkout (the repo the implementers work in). undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; repo: string | null }) => string | undefined;
   /** #599 — the repository the worktrees are made in (`repoPath` as `repoPath` answered it): its origin remote (URL or `owner/name`; null = unknown) and its default branch (null = unknown). Absent = every run is read as same-repo (the pre-#599 rule). */
+  /** #683 — cross-repo runs: create the ticket branch in the TARGET repo (from its tip) before the implementer starts; resolves when it exists. A throw is a failed start of that ticket (retried next pass), never a spawn without the branch. Absent = nothing is created and the brief is unchanged. */
+  prepareTicketBranch?: (i: { run: string; ticket: string; repo: string; target: string; branch: string }) => Promise<void>;
   worktreeRepo?: (i: { run: string; repoPath: string | undefined }) => { remote: string | null; defaultBranch: string | null } | Promise<{ remote: string | null; defaultBranch: string | null }>;
   /** #599 — does `ref` resolve to a commit in the worktree repository (what `git branch <b> <ref>` needs)? Absent = no check. */
   refExists?: (i: { run: string; repoPath: string | undefined; ref: string }) => Promise<boolean>;
@@ -123,13 +125,19 @@ export function startRun(run: string, caller: string | undefined, deps: StartDep
       const kind: 'spawn' | 'respawn' = t.implementer ? 'respawn' : 'spawn'; // a dead recorded implementer is replaced; a ticket set `started` by hand with none is a first spawn
       const onBranch = kind === 'respawn' && !!t.branch; // the dead agent's branch: same name, same PR / head, the new worktree is put ON it
       const base = await resolveBase(ticket, cur.repo, cur.target); // may throw start-base-missing: before this ticket's spawn, so before ANY spawn of the call
-      const task = renderImplementerBrief({ state: cur, ticket, ...(deps.loop !== undefined ? { loop: deps.loop } : {}), ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });
+      const ticketBranch = onBranch ? t.branch! : implementerName(ticket);
+      const prepared = base.kind === 'cross' && !!deps.prepareTicketBranch && !!cur.repo;
+      if (prepared) { // #683: the loop owns the branch name — it exists before the implementer is told about it
+        try { await deps.prepareTicketBranch!({ run, ticket, repo: cur.repo!, target: cur.target, branch: ticketBranch }); } catch (e) { out.failed.push({ ticket, error: `could not create the ticket branch ${ticketBranch} on ${cur.repo}: ${e instanceof Error ? e.message : String(e)}` }); continue; }
+      }
+      const task = renderImplementerBrief({ state: cur, ticket, ...(prepared ? { ticketBranch } : {}), ...(deps.loop !== undefined ? { loop: deps.loop } : {}), ...(onBranch ? { continueFrom: { branch: t.branch!, head: t.head } } : {}), ...(base.kind === 'cross' ? { crossRepo: { targetRepo: base.targetRepo, defaultBranch: base.defaultBranch } } : {}) });
       let res: Awaited<ReturnType<StartDeps['spawn']>>;
       try {
         res = await deps.spawn({ from: run, name: onBranch ? t.branch! : implementerName(ticket), task, repoPath: deps.repoPath({ run, ticket, repo: cur.repo }), baseBranch: base.base, ...(onBranch ? { reuseBranch: true } : {}) }); // same repo: the worktree is cut from the run target; another repo (#599): from the worktree repo's default branch, the brief names the target
       } catch (e) { res = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
       if (!res.id || !res.branch) { out.failed.push({ ticket, error: res.error ?? 'spawn failed' }); continue; } // no workspace: nothing to record, a second call retries
-      const id = res.id, branch = onBranch ? t.branch! : res.branch, hash = briefHash(task);
+      const id = res.id, branch = onBranch ? t.branch! : prepared ? ticketBranch : res.branch, // #683: the name the loop tracks is the one it created in the target repo
+         hash = briefHash(task);
       let recorded = false;
       for (let k = 0; ; k++) { // the agent exists once the spawn answered: losing its id (a lock timeout…) would strand the ticket, so the write is retried
         try {

@@ -121,6 +121,7 @@ export function renderConnectAsk(i: { ticket: string; upstream: string; branch: 
 /** #608 — git and the forge overrule the state at each start: a merge made by hand is adopted, a closed PR parks its ticket, a parked ticket whose blocker merged is released. Nothing before the state exists (the plan step creates it). */
 export async function stepReconcile(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
+  if (readLoopState(deps.home, deps.run)) await adoptBranchTwins(ctx); // #683: before the reality read, so the twin's head and PR are what reconcile sees
   if (!readLoopState(deps.home, deps.run)) return;
   // `readReality` turns a failed read into "unknown" (never "gone"); a process death (LoopKilled, the tests' seam) must still end the pass
   let killed: LoopKilled | null = null;
@@ -130,6 +131,20 @@ export async function stepReconcile(ctx: LoopCtx): Promise<void> {
   for (const id of o.adopted) ctx.did(`adopted ${id}: merged outside the loop`);
   for (const id of o.released) ctx.did(`released ${id}: its parked upstream was merged`);
   for (const p of o.parked) ctx.did(`parked ${p.ticket} [${p.cause}]: ${p.reason}`);
+}
+/** #683 — a started ticket whose tracked branch is not on the remote but whose separator twin is (`impl/X` pushed for `impl-X`): the ticket follows the twin (head, PR as if tracked), said in the log. Unreadable remote ⇒ nothing adopted. */
+export async function adoptBranchTwins(ctx: LoopCtx): Promise<void> {
+  const { deps } = ctx;
+  if (!deps.git.twin) return;
+  for (const id of activeTickets(ctx.st())) {
+    const t = ctx.st().tickets[id];
+    if (!t?.branch || t.status === 'todo') continue;
+    if (await deps.git.head(t.branch)) continue;
+    const tw = await deps.git.twin(t.branch);
+    if (!tw || tw === t.branch) continue;
+    ctx.update((x) => withLoop(applyTicketPatch(x, id, { branch: tw }, deps.now()), x.loop));
+    ctx.did(`adopted ${tw} as the branch of ${id}: ${t.branch} is not on the remote, ${tw} is (same name apart from its separators)`);
+  }
 }
 /** #607 — what a CI step reads from the loop: the deps, the state (read now) and the atomic write (the loop's own side file rides along untouched). */
 const ciCtxOf = (ctx: LoopCtx): Parameters<typeof runCi>[0] => ({

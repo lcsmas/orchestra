@@ -39,6 +39,8 @@ export interface AcceptanceHostDeps {
   orphanImplementer?: StartDeps['orphanImplementer'];
   /** #599 — see StartDeps.worktreeRepo / refExists: which repository the implementers' worktrees are in, and whether the run target resolves there. */
   worktreeRepo?: StartDeps['worktreeRepo'];
+  /** #683 — see StartDeps.prepareTicketBranch. */
+  prepareTicketBranch?: StartDeps['prepareTicketBranch'];
   refExists?: StartDeps['refExists'];
   /** #614 — the on-disk Claude Code transcript directory of a workspace (its pinned account's config dir + the mangled worktree path), null = unknown workspace. Absent = op `transcripts` is not wired. */
   transcriptDirOf?: (id: string) => string | null;
@@ -91,7 +93,7 @@ export async function dispatchFanoutAcceptance(input: Record<string, unknown>, d
       const spawnImplementer = deps.spawnImplementer;
       const caller = str(input.from);
       const vouched = !!caller && !!deps.vouches && deps.vouches(caller, str(input.key)); // the caller is the coordinator only on the HOST's word, not on an env id
-      const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
+      const result = await startRun(run, vouched ? caller : undefined, { orphanImplementer: deps.orphanImplementer, prepareTicketBranch: deps.prepareTicketBranch, worktreeRepo: deps.worktreeRepo, refExists: deps.refExists, home: deps.home, now: deps.now, implementerLive: deps.implementerLive, repoPath: ({ run: r, ticket: tk, repo }) => deps.repoPath({ run: r, ticket: tk, from: str(input.from), repo, implementer: null }), spawn: spawnImplementer });
       return { ok: true, op: 'start', result };
     }
     if (input.op === 'live' || input.op === 'transcripts' || input.op === 'release') { // #614: the Boucle's two host-only facts. Read-only, but still the run's coordinator's: vouched by the host like `start`, and only for workspaces of THIS run's state

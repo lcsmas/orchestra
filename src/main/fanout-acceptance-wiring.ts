@@ -5,6 +5,8 @@ import { send, getBus } from './bus.ts';
 import { orchestraHome } from './platform/index.ts';
 import { store } from './store';
 import { detectRemoteUrl, refResolves } from './git';
+import { execFile } from 'node:child_process';
+import { ensureTicketBranch } from '../shared/fanout-ticket-branch.ts';
 import { sessionKeys } from './session-identity-host.ts';
 import { archiveWorkspace, dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
 import { transcriptDirOfWorkspace } from './agent-sdk';
@@ -36,6 +38,11 @@ const productionDeps: AcceptanceHostDeps = {
     const named = (b: string): boolean => b === name || (b.startsWith(`${name}-`) && /^\d+$/.test(b.slice(name.length + 1)));
     const w = store.workspaces.find((x) => x.parentId === run && !x.archived && !recorded.includes(x.id) && named(x.branch) && !others.includes(x.branch));
     return w ? { id: w.id, branch: w.branch } : null;
+  },
+  // #683: the loop creates the ticket branch in the target repo (gh API, from the target tip) before the implementer is told its name
+  prepareTicketBranch: async ({ repo, target, branch }) => {
+    const gh = (args: string[]) => new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => execFile('gh', args, { timeout: 60_000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) })));
+    await ensureTicketBranch({ repo, target, branch, gh });
   },
   // #599: which repository the implementers' worktrees are made in (the coordinator's, as `repoPath` above) and whether the run target is a ref of it
   worktreeRepo: async ({ run, repoPath }) => {
