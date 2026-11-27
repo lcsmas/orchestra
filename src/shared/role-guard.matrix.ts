@@ -148,6 +148,8 @@ for (const role of ['coordinator', 'verifier', 'reviewer', 'explorer', 'scribe']
     deny(role, `protect: ${cmd} (verb at command start or after a separator)`, bash(cmd), /role guard's own wiring|sed -i edits|shell write/);
   allow(role, 'reading the guard wiring', bash('cat .orchestra/role && ls .claude/settings.local.json'));
   deny(role, 'Edit of .orchestra/role', edit('Edit', `${wt}/.orchestra/role`), /role guard's own wiring/);
+  deny(role, 'Edit of .orchestra/ticket-branch (#683 wiring)', edit('Write', `${wt}/.orchestra/ticket-branch`), /role guard's own wiring/);
+  deny(role, 'rm .orchestra/ticket-branch (#683 wiring)', bash('rm .orchestra/ticket-branch'), /role guard's own wiring/);
   deny(role, 'Edit of .claude/settings.local.json', edit('Write', `${wt}/.claude/settings.local.json`), /role guard's own wiring/);
 }
 for (const role of ['verifier', 'reviewer', 'explorer', 'scribe']) {
@@ -418,7 +420,7 @@ test('baseline matrix is clean; every mutant reddens it', () => {
     ['heredoc bodies are scanned as commands', '| awk "$awk_prog" |', '| cat |'],
     ['redirect targets are never judged', 'judge("W", wd, wv, bd)', 'wv = wv'],
     ['sed -i is allowed', 'if (!inpl) return', 'return'],
-    ['the guard wiring is editable', "*/.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)", "*/.orchestra/NEVER)"],
+    ['the guard wiring is editable', "*/.orchestra/role|*/.orchestra/ticket-branch|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)", "*/.orchestra/NEVER)"],
     ['the table\'s bashDeny rules are never evaluated', 'if ! { [ "$in_scratch" = 1 ] && [ "$i" -lt "$n_table" ]; } && chk', 'if false && chk'],
     ['scratch-clone exemption removed', 'then in_scratch=1; fi', 'then in_scratch=0; fi'],
     ['scratch-clone exemption admits a push', '&& ! chk \'', '&& ! chk \'NEVERMATCH'],
