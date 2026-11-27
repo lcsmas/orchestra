@@ -397,7 +397,7 @@ export async function stepReview(ctx: LoopCtx): Promise<void> {
 export async function stepApprovals(ctx: LoopCtx): Promise<void> {
   ctx.approved.clear();
   const s = ctx.st();
-  for (const r of pointReleases(s).values()) ctx.note(r.text); // #688: a hold cycle is said, never waited out silently
+  for (const r of pointReleases(s).values()) ctx.note(r.text); // #691: a hold cycle is said, never waited out silently
   for (const id of activeTickets(s)) {
     const t = s.tickets[id];
     if (!t.head) continue;
@@ -406,7 +406,7 @@ export async function stepApprovals(ctx: LoopCtx): Promise<void> {
     if (r.recorded.blocking > 0 || r.recorded.major > 0) { ctx.note(`${id}: approval held — ${r.recorded.blocking} BLOCKING / ${r.recorded.major} MAJOR finding(s) still open on the recorded approve; lifted by ${id}'s implementer fixing them and its reviewer recording again`); continue; }
     const minors = blockingMinors(s, id);
     if (minors.length) { ctx.note(`${id}: approval held — unsettled finding(s) ${minors.join(', ')} (a MINOR the policy blocks on); lifted by the fix (state set ${id} --settle <finding>=fixed:<head>) or the coordinator's decision (--decide)`); continue; }
-    if (openPointBlocked(s, id)) { for (const l of openPointHoldLines(s, id)) ctx.note(l); continue; } // #676: an unsettled open point holds the approval — the merge and the CONNECT of its dependents (#688: not the raiser's, when the point is about its dependent)
+    if (openPointBlocked(s, id)) { for (const l of openPointHoldLines(s, id)) ctx.note(l); continue; } // #676: an unsettled open point holds the approval — the merge and the CONNECT of its dependents (#691: not the raiser's, when the point is about its dependent)
     const entry = reviewOn(t, t.head, t.tree);
     if (entry) ctx.approved.set(id, { head: t.head, at: entry.at, round: r.recorded.round });
   }

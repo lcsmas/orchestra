@@ -47,7 +47,7 @@ export function recordOpenPoint(state: FanoutState, from: string, a: { about: st
   return { state: { ...state, openPoints: [...list, point], updatedAt: a.now }, point, fresh: true };
 }
 
-// ── #688 — who an open point holds. The point lifts only when the reviewer of the ticket that carries it approves a NEW head, and that ticket cannot be reviewed before it is connected to its unmerged upstreams. So a point
+// ── #691 — who an open point holds. The point lifts only when the reviewer of the ticket that carries it approves a NEW head, and that ticket cannot be reviewed before it is connected to its unmerged upstreams. So a point
 // raised by A about a ticket that depends on A must NOT hold A (its merge, its CONNECTs): A would wait for B and B for A. Rule 1: `dependent`; rule 4: any other hold cycle found in the graph breaks the same way.
 const isLive = (state: FanoutState, id: string): boolean => { const t = state.tickets[id]; return !!t && t.status !== 'merged' && t.status !== 'dropped'; };
 /** Does `id` depend on `up`, directly or through other tickets (unmerged edges only: a merged ticket is no longer waited for)? */
@@ -97,7 +97,7 @@ export function pointReleases(state: FanoutState): Map<number, PointRelease> {
   }
   return out;
 }
-/** The unmerged direct upstreams of `about` that lead to `from` (or are it) and it has not connected to yet (`builtOn`): the order of a point raised by `from` waits for them (#688). */
+/** The unmerged direct upstreams of `about` that lead to `from` (or are it) and it has not connected to yet (`builtOn`): the order of a point raised by `from` waits for them (#691). */
 export function unconnectedTowards(state: FanoutState, about: string, from: string): string[] {
   const t = state.tickets[about];
   if (!t) return [];
@@ -112,7 +112,7 @@ export function openPointHoldLines(state: FanoutState, id: string): string[] {
   });
 }
 
-/** The refusal of `gate` / `deliver` / the loop's approval for ticket `id`: an unsettled point it raised (unless #688 releases the raiser), is about, or carries (as a follow-up). A merged / dropped ticket is not judged (nothing left to deliver). null = free. */
+/** The refusal of `gate` / `deliver` / the loop's approval for ticket `id`: an unsettled point it raised (unless #691 releases the raiser), is about, or carries (as a follow-up). A merged / dropped ticket is not judged (nothing left to deliver). null = free. */
 export function openPointRefusal(state: FanoutState, id: string): FollowUpRefusal | null {
   const t = state.tickets[id];
   if (!t || t.status === 'merged' || t.status === 'dropped') return null;

@@ -1,4 +1,4 @@
-// #688 — the open-point DEADLOCK (host 2, attempt 4): a point raised by A about B, B dependsOn A. B cannot be reviewed before it connects to A, the CONNECT waits for A's approval, A's approval waited for the point → nobody moved.
+// #691 — the open-point DEADLOCK (host 2, attempt 4): a point raised by A about B, B dependsOn A. B cannot be reviewed before it connects to A, the CONNECT waits for A's approval, A's approval waited for the point → nobody moved.
 // The rig: 3 tickets (A, B dependsOn A, C unrelated), real `stepApprovals` / `stepOpenPoints` against a hand-made ctx. Each test fails on the code before the fix.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
