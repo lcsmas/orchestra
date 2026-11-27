@@ -216,6 +216,17 @@ export function fileOnHead(runner: Runner, head: string, file: string, cwd: stri
   return /\b404\b|Not Found/i.test(a.stderr) ? false : null;
 }
 
+/** #676 — make `head` readable by `fileOnHead` BEFORE a demonstration is checked: when the commit is not in this repository, fetch the ticket's branch (then the sha itself) from origin. true = the commit is now local; false = it is not
+ *  (no origin / no network / branch deleted): `fileOnHead` then falls back to the forge, as before. The refusal "`<file>` does not exist on head" was a read of a head nobody had fetched (4/4 demonstrations of the trial run). */
+export function ensureHeadFetched(runner: Runner, head: string, branch: string | null, cwd: string): boolean {
+  if (!SHA_ARG.test(head)) return false;
+  const have = (): boolean => runner('git', ['rev-parse', '--verify', '-q', `${head}^{commit}`], cwd).code === 0;
+  if (have()) return true;
+  if (branch && /^[A-Za-z0-9._][A-Za-z0-9._/+@-]{0,199}$/.test(branch) && !branch.startsWith('-')) { runner('git', ['fetch', '--quiet', 'origin', branch], cwd); if (have()) return true; }
+  runner('git', ['fetch', '--quiet', 'origin', head], cwd);
+  return have();
+}
+
 export interface Parsed { pos: string[]; vals: Record<string, string>; bools: Set<string> }
 
 /** Strict flag parser: an unknown flag is refused (never swallowed as a value or positional). */

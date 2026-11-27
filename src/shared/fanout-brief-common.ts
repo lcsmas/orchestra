@@ -24,6 +24,9 @@ export function renderRunChoices(state: FanoutState, forTicket?: string): string
   return `${head}\n${lines.join('\n')}\nA finding whose subject is one of THIS ticket's choices does not block the merge: record it with \`--on-choice <finding>=<n>\` — EXCEPT a finding whose \`specSentence\` is the sentence the choice narrows, or, for a choice with "narrows: none declared", a \`specSentence\` that quotes an acceptance criterion: that exemption does not apply and the finding keeps its severity. A finding that the code does NOT do what the choice says is a normal finding.`;
 }
 
+/** #676 — the ONE line of every implementer and reviewer brief about a point left open on ANOTHER ticket: it goes in the state (the loop reads it), never in prose. */
+export const OPEN_POINT_LINE = 'A point your ticket leaves open ABOUT ANOTHER ticket is never written in prose (no report, no PR text): run `orchestra fanout open-point <your ticket> --about <that ticket> --text "<the point>"` — it blocks both tickets until the point is settled, and the loop acts on it.';
+
 /** The switches in force (all of them, with their value) on ONE line. */
 export function renderSwitchesLine(state: FanoutState): string {
   const sw = switchesOf(state);

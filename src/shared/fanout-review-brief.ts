@@ -1,7 +1,7 @@
 // #588 (I3) — the reviewer's brief, rendered by CODE from the run state: no free text from the coordinator (the coordinator's words reach it only as the run's decisions, `state set --run-decision`).
 // Pure and deterministic: the same BriefInput renders the same text (no clock, no random); `briefHash` is its sha256. Rules = the pointer REVIEWER_RULES + the role file (#590).
 import { SWITCH_NAMES, type Switches } from './fanout-state.ts';
-import { briefHash } from './fanout-brief-common.ts'; // the pieces shared with the implementer's brief (#587 PR A): decisions / switches line / interfaces are rendered by `briefInputOf` through them
+import { OPEN_POINT_LINE, briefHash } from './fanout-brief-common.ts'; // the pieces shared with the implementer's brief (#587 PR A): decisions / switches line / interfaces are rendered by `briefInputOf` through them
 
 export { briefHash };
 
@@ -31,6 +31,8 @@ export interface BriefInput {
   choicesText?: string;
   /** #675 — the numbered acceptance criteria read from the ticket text (`criteriaLines`): absent / [] = none (nothing is printed, the verdict needs no `criteria`). */
   criteria?: string[];
+  /** #676 — `renderPointsForReviewer(state, ticket)`: the open points this reviewer can address ('' / absent = none: nothing is printed). */
+  pointsText?: string;
   switchesLine: string;
   /** The upstream interface versions this ticket follows vs the current ones (a STALE one is said). */
   follows: BriefFollow[];
@@ -105,7 +107,8 @@ export function renderReviewerBrief(i: BriefInput): string {
     for (const f of i.openFindings) out.push(`- ${f.id} [${f.severity}]${f.raisedOn ? ` raised on ${briefShort(f.raisedOn)}` : ''}${f.text ? `: ${f.text}` : ''}`);
     out.push('');
   }
-  out.push('## Rules', REVIEWER_RULES, MERGE_RULES[i.switches.minorPolicy], '');
+  if (i.pointsText) out.push(i.pointsText, '');
+  out.push('## Rules', REVIEWER_RULES, MERGE_RULES[i.switches.minorPolicy], OPEN_POINT_LINE, '');
   if (i.reviewerSkillPath) out.push(`Your role file: ${i.reviewerSkillPath}`, '');
   out.push('## How to end',
     `Record your verdict and EVERY finding with ONE command — gate and deliver read nothing else (a verdict written in prose or typed by the coordinator is not read):`,

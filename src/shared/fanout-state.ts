@@ -175,6 +175,9 @@ export type ChoiceRule = (typeof CHOICE_RULES)[number];
 export interface ChoiceRecord { n: number; ticket: string; question: string; rule: ChoiceRule; answer: string; at: string;
   /** #675 — the verbatim sentence of the ticket text this choice narrows (`fanout choice --narrows`); absent = none declared. */
   narrows?: string }
+/** #676 — a point a ticket leaves OPEN about ANOTHER ticket (`orchestra fanout open-point`): run state, not prose. It blocks `from` and `about` (and the follow-up carrying it) until settled. */
+export interface OpenPointSettled { how: 'addressed' | 'decided'; at: string; by: string; /** addressed: the ticket whose reviewer approved (the `about` ticket or its follow-up) and the head it approved */ ticket?: string; head?: string; /** decided: the reason (the loop's fixed rule, or the coordinator's) */ text?: string }
+export interface OpenPoint { id: number; from: string; about: string; text: string; at: string; status: 'open' | 'settled'; /** the head / tree of `about` when the point was raised: only a NEW head can address it */ aboutHead: string | null; aboutTree: string | null; /** the follow-up ticket the loop opened because `about` was already merged */ followUp?: string; settled?: OpenPointSettled }
 /** The ONLY pause of slice 1: `prs` = the pull requests red on the same `check` (null = no single check named). */
 export interface PauseRecord { at: string; reason: string; check: string | null; prs: number[];
   /** #655 — set ONLY by the loop's environment pause: the loop stays alive, reruns the red checks (`tries` so far, next at `nextAt`) and lifts it by itself on the first green. A human `--pause` has none: exit 4. */
@@ -234,6 +237,8 @@ export interface FanoutState {
   decisions?: Array<{ n: number; text: string; by: string; at: string }>;
   /** #603 — what the agents chose when they asked (`recordChoice`), oldest first; the closing report lists each. */
   choices?: ChoiceRecord[];
+  /** #676 — the open points the tickets raised about each other (`recordOpenPoint`), oldest first, numbered from 1; the closing report lists each with how it settled. */
+  openPoints?: OpenPoint[];
   /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
   pause?: PauseRecord;
   /** #655 — the automatic pauses already lifted (oldest first). */
@@ -298,6 +303,7 @@ TICKET_KEYS.add('reviews'); // #589 (I4)
 TICKET_KEYS.add('parked'); // #603
 TICKET_KEYS.add('rounds'); // #603
 TOP_KEYS.add('choices'); // #603
+TOP_KEYS.add('openPoints'); // #676
 TOP_KEYS.add('pause'); // #603
 TOP_KEYS.add('waited'); // #655
 TOP_KEYS.add('startFlaky'); // #654
@@ -1163,6 +1169,7 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.plan !== undefined ? { plan: planOf(raw.plan) } : {}),
     ...(raw.decisions !== undefined ? { decisions: decisionsOf(raw.decisions) } : {}),
     ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
+    ...(raw.openPoints !== undefined ? { openPoints: openPointsParse(raw.openPoints) } : {}), // #676
     ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
     ...(raw.waited !== undefined ? { waited: waitedOf(raw.waited) } : {}), // #655
     ...(raw.startFlaky !== undefined ? { startFlaky: startFlakyOf(raw.startFlaky) } : {}), // #654
@@ -1246,7 +1253,7 @@ export function unmergedUpstreams(state: FanoutState, id: string): string[] {
 export const FOLLOWUP_RULE = 'A follow-up candidate on an already-merged ticket needs at least one BLOCKING or MAJOR finding of that ticket it fixes, or a MINOR whose specSentence is a literal sentence of the ticket\'s captured spec; other MINOR findings get no action (no follow-up PR, no extra list).';
 /** `refuse` = the #514 rule as it was (MINOR findings get no action): the wording under that switch. */
 export const FOLLOWUP_RULE_REFUSE = 'A follow-up candidate on an already-merged ticket needs at least one BLOCKING or MAJOR finding of that ticket it fixes; MINOR findings get no action (no follow-up PR, no extra list).';
-export type FollowUpReason = 'followup-undeclared' | 'followup-base-not-merged' | 'followup-no-finding' | 'followup-unknown-finding' | 'followup-minor-only' | 'followup-process-finding' | 'finding-unsettled';
+export type FollowUpReason = 'followup-undeclared' | 'followup-base-not-merged' | 'followup-no-finding' | 'followup-unknown-finding' | 'followup-minor-only' | 'followup-process-finding' | 'finding-unsettled' | 'open-point-unsettled';
 
 // ── #552 — the MINOR policy. The switches themselves (storage, freeze, `switchesOf`) are #554's, above; these aliases keep #552's names. ──
 export type MinorPolicy = Switches['minorPolicy'];
@@ -1342,13 +1349,15 @@ export function followUpRefusal(state: FanoutState, id: string, head?: string | 
   if (t.followUpOf === id || !base) return refuse('followup-base-not-merged', `it follows ${t.followUpOf}, which ${t.followUpOf === id ? 'is itself' : 'is not in the state'}`);
   if (base.status !== 'merged') return refuse('followup-base-not-merged', `it follows ${t.followUpOf}, which is ${base.status}, not merged — fix it on its own branch, not by a follow-up`);
   if (t.fixes.length === 0) return refuse('followup-no-finding', `it names no finding it fixes (--fixes <id>[,…], recorded on ${t.followUpOf})`);
-  const unknown = t.fixes.filter((f) => !base.findings[f]);
+  // #676: `op-<n>` = the open point n (about the merged ticket) that the loop's follow-up carries — it always qualifies
+  const opRef = (f: string): boolean => { const m = /^op-([1-9][0-9]*)$/.exec(f); return !!m && (state.openPoints ?? []).some((p) => p.id === Number(m[1]) && p.about === t.followUpOf); };
+  const unknown = t.fixes.filter((f) => !base.findings[f] && !opRef(f));
   if (unknown.length) return refuse('followup-unknown-finding', `finding ${unknown.join(', ')} is not recorded on ${t.followUpOf} (recorded: ${Object.keys(base.findings).join(', ') || 'none'}; record it with state set ${t.followUpOf} --finding <id>=<severity>)`);
   // #552: a process finding (how the work is REPORTED) is settled by a PR-body edit — it never starts a code round, whatever its severity
-  const proc = t.fixes.filter((f) => base.findings[f].kind === 'process');
+  const proc = t.fixes.filter((f) => base.findings[f]?.kind === 'process');
   if (proc.length) return refuse('followup-process-finding', `${proc.join(', ')} of ${t.followUpOf} is a process finding (how the work is reported): it is settled by editing the PR body (state set ${t.followUpOf} --settle ${proc[0]}=pr-body:<what it says now>), never by a code round`);
   // BLOCKING | MAJOR, or — under minorPolicy spec — a MINOR whose specSentence the captured spec contains
-  const qualifies = (f: string): boolean => base.findings[f].severity === 'BLOCKING' || base.findings[f].severity === 'MAJOR' || (policy === 'spec' && sentenceAccepted(effectiveSpec(state, base), base.findings[f]));
+  const qualifies = (f: string): boolean => opRef(f) || base.findings[f].severity === 'BLOCKING' || base.findings[f].severity === 'MAJOR' || (policy === 'spec' && sentenceAccepted(effectiveSpec(state, base), base.findings[f]));
   if (!t.fixes.some(qualifies)) {
     return refuse('followup-minor-only', `it fixes only MINOR finding(s) of ${t.followUpOf} (${t.fixes.map((f) => `${f}=${base.findings[f].severity}${base.findings[f].specSentence !== undefined ? ' (its specSentence is not in the captured spec)' : ''}`).join(', ')})`);
   }
@@ -1763,6 +1772,34 @@ export function recordRound(state: FanoutState, id: string, fingerprint: string,
   const last = rounds.length ? rounds[rounds.length - 1].n : 0;
   if (n !== undefined && (!Number.isInteger(n) || n <= last)) throw new FanoutStateError(`${id}: round number ${n} must be an integer greater than the last recorded round (${last})`);
   return { state: { ...state, tickets: { ...state.tickets, [id]: { ...t, rounds: [...rounds, { n: n ?? last + 1, fingerprint, at: now }], updatedAt: now } }, updatedAt: now }, repeat };
+}
+
+export const OPEN_POINT_TEXT_MAX = 2000;
+export const OPEN_POINTS_MAX = 200;
+/** #676 — the stored open points: ids 1..n in order, tickets / texts / dates checked, `settled` present exactly when `status` is `settled`. */
+function openPointsParse(v: unknown): OpenPoint[] {
+  if (!Array.isArray(v) || v.length === 0) throw new FanoutStateError('openPoints must be a non-empty list of {id, from, about, text, at, status, aboutHead, aboutTree}');
+  return v.map((e, i) => {
+    const where = `openPoints[${i}]`;
+    if (!isObj(e)) throw new FanoutStateError(`${where} must be an object`);
+    refuseUnknown(e, new Set(['id', 'from', 'about', 'text', 'at', 'status', 'aboutHead', 'aboutTree', 'followUp', 'settled']), where);
+    if (e.id !== i + 1) throw new FanoutStateError(`${where}.id must be ${i + 1}`);
+    for (const k of ['from', 'about'] as const) if (typeof e[k] !== 'string' || !SAFE_TICKET.test(e[k] as string)) throw new FanoutStateError(`${where}.${k} must be a ticket id`);
+    if (e.from === e.about) throw new FanoutStateError(`${where}: a point is about ANOTHER ticket (from and about are both ${String(e.from)})`);
+    if (e.status !== 'open' && e.status !== 'settled') throw new FanoutStateError(`${where}.status must be open|settled`);
+    if ((e.status === 'settled') !== (e.settled !== undefined)) throw new FanoutStateError(`${where}: settled is present exactly when status is settled`);
+    let settled: OpenPointSettled | undefined;
+    if (e.settled !== undefined) {
+      if (!isObj(e.settled)) throw new FanoutStateError(`${where}.settled must be an object`);
+      const x = e.settled;
+      refuseUnknown(x, new Set(['how', 'at', 'by', 'ticket', 'head', 'text']), `${where}.settled`);
+      if (x.how !== 'addressed' && x.how !== 'decided') throw new FanoutStateError(`${where}.settled.how must be addressed|decided`);
+      if (typeof x.by !== 'string' || !x.by) throw new FanoutStateError(`${where}.settled.by must say who settled it`);
+      settled = { how: x.how, at: isoOf(x.at, `${where}.settled.at`), by: lineOf(x.by, `${where}.settled.by`, 200), ...(x.ticket !== undefined ? { ticket: checked(strOrNull(x.ticket, 'ticket'), SAFE_TICKET, 'ticket') ?? undefined } : {}), ...(x.head !== undefined ? { head: checked(strOrNull(x.head, 'head'), HEX_SHA, 'head (7-40 lowercase hex)') ?? undefined } : {}), ...(x.text !== undefined ? { text: lineOf(x.text, `${where}.settled.text`, OPEN_POINT_TEXT_MAX) } : {}) };
+    }
+    const followUp = e.followUp === undefined ? undefined : checked(strOrNull(e.followUp, 'followUp'), SAFE_TICKET, 'followUp') ?? undefined;
+    return { id: i + 1, from: e.from as string, about: e.about as string, text: lineOf(e.text, `${where}.text`, OPEN_POINT_TEXT_MAX), at: isoOf(e.at, `${where}.at`), status: e.status, aboutHead: checked(strOrNull(e.aboutHead, 'aboutHead'), HEX_SHA, 'aboutHead (7-40 lowercase hex)'), aboutTree: treeOrNull(e.aboutTree, 'aboutTree'), ...(followUp ? { followUp } : {}), ...(settled ? { settled } : {}) };
+  });
 }
 
 /** Record what an agent chose when it asked (`[choice-bad]` on a blank / unknown-rule / oversized entry). Numbered from 1, never edited. */

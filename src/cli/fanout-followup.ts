@@ -2,6 +2,7 @@
 // finding of that ticket it fixes. The rule is `followUpRefusal` (src/shared/fanout-state.ts); this file reads the state the way the acceptance reader does.
 import os from 'node:os';
 import path from 'node:path';
+import { openPointRefusal } from '../shared/fanout-open-point.ts';
 import { FanoutStateError, followUpRefusal, mergeBlockRefusal, readState, resolveFanoutRun, stateFile, type FollowUpRefusal } from '../shared/fanout-state.ts';
 
 export type FollowUpAnswer = { consulted: boolean; known: boolean; refusal: FollowUpRefusal | null };
@@ -19,7 +20,7 @@ export function followUpFromState(opts: { ticket: string; run?: string; head: st
     const state = readState(stateFile(home, r));
     if (!state) continue;
     sawState = true;
-    if (state.tickets[opts.ticket]) return { consulted: true, known: true, refusal: followUpRefusal(state, opts.ticket, opts.head, opts.branch, opts.headTree) ?? mergeBlockRefusal(state, opts.ticket) }; // #552: an unsettled MINOR that breaks a spec sentence blocks the merge like a MAJOR
+    if (state.tickets[opts.ticket]) return { consulted: true, known: true, refusal: followUpRefusal(state, opts.ticket, opts.head, opts.branch, opts.headTree) ?? mergeBlockRefusal(state, opts.ticket) ?? openPointRefusal(state, opts.ticket) }; // #552: an unsettled MINOR that breaks a spec sentence blocks the merge like a MAJOR; #676: so does an unsettled open point (both tickets)
   }
   if (!sawState) {
     if (opts.run && !opts.lenient) throw new FanoutStateError(`no fanout state for --run ${opts.run}: a wrong run id would skip the follow-up rule`);

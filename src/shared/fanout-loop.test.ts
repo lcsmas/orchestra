@@ -319,7 +319,7 @@ test('the loop writes the REAL #603 records: choices and the pause live in state
   assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'reversible-default']]);
   const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
   for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
-  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'reconnects', 'replaced', 'signalled']);
+  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'pointOrders', 'reconnects', 'replaced', 'signalled']);
   assert.deepEqual(r.result.report.parked, []);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {

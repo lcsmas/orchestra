@@ -9,6 +9,8 @@ import { LoopKilled } from './fanout-loop-kill.ts';
 import { flakyAtMerge, stepCi as runCi, stepPauseWatch as runPauseWatch, stepStartCheck as runStartCheck } from './fanout-loop-ci.ts';
 import { runCorrections } from './fanout-loop-corrections.ts';
 import { renderRunChoices } from './fanout-brief-common.ts';
+import { stepOpenPoints as runOpenPoints } from './fanout-loop-points.ts';
+import { openPointBlocked } from './fanout-open-point.ts';
 import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
 import { blockingMinors, applyTicketPatch, type FanoutState, FanoutStateError, newState, parkTicket, parkedTickets, pausedOf, planMissing, recordChoice, CHOICES_MAX, SeatRefusal, unmergedUpstreams, upstreamBlocker } from './fanout-state.ts';
@@ -171,6 +173,7 @@ export async function stepCorrections(ctx: LoopCtx): Promise<void> {
     else if (o.action === 'reviewer-woken') ctx.note(`${o.ticket}: reviewer ${o.reviewer} reads ${o.head.slice(0, 12)}`); // NOT progress: the host op is a no-op on a head the reviewer already holds, so a silent reviewer would feed the stall clock every pass for ever
     else if (o.action === 'blocked') ctx.note(`${o.ticket}: corrections blocked — ${o.why}`);
   }
+  await runOpenPoints(ctx); // #676: the open points of the tickets: an order to the `about` implementer, a follow-up ticket when it is merged, the fixed rule when nobody addresses it
 }
 
 /** The state exists with its switches, the plan is declared and complete. */
@@ -385,6 +388,7 @@ export async function stepApprovals(ctx: LoopCtx): Promise<void> {
     const r = recordedVerdictOf(s, id, t.head, t.tree);
     if (!r.ok || r.recorded.verdict !== 'approve' || r.recorded.blocking > 0 || r.recorded.major > 0) continue;
     if (blockingMinors(s, id).length) continue;
+    if (openPointBlocked(s, id)) continue; // #676: an unsettled open point (raised by this ticket, about it, or carried by it) holds the approval — the merge and the CONNECT of its dependents
     const entry = reviewOn(t, t.head, t.tree);
     if (entry) ctx.approved.set(id, { head: t.head, at: entry.at, round: r.recorded.round });
   }
