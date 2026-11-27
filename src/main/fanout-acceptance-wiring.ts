@@ -6,6 +6,8 @@ import { orchestraHome } from './platform/index.ts';
 import { store } from './store';
 import { detectRemoteUrl, refResolves } from './git';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { ensureTicketBranch } from '../shared/fanout-ticket-branch.ts';
 import { sessionKeys } from './session-identity-host.ts';
 import { archiveWorkspace, dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
@@ -38,6 +40,21 @@ const productionDeps: AcceptanceHostDeps = {
     const named = (b: string): boolean => b === name || (b.startsWith(`${name}-`) && /^\d+$/.test(b.slice(name.length + 1)));
     const w = store.workspaces.find((x) => x.parentId === run && !x.archived && !recorded.includes(x.id) && named(x.branch) && !others.includes(x.branch));
     return w ? { id: w.id, branch: w.branch } : null;
+  },
+  // #682: a shallow read-only checkout of each target repo at the run target (host-owned dir, reused), so the plan agent READS the code the tickets name; the brief renders these paths
+  checkouts: async ({ run, repos, target }) => {
+    const run1 = (cmd: string, args: string[]) => new Promise<void>((resolve, reject) => execFile(cmd, args, { timeout: 300_000, maxBuffer: 1 << 20 }, (err, _o, stderr) => (err ? reject(new Error(`${cmd} ${args[0]}: ${String(stderr).trim().slice(0, 200) || err.message}`)) : resolve())));
+    const out: Array<{ repo: string; path: string }> = [];
+    for (const repo of repos) {
+      const dir = path.join(orchestraHome(), 'fanout', run, 'plan-src', repo.replace('/', '__'));
+      if (!fs.existsSync(path.join(dir, '.git'))) {
+        fs.mkdirSync(path.dirname(dir), { recursive: true });
+        await run1('gh', ['repo', 'clone', repo, dir, '--', '--depth', '1', '--no-single-branch']);
+        await run1('git', ['-C', dir, 'checkout', '--detach', `origin/${target}`]).catch(() => undefined); // a target that is not a branch of it: the default branch stays
+      }
+      out.push({ repo, path: dir });
+    }
+    return out;
   },
   // #683: the loop creates the ticket branch in the target repo (gh API, from the target tip) before the implementer is told its name
   prepareTicketBranch: async ({ repo, target, branch }) => {

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { TICKET_ID, applyPlan, parsePlan, planHash, validatePlan, PlanError, type PlanReason } from './fanout-plan.ts';
-import { planAgentName, renderPlanBrief } from './fanout-plan-brief.ts';
+import { PLAN_REPO, planAgentName, renderPlanBrief, type PlanCheckout } from './fanout-plan-brief.ts';
 import { FanoutStateError, SeatRefusal, assertRunId, readState, seatRecordsOn, stampDefaults, stateFile, switchesLockedWhy, updateState, type FanoutState } from './fanout-state.ts';
 
 export const PLAN_MAX_SUBMISSIONS = 2;
@@ -106,6 +106,8 @@ export interface PlanHostDeps {
   /** Is this workspace alive (exists, not archived)? Absent = `isWorkspace`. */
   isLive?: (id: string) => boolean;
   repoPath: (i: { run: string; ticket: string; from?: string; repo: string | null; implementer: string | null }) => string | undefined;
+  /** #682 — a read-only checkout of each target repo at the run's target, made BEFORE the plan agent is spawned, so its brief names real paths and it can read the code the tickets name. Absent = the agent reads its working directory. A throw ends the call `[plan-checkout-failed]`. */
+  checkouts?: (i: { run: string; repos: string[]; target: string }) => Promise<PlanCheckout[]>;
   /** The agent spawn route: the role table pins the explorer role from the `explo-` prefix. */
   spawn: (i: { from?: string; name: string; task: string; repoPath?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
   /** Did the host vouch `id` with this session key (the live session of that workspace)? Absent = nobody is vouched and the op is refused. */
@@ -157,6 +159,10 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
     let adopted: { action: 'adopt' | 'in-flight' | 'accepted'; id: string | null } | null = null;
     let task = '';
     let repo: string | null = null;
+    let target = 'master';
+    const alsoRepos = Array.isArray(input.repos) ? [...new Set((input.repos as unknown[]).filter((t): t is string => typeof t === 'string').map((t) => t.trim()).filter(Boolean))] : [];
+    const badRepo = alsoRepos.find((t) => !PLAN_REPO.test(t));
+    if (badRepo !== undefined) return refusal('plan-bad-repo', `${JSON.stringify(badRepo.slice(0, 60))} is not a repository (owner/name): the brief names repositories from validated slugs, never from text`);
     updateState(file, (cur) => { // EVERYTHING is decided under the state lock, and the slot is claimed BEFORE the spawn: two concurrent calls spawn ONE agent, a plan that lands meanwhile spawns none
       if (!cur) throw new FanoutStateError(`no fanout state for run ${run}`);
       if (!seatRecordsOn(cur)) { early = refusal('seat-records-off', `run ${run} has seatRecords=off: the plan step is a seatRecords rule (state init --switch seatRecords=on)`); return cur; }
@@ -166,12 +172,12 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
       if (locked) { early = refusal('plan-after-spawn', `run ${run} already spawned (${locked}) — the plan of the loop is written before the first spawn`); return cur; }
       if (cur.decisions?.length) { early = refusal('plan-after-decision', `run ${run} already holds ${cur.decisions.length} run decision(s): they ride in every brief verbatim — no plan agent is spawned (start from a state with none)`); return cur; }
       repo = cur.repo;
+      target = cur.target;
       const sc = readPlanSidecar(deps.home, run);
       const d = decidePlanAgent(sc, tickets, now, live);
       if (d.action === 'refuse') { early = refusal(d.refusal, d.detail); return cur; }
       if (d.action === 'adopt' || d.action === 'in-flight') { adopted = { action: d.action, id: d.action === 'adopt' ? d.id! : null }; return cur; }
       action = d.action;
-      task = renderPlanBrief(tickets, { run });
       writePlanSidecar(deps.home, run, { version: 1, tickets, agent: { id: null, name, at: now }, spawns: (sc?.spawns ?? 0) + 1, attempts: sc?.attempts ?? [], outcome: 'open' });
       return cur;
     });
@@ -192,6 +198,12 @@ export async function dispatchPlan(input: Record<string, unknown>, deps: PlanHos
       }
     };
     let res: Awaited<ReturnType<PlanHostDeps['spawn']>>;
+    let checkouts: PlanCheckout[] = [];
+    const repos = [...new Set([...(repo ? [repo as string] : []), ...alsoRepos])];
+    if (repos.length && deps.checkouts) { // #682: the code the tickets name is there to be read before the agent writes a name
+      try { checkouts = await deps.checkouts({ run, repos, target }); } catch (e) { settle(null); return refusal('plan-checkout-failed', `could not check out ${repos.join(', ')} for the plan agent: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+    task = renderPlanBrief(tickets, { run, checkouts });
     try {
       const parent = deps.isWorkspace(run) ? run : caller;
       res = await deps.spawn({ from: parent, name, task, repoPath: deps.repoPath({ run, ticket: '', from: caller, repo, implementer: null }) });

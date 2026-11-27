@@ -17,7 +17,7 @@ import type { Plan } from '../shared/fanout-plan.ts';
 const NOW = '2026-11-25T10:00:00.000Z';
 const RUN = 'c77b2530-198b-4dc9-bc1b-ef387ad5efdf';
 const offline = () => ({ code: 1, stdout: '', stderr: 'offline' });
-const goodPlan = (): Plan => ({ version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: 'column `orders.status`' } });
+const goodPlan = (): Plan => ({ version: 1, tickets: [{ id: 'A', title: 'table', spec: 'ledger §A', specText: 'The orders table.', dependsOn: [] }, { id: 'B', title: 'api', spec: 'ledger §B', specText: 'The orders api.', dependsOn: ['A'] }], interfaces: { A: '`orders.status` — kind: column; shape: string; where: src/orders.ts' }, noSharedBehaviour: ['A-B'] });
 const TICKETS = ['A', 'B'];
 
 function mkHome(t: { after: (fn: () => void) => void }): string {
@@ -63,6 +63,37 @@ test('host: spawns ONE explo-plan-<run8> agent under the coordinator, the brief 
   assert.equal(f.spawns[0].task, renderPlanBrief(TICKETS, { run: RUN }));
   const sc = readPlanSidecar(home, RUN)!;
   assert.deepEqual([sc.agent?.id, sc.spawns, sc.outcome, sc.tickets], ['plan-ws-1', 1, 'open', TICKETS]);
+});
+
+test('#682 host: a 2-repo run — each target repo is checked out BEFORE the spawn and both paths are in the brief the agent gets', async (t) => {
+  const { home } = run(t);
+  updateState(stateFile(home, RUN), (cur) => ({ ...cur!, repo: 'mobile-club/monorepo-loop' }));
+  const f = fakeHost(home);
+  const asked: Array<{ repos: string[]; target: string; spawned: number }> = [];
+  f.deps.checkouts = async (i) => { asked.push({ repos: i.repos, target: i.target, spawned: f.spawns.length }); return i.repos.map((repo) => ({ repo, path: `/h/plan-src/${repo.replace('/', '__')}` })); };
+  const r = await ask(f, { repos: ['mobile-club/next-api', 'mobile-club/monorepo-loop'] });
+  assert.equal(r.ok, true);
+  assert.deepEqual(asked, [{ repos: ['mobile-club/monorepo-loop', 'mobile-club/next-api'], target: 'master', spawned: 0 }], 'the run repo first, the others after, deduped; before any spawn');
+  assert.match(f.spawns[0].task, /- mobile-club\/monorepo-loop → \/h\/plan-src\/mobile-club__monorepo-loop\n- mobile-club\/next-api → \/h\/plan-src\/mobile-club__next-api\n/);
+  assert.equal((f.spawns[0].task.match(/→ \/h\/plan-src/g) ?? []).length, 2);
+});
+
+test('#682 host: no repo named and no checkout wired = the agent reads its working directory; a failed checkout spawns nothing [plan-checkout-failed] and frees the claim; a bad slug is [plan-bad-repo]', async (t) => {
+  const { home } = run(t);
+  const f = fakeHost(home);
+  assert.equal((await ask(f)).ok, true);
+  assert.match(f.spawns[0].task, /the target repository is your working directory/);
+  const h2 = run(t);
+  updateState(stateFile(h2.home, RUN), (cur) => ({ ...cur!, repo: 'o/n' }));
+  const g = fakeHost(h2.home);
+  g.deps.checkouts = async () => { throw new Error('gh: not logged in'); };
+  const r = await ask(g);
+  assert.match(String((r as { error?: string }).error), /^\[plan-checkout-failed\].*not logged in/);
+  assert.equal(g.spawns.length, 0);
+  assert.equal(readPlanSidecar(h2.home, RUN)!.agent, null);
+  g.deps.checkouts = async (i) => i.repos.map((repo) => ({ repo, path: '/p' }));
+  assert.equal((await ask(g)).ok, true, 'the claim was freed: the next call spawns');
+  for (const bad of ['no-slash', 'a/b/c', 'a b/c', '../x/y', 'o/n; rm -rf']) assert.match(String((await ask(fakeHost(home), { repos: [bad] }) as { error?: string }).error), /^\[plan-bad-repo\]/, bad);
 });
 
 test('host: a second call while the agent lives ADOPTS it (never two); two concurrent calls spawn ONE', async (t) => {

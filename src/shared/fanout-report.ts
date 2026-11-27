@@ -49,8 +49,12 @@ export interface Report {
   findingsLeft: ReportFinding[];
   /** #676 — the open points the tickets raised about each other, and how each settled (`addressed` on a head its reviewer approved | `decided` — the loop's fixed rule or the coordinator's | still open). Absent = none were raised. */
   openPoints?: OpenPoint[];
+  /** #682 — open points raised per run, always counted (0 is a fact: the plan missed nothing the tickets had to raise), split by how each ended. */
+  openPointCount: { raised: number; addressed: number; decided: number; open: number };
   /** #680 — the contracts of the plan and their final verdicts, per party. Absent = the plan had none. */
   contracts?: ReportContract[];
+  /** #682 — the dependency pairs the plan declared as sharing no behaviour (`noSharedBehaviour`). Absent = none declared. */
+  noSharedBehaviour?: string[];
   /** `<ticket>/<check>`: a red job that went green on the one automatic re-run (#607: `TicketState.ci.flaky`). */
   flaky: string[];
   costPerTicket: Record<string, TokenCost | null>;
@@ -87,6 +91,12 @@ export function findingsLeftOf(ticket: string, t: TicketState): ReportFinding[] 
 export const extraReviewRoundsOf = (t: TicketState): number => Math.max(0, new Set((t.reviews ?? []).map((r) => r.n)).size - 1);
 const sumOf = (m: Record<string, number>): number => Object.values(m).reduce((a, b) => a + b, 0);
 
+/** #682 — how many open points the run raised, and how each ended. */
+export function openPointCountOf(state: FanoutState): Report['openPointCount'] {
+  const list = state.openPoints ?? [];
+  return { raised: list.length, addressed: list.filter((p) => p.status === 'settled' && p.settled?.how === 'addressed').length, decided: list.filter((p) => p.status === 'settled' && p.settled?.how === 'decided').length, open: list.filter((p) => p.status === 'open').length };
+}
+
 export function buildReport(state: FanoutState, costs: Record<string, TokenCost | null> = {}, reconnects: Record<string, number> | null = null): Report {
   const ids = orderedTickets(state);
   const merged: string[] = [], dropped: string[] = [], unfinished: string[] = [], parked: ReportParked[] = [];
@@ -105,7 +115,9 @@ export function buildReport(state: FanoutState, costs: Record<string, TokenCost 
   return {
     run: state.run, irreversible, merged, parked, dropped, unfinished, choices,
     findingsLeft: ids.flatMap((id) => findingsLeftOf(id, state.tickets[id])),
+    openPointCount: openPointCountOf(state),
     ...(state.openPoints?.length ? { openPoints: state.openPoints } : {}),
+    ...(state.noSharedBehaviour?.length ? { noSharedBehaviour: state.noSharedBehaviour } : {}),
     ...(state.contracts?.length ? { contracts: state.contracts.map((c: ContractRecord): ReportContract => ({ id: c.id, owner: c.owner, must: c.must, owned: lastContractAnswer(state, c.owner, c.id), consumers: c.consumers.map((t) => ({ ticket: t, answer: lastContractAnswer(state, t, c.id) })) })) } : {}),
     flaky: [...(state.startFlaky ?? []).map((c) => `start-check/${c}`), ...ids.flatMap((id) => flakyOf(state.tickets[id]).map((c) => `${id}/${c}`))],
     costPerTicket: Object.fromEntries(ids.map((id) => [id, costs[id] ?? null])),
@@ -153,6 +165,9 @@ export function renderReport(r: Report): string {
     L.push(`contracts of the plan (${r.contracts.length}) — each a behaviour one ticket owns and others rely on, with the last verdict recorded for each party:`);
     for (const c of r.contracts) L.push(`  ${c.id}: ${c.owner} [${c.owned ?? 'no verdict'}] must ${oneLine(c.must, 200)} — consumers: ${c.consumers.map((x) => `${x.ticket} [${x.answer ?? 'no verdict'}]`).join(', ')}`);
   }
+  if (r.noSharedBehaviour?.length) L.push(`pairs the plan declared sharing no behaviour (${r.noSharedBehaviour.length}) — each a dependency with no contract, stated on purpose: ${r.noSharedBehaviour.join(', ')}`);
+  const oc = r.openPointCount;
+  L.push(`open points raised: ${oc.raised}${oc.raised ? ` — ${oc.addressed} addressed, ${oc.decided} decided, ${oc.open} still open` : ''} (what the plan did not freeze)`);
   if (r.openPoints?.length) {
     L.push(`open points (${r.openPoints.length}) — each a point a ticket left open about another (\`orchestra fanout open-point\`), and how it settled:`);
     for (const p of r.openPoints) L.push(reportPointLine(p));

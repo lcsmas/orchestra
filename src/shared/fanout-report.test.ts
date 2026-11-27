@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { blankTicket } from './fanout-state.ts';
-import { collectCosts, makeCostOf, tokensOfFiles, tokensOfTranscript, transcriptFilesIn, workspacesOfTicket } from './fanout-report.ts';
+import { buildReport, collectCosts, makeCostOf, openPointCountOf, renderReport, tokensOfFiles, tokensOfTranscript, transcriptFilesIn, workspacesOfTicket } from './fanout-report.ts';
 import { newState } from './fanout-state.ts';
 
 const line = (o: unknown): string => JSON.stringify(o);
@@ -92,4 +92,24 @@ test('collectCosts: a port that throws for one ticket leaves that ticket unmeasu
   s = { ...s, tickets: { A: blankTicket('t'), B: blankTicket('t') } };
   const costs = await collectCosts(s, async (id) => { if (id === 'A') throw new Error('boom'); return { tokens: 3 }; });
   assert.deepEqual(costs, { A: null, B: { tokens: 3 } });
+});
+
+// ── #682: the closing report counts the open points raised per run, and lists the pairs the plan declared sharing nothing ──
+const pt = (id: number, status: 'open' | 'settled', how?: 'addressed' | 'decided') => ({ id, from: 'A', about: 'B', text: `point ${id}`, at: 'x', status, aboutHead: null, aboutTree: null, ...(how ? { settled: { how, at: 'x', by: 'r', ...(how === 'decided' ? { text: 'rule' } : { ticket: 'B', head: 'a'.repeat(40) }) } } : {}) });
+test('#682 report: open points raised are counted per run, split by how each ended; 0 is printed as a fact', () => {
+  const none = buildReport(newState('r1', { now: '2026-11-27T00:00:00.000Z' }));
+  assert.deepEqual(none.openPointCount, { raised: 0, addressed: 0, decided: 0, open: 0 });
+  assert.match(renderReport(none), /^open points raised: 0 \(what the plan did not freeze\)$/m);
+  const st = { ...newState('r1', { now: '2026-11-27T00:00:00.000Z' }), openPoints: [pt(1, 'settled', 'addressed'), pt(2, 'settled', 'decided'), pt(3, 'open'), pt(4, 'settled', 'addressed')] };
+  assert.deepEqual(openPointCountOf(st), { raised: 4, addressed: 2, decided: 1, open: 1 });
+  assert.match(renderReport(buildReport(st)), /^open points raised: 4 — 2 addressed, 1 decided, 1 still open/m);
+});
+
+test('#682 report: the pairs declared noSharedBehaviour are listed; absent when none were', () => {
+  const base = newState('r1', { now: '2026-11-27T00:00:00.000Z' });
+  assert.equal(buildReport(base).noSharedBehaviour, undefined);
+  assert.doesNotMatch(renderReport(buildReport(base)), /sharing no behaviour/);
+  const r = buildReport({ ...base, noSharedBehaviour: ['A-B', 'B-C'] });
+  assert.deepEqual(r.noSharedBehaviour, ['A-B', 'B-C']);
+  assert.match(renderReport(r), /^pairs the plan declared sharing no behaviour \(2\)[^\n]*A-B, B-C$/m);
 });

@@ -13,7 +13,7 @@ export const TICKET_ID = /^[A-Za-z0-9][A-Za-z0-9._#:-]{0,63}$/;
 const CTRL_LINE = /[\x00-\x1f\x7f]/;
 const CTRL_TEXT = /[\x00-\x08\x0b-\x1f\x7f]/;
 
-export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short', 'plan-contract-empty', 'plan-contract-unknown-ticket', 'plan-contract-self', 'plan-contract-duplicate'] as const;
+export const PLAN_REASON_CODES = ['plan-bad-json', 'plan-free-text', 'plan-ticket-missing', 'plan-ticket-unknown', 'plan-duplicate-ticket', 'plan-cycle', 'plan-interface-missing', 'plan-interface-no-name', 'plan-bad-dependency', 'plan-spec-text-missing', 'plan-spec-text-short', 'plan-contract-empty', 'plan-contract-unknown-ticket', 'plan-contract-self', 'plan-contract-duplicate', 'plan-interface-no-kind', 'plan-interface-no-shape', 'plan-interface-multi-name', 'plan-contract-missing', 'plan-no-shared-bad', 'plan-interface-no-where'] as const;
 export type PlanReasonCode = (typeof PLAN_REASON_CODES)[number];
 export interface PlanReason { code: PlanReasonCode; detail: string }
 
@@ -21,7 +21,8 @@ export interface PlanReason { code: PlanReasonCode; detail: string }
 export interface PlanTicket { id: string; title: string; spec: string; specText: string; dependsOn: string[] }
 /** #680 — a behaviour ONE ticket owns and others rely on (`must`, one line); the code renders it in the briefs of the owner, the consumers and their reviewers, and every approve answers it. */
 export interface PlanContract { id: string; owner: string; must: string; consumers: string[] }
-export interface Plan { version: 1; tickets: PlanTicket[]; interfaces: Record<string, string>; /** absent = none (a plan with no contract is what it was) */ contracts?: PlanContract[] }
+export interface Plan { version: 1; tickets: PlanTicket[]; interfaces: Record<string, string>; /** absent = none (a plan with no contract is what it was) */ contracts?: PlanContract[];
+  /** #682 — `["A-B"]`: the dependency pairs the plan states share NO behaviour (no contract needed). Absent = none declared. */ noSharedBehaviour?: string[] }
 
 /** parsePlan's refusal: every structural reason found, not only the first (the agent fixes them in ONE retry). */
 export class PlanError extends Error {
@@ -40,7 +41,7 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
   let v = raw;
   if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return { plan: null, reasons: [{ code: 'plan-bad-json', detail: `not JSON: ${e instanceof Error ? e.message : String(e)}` }] }; } }
   if (!isObj(v)) return { plan: null, reasons: [{ code: 'plan-bad-json', detail: 'the plan must be a JSON object {version, tickets, interfaces}' }] };
-  for (const k of Object.keys(v)) if (!['version', 'tickets', 'interfaces', 'contracts'].includes(k)) free(`unknown key "${k}" at the top of the plan — the plan holds only version, tickets, interfaces, contracts (no decisions, notes or order)`);
+  for (const k of Object.keys(v)) if (!['version', 'tickets', 'interfaces', 'contracts', 'noSharedBehaviour'].includes(k)) free(`unknown key "${k}" at the top of the plan — the plan holds only version, tickets, interfaces, contracts, noSharedBehaviour (no decisions, notes or order)`);
   if (v.version !== PLAN_VERSION) bad(`version must be ${PLAN_VERSION}`);
   if (!Array.isArray(v.tickets)) { bad('tickets must be a list of {id, title, spec, specText, dependsOn}'); return { plan: null, reasons }; }
   const tickets: PlanTicket[] = [];
@@ -102,9 +103,15 @@ function readPlan(raw: unknown): { plan: Plan | null; reasons: PlanReason[] } {
       contracts.push({ id, owner, must, consumers });
     });
   }
-  return { plan: { version: PLAN_VERSION, tickets, interfaces: Object.fromEntries(ifaceEntries), ...(contracts.length ? { contracts } : {}) }, reasons };
+  let noShared: string[] = [];
+  if (v.noSharedBehaviour !== undefined) {
+    if (!Array.isArray(v.noSharedBehaviour) || v.noSharedBehaviour.some((d) => typeof d !== 'string' || !d.trim() || d.length > NO_SHARED_MAX)) bad(`noSharedBehaviour must be a list of "<ticket>-<ticket>" pairs (each at most ${NO_SHARED_MAX} characters; [] = none)`);
+    else noShared = [...new Set((v.noSharedBehaviour as string[]).map((d) => d.trim()))];
+  }
+  return { plan: { version: PLAN_VERSION, tickets, interfaces: Object.fromEntries(ifaceEntries), ...(contracts.length ? { contracts } : {}), ...(noShared.length ? { noSharedBehaviour: noShared } : {}) }, reasons };
 }
 
+export const NO_SHARED_MAX = 130;
 export const NAME_MAX = 80;
 const HTTP_METHOD = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/;
 /** Placeholders and filler that are one token but no name. */
@@ -125,6 +132,43 @@ export function interfaceNames(text: string): string[] {
   for (const m of text.matchAll(/`([^`\n]{2,200})`/g)) if (isExactName(m[1])) out.push(m[1].trim());
   return out;
 }
+
+/** #682 — what an interface entry says it IS: the kinds a dependent can build against (a table column, a field, an event, a function, a route; a query / mutation of an API). */
+export const INTERFACE_KINDS = ['field', 'column', 'event', 'function', 'route', 'query', 'mutation'] as const;
+/** One interface entry = one line holding ONE name in backticks, then `kind: <kind>; shape: <type, or the payload's fields>; where: <path of the existing code it extends | new <module path>>` (no backticks after the name). */
+export interface InterfaceEntry { line: string; names: string[]; kind: string | null; shape: string | null; where: string | null }
+const WHERE_PATH = /^[\w@.\/-]+(?::\d+(?:-\d+)?)?$/;
+/** #682: `where` = a path (`src/orders/order.ts`, `…:42`) of the code the name extends, or `new <module path>`; `new` alone or a sentence is none. */
+export function isWhere(w: string): boolean {
+  const rest = w.trim().replace(/^new\b\s*:?\s*/i, '');
+  return rest.length > 0 && rest.length <= 200 && WHERE_PATH.test(rest) && /[/.]/.test(rest);
+}
+/** The entries of an interface text: every line that holds an exact name (a line with none is prose, ignored). `kind` null = absent or not one of {@link INTERFACE_KINDS}; `shape` null = absent or filler. */
+export function interfaceEntries(text: string): InterfaceEntry[] {
+  const out: InterfaceEntry[] = [];
+  for (const raw of text.split('\n')) {
+    const names = interfaceNames(raw);
+    if (!names.length) continue;
+    const k = /\bkind:\s*([A-Za-z]+)/.exec(raw)?.[1]?.toLowerCase() ?? null;
+    const wm = /(?:;\s*|\s)where:\s*(\S.*?)\s*$/.exec(raw);
+    const sh = /\bshape:\s*(\S.*?)\s*$/.exec(wm ? raw.slice(0, wm.index) : raw)?.[1] ?? null;
+    const shapeOk = sh !== null && sh.length >= 2 && /[A-Za-z]/.test(sh) && !NOT_A_NAME.has(sh.toLowerCase());
+    out.push({ line: raw.trim(), names, kind: k && (INTERFACE_KINDS as readonly string[]).includes(k) ? k : null, shape: shapeOk ? sh : null, where: wm && isWhere(wm[1]) ? wm[1].trim() : null });
+  }
+  return out;
+}
+
+/** #682 — `"A-B"` as a direct dependency pair of the plan, in either order (a ticket id may hold `-`: every split is tried). null = not a pair of tickets joined by a dependency. */
+export function resolveDependencyPair(entry: string, plan: Plan): [string, string] | null {
+  const known = new Set(plan.tickets.map((t) => t.id));
+  const joined = (a: string, b: string): boolean => plan.tickets.some((t) => (t.id === b && t.dependsOn.includes(a)) || (t.id === a && t.dependsOn.includes(b)));
+  for (let i = entry.indexOf('-'); i !== -1; i = entry.indexOf('-', i + 1)) {
+    const a = entry.slice(0, i), b = entry.slice(i + 1);
+    if (known.has(a) && known.has(b) && a !== b && joined(a, b)) return [a, b];
+  }
+  return null;
+}
+const sharesContract = (plan: Plan, a: string, b: string): boolean => (plan.contracts ?? []).some((c) => { const m = [c.owner, ...c.consumers]; return m.includes(a) && m.includes(b); });
 
 /** `raw` = the parsed JSON, or its text. Throws PlanError (every structural reason: bad JSON, a wrong type, a free-text key or an over-long label). The graph is checkPlan's. */
 export function parsePlan(raw: unknown): Plan {
@@ -166,7 +210,27 @@ export function checkPlan(plan: Plan, ticketIds: string[]): { ok: boolean; reaso
     const text = Object.hasOwn(plan.interfaces, d) ? plan.interfaces[d] : undefined; // a ticket named `constructor` is not an inherited member
     if (text === undefined || !text.trim()) reasons.push({ code: 'plan-interface-missing', detail: `${d} is depended on by ${plan.tickets.filter((t) => t.dependsOn.includes(d)).map((t) => t.id).join(', ')} and has no interface — add interfaces.${d}` });
     else if (!interfaceNames(text).length) reasons.push({ code: 'plan-interface-no-name', detail: `interfaces.${d} holds no exact name in backticks — ONE token or \`METHOD /path\` (\`orders.status\`, \`POST /orders\`, \`OrderCreated\`), at most ${NAME_MAX} chars: "${short(text.trim())}"` });
+    else {
+      const by = plan.tickets.filter((t) => t.dependsOn.includes(d)).map((t) => t.id).join(', ');
+      for (const e of interfaceEntries(text)) { // #682: a name alone is not frozen — its kind and its shape are
+        const at = `interfaces.${d} (${by} build on it): "${short(e.line)}"`;
+        if (e.names.length > 1) reasons.push({ code: 'plan-interface-multi-name', detail: `${at} holds ${e.names.length} names on one line — ONE entry per line: \`name\` — kind: <${INTERFACE_KINDS.join('|')}>; shape: <type or payload fields>` });
+        if (!e.kind) reasons.push({ code: 'plan-interface-no-kind', detail: `${at} has no kind — add \`kind: <${INTERFACE_KINDS.join('|')}>\`` });
+        if (!e.shape) reasons.push({ code: 'plan-interface-no-shape', detail: `${at} has no shape — add \`shape: <the type, or the payload's fields>\` (e.g. \`shape: string\`, \`shape: { parcelId: string, at: ISO date }\`)` });
+        if (!e.where) reasons.push({ code: 'plan-interface-no-where', detail: `${at} has no where — add \`where: <path of the existing code it extends>\` or \`where: new <module path>\` (e.g. \`where: src/orders/order.ts\`, \`where: new src/orders/events.ts\`): read the target repo, do not guess` });
+      }
+    }
   }
+  const pairs = new Map<string, [string, string]>(); // #682: every direct dependency, dependency first
+  for (const t of plan.tickets) for (const d of t.dependsOn) if (known.has(d) && d !== t.id) pairs.set(`${d}-${t.id}`, [d, t.id]);
+  const declared = new Set<string>();
+  for (const entry of plan.noSharedBehaviour ?? []) {
+    const pr = resolveDependencyPair(entry, plan);
+    if (!pr) reasons.push({ code: 'plan-no-shared-bad', detail: `noSharedBehaviour "${entry}" is not a pair of tickets joined by a dependency (pairs: ${[...pairs.keys()].join(', ') || 'none'})` });
+    else if (sharesContract(plan, pr[0], pr[1])) reasons.push({ code: 'plan-no-shared-bad', detail: `noSharedBehaviour "${entry}" contradicts a contract naming both ${pr[0]} and ${pr[1]} — keep the contract or drop the declaration` });
+    else declared.add(`${pr[0]}-${pr[1]}`), declared.add(`${pr[1]}-${pr[0]}`);
+  }
+  for (const [label, [a, b]] of pairs) if (!sharesContract(plan, a, b) && !declared.has(label)) reasons.push({ code: 'plan-contract-missing', detail: `${label}: ${b} depends on ${a} and no contract names both — add a contract {owner, must, consumers} for the behaviour ${b} relies on, or state "noSharedBehaviour": ["${label}"] if they share none` });
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -195,7 +259,7 @@ export function validatePlan(raw: unknown, ticketIds: string[]): { ok: boolean; 
 
 /** sha256 of the normalised plan (tickets in the plan's order, fixed key order): the `loopPlan.hash`. */
 export function planHash(plan: Plan): string {
-  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, specText: t.specText, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])), ...(plan.contracts?.length ? { contracts: plan.contracts.map((c) => ({ id: c.id, owner: c.owner, must: c.must, consumers: c.consumers })) } : {}) };
+  const norm = { version: plan.version, tickets: plan.tickets.map((t) => ({ id: t.id, title: t.title, spec: t.spec, specText: t.specText, dependsOn: t.dependsOn })), interfaces: Object.fromEntries(Object.keys(plan.interfaces).sort().map((k) => [k, plan.interfaces[k]])), ...(plan.contracts?.length ? { contracts: plan.contracts.map((c) => ({ id: c.id, owner: c.owner, must: c.must, consumers: c.consumers })) } : {}), ...(plan.noSharedBehaviour?.length ? { noSharedBehaviour: plan.noSharedBehaviour } : {}) };
   return createHash('sha256').update(JSON.stringify(norm)).digest('hex');
 }
 
@@ -219,6 +283,7 @@ export function applyPlan(state: FanoutState, plan: Plan, now: string, attempts 
   for (const t of plan.tickets) st = applyTicketPatchCore(st, t.id, { dependsOn: t.dependsOn }, now);
   for (const [id, text] of Object.entries(plan.interfaces)) st = applyTicketPatchCore(st, id, { interface: text }, now);
   if (plan.contracts?.length) st = { ...st, contracts: plan.contracts.map((c) => ({ id: c.id, owner: c.owner, must: c.must, consumers: [...c.consumers] })), updatedAt: now }; // #680: rendered in the briefs, answered in every approve
+  if (plan.noSharedBehaviour?.length) st = { ...st, noSharedBehaviour: [...plan.noSharedBehaviour], updatedAt: now }; // #682: listed in the closing report
   const missing = planMissing(st);
   if (missing.length) throw new SeatRefusal('plan-incomplete', `the plan leaves ${missing.length} thing(s) missing: ${missing.join('; ')}`);
   return { ...st, loopPlan: { at: now, hash, attempts }, updatedAt: now };

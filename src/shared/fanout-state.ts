@@ -247,6 +247,8 @@ export interface FanoutState {
   choices?: ChoiceRecord[];
   /** #680 — the cross-ticket contracts of the plan (`applyPlan`): a behaviour one ticket OWNS and others rely on; rendered in the briefs of the owner, the consumers and their reviewers, answered in every approve. Absent = none. */
   contracts?: ContractRecord[];
+  /** #682 — the dependency pairs (`"A-B"`) the plan stated share NO behaviour (`applyPlan`); the closing report lists them. Absent = none. */
+  noSharedBehaviour?: string[];
   /** #676 — the open points the tickets raised about each other (`recordOpenPoint`), oldest first, numbered from 1; the closing report lists each with how it settled. */
   openPoints?: OpenPoint[];
   /** #603 — set while the run is paused for an environment fault (`pauseRun` / `resumeRun`). */
@@ -315,6 +317,7 @@ TICKET_KEYS.add('rounds'); // #603
 TOP_KEYS.add('choices'); // #603
 TOP_KEYS.add('openPoints'); // #676
 TOP_KEYS.add('contracts'); // #680
+TOP_KEYS.add('noSharedBehaviour'); // #682
 TOP_KEYS.add('pause'); // #603
 TOP_KEYS.add('waited'); // #655
 TOP_KEYS.add('startFlaky'); // #654
@@ -798,6 +801,11 @@ function contractsParse(v: unknown): ContractRecord[] {
     return { id, owner: e.owner, must: lineOf(e.must, `${where}.must`, CONTRACT_MUST_MAX), consumers: [...new Set(e.consumers as string[])] };
   });
 }
+/** #682 — the stored `noSharedBehaviour`: a non-empty list of `"<ticket>-<ticket>"` lines. */
+function noSharedParse(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length === 0 || v.some((x) => typeof x !== 'string' || !x.trim() || x.length > 130)) throw new FanoutStateError('noSharedBehaviour must be a non-empty list of "<ticket>-<ticket>" pairs');
+  return [...new Set(v as string[])];
+}
 function criteriaOf(v: unknown, where: string, keyRe: RegExp = /^[1-9][0-9]{0,3}$/): Record<string, 'met' | 'unmet'> {
   if (!isObj(v)) throw new FanoutStateError(`${where} must be {"<key>":"met|unmet"}`);
   const out: Record<string, 'met' | 'unmet'> = {};
@@ -1204,6 +1212,7 @@ export function parseState(raw: unknown): FanoutState {
     ...(raw.choices !== undefined ? { choices: choicesOf(raw.choices) } : {}), // #603
     ...(raw.openPoints !== undefined ? { openPoints: openPointsParse(raw.openPoints) } : {}), // #676
     ...(raw.contracts !== undefined ? { contracts: contractsParse(raw.contracts) } : {}), // #680
+    ...(raw.noSharedBehaviour !== undefined ? { noSharedBehaviour: noSharedParse(raw.noSharedBehaviour) } : {}), // #682
     ...(raw.pause !== undefined ? { pause: pauseOf(raw.pause) } : {}), // #603
     ...(raw.waited !== undefined ? { waited: waitedOf(raw.waited) } : {}), // #655
     ...(raw.startFlaky !== undefined ? { startFlaky: startFlakyOf(raw.startFlaky) } : {}), // #654

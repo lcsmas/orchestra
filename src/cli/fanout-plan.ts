@@ -8,18 +8,18 @@ import { FanoutStateError, SeatRefusal, assertRunId, newState, readState, seatRe
 import type { Exec } from '../shared/fanout-loop-live-git.ts';
 import { realExec, resolveRunTarget } from './fanout-run-live.ts';
 import { submitPlan, submitText } from '../shared/fanout-plan-host.ts';
-import { renderPlanBrief } from '../shared/fanout-plan-brief.ts';
+import { PLAN_REPO, renderPlanBrief } from '../shared/fanout-plan-brief.ts';
 import { homeOf, parseArgs, runOf, type FanoutDeps, type RunResult } from './fanout-state.ts';
 
-export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [--run <id>] [--repo <owner/name>] [--print] [--timeout <min>]
+export const PLAN_USAGE = `usage: orchestra fanout plan --tickets <id,id,…> [--run <id>] [--repo <owner/name>] [--also-repos <owner/name,…>] [--print] [--timeout <min>]
        orchestra fanout plan submit <file|-> --run <id>
   A fresh run needs no \`state init\` (#626): the state is created with the switches \`fanout run\` uses (seatRecords=on, minorPolicy=demonstrated, verifier=off; --repo <owner/name> optional, the target = origin/HEAD, else the GitHub default branch).
   seatRecords=on, coordinator only: spawns ONE single-use agent (explo-plan-<run8>, explorer role) whose brief is rendered by code from the ticket ids (no flag takes text), and returns when its plan is accepted:
   prints {"plan":"accepted","hash","attempts","tickets"} (exit 0). --print renders the brief and spawns nothing. --timeout (default 45, minutes) = how long to wait for the plan.
-  The plan agent submits with \`plan submit\`: the CLI checks the file and answers at once. The plan file holds exactly {version, tickets[{id,title,spec,specText,dependsOn}], interfaces{<depended-on ticket>: text with ≥1 \`exact name\`}}.
-  Refused (exit 2, [name] …): [plan-free-text] · [plan-bad-json] · [plan-ticket-missing] · [plan-ticket-unknown] · [plan-duplicate-ticket] · [plan-cycle] · [plan-interface-missing] · [plan-interface-no-name] · [plan-bad-dependency]
+  The plan agent submits with \`plan submit\`: the CLI checks the file and answers at once. The plan file holds exactly {version, tickets[{id,title,spec,specText,dependsOn}], interfaces{<depended-on ticket>: one line per \`exact name\` — kind: <field|column|event|function|route|query|mutation>; shape: <type or payload fields>; where: <path of the code it extends | new <module path>>}, contracts[{id,owner,must,consumers}], noSharedBehaviour["A-B"]}; every dependency pair shares a contract or is declared in noSharedBehaviour.
+  Refused (exit 2, [name] …): [plan-free-text] · [plan-bad-json] · [plan-ticket-missing] · [plan-ticket-unknown] · [plan-duplicate-ticket] · [plan-cycle] · [plan-interface-missing] · [plan-interface-no-name] · [plan-interface-no-kind] · [plan-interface-no-shape] · [plan-interface-no-where] · [plan-interface-multi-name] · [plan-contract-missing] · [plan-no-shared-bad] · [plan-bad-dependency]
   — the first refusal gives the agent the reasons and ONE more submission; the second is [plan-refused-twice]: loopPlan is NOT set, the verb exits 2, the run does not start.
-  Other refusals: [plan-caller] · [plan-not-requested] · [plan-closed] · [plan-tickets-changed] · [plan-agent-dead] · [plan-after-spawn] · [plan-after-decision] · [plan-bad-ticket-id] · [plan-apply-failed] · [seat-records-off]. After an accepted plan \`state set --run-decision\` is refused [decision-after-plan].`;
+  Other refusals: [plan-bad-repo] · [plan-checkout-failed] · [plan-caller] · [plan-not-requested] · [plan-closed] · [plan-tickets-changed] · [plan-agent-dead] · [plan-after-spawn] · [plan-after-decision] · [plan-bad-ticket-id] · [plan-apply-failed] · [seat-records-off]. After an accepted plan \`state set --run-decision\` is refused [decision-after-plan].`;
 
 export interface PlanLoopOpts {
   /** Real-time pacing (tests hand a fake clock). */
@@ -43,14 +43,17 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
   try {
     if (args.includes('--help') || args.includes('-h')) return { code: 0, stdout: `${PLAN_USAGE}\n`, stderr: '' };
     if (args[0] === 'submit') return submit(args.slice(1), deps);
-    const p = parseArgs(args, ['--run', '--tickets', '--timeout', '--repo'], ['--print']);
-    if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]} (fanout plan takes --tickets, --run, --print, --timeout; the plan agent uses \`plan submit\`)`);
+    const p = parseArgs(args, ['--run', '--tickets', '--timeout', '--repo', '--also-repos'], ['--print']);
+    if (p.pos.length) throw new FanoutStateError(`unexpected argument ${p.pos[0]} (fanout plan takes --tickets, --run, --repo, --also-repos, --print, --timeout; the plan agent uses \`plan submit\`)`);
     const tickets = [...new Set((p.vals['--tickets'] ?? '').split(',').map((t) => t.trim()).filter(Boolean))];
     if (!tickets.length) throw new FanoutStateError(`--tickets <id,id,…> is required\n${PLAN_USAGE}`);
     const badId = tickets.find((t) => !TICKET_ID.test(t));
     if (badId !== undefined) throw new SeatRefusal('plan-bad-ticket-id', `${JSON.stringify(badId.slice(0, 40))} is not a ticket id (letters, digits, . _ # : -, at most 64): the plan agent's brief is rendered from ids, never from text`);
+    const alsoRepos = [...new Set((p.vals['--also-repos'] ?? '').split(',').map((t) => t.trim()).filter(Boolean))]; // #682: the other repositories the run's tickets target (the run's own `--repo` is read from the state)
+    const badRepo = alsoRepos.find((t) => !PLAN_REPO.test(t));
+    if (badRepo !== undefined) throw new SeatRefusal('plan-bad-repo', `${JSON.stringify(badRepo.slice(0, 60))} is not a repository (owner/name)`);
     const r = runOf(p, deps, 'use');
-    if (p.bools.has('--print')) return { code: 0, stdout: `${renderPlanBrief(tickets, { run: r.run })}\n`, stderr: r.note };
+    if (p.bools.has('--print')) return { code: 0, stdout: `${renderPlanBrief(tickets, { run: r.run, checkouts: [...new Set([...(p.vals['--repo'] ? [p.vals['--repo']] : []), ...alsoRepos])].map((repo) => ({ repo, path: `<checkout of ${repo}, made when the agent is spawned>` })) })}\n`, stderr: r.note };
     const file = stateFile(homeOf(deps.env), r.run);
     let state = readState(file);
     let preNote = r.note;
@@ -74,7 +77,7 @@ export async function runPlan(args: string[], deps: FanoutDeps, host: (body: Rec
     if (!Number.isFinite(timeoutMin) || timeoutMin <= 0) throw new FanoutStateError('--timeout must be a number of minutes > 0');
     const sleep = opts.sleep ?? realSleep, nowMs = opts.nowMs ?? Date.now, pollMs = opts.pollMs ?? 2_000, recheckMs = opts.recheckMs ?? 45_000;
     const ask = async (): Promise<Record<string, unknown>> => {
-      const res = await host({ op: 'plan', run: r.run, from: caller, key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined, tickets });
+      const res = await host({ op: 'plan', run: r.run, from: caller, key: deps.env.ORCHESTRA_SESSION_KEY?.trim() || undefined, tickets, ...(alsoRepos.length ? { repos: alsoRepos } : {}) });
       return res.ok ? res : failFrom(res);
     };
     const first = await ask();

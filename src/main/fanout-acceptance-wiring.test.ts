@@ -31,3 +31,11 @@ test('#629 / #628 wiring: the host archives through the app\'s own archiveWorksp
   assert.match(read('fanout-acceptance-wiring.ts'), /import \{ archiveWorkspace, dispatchAgentSpawnRequest,/);
   assert.match(read('fanout-acceptance-wiring.ts'), /archive: \(id\) => archiveWorkspace\(id\)/);
 });
+
+test('#682 wiring: the plan agent\'s target repos are checked out by `gh repo clone` under <home>/fanout/<run>/plan-src, shallow, at the run target — before the spawn', () => {
+  const src = read('fanout-acceptance-wiring.ts');
+  assert.match(src, /checkouts: async \(\{ run, repos, target \}\)/);
+  assert.match(src, /'fanout', run, 'plan-src'/);
+  assert.match(src, /'gh', \['repo', 'clone', repo, dir, '--', '--depth', '1'/);
+  assert.match(src, /`origin\/\$\{target\}`/);
+});

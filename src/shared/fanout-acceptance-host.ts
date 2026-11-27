@@ -6,7 +6,7 @@ import {
 import { readRepoFacts } from './fanout-harness-facts.ts';
 import { resolveHarness, type RepoFacts, type ResolvedHarness } from './fanout-harness.ts';
 import { dispatchReview, type ReviewHostDeps, type ReviewHostResult } from './fanout-review-host.ts';
-import { dispatchPlan, dispatchPlanRelease, type PlanHostResult } from './fanout-plan-host.ts';
+import { dispatchPlan, dispatchPlanRelease, type PlanHostDeps, type PlanHostResult } from './fanout-plan-host.ts';
 import { startRun, type StartDeps, type StartResult } from './fanout-start.ts';
 import { acceptanceBranch, acceptorBrief, acceptorName, amendedStatusText, claimAcceptor, frozenRecipients, frozenStatusText, settleAcceptor } from './fanout-acceptance.ts';
 
@@ -17,6 +17,8 @@ export interface AcceptanceHostDeps {
   isWorkspace: (id: string) => boolean;
   /** The checkout the writer works in: the ticket's implementer's repo, else the repo matching the state's `owner/name`, else the caller's. undefined = let the spawn inherit. */
   repoPath: (i: { run: string; ticket: string; from?: string; repo: string | null; implementer: string | null }) => string | undefined;
+  /** #682 — the plan agent's read-only checkouts of the target repos (see PlanHostDeps.checkouts). */
+  checkouts?: PlanHostDeps['checkouts'];
   /** The agent spawn route (`dispatchAgentSpawnRequest`): the role table pins the model from the name's `accept-` prefix. */
   spawn: (i: { from?: string; name: string; task: string; repoPath?: string }) => Promise<{ ok: boolean; id?: string; error?: string }>;
   /** #538 — the facts the harness discovery reads, from the TARGET ref of the repo at `repoPath` (null = cannot inspect). Default: git on that path (fanout-harness-facts.ts). */

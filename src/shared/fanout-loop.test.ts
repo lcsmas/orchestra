@@ -540,8 +540,8 @@ test('MINOR-3: the loop section of the implementer brief — present for a loop-
   const planned = applyPlan(newState('rts7', { target: 'main', switches: { seatRecords: 'on' }, now: '2026-01-01T00:00:00.000Z' }), planOf(load('rts7')), '2026-01-01T00:00:00.000Z');
   const { loopPlan: _lp, ...st0 } = planned; // the REAL #604 `applyPlan` sets `loopPlan` (which turns the loop section on): the byte-identity pin is for a state WITHOUT it
   const st = { ...st0, tickets: Object.fromEntries(Object.entries(st0.tickets).map(([k, t]) => [k, { ...t, specText: null }])) }; // #675: the plan now carries the ticket text, which the brief prints; the pinned hashes are of the brief of a ticket with none (no choice, no text ⇒ byte-identical)
-  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), 'ba8d1058cfd07dcfe57f722b417609b3b083c025df4175d3704c7581494fa019', 'no loop ⇒ the brief is what it was before #605 (hash taken on the unmodified renderer)');
-  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T1' })), 'b88073ddf1793f4e7e5254289b14f78400f52a408c2b12b7c15a942aa30aa560');
+  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T3' })), '3172fcf54ff9e9a96f1cc9875eb9f3a0856218e665288ce34889226b8509ec9a', 'no loop ⇒ the brief is what it was before #605 (re-pinned #682: the dummy plan\'s interface line now carries kind + shape — the only change)');
+  assert.equal(sha256Hex(renderImplementerBrief({ state: st, ticket: 'T1' })), '6db5e0fbea164656044cb58fde0d88e42782377868b18185e31807419aabd15a');
   assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: false }), renderImplementerBrief({ state: st, ticket: 'T3' }));
   assert.equal(renderImplementerBrief({ state: st, ticket: 'T3', loop: true }), `${renderImplementerBrief({ state: st, ticket: 'T3' })}\n\n${LOOP_BRIEF}`);
   assert.ok(planned.loopPlan, 'a loop-planned run carries #604\'s marker');
