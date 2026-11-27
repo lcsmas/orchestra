@@ -7,6 +7,8 @@ import { AWK_WRITES } from './role-guard-writes.ts';
 
 /** Sentinel the hook installer writes in `.orchestra/` (the role word, from `roleOfName(ws.name)`). Absent ⇒ guard inert. */
 export const ROLE_SENTINEL_FILE = 'role';
+/** #683 — `.orchestra/ticket-branch`: the one branch an implementer may push (its workspace branch, the ticket's). Absent ⇒ no push rule. */
+export const TICKET_BRANCH_FILE = 'ticket-branch';
 
 /** Tools the guard intercepts (AskUserQuestion is denied to every role, D6). */
 export const ROLE_GUARD_MATCHER = 'Bash|Edit|MultiEdit|Write|NotebookEdit|AskUserQuestion';
@@ -103,7 +105,7 @@ export function toEre(src: string): string {
 const AWK_HEREDOC = String.raw`BEGIN{h=""} { if (h != "") { l=$0; sub(/^[ \t]+/, "", l); if (l == h) h=""; next } print; c=$0; gsub(/<<</, "", c); gsub(/\(\([^)]*\)\)/, "", c); if (match(c, /<<-?[ \t]*\\*["']?[A-Za-z_][A-Za-z0-9_]*/)) { t=substr(c, RSTART, RLENGTH); sub(/<<-?[ \t]*\\*["']?/, "", t); h=t } }`;
 
 /** The guard's own wiring (sentinel, script, hook settings) is never written by the role it constrains (pre-review m4). */
-const PROTECT_RE = `([0-9]?>>?|${B}(tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|${B}sed[[:space:]]+-[a-zA-Z]*i|[[:space:]]sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
+const PROTECT_RE = `([0-9]?>>?|${B}(tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|[[:space:]](tee|rm|mv|cp|ln|truncate|chmod|dd|install|rsync)[[:space:]]|${B}sed[[:space:]]+-[a-zA-Z]*i|[[:space:]]sed[[:space:]]+-[a-zA-Z]*i)[^;&|]*(\\.orchestra/(role|ticket-branch|role-guard\\.sh)|\\.claude/settings(\\.local)?\\.json)`;
 /** Cheap Bash write heuristics (pre-review m1): the edit tools are only one door; these close the obvious others for the read-only
  *  roles. Redirect/`tee` TARGETS are judged in bash (scratch allowed); `sed -i` and in-place git acts are denied outright. */
 const GIT_WRITE = `${B}${GIT}[[:space:]]+${G}(apply|am|cherry-pick|revert|pull|restore|update-ref|checkout[[:space:]][^;&|]*[[:space:]]--([[:space:]]|$)|clean[[:space:]]+[^;&|]*-[a-zA-Z]*f|branch[[:space:]]+([^;&|]*[[:space:]])?(-f|--force)([[:space:]]|$))`;
@@ -185,7 +187,7 @@ case "$tool" in
   ${EDIT_TOOLS.join('|')})
     fp="$(printf '%s' "$input" | grep -oE '"(file_path|notebook_path)": *"([^"\\\\]|\\\\.)*"' | head -1 | sed -E 's/^"[a-z_]+": *"(.*)"$/\\1/')"
     case "$fp" in
-      */.orchestra/role|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)
+      */.orchestra/role|*/.orchestra/ticket-branch|*/.orchestra/role-guard.sh|*/.claude/settings.json|*/.claude/settings.local.json)
         deny "'$fp' is the role guard's own wiring — a fleet role never edits it." ;;
     esac
     scratch=0
@@ -281,6 +283,28 @@ if [ "$write_guard" != none ] && [ "$in_scratch" != 1 ]; then
       done
       [ "$okp" = 1 ] || deny "a shell write to '$p' resolves through a symlink to '$rp', outside scratch — the $role role writes only scratch (\\$TMPDIR, ~/.orchestra/agent-tmp/<wsid>/). (This guard is a heuristic: it cannot see every shell write.)"
     done <<< "$oks"
+  fi
+fi
+# #683: an implementer pushes its ticket branch only (it never creates \`impl/X\` for \`impl-X\`): every pushed ref name must equal the one in .orchestra/${TICKET_BRANCH_FILE}
+if [ "$role" = implementer ] && [ -f "$here/${TICKET_BRANCH_FILE}" ] && chk '${sq(PUSH)}'; then
+  want="$(head -c 200 "$here/${TICKET_BRANCH_FILE}" 2>/dev/null | tr -d '[:space:]')"
+  wantbase="$(printf '%s' "$want" | sed -E 's/-[0-9]+$//')"
+  if [ -n "$want" ]; then
+    seg="$(printf '%s' "$cmd" | grep -oE -- '${sq(PUSH)}[^;&|]*' | head -1 | sed -E 's/^.*[[:space:]]push([[:space:]]|$)//')"
+    set -f; nrefs=0; nwords=0
+    for w in $seg; do
+      w="$(printf '%s' "$w" | tr -d "\\\\\\"'")"
+      case "$w" in
+        --all|--mirror) deny "an implementer pushes its ticket branch '$want' only — '$w' pushes every branch. Push '$want' by name." ;;
+        -*) continue ;;
+      esac
+      nwords=$((nwords + 1)); [ "$nwords" -ge 2 ] || continue # the first word is the remote
+      nrefs=$((nrefs + 1)); r="\${w#+}"; case "$r" in *:*) r="\${r#*:}" ;; esac; r="\${r#refs/heads/}"
+      if [ "$r" = HEAD ]; then r="$(git -C "\${cwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"; [ -n "$r" ] || continue; fi
+      if [ "$r" != "$want" ] && [ "$r" != "$wantbase" ]; then set +f; deny "an implementer pushes its ticket branch '$want' only — refused a push to '$r'. Check '$want' out (git fetch origin $want && git checkout -B $want origin/$want) and push that name; never create another branch (a name that differs only by / - _ is invisible to the loop)."; fi
+    done
+    if [ "$nrefs" = 0 ]; then cur="$(git -C "\${cwd:-.}" symbolic-ref --short -q HEAD 2>/dev/null)"; if [ -n "$cur" ] && [ "$cur" != "$want" ] && [ "$cur" != "$wantbase" ]; then set +f; deny "an implementer pushes its ticket branch '$want' only — this checkout is on '$cur'. Check '$want' out (git fetch origin $want && git checkout -B $want origin/$want) and push that name."; fi; fi
+    set +f
   fi
 fi
 if chk '${sq(CHECK)}' && chk '${sq(DESTRUCTIVE)}'; then

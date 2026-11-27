@@ -1,6 +1,7 @@
 // #614 (spec #601, ledger #613) — the LIVE GitPort of the Boucle: real git behind an injected runner. Local refs win while nothing is pushed, `origin` takes over once it is ahead (a branch the author pushed and a local copy that never moved).
 // Every read fails closed: an unreadable ref is `null` / `false`, a git error that is not "unknown object" throws (the loop ends `could not run`, never a guess).
 import type { GitPort } from './fanout-loop-ports.ts';
+import { separatorTwin } from './fanout-ticket-branch.ts';
 import { FanoutStateError, StartCheckIdentityError } from './fanout-state.ts';
 
 export interface ExecResult { code: number; stdout: string; stderr: string }
@@ -74,6 +75,12 @@ export function createLiveGit(deps: LiveGitDeps): GitPort {
       if (push.code !== 0) throw new FanoutStateError(`git push of the probe branch failed: ${push.stderr.trim().slice(0, 300)}`);
       await refresh(branch);
       return { head: commit };
+    },
+    async twin(branch) { // #683: the remote's word (ls-remote), never a stale tracking ref
+      const ls = await deps.git(['ls-remote', '--heads', remote]);
+      if (ls.code !== 0) return null; // unreadable ⇒ unknown, never "gone"
+      const names = ls.stdout.split('\n').map((l) => /\srefs\/heads\/(\S+)$/.exec(l)?.[1]).filter((n): n is string => !!n);
+      return separatorTwin(branch, names);
     },
     async deleteBranch(branch) {
       if (!PROBE.test(branch)) throw new FanoutStateError(`refusing to delete a branch named ${JSON.stringify(branch)}: only the start check's probe (orchestra-start-check-<run>) is deleted here`);
