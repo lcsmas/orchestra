@@ -121,6 +121,21 @@ test('#628: the bare gh fallback classifies a conflict refusal the same way', as
   assert.deepEqual([a.ok, a.reason], [false, 'merge-conflict'], JSON.stringify(a));
 });
 
+// ── #689: the loop reads `mergeable` itself (a CONFLICTING PR has no merge ref → no Actions run → nothing else would say it) ──
+test('#689: prState carries GitHub\'s mergeable word: MERGEABLE / CONFLICTING', async () => {
+  const r = await rig({ approve: true });
+  assert.equal((await r.forge.prState(r.n)).mergeable, 'MERGEABLE');
+  r.fake.conflicting.add(r.n);
+  assert.equal((await r.forge.prState(r.n)).mergeable, 'CONFLICTING');
+});
+test('#689: UNKNOWN is read once more at once; still UNKNOWN → reported as UNKNOWN (never a verdict)', async () => {
+  const r = await rig({ approve: true });
+  r.fake.unknownReads.set(r.n, 1);
+  assert.equal((await r.forge.prState(r.n)).mergeable, 'MERGEABLE', 'the second read answered');
+  r.fake.unknownReads.set(r.n, 5);
+  assert.equal((await r.forge.prState(r.n)).mergeable, 'UNKNOWN');
+});
+
 // ── #627: the run target, with a fake exec ──
 import { livePlanner, resolveRunTarget } from './fanout-run-live.ts';
 import type { Exec } from '../shared/fanout-loop-live-git.ts';

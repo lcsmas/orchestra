@@ -35,6 +35,8 @@ export class FakeForge {
   readonly conflicting = new Set<number>();
   /** #628 — pull requests that read MERGEABLE until the merge call, which then refuses them (mergeable UNKNOWN → CONFLICTING between the two). */
   readonly conflictsAtMerge = new Set<number>();
+  /** #689 — pull request → how many `mergeable` reads still answer UNKNOWN (GitHub computes it lazily). */
+  readonly unknownReads = new Map<number, number>();
   /** The name of a job that is SKIPPED (an `if:` that evaluated false) on every run. */
   skipped: string | null = null;
   /** The steps `gh run view --json jobs` reports for a job (default: setup + ONE user step that succeeded + complete). */
@@ -77,7 +79,7 @@ export class FakeForge {
       case 'baseRefName': return pr.base;
       case 'number': return pr.n;
       case 'url': return `https://github.com/o/r/pull/${pr.n}`;
-      case 'mergeable': return this.conflicting.has(pr.n) ? 'CONFLICTING' : 'MERGEABLE';
+      case 'mergeable': { const u = this.unknownReads.get(pr.n) ?? 0; if (u > 0) { this.unknownReads.set(pr.n, u - 1); return 'UNKNOWN'; } return this.conflicting.has(pr.n) ? 'CONFLICTING' : 'MERGEABLE'; }
       case 'mergeCommit': return pr.state === 'MERGED' ? { oid: pr.mergeCommit ?? this.treeOf(`merge:${pr.n}`) } : null;
       default: return undefined;
     }

@@ -39,7 +39,7 @@ export interface Scenario {
   events?: Record<string, Array<{ at: string; kind: 'question' | 'no-safe-option'; /** the ask's exact body (default: a well-formed one) */ body?: string }>>;
   /** the state already holds a COMPLETE plan written by hand (no `loopPlan` marker) when the loop starts: `stepPlan` adopts it and starts */
   prePlanned?: boolean;
-  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[]; /** #628: tickets whose merge the forge refuses with `merge-conflict` while their branch lacks the target's tip (until their `sync` step merges it in) */ conflictOnStale?: string[]; /** #625: the plan is NOT handed to the loop — the planner port (the plan agent) writes it */ viaPlanner?: boolean };
+  faults?: { stealMail?: boolean; /** tickets whose agent never records `--follows` before it nominates */ noFollows?: string[]; /** ticket → ms after its CI starts before the `build`/`test` checks register (only `lint` exists before) */ noChecks?: string[]; lateCheck?: Record<string, number>; /** tickets whose green checks report 0 steps */ zeroStepCi?: string[]; /** #628: tickets whose merge the forge refuses with `merge-conflict` while their branch lacks the target's tip (until their `sync` step merges it in) */ conflictOnStale?: string[]; /** #689: tickets whose PR READS `mergeable: CONFLICTING` while their branch lacks the target's tip — and, as on GitHub, no Actions run starts on it (only an external check shows) */ conflictVisible?: string[]; /** #625: the plan is NOT handed to the loop — the planner port (the plan agent) writes it */ viaPlanner?: boolean };
   timing?: { codeMs?: number; nominateMs?: number; connectMs?: number; reviewMs?: number; ciMs?: number };
 }
 
@@ -369,8 +369,13 @@ export class DummyWorld {
     this.ev('ci-start', p.ticket, { n: p.n, head, doneAt: run.doneAt, result: run.result });
     return run;
   }
+  /** #689: what the forge says of the PR's mergeability — CONFLICTING for a `conflictVisible` ticket whose branch lacks the target's tip */
+  mergeableOf(p: Pr): 'MERGEABLE' | 'CONFLICTING' {
+    return p.state === 'open' && !!this.sc.faults?.conflictVisible?.includes(p.ticket) && !this.contains(this.branches.get(this.target)!, this.branches.get(p.branch)!) ? 'CONFLICTING' : 'MERGEABLE';
+  }
   checks(n: number, head: string): ForgeCheck[] {
     const p = this.prs.get(n)!;
+    if (this.mergeableOf(p) === 'CONFLICTING') return [{ name: 'vercel', status: 'green' }]; // no merge ref → no Actions run, only an external status (steps unknown)
     const run = this.runFor(p, head);
     const steps = this.sc.faults?.zeroStepCi?.includes(p.ticket) ? 0 : 3;
     if (this.sc.faults?.noChecks?.includes(p.ticket) || (p.branch.startsWith('orchestra-start-check-') && this.sc.startCheck === 'missing')) return []; // the forge shows no check at all
@@ -388,7 +393,7 @@ export class DummyWorld {
     if (method !== 'merge') { this.ev('merge-refused', p.ticket, { n, method }); return { ok: false, reason: `method ${method}: only a merge commit keeps the dependents' history (squash/rebase rewrite it)` }; }
     const head = this.branches.get(p.branch)!;
     if (p.state !== 'open') return { ok: false, reason: `the PR is ${p.state}` };
-    if (this.sc.faults?.conflictOnStale?.includes(p.ticket) && !this.contains(this.branches.get(this.target)!, head)) { this.ev('merge-refused', p.ticket, { n, reason: 'merge-conflict' }); return { ok: false, reason: 'merge-conflict', detail: 'the branch lacks the target tip' }; }
+    if ((this.sc.faults?.conflictOnStale?.includes(p.ticket) || this.mergeableOf(p) === 'CONFLICTING') && !this.contains(this.branches.get(this.target)!, head)) { this.ev('merge-refused', p.ticket, { n, reason: 'merge-conflict' }); return { ok: false, reason: 'merge-conflict', detail: 'the branch lacks the target tip' }; }
     if (!dummySameSha(head, matchHead)) return { ok: false, reason: 'head-moved' };
     const run = [...p.runs].reverse().find((r) => r.head === head);
     const ci = !run ? 'none' : this.t < run.doneAt ? 'pending' : run.result;
@@ -438,7 +443,7 @@ export function buildDummy(i: { home: string; run: string; scenario: Scenario; t
   };
   const forge: ForgePort = {
     async openPr({ branch, title }) { const t = ticketOfBranch(branch) ?? title.split(':')[0]; return { n: w.openPr(branch, t) }; },
-    async prState(n) { const p = w.prs.get(n)!; return { state: p.state, head: p.mergedHead ?? w.branches.get(p.branch)! }; },
+    async prState(n) { const p = w.prs.get(n)!; return { state: p.state, head: p.mergedHead ?? w.branches.get(p.branch)!, mergeable: w.mergeableOf(p) }; },
     async checks(n, head) { return w.checks(n, head); },
     async rerun(n) { w.rerun(n); },
     async merge(n, matchHead, method) { return w.merge(n, matchHead, method); },

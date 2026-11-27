@@ -29,7 +29,8 @@ export interface ForgeCheck { name: string; status: 'pending' | 'green' | 'red';
 export interface ForgePort {
   /** Idempotent per branch: a second call for the same branch answers the same number. */
   openPr(i: { branch: string; base: string; title: string }): Promise<{ n: number }>;
-  prState(n: number): Promise<{ state: 'open' | 'merged' | 'closed'; head: string }>;
+  /** `mergeable` = GitHub's word (UNKNOWN while it computes). Absent = a port that cannot tell (read as MERGEABLE); a CONFLICTING PR gets no merge ref, so NO Actions run starts on its head (#689). */
+  prState(n: number): Promise<{ state: 'open' | 'merged' | 'closed'; head: string; mergeable?: 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' }>;
   checks(n: number, head: string): Promise<ForgeCheck[]>;
   rerun(n: number, names: string[]): Promise<void>;
   /** A MERGE COMMIT bound to `matchHead` (refused with `reason: 'head-moved'` when the PR head is another). */
