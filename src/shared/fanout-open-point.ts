@@ -47,11 +47,77 @@ export function recordOpenPoint(state: FanoutState, from: string, a: { about: st
   return { state: { ...state, openPoints: [...list, point], updatedAt: a.now }, point, fresh: true };
 }
 
-/** The refusal of `gate` / `deliver` / the loop's approval for ticket `id`: an unsettled point it raised, is about, or carries (as a follow-up). A merged / dropped ticket is not judged (nothing left to deliver). null = free. */
+// ── #691 — who an open point holds. The point lifts only when the reviewer of the ticket that carries it approves a NEW head, and that ticket cannot be reviewed before it is connected to its unmerged upstreams. So a point
+// raised by A about a ticket that depends on A must NOT hold A (its merge, its CONNECTs): A would wait for B and B for A. Rule 1: `dependent`; rule 4: any other hold cycle found in the graph breaks the same way.
+const isLive = (state: FanoutState, id: string): boolean => { const t = state.tickets[id]; return !!t && t.status !== 'merged' && t.status !== 'dropped'; };
+/** Does `id` depend on `up`, directly or through other tickets (unmerged edges only: a merged ticket is no longer waited for)? */
+export function dependsTransitively(state: FanoutState, id: string, up: string): boolean {
+  const seen = new Set<string>();
+  const walk = (x: string): boolean => {
+    for (const d of state.tickets[x]?.dependsOn ?? []) {
+      if (!isLive(state, d) || seen.has(d)) continue;
+      if (d === up) return true;
+      seen.add(d);
+      if (walk(d)) return true;
+    }
+    return false;
+  };
+  return walk(id);
+}
+const liftTicketOf = (p: OpenPoint): string => p.followUp ?? p.about;
+export interface PointRelease { id: number; kind: 'dependent' | 'cycle'; text: string }
+/** The open points whose RAISER is not held (only the ticket that carries the point is): rule 1 = the point is about a ticket that depends on the raiser; rule 4 = the hold graph (X waits for its unmerged upstreams, and for the ticket that carries a point holding X) has a cycle through the raiser. */
+export function pointReleases(state: FanoutState): Map<number, PointRelease> {
+  const out = new Map<number, PointRelease>();
+  const open = openPointsOpen(state);
+  for (const p of open) {
+    if (isLive(state, p.from) && isLive(state, liftTicketOf(p)) && dependsTransitively(state, liftTicketOf(p), p.from)) out.set(p.id, { id: p.id, kind: 'dependent', text: `deadlock: point ${p.id} (${p.from} → ${p.about}) — ${liftTicketOf(p)} depends on ${p.from} and cannot be reviewed before ${p.from} merges; ${p.from} is not held by it, only ${liftTicketOf(p)}` });
+  }
+  for (let round = 0; round <= open.length; round++) {
+    const edges = new Map<string, Set<string>>();
+    const add = (x: string, y: string): void => { if (x !== y && isLive(state, x) && isLive(state, y)) { if (!edges.has(x)) edges.set(x, new Set()); edges.get(x)!.add(y); } };
+    for (const id of Object.keys(state.tickets)) for (const d of state.tickets[id].dependsOn) add(id, d);
+    for (const p of open) { const l = liftTicketOf(p); for (const h of [p.about, p.followUp ?? p.about, ...(out.has(p.id) ? [] : [p.from])]) add(h, l); }
+    const path = (from: string, to: string): string[] | null => { // BFS: the edges leading from `from` to `to`
+      const prev = new Map<string, string>([[from, '']]);
+      const q = [from];
+      for (let i = 0; i < q.length; i++) for (const n of edges.get(q[i]) ?? []) if (!prev.has(n)) { prev.set(n, q[i]); if (n === to) { const r = [to]; for (let c = q[i]; c; c = prev.get(c)!) r.unshift(c); return r; } q.push(n); }
+      return null;
+    };
+    let changed = false;
+    for (const p of open) {
+      if (out.has(p.id)) continue;
+      const back = path(liftTicketOf(p), p.from);
+      if (!back || !edges.get(p.from)?.has(liftTicketOf(p))) continue;
+      out.set(p.id, { id: p.id, kind: 'cycle', text: `deadlock: point ${p.id} (${p.from} → ${p.about}) waits in a cycle ${[p.from, ...back].join(' → ')}; ${p.from} is not held by it, only ${liftTicketOf(p)}` });
+      changed = true;
+      break; // the graph changed: look again
+    }
+    if (!changed) break;
+  }
+  return out;
+}
+/** The unmerged direct upstreams of `about` that lead to `from` (or are it) and it has not connected to yet (`builtOn`): the order of a point raised by `from` waits for them (#691). */
+export function unconnectedTowards(state: FanoutState, about: string, from: string): string[] {
+  const t = state.tickets[about];
+  if (!t) return [];
+  return t.dependsOn.filter((d) => isLive(state, d) && (d === from || dependsTransitively(state, d, from)) && !t.builtOn?.[d]);
+}
+/** The hold lines of ticket `id` for the loop's log: each open point holding it, who can lift it. */
+export function openPointHoldLines(state: FanoutState, id: string): string[] {
+  const rel = pointReleases(state);
+  return openPointsOpen(state).filter((p) => (p.from === id && !rel.has(p.id)) || p.about === id || p.followUp === id).map((p) => {
+    const carrier = liftTicketOf(p);
+    return `${id}: approval held by open point ${p.id} (${p.from} → ${p.about}${p.followUp ? `, carried by ${p.followUp}` : ''}): “${p.text.replace(/\s+/g, ' ').slice(0, 100)}” — lifted by the reviewer of ${carrier} approving a NEW head with it addressed, a coordinator decision (fanout open-point --decide ${p.id}=<reason>), or the loop's fixed rule after its orders`;
+  });
+}
+
+/** The refusal of `gate` / `deliver` / the loop's approval for ticket `id`: an unsettled point it raised (unless #691 releases the raiser), is about, or carries (as a follow-up). A merged / dropped ticket is not judged (nothing left to deliver). null = free. */
 export function openPointRefusal(state: FanoutState, id: string): FollowUpRefusal | null {
   const t = state.tickets[id];
   if (!t || t.status === 'merged' || t.status === 'dropped') return null;
-  const mine = openPointsOpen(state).filter((p) => p.from === id || p.about === id || p.followUp === id);
+  const rel = openPointsOpen(state).some((p) => p.from === id) ? pointReleases(state) : new Map<number, PointRelease>();
+  const mine = openPointsOpen(state).filter((p) => (p.from === id && !rel.has(p.id)) || p.about === id || p.followUp === id);
   if (!mine.length) return null;
   const line = (p: OpenPoint): string => `#${p.id} ${p.from} → ${p.about}${p.followUp ? ` (carried by ${p.followUp})` : ''}: “${p.text.replace(/\s+/g, ' ').slice(0, 120)}”`;
   return { reason: 'open-point-unsettled', detail: `${id}: ${mine.length} open point(s) block it — ${mine.map(line).join('; ')} — settled when the reviewer of ${[...new Set(mine.map((p) => p.followUp ?? p.about))].join(' / ')} approves a NEW head with the point listed in "addressed" (\`fanout record\`), or by a recorded decision (\`orchestra fanout open-point --decide <n>=<reason>\`, listed in the report)` };
