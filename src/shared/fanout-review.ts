@@ -6,6 +6,7 @@ import { renderPointsForReviewer } from './fanout-open-point.ts';
 import { renderDecisions, renderInterfaces, renderSwitchesLine, renderRunChoices } from './fanout-brief-common.ts';
 import { isVouched, type Caller } from './fanout-caller.ts';
 import { criteriaLines } from './fanout-criteria.ts';
+import { contractsOf, renderContracts } from './fanout-contracts.ts';
 import { claimIsStale } from './fanout-acceptance.ts';
 import {
   FanoutStateError, SeatRefusal, effectiveSpec, freezeAtFirstSpawn, interfaceOf, planMissing, seatRecordsOn, stampDefaults, switchesOf,
@@ -94,6 +95,8 @@ export function briefInputOf(state: FanoutState, ticket: string, o: { kind: Brie
     decisionsText: renderDecisions(state),
     choicesText: renderRunChoices(state, ticket),
     criteria: criteriaLines(effectiveSpec(state, t).specText),
+    contractsText: renderContracts(state, ticket),
+    contractIds: contractsOf(state, ticket).map((x) => x.c.id),
     pointsText: renderPointsForReviewer(state, ticket),
     switchesLine: renderSwitchesLine(state),
     follows: t.dependsOn.flatMap((id) => { const i = interfaceOf(state, id); return i ? [{ id, current: i.version, followed: follows[id] ?? null }] : []; }),

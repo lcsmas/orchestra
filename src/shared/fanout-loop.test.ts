@@ -172,6 +172,23 @@ test('#675 (dummy fleet): a choice that NARROWS a ticket sentence is challenged 
   assert.match(batch, /F1 MAJOR/);
   assert.match(batch, /## Choices of the run[\s\S]*Choice 1 narrows: « A later manual trigger gets the same effect as the carrier status\. »/);
 });
+test('#680 (dummy fleet): an UNMET contract blocks — the owner\'s reviewer answers c1 unmet, the author gets the batch with the contract, the fix is approved (met) and both owner and consumer merge; the report lists the contract with its final verdicts', async () => {
+  const home = tmp();
+  const r = await runDummyLoop({ home, scenario: load('contract-unmet'), options: { stallMs: 30 * 60_000, maxPasses: 1500 } });
+  assert.equal(r.result.exit, 0, r.world.events.filter((e) => e.ev === 'review-error').map((e) => String(e.error)).join('; '));
+  assert.deepEqual(r.result.report.merged, ['T1', 'T2', 'T3']);
+  assert.deepEqual(r.world.events.filter((e) => e.ev === 'review-record' && e.ticket === 'T1').map((e) => e.verdict), ['changes-requested', 'approve'], 'the unmet contract blocked once');
+  const s = readLoopState(home, 'contract-unmet')!;
+  assert.equal(s.tickets.T1.findings['contract-c1'].severity, 'BLOCKING');
+  assert.deepEqual(s.tickets.T1.reviews!.map((x) => x.contracts), [{ c1: 'unmet' }, { c1: 'met' }]);
+  assert.deepEqual(s.tickets.T2.reviews![0].contracts, { c1: 'met' }, 'the consumer answered met');
+  assert.deepEqual(s.tickets.T2.reviews![0].contractEvidence, { c1: 'src/T2.ts:1' }, 'with its evidence line');
+  assert.equal(s.tickets.T3.reviews![0].contracts, undefined, 'T3 is part of no contract: nothing to answer');
+  const batch = String(r.world.events.find((e) => e.ev === 'corrections-batch' && e.ticket === 'T1')?.text ?? '');
+  assert.match(batch, /contract-c1 BLOCKING — contract c1 is unmet on this head: T1 must — every path that sets the state/);
+  assert.deepEqual(r.result.report.contracts, [{ id: 'c1', owner: 'T1', must: 'every path that sets the state dispatches the event through one function', owned: 'met', consumers: [{ ticket: 'T2', answer: 'met' }] }]);
+  assert.match(renderReport(r.result.report), /contracts of the plan \(1\)[^\n]*\n  c1: T1 \[met\] must every path that sets the state dispatches the event through one function — consumers: T2 \[met\]/);
+});
 test('decision 8 (#607, composed): red CI → one re-run → the author is told the check → the same failure after its fix parks the ticket, its dependent with it; a red CI is never merged', async () => {
   const r = await go('red-ci');
   assert.equal(r.result.exit, 3);

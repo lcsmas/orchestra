@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "run": "contract-unmet",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [],
+        "spec": "spec/T2.md"
+      },
+      {
+        "id": "T3",
+        "dependsOn": [],
+        "spec": "spec/T3.md"
+      }
+    ],
+    "contracts": [
+      {
+        "id": "c1",
+        "owner": "T1",
+        "must": "every path that sets the state dispatches the event through one function",
+        "consumers": [
+          "T2"
+        ]
+      }
+    ]
+  },
+  "agents": {
+    "T1": {
+      "implementer": [
+        {
+          "do": "code"
+        },
+        {
+          "do": "nominate"
+        },
+        {
+          "do": "fix",
+          "afterMs": 900000
+        }
+      ],
+      "reviewer": [
+        {
+          "do": "changes",
+          "unmet": [
+            "c1"
+          ]
+        },
+        {
+          "do": "approve"
+        }
+      ]
+    }
+  }
+}
