@@ -3,7 +3,7 @@
 // Orders are spaced by `orderWaitMs`; the same head after 2 orders, or `MAX_POINT_ORDERS` orders over new heads that approve without addressing it, decides the point.
 import type { LoopCtx } from './fanout-loop.ts';
 import { withLoop } from './fanout-loop-side.ts';
-import { OPEN_POINT_FIXED_RULE, decideOpenPoint, openFollowUp, openPointsOf, openPointsOpen, renderPointOrder } from './fanout-open-point.ts';
+import { OPEN_POINT_FIXED_RULE, decideOpenPoint, openFollowUp, openPointsOf, openPointsOpen, renderPointOrder, unconnectedTowards } from './fanout-open-point.ts';
 import { reviewOn } from './fanout-record.ts';
 
 /** Orders for ONE point over every head (a new head that approves without addressing it earns a new order): past this the fixed rule decides. */
@@ -34,6 +34,8 @@ export async function stepOpenPoints(ctx: LoopCtx): Promise<void> {
     if (p.followUp) { ctx.waitOn(`point:${p.id}:${target}`, deps.options.stallMs); return; } // the follow-up flows through the ordinary steps; its reviewer settles the point
     const impl = tt.implementer;
     const o = s.loop.pointOrders[String(p.id)];
+    const unconnected = o ? [] : unconnectedTowards(s, target, p.from); // #688: a ticket that depends on the raiser gets the order once it is CONNECTED to it (before, it cannot even be reviewed): the connection is the loop's own step, bounded here
+    if (unconnected.length) { ctx.waitOn(`point:${p.id}:connect`, deps.options.stallMs); ctx.note(`open point ${p.id}: order to ${target} waits for its connection to ${unconnected.join(', ')}`); return; }
     if (!impl || !deps.fleet.live(impl)) { ctx.waitOn(`point:${p.id}:start`, deps.options.stallMs); return; } // `start` puts a fresh implementer on the ticket; the order follows next pass
     const head = tt.head ?? '';
     const send = async (n: number, total: number): Promise<void> => {
