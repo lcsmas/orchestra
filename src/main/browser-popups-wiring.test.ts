@@ -22,7 +22,7 @@ const fn = (src: string, decl: string): string => {
 const code = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/[ \t]+$/gm, '');
 
 test('teardownWorkspace destroys the browser panel as an UNCONDITIONAL top-level statement: the socket `orchestra delete`, the bulk delete and repo removal all go through it', () => {
-  const body = code(fn(ws, 'async function teardownWorkspace(ws: Workspace)'));
+  const body = code(fn(ws, 'async function teardownWorkspace(ws: Workspace'));
   assert.match(body, /^ {2}destroyBrowserPanel\(id\);$/m, 'a top-level statement (not commented out, not behind an if)');
   // controls for the matcher itself: the two shapes that used to slip through
   assert.doesNotMatch(code('  // destroyBrowserPanel(id);'), /^ {2}destroyBrowserPanel\(id\);$/m);
@@ -30,9 +30,9 @@ test('teardownWorkspace destroys the browser panel as an UNCONDITIONAL top-level
 });
 
 test('control: deleteWorkspace and deleteWorkspaces both tear down through teardownWorkspace; the socket route calls deleteWorkspace', () => {
-  assert.match(code(fn(ws, 'export async function deleteWorkspace(id: string)')), /^ {2,4}await teardownWorkspace\(ws\);$/m);
+  assert.match(code(fn(ws, 'export async function deleteWorkspace(id: string')), /^ {2,4}await teardownWorkspace\(ws(, opts)?\);$/m);
   assert.match(code(fn(ws, 'export async function deleteWorkspaces(')), /^ {4,6}await teardownWorkspace\(ws\);$/m);
-  assert.match(code(fn(ws, 'export async function dispatchDeleteWorkspaceRequest(')), /^ {4}await deleteWorkspace\(id\);$/m);
+  assert.match(code(fn(ws, 'export async function dispatchDeleteWorkspaceRequest(')), /^ {4}await deleteWorkspace\(id, \{.*\}\);$/m);
 });
 
 test('control: archiveWorkspace still destroys the browser panel itself', () => {

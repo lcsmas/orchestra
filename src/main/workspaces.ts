@@ -11,7 +11,10 @@ import { hasSessionKey, forgetSessionKey, sessionKeys } from './session-identity
 import { decideSpawnProfile, type SpawnProfileDecision } from '../shared/spawn-profile.ts';
 import { effectiveProfileId } from '../shared/browser-profile.ts';
 import { deletingProfiles } from './spawn-profile-gate.ts';
-import { forbidKeeperLaunch, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
+import { forbidKeeperLaunch, keeperSocketPath, killKeeper, killKeeperIf, killKeeperTree, readTrackedKeeperPid, snapshotKeeperTree } from './keeper-client';
+import { dockerApiForMember } from './docker-api';
+import { cleanupDockerApi, removeWorkspaceContainers } from './docker-cleanup';
+import { cleanupReportIsNoteworthy, formatCleanupReport, type DockerCleanupReport } from '../shared/docker-cleanup';
 import { stopMemberScopeIfAny } from './scope-stop-host';
 import { removeAgentTmpDir } from './agent-tmpdir';
 import {
@@ -810,18 +813,31 @@ export async function stopAgentSessionForMove(id: string, reason: string): Promi
   }
 }
 
+/** What a delete is asked beyond the default (#696). */
+export interface DeleteOptions {
+  /** Also remove the NAMED volumes the member's containers mounted (default: listed, kept). */
+  removeNamedVolumes?: boolean;
+  /** Receives what was removed Docker-side. */
+  onDockerReport?: (r: DockerCleanupReport) => void;
+}
+
 /** Tear down everything a delete owns EXCEPT the store record and the renderer
  *  broadcast: stop PTYs, run the archive script, remove the worktree/dir, drop
  *  scrollback + inbox. Split out so bulk delete can reap N worktrees and then
  *  do a SINGLE store write + a SINGLE broadcast, instead of paying a full
  *  serialized store.json rewrite and a renderer re-render per workspace. */
-async function teardownWorkspace(ws: Workspace): Promise<void> {
+async function teardownWorkspace(ws: Workspace, opts: DeleteOptions = {}): Promise<void> {
   const id = ws.id;
+  const dockerApi = dockerApiForMember(keeperSocketPath(id), cleanupDockerApi()); // resolved BEFORE the keeper dies: its relay's upstream sidecar goes with it
   dropHeldStart(id); // #286: a deleted workspace (single AND bulk delete) must not linger in `held starts:` nor keep the held line "non-empty"
   forgetWorkspaceProbes(id);
   forgetHibernationActivity(id);
   log.info(`deleting workspace ${ws.branch} (${id}) worktree=${ws.worktreePath}`);
   await stopStructuredSession(id);
+  // #696: the member's containers (stamped `orchestra.ws=<id>` by its relay) go with it, anonymous volumes included — after the stop so nothing new is created meanwhile, before the early returns so every kind is covered
+  const docker = await removeWorkspaceContainers(dockerApi, id, { removeNamedVolumes: opts.removeNamedVolumes });
+  if (cleanupReportIsNoteworthy(docker)) log.info(`delete ${id}: docker — ${formatCleanupReport(docker).join(' | ')}`);
+  opts.onDockerReport?.(docker);
   // Hard delete: the agent session is stopped above; now the Run/nvim terminals, then the user's archive script (best-effort),
   // the git worktree and the leftover `logs/<id>.log` (the pre-#233 agent-PTY log — nothing writes it now). The archive script
   // runs BEFORE worktree removal so it can still see the files / cwd.
@@ -923,12 +939,12 @@ export function reportAdmissionFailure(wsId: string, text: string): void {
   log.info(`admission: told coordinator ${(parent as Workspace).id} that ${wsId}'s released start did not start`);
 }
 
-export async function deleteWorkspace(id: string): Promise<void> {
+export async function deleteWorkspace(id: string, opts: DeleteOptions = {}): Promise<void> {
   const ws = store.getWorkspace(id);
   if (!ws) return;
   const closedRuns = closeRunsOf([id]); // #437: first — mail to a coordinator being deleted is refused for the whole (slow) teardown
   try {
-    await teardownWorkspace(ws);
+    await teardownWorkspace(ws, opts);
   } catch (e) {
     reopenRunIds(closedRuns); // #437: the delete failed — the workspace stays, so do the runs THIS call closed
     throw e;
@@ -1739,6 +1755,8 @@ export interface DeleteWorkspaceResult {
   id?: string;
   branch?: string;
   error?: string;
+  /** #696: what the delete removed from Docker (containers, anonymous volumes; named volumes kept or removed). */
+  docker?: DockerCleanupReport;
 }
 
 /** Socket entry point for `/deleteWorkspace`. Hard-deletes a workspace the same
@@ -1749,6 +1767,8 @@ export interface DeleteWorkspaceResult {
  * `deleteWorkspace`) so a CLI caller gets feedback on a bad id. */
 export async function dispatchDeleteWorkspaceRequest(input: {
   id?: string;
+  /** #696: also remove the named volumes the member's containers mounted. */
+  removeVolumes?: boolean;
 }): Promise<DeleteWorkspaceResult> {
   const id = input.id?.trim();
   if (!id) return { ok: false, error: 'missing id' };
@@ -1756,8 +1776,9 @@ export async function dispatchDeleteWorkspaceRequest(input: {
   if (!ws) return { ok: false, error: `unknown workspace: ${id}` };
   try {
     const branch = ws.branch;
-    await deleteWorkspace(id);
-    return { ok: true, id, branch };
+    let docker: DockerCleanupReport | undefined;
+    await deleteWorkspace(id, { removeNamedVolumes: input.removeVolumes === true, onDockerReport: (r) => (docker = r) });
+    return { ok: true, id, branch, ...(docker ? { docker } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'delete failed' };
   }
@@ -4010,7 +4031,9 @@ Archived workspaces cannot be migrated.
 ## Delete a workspace
 
 Stops its agent, runs its archive script, removes the git worktree AND its
-branch, and drops it from the app. **Destructive and irreversible** — run it only
+branch, removes the Docker containers its agent created (and their anonymous
+volumes; named volumes are listed, --volumes removes them too), and drops it
+from the app. **Destructive and irreversible** — run it only
 on an explicit user request to delete that workspace.
 
 \`\`\`bash

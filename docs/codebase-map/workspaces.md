@@ -410,7 +410,7 @@ A workspace with NO agent session by design: a shell command owns a fan-out run 
   'workspace-deleted')` (kills a surviving keeper/CLI, sweeps its pid/sock) +
   `stopMemberScopeIfAny(id, 'workspace-deleted')` (#327: only a member WITH a kernel scope — kills its Reliquats
   by identity, then stops ITS scope units — `session-keeper.md`) —
-  also run by `pruneOrphanedWorkspaces` (boot). It sits in the workspaces.ts
+  also run by `pruneOrphanedWorkspaces` (boot); right after it **#696** `removeWorkspaceContainers` removes the member's `orchestra.ws`-labelled Docker containers with their anonymous volumes (`session-keeper.md` § Docker cleanup). It sits in the workspaces.ts
   chokepoint, not api-handlers' fire-and-forget `sdkStopMany` (which skips a
   session-less survivor and is bypassed by the CLI socket route
   `dispatchDeleteWorkspaceRequest`). `deleteWorkspaces` tombstones (`forbidKeeperLaunch`) EVERY id before the first teardown (L5); the boot

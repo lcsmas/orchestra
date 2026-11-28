@@ -426,7 +426,7 @@ export function realResourceMonitorDeps(): ResourceMonitorDeps {
 export const CONTAINER_PASS_BUDGET_MS = 15_000;
 
 /** The bus + store the container-accounting predicates read (FI-3 v1.3: `container-window.ts`, the SAME "live fleet run" as the LEAD selection / memory Pause). */
-const windowDeps: ContainerWindowDeps = {
+export const windowDeps: ContainerWindowDeps = {
   getBus,
   getWorkspace: (id) => store.getWorkspace(id),
   listWorkspaces: () => store.workspaces,

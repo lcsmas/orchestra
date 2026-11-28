@@ -16,7 +16,7 @@ export interface DockerResponse {
   body: Buffer;
 }
 export interface DockerRequest {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   /** Path + query, no API version prefix (the daemon then speaks its newest). */
   path: string;
   timeoutMs: number;
@@ -47,6 +47,13 @@ export interface DockerContainerSummary {
   labels: Record<string, string>;
 }
 
+/** One entry of the container's `Mounts` (inspect). `name` is set for `type: 'volume'` only. */
+export interface DockerMount {
+  type: string;
+  name: string | null;
+  destination: string;
+}
+
 export interface DockerContainerInspect {
   id: string;
   name: string;
@@ -55,6 +62,8 @@ export interface DockerContainerInspect {
   /** `HostConfig.AutoRemove` — `docker run --rm`: stopping such a container DELETES it (FI-1.4). */
   autoRemove: boolean;
   labels: Record<string, string>;
+  /** `Mounts` — the volumes (#696: what a removal takes with it, what it leaves). */
+  mounts: DockerMount[];
 }
 
 export interface ListContainersOptions {
@@ -80,6 +89,10 @@ export interface DockerApi {
   stopContainer(id: string, timeoutSec?: number): Promise<'stopped' | 'already-stopped' | 'gone'>;
   /** `POST /containers/{id}/start`. */
   startContainer(id: string): Promise<'started' | 'already-running' | 'gone'>;
+  /** `DELETE /containers/{id}?v=…&force=…` (#696). `volumes` = `docker rm -v` (the container's ANONYMOUS volumes go with it; named ones stay); `force` kills a running one. */
+  removeContainer(id: string, o?: { volumes?: boolean; force?: boolean }): Promise<'removed' | 'gone'>;
+  /** `DELETE /volumes/{name}` (#696). 'in-use' = another container still mounts it (409): the daemon's own guard, never forced. */
+  removeVolume(name: string): Promise<'removed' | 'gone' | 'in-use'>;
   /** One-shot `GET /containers/{id}/stats?stream=false&one-shot=true` as the daemon returns it; null = 404. #293 reduces it to bytes. */
   containerStats(id: string): Promise<unknown | null>;
 }
@@ -254,6 +267,7 @@ export function createDockerApi(
         Config?: { Image?: string; Labels?: Record<string, string> | null };
         State?: { Running?: boolean };
         HostConfig?: { AutoRemove?: boolean };
+        Mounts?: Array<{ Type?: string; Name?: string; Destination?: string }> | null;
       }>(res, `inspect ${id}`);
       return {
         id: j.Id,
@@ -262,6 +276,7 @@ export function createDockerApi(
         running: j.State?.Running === true,
         autoRemove: j.HostConfig?.AutoRemove === true,
         labels: j.Config?.Labels ?? {},
+        mounts: (j.Mounts ?? []).map((m) => ({ type: String(m.Type ?? ''), name: typeof m.Name === 'string' && m.Name !== '' ? m.Name : null, destination: String(m.Destination ?? '') })),
       };
     },
     async stopContainer(id, timeoutSec = 10) {
@@ -277,6 +292,19 @@ export function createDockerApi(
       if (res.status === 304) return 'already-running';
       if (res.status === 404) return 'gone';
       throw httpError(res, `start ${id}`);
+    },
+    async removeContainer(id, o = {}) {
+      const res = await transport({ method: 'DELETE', path: `/containers/${enc(id)}?v=${o.volumes ? 1 : 0}&force=${o.force ? 1 : 0}`, timeoutMs: Math.max(timeoutMs, 30_000) });
+      if (res.status === 204) return 'removed';
+      if (res.status === 404) return 'gone';
+      throw httpError(res, `remove ${id}`);
+    },
+    async removeVolume(name) {
+      const res = await transport({ method: 'DELETE', path: `/volumes/${enc(name)}`, timeoutMs: Math.max(timeoutMs, 30_000) });
+      if (res.status === 204) return 'removed';
+      if (res.status === 404) return 'gone';
+      if (res.status === 409) return 'in-use';
+      throw httpError(res, `remove volume ${name}`);
     },
     async containerStats(id) {
       const res = await transport({ method: 'GET', path: `/containers/${enc(id)}/stats?stream=false&one-shot=true`, timeoutMs: Math.max(timeoutMs, 10_000) });

@@ -392,7 +392,7 @@ test('#437 wiring: every archive / delete path closes, unarchive and a session s
   assert.match(fnBody(WS, 'export async function archiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+closeRunsOf\(\[ws\.id\]\);/, 'archive (UI, mobile, subtree) closes the run each archived workspace coordinates, after its store write');
   assert.match(fnBody(WS, 'export async function unarchiveWorkspace('), /await store\.upsertWorkspace\(updated\);\n\s+reopenRunsOf\(\[ws\.id\]\);/, 'unarchive reopens');
   const del = fnBody(WS, 'export async function deleteWorkspace(');
-  assert.match(del, /const closedRuns = closeRunsOf\(\[id\]\);[^\n]*\n\s+try \{\n\s+await teardownWorkspace\(ws\);\n\s+\} catch \(e\) \{\n\s+reopenRunIds\(closedRuns\);/, 'delete (UI + CLI /deleteWorkspace route through it) closes BEFORE the teardown and reopens if it fails');
+  assert.match(del, /const closedRuns = closeRunsOf\(\[id\]\);[^\n]*\n\s+try \{\n\s+await teardownWorkspace\(ws, opts\);\n\s+\} catch \(e\) \{\n\s+reopenRunIds\(closedRuns\);/, 'delete (UI + CLI /deleteWorkspace route through it) closes BEFORE the teardown and reopens if it fails');
   const bulk = fnBody(WS, 'export async function deleteWorkspaces(');
   assert.match(bulk, /for \(const w of targets\) closedByCall\.set\(w\.id, closeRunsOf\(\[w\.id\]\)\);[^\n]*\n\s+try \{/, 'bulk delete closes every target before the first teardown');
   assert.match(bulk, /\} catch \(e\) \{\n\s+reopenRunIds\(targets\.filter\(\(w\) => !removed\.includes\(w\.id\)\)\.flatMap\(\(w\) => closedByCall\.get\(w\.id\) \?\? \[\]\)\);/, 'and reopens only the runs THIS call closed, for those not torn down, when one fails');

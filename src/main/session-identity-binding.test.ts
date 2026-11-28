@@ -146,7 +146,7 @@ test('reconcile: a keyed live session is host-resolved — marker FILE only, no 
 
 test('a deleted workspace forgets its session key at every removal path (delete, bulk delete, prune)', () => {
   assert.equal(workspaces.match(/forgetSessionKey\(/g)?.length, 4, 'three removal paths + the coordinator bump (MAJOR-1; the import line has no paren)');
-  const del = bodyBetween(workspaces, 'export async function deleteWorkspace(id: string)', '\n}\n');
+  const del = bodyBetween(workspaces, 'export async function deleteWorkspace(id: string', '\n}\n');
   assert.ok(del.includes('forgetSessionKey(id)'));
   const bulk = bodyBetween(workspaces, 'export async function deleteWorkspaces(', '\n}\n');
   assert.ok(bulk.includes('forgetSessionKey(id)'));

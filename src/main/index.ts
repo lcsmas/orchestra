@@ -265,6 +265,7 @@ import {
   setBootWedgeRunResolver,
 } from './session-watchdog';
 import { reapKeepersNow, startResourceMonitor, stopResourceMonitor } from './resource-monitor';
+import { startDockerSweep, stopDockerSweep } from './docker-sweep-host';
 import { setMemoryGuardSettingsReader, startMemoryGuard, stopMemoryGuard } from './memory-guard';
 import { livenessSilencedByAdmission, startAdmission, stopAdmission } from './admission';
 import { startDockerHold, stopDockerHold } from './docker-hold-host';
@@ -577,6 +578,7 @@ async function createMainWindow() {
       // proof-of-deletion — never runs against an unloaded store; decideReap
       // additionally refuses unless `store.loadedFromDisk`.
       startResourceMonitor();
+      startDockerSweep(); // #696: containers of deleted workspaces; after store.load() for the same reason
     });
   // Insights & Improvements: manual-only since 2026-09-30 (no auto-run) —
   // just sweep a run left `running` by a previous session.
@@ -1019,6 +1021,7 @@ function shutdownSubsystems(): void {
   stopPauseUiWatcher();
   stopSessionWatchdog();
   stopResourceMonitor();
+  stopDockerSweep();
   stopAdmission();
   stopDockerHold();
   stopMemoryBanner();

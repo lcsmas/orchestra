@@ -220,11 +220,14 @@ without restarting them. Default: THIS workspace.
   {
     name: 'delete',
     group: 'Workspaces',
-    summary: 'Delete a workspace (worktree + branch)',
-    detail: `usage: orchestra delete <id> [--yes]
+    summary: 'Delete a workspace (worktree, branch, Docker containers)',
+    detail: `usage: orchestra delete <id> [--yes] [--volumes]
 
-Delete a workspace: its worktree and branch. Destructive, so --yes (or -y)
-is REQUIRED — without it the command refuses.`,
+Delete a workspace: its worktree and branch, and the Docker containers its
+agent created (labelled orchestra.ws=<id>) with their anonymous volumes — what
+was removed is printed. Named volumes are listed and kept; --volumes also
+removes them (never one another container still uses). Destructive, so --yes
+(or -y) is REQUIRED — without it the command refuses.`,
   },
 
   // ── Fleet bus ─────────────────────────────────────────────────────────
