@@ -104,11 +104,11 @@ export function holdMutants(T = HOLD_T) {
     ['X8', REL, [["flat.push('content-length', String(out.length), ...extra);", "flat.push('content-length', String(parts.length), ...extra);"]], [T.relayHold], 'the rewritten create answer keeps the old framing'],
     ['X9', REL, [['path: `${prefix}/containers/${encodeURIComponent(id)}/json`', 'path: `/containers/${encodeURIComponent(id)}/json`']], [T.relayHold], 'the inspect drops the API version prefix'],
     // ── keeper wiring ──────────────────────────────────────────────────────────────────────────────────────────────────
-    ['K10', 'src/keeper/index.ts', [[', log: klog, ...(gate ? { hold: gate } : {}) });', ', log: klog });']], [T.keeper], 'the gate is built but never given to the relay; rig: hold_create'],
-    ['K11', 'src/keeper/index.ts', [['void withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState).then(', 'void withDockerRelay(f.dockerRelay.runId, capEnv).then(']], [T.keeper], 'the spawn frame\'s holdState never reaches the relay; rig: hold_create'],
+    ['K10', 'src/keeper/index.ts', [[', log: klog, ...(gate ? { hold: gate } : {}), limits, budgetLockDir', ', log: klog, limits, budgetLockDir']], [T.keeper], 'the gate is built but never given to the relay; rig: hold_create'],
+    ['K11', 'src/keeper/index.ts', [['void withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState, f.memoryCap?.hardBytes, f.dockerRelay.limits).then(', 'void withDockerRelay(f.dockerRelay.runId, capEnv, undefined, f.memoryCap?.hardBytes, f.dockerRelay.limits).then(']], [T.keeper], 'the spawn frame\'s holdState never reaches the relay; rig: hold_create'],
     ['K14', 'src/keeper/index.ts', [["return parseMemAvailableBytes(fs.readFileSync('/proc/meminfo', 'utf8'));", 'return null;']], [T.keeper], 'the keeper never takes a fresh reading; rig: hold_fresh_reading'],
     // ── the protocol / spec ────────────────────────────────────────────────────────────────────────────────────────────
-    ['HS1', 'src/shared/docker-relay.ts', [['return runId ? { runId, ...(args.holdState ? { holdState: args.holdState } : {}) } : undefined;', 'return runId ? { runId } : undefined;']], [T.sw], 'the offer drops holdState; rig: hold_guard_chain'],
+    ['HS1', 'src/shared/docker-relay.ts', [['...(args.holdState ? { holdState: args.holdState } : {}), ...(args.limits', '...(args.limits']], [T.sw], 'the offer drops holdState; rig: hold_guard_chain'],
     ['HS2', 'src/shared/docker-relay.ts', [["'.docker.hold')", "'.docker.pid')"]], [T.keeper, T.appHold], 'the hold file is named *.pid (listLiveKeepers would read it as a workspace)'],
     ['HS3', 'src/main/docker-relay-switch.ts', [['...(isFleetMember(ws) ? { holdState: admissionStateFile(orchestraHome()) } : {})', '']], [T.sw], 'the app never names the state file; rig: hold_guard_chain'],
     // ── the app half ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -134,8 +134,8 @@ export function holdMutants(T = HOLD_T) {
     ['WK3', KIDX, [['owner: wsId, pid: process.pid, log: klog', "owner: 'x', pid: process.pid, log: klog"]], [T.wire], 'the slot is owned by no workspace'],
     ['WK4', KIDX, [['ownWs: wsId, pid: process.pid, leaseFile', "ownWs: '', pid: process.pid, leaseFile"]], [T.wire], 'the line does not know which workspace is its own'],
     ['WK5', KIDX, [['leaseFile: admissionLeaseFile(holdState), io: leaseIo() })', 'leaseFile: holdState, io: leaseIo() })']], [T.wire], 'the line queues behind a slot that is not the shared one'],
-    ['WK6', KIDX, [['...(gate ? { hold: gate } : {}) })', '})']], [T.wire], 'the relay is created without its gate'],
-    ['WK7', KIDX, [['withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState)', 'withDockerRelay(f.dockerRelay.runId, capEnv, undefined)']], [T.wire], 'the spawn frame\'s holdState never reaches the relay'],
+    ['WK6', KIDX, [['...(gate ? { hold: gate } : {}), limits, budgetLockDir', 'limits, budgetLockDir']], [T.wire], 'the relay is created without its gate'],
+    ['WK7', KIDX, [['withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState, ', 'withDockerRelay(f.dockerRelay.runId, capEnv, undefined, ']], [T.wire], 'the spawn frame\'s holdState never reaches the relay'],
     ['WK8', KIDX, [['file: admissionLeaseFile(holdState), owner: wsId', 'file: holdState, owner: wsId']], [T.wire], 'the slot is the state file itself (it would be overwritten)'],
     ['WK9', KIDX, [['holdFile: relayHoldFile(sockPath),\n    now: Date.now,', 'holdFile: sockPath,\n    now: Date.now,']], [T.wire], 'what this keeper holds is published where the others do not look'],
   ];

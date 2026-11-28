@@ -19,7 +19,13 @@ export interface FakeDaemon {
   readonly sockPath: string;
   readonly seen: SeenRequest[];
   /** Scripted containers for `GET …/containers/<id>/json` (the labels + running flag the relay inspects before it holds a START); an unknown id answers 404 like dockerd. */
-  setContainer(id: string, c: { labels?: Record<string, string> | null; running?: boolean }): void;
+  setContainer(id: string, c: ScriptedContainer): void;
+  /** The NEXT `GET /containers/json` answers 500 (a daemon that cannot list): the relay's budget must fail open. One-shot. */
+  failNextList(): void;
+  /** Write one line to every open `GET /events?filters=…oom…` stream (the relay keeper's OOM watch). */
+  emitEvent(line: string): void;
+  /** Drop every open filtered event stream (a daemon restart): the watch must re-open it. */
+  dropEventStreams(): void;
   /** Delay every inspect answer by this long (a daemon under swap thrash). */
   setInspectDelay(ms: number): void;
   /** The NEXT create answers with this instead of 201 + `{Id, Warnings}` (a 4xx after a long wait, a gzip / non-JSON body). One-shot. */
@@ -33,12 +39,25 @@ export interface FakeDaemon {
   close(): Promise<void>;
 }
 
-export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
+/** `memory` = `HostConfig.Memory`, `name` = the inspect `Name`, `state` = the list `State` (default: running ? 'running' : 'exited'). */
+export interface ScriptedContainer {
+  labels?: Record<string, string> | null;
+  running?: boolean;
+  memory?: number;
+  nanoCpus?: number;
+  name?: string;
+  state?: string;
+}
+
+/** `trackCreates` (#695): a container create is REMEMBERED (state `created`, its Labels + HostConfig.Memory read from the body) so a later list/inspect — the relay's budget — sees it, like dockerd. */
+export async function startFakeDaemon(sockPath: string, o: { trackCreates?: boolean } = {}): Promise<FakeDaemon> {
   const seen: SeenRequest[] = [];
   const eventGates: Array<() => void> = [];
   const waitGates: Array<() => void> = [];
   const sockets = new Set<net.Socket>();
-  const containers = new Map<string, { labels?: Record<string, string> | null; running?: boolean }>();
+  const containers = new Map<string, ScriptedContainer>();
+  let failList = false;
+  const oomStreams = new Set<http.ServerResponse>();
   let inspectDelayMs = 0;
   let createOverride: { status: number; headers?: Record<string, string>; body: string | Buffer } | null = null;
 
@@ -67,13 +86,31 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
         res.writeHead(o.status, { 'content-length': buf.length, ...(o.headers ?? {}) });
         res.end(buf);
       } else if (req.method === 'POST' && /\/containers\/create/.test(url)) {
+        if (o.trackCreates) {
+          try {
+            const b = JSON.parse(body.toString('utf8')) as { Labels?: Record<string, string>; HostConfig?: { Memory?: number; NanoCpus?: number } };
+            containers.set(`tracked-${containers.size}`, { labels: b.Labels ?? {}, memory: b.HostConfig?.Memory ?? 0, nanoCpus: b.HostConfig?.NanoCpus ?? 0, state: 'created', name: `tracked-${containers.size}` });
+          } catch {
+            /* not JSON: nothing to remember */
+          }
+        }
         const out = JSON.stringify({ Id: 'fake0123456789', Warnings: [] });
         res.writeHead(201, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
+        res.end(out);
+      } else if (req.method === 'GET' && /\/containers\/json(\?|$)/.test(url)) {
+        // the list the relay's budget reads: honours `filters={"label":["k=v"],"status":[…]}` like dockerd
+        const f = JSON.parse(new URL(url, 'http://x').searchParams.get('filters') ?? '{}') as { label?: string[]; status?: string[] };
+        const rows = [...containers.entries()]
+          .map(([id, c]) => ({ Id: id, State: c.state ?? (c.running ? 'running' : 'exited'), Labels: c.labels ?? {} }))
+          .filter((r) => (f.label ?? []).every((l) => { const [k, ...v] = l.split('='); return v.length ? r.Labels[k] === v.join('=') : k in r.Labels; }) && (!f.status || f.status.includes(r.State)));
+        const out = failList ? JSON.stringify({ message: 'boom' }) : JSON.stringify(rows);
+        res.writeHead(failList ? 500 : 200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
+        failList = false;
         res.end(out);
       } else if (req.method === 'GET' && /\/containers\/[^/]+\/json(\?|$)/.test(url)) {
         const id = decodeURIComponent(/\/containers\/([^/]+)\/json/.exec(url)![1]);
         const c = containers.get(id);
-        const out = JSON.stringify(c ? { Id: id, Config: { Labels: c.labels ?? null }, State: { Running: c.running === true } } : { message: `No such container: ${id}` });
+        const out = JSON.stringify(c ? { Id: id, Name: `/${c.name ?? id}`, Config: { Labels: c.labels ?? null }, HostConfig: { Memory: c.memory ?? 0, NanoCpus: c.nanoCpus ?? 0 }, State: { Running: c.running === true } } : { message: `No such container: ${id}` });
         setTimeout(() => {
           res.writeHead(c ? 200 : 404, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(out) });
           res.end(out);
@@ -81,6 +118,11 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
       } else if (req.method === 'POST' && /\/containers\/[^/]+\/start(\?|$)/.test(url)) {
         res.writeHead(204);
         res.end();
+      } else if (req.method === 'GET' && /^(\/v[\d.]+)?\/events\?/.test(url)) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.flushHeaders();
+        oomStreams.add(res);
+        res.on('close', () => oomStreams.delete(res));
       } else if (req.method === 'GET' && url.endsWith('/events')) {
         // Chunked stream: first chunk now, the next only when the test releases it — a proxy that buffers fails.
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -161,6 +203,9 @@ export async function startFakeDaemon(sockPath: string): Promise<FakeDaemon> {
     sockPath,
     seen,
     setContainer: (id, c) => void containers.set(id, c),
+    failNextList: () => void (failList = true),
+    emitEvent: (line) => void [...oomStreams].forEach((r) => r.write(`${line}\n`)),
+    dropEventStreams: () => void [...oomStreams].forEach((r) => r.destroy()),
     setInspectDelay: (ms) => void (inspectDelayMs = ms),
     nextCreate: (r) => void (createOverride = r),
     releaseEvent: () => eventGates.shift()?.(),
