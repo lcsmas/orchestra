@@ -57,7 +57,7 @@ export class FakeDocker implements PauseDockerApi {
     this.calls.push(`inspect ${id}`);
     this.check();
     const c = this.get(id);
-    return c ? { id: c.id, name: c.name, image: c.image, running: c.running, autoRemove: c.autoRemove, labels: { ...c.labels } } : null;
+    return c ? { id: c.id, name: c.name, image: c.image, running: c.running, autoRemove: c.autoRemove, labels: { ...c.labels }, mounts: [] } : null;
   }
   async stopContainer(id: string, t = 10): Promise<'stopped' | 'already-stopped' | 'gone'> {
     this.calls.push(`stop ${id} t=${t}`);

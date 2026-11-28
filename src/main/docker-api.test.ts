@@ -36,12 +36,18 @@ before(async () => {
         { Id: 'bbb', Names: ['/g-db'], Image: 'mysql', State: 'exited', Status: 'Exited (0)', Created: 1700000001, Labels: null },
       ]);
     }
-    if (u === '/containers/aaa/json') return json(200, { Id: 'aaa', Name: '/g-web', Config: { Image: 'alpine', Labels: { 'orchestra.ws': 'ws-1' } }, State: { Running: true }, HostConfig: { AutoRemove: true } });
+    if (u === '/containers/aaa/json') return json(200, { Id: 'aaa', Name: '/g-web', Config: { Image: 'alpine', Labels: { 'orchestra.ws': 'ws-1' } }, State: { Running: true }, HostConfig: { AutoRemove: true }, Mounts: [{ Type: 'volume', Name: 'pgdata', Destination: '/p' }, { Type: 'bind', Source: '/src', Destination: '/s' }] });
     if (u === '/containers/gone/json') return json(404, { message: 'No such container: gone' });
     if (u === '/containers/boom/json') return json(500, { message: 'daemon exploded' });
     if (u === '/containers/aaa/stop?t=10') return bare(204);
     if (u === '/containers/bbb/stop?t=10') return bare(304);
     if (u.startsWith('/containers/gone/stop')) return json(404, { message: 'No such container: gone' });
+    if (u === '/containers/aaa?v=1&force=1') return bare(204);
+    if (u === '/containers/bbb?v=0&force=0') return json(409, { message: 'cannot remove a running container' });
+    if (u.startsWith('/containers/gone?')) return json(404, { message: 'No such container: gone' });
+    if (u === '/volumes/pgdata') return bare(204);
+    if (u === '/volumes/used') return json(409, { message: 'volume is in use' });
+    if (u === '/volumes/none') return json(404, { message: 'no such volume' });
     if (u === '/containers/aaa/start') return bare(204);
     if (u === '/containers/bbb/start') return bare(304);
     if (u === '/containers/gone/start') return json(404, { message: 'No such container: gone' });
@@ -81,9 +87,28 @@ test('listContainers {all:true} asks for stopped ones too', async () => {
 test('inspectContainer: AutoRemove is read (a --rm container must not be stopped); 404 → null; 500 → http error', async () => {
   const api = createDockerApi({ socketPath: sock });
   const c = await api.inspectContainer('aaa');
-  assert.deepEqual(c, { id: 'aaa', name: 'g-web', image: 'alpine', running: true, autoRemove: true, labels: { 'orchestra.ws': 'ws-1' } });
+  assert.deepEqual(c, { id: 'aaa', name: 'g-web', image: 'alpine', running: true, autoRemove: true, labels: { 'orchestra.ws': 'ws-1' }, mounts: [{ type: 'volume', name: 'pgdata', destination: '/p' }, { type: 'bind', name: null, destination: '/s' }] });
   assert.equal(await api.inspectContainer('gone'), null);
   await assert.rejects(api.inspectContainer('boom'), (e: DockerApiError) => e instanceof DockerApiError && e.kind === 'http' && e.status === 500 && /daemon exploded/.test(e.message));
+});
+
+test('removeContainer / removeVolume (#696): DELETE with v + force on the wire; 204/404/409 → outcomes; any other status throws', async () => {
+  const api = createDockerApi({ socketPath: sock });
+  seen.length = 0;
+  assert.equal(await api.removeContainer('aaa', { volumes: true, force: true }), 'removed');
+  assert.equal(await api.removeContainer('gone', { volumes: true }), 'gone');
+  await assert.rejects(api.removeContainer('bbb'), (e: DockerApiError) => e.kind === 'http' && e.status === 409);
+  assert.equal(await api.removeVolume('pgdata'), 'removed');
+  assert.equal(await api.removeVolume('used'), 'in-use');
+  assert.equal(await api.removeVolume('none'), 'gone');
+  assert.deepEqual(seen.map((s) => `${s.method} ${s.url}`), [
+    'DELETE /containers/aaa?v=1&force=1',
+    'DELETE /containers/gone?v=1&force=0',
+    'DELETE /containers/bbb?v=0&force=0',
+    'DELETE /volumes/pgdata',
+    'DELETE /volumes/used',
+    'DELETE /volumes/none',
+  ]);
 });
 
 test('stop / start map 204/304/404 to outcomes and use the frozen verbs (stop?t=10, start)', async () => {

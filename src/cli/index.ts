@@ -13,6 +13,7 @@ import {
   reloadExitCode,
   type ReloadResult,
 } from '../shared/reload-skills.ts';
+import { formatCleanupReport, type DockerCleanupReport } from '../shared/docker-cleanup.ts';
 import type { DivergenceCounters } from '../shared/bus-mirror.ts';
 import {
   resolveBusIdentity,
@@ -2684,8 +2685,9 @@ async function main(argv: string[]): Promise<void> {
 
     case 'delete': {
       const yes = args.includes('--yes') || args.includes('-y');
-      const id = args.find((a) => a !== '--yes' && a !== '-y');
-      if (!id) fail('usage: orchestra delete <id> [--yes]');
+      const volumes = args.includes('--volumes'); // #696: also remove the NAMED volumes the member's containers mounted
+      const id = args.find((a) => a !== '--yes' && a !== '-y' && a !== '--volumes');
+      if (!id) fail('usage: orchestra delete <id> [--yes] [--volumes]');
       // Deleting is destructive — it removes the git worktree and branch. Require
       // an explicit --yes so a stray `delete <id>` can't tear down a workspace,
       // while staying scriptable (no interactive prompt).
@@ -2696,10 +2698,12 @@ async function main(argv: string[]): Promise<void> {
             `  orchestra delete ${id} --yes`,
         );
       }
-      const res = await request('/deleteWorkspace', { id });
+      const res = await request('/deleteWorkspace', { id, ...(volumes ? { removeVolumes: true } : {}) });
       if (!res.ok) fail(res.error ?? 'failed to delete workspace');
       const branch = (res.branch as string | undefined) ?? '';
       process.stdout.write(`Deleted workspace ${res.id as string}${branch ? ` (${branch})` : ''}\n`);
+      const docker = res.docker as DockerCleanupReport | undefined;
+      if (docker) for (const line of formatCleanupReport(docker)) process.stdout.write(`${line}\n`);
       return;
     }
 

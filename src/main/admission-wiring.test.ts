@@ -85,7 +85,7 @@ test('F3 liveness: index.ts silences a member with a held start (the same predic
 });
 
 test('F4 delete: teardownWorkspace (single AND bulk delete) drops the held start FIRST', () => {
-  const body = fn(ws, 'async function teardownWorkspace(ws: Workspace)');
+  const body = fn(ws, 'async function teardownWorkspace(ws: Workspace');
   assert.ok(body.indexOf('dropHeldStart(id);') > 0 && body.indexOf('dropHeldStart(id);') < body.indexOf('await stopStructuredSession(id);'), 'dropped before anything slow runs');
   assert.match(ws, /import \{ admissionGate, dropHeldStart, dropWakeSite, heldStartFor, type HeldStartKind \} from '\.\/admission\.ts';/);
 });

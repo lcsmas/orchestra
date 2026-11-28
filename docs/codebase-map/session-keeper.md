@@ -475,6 +475,20 @@ Why: a member's containers live under dockerd (`system.slice`), NOT in its memor
 
 Gates: `src/shared/docker-limits.test.ts` (numbers, rewrite shapes incl. versioned URL / compose body / > 2^53, verdicts), `src/keeper/docker-relay-limits.test.ts` (relay + fake daemon: stamping, clamp, member / CPU / host-wide refusal, two-keeper lock, fail-open, OOM stream + reconnect, record texts, keeper wiring), `src/main/docker-relay-switch.test.ts` (the settings file); 34 in-place mutants `LM1`–`LM34` in `scripts/docker-relay-mutants.mjs` (`--check` verifies anchors). No real-dockerd arm: the rig must not start containers on a laptop that already froze twice — any manual check uses `--memory 512m --pids-limit 128`.
 
+### Docker cleanup of a deleted workspace (#696)
+
+Why: a delete used to leave the member's containers (relay-stamped `orchestra.ws=<id>`) and their ANONYMOUS volumes (a database image's VOLUME survives `docker rm` without `-v`) — 381 orphan volumes / 20 GB measured on 2026-11-28.
+
+| Piece | File | Role |
+|---|---|---|
+| Delete | `src/main/docker-cleanup.ts` `removeWorkspaceContainers` ← `workspaces.ts` `teardownWorkspace` | After `stopStructuredSession`, BEFORE the scratch/sandbox early returns (every kind): list `all` containers by `orchestra.ws=<id>` (label re-asserted per row), stop (t=10, skipped for `--rm`), `DELETE …?v=1&force=1`. The daemon is the member's PINNED one (`dockerApiForMember`, resolved before its keeper dies). Never throws: no daemon ⇒ `unavailable`, failures listed. |
+| Named volumes | same, `settleNamedVolumes` | 64-hex name = anonymous (`isAnonymousVolumeName`, `shared/docker-cleanup.ts`); others are LISTED and kept. `orchestra delete <id> --yes --volumes` (`removeVolumes` on `/deleteWorkspace`) removes them via `DELETE /volumes/<name>`; the daemon's 409 (another container mounts it) is respected, never forced. |
+| Report | `shared/docker-cleanup.ts` `formatCleanupReport` | `dispatchDeleteWorkspaceRequest` returns `docker: DockerCleanupReport`; the CLI prints it under "Deleted workspace …". |
+| Sweep | `docker-cleanup.ts` `sweepOrphanContainers`, host timer `docker-sweep-host.ts` `startDockerSweep` (index.ts, after `startResourceMonitor`) | 2 min after boot then every 10 min, over the app's daemon + member-pinned ones: a container whose `orchestra.ws` workspace is not in the store is removed (anonymous volumes with it, named ones only named in the log line), ONE `docker-sweep:` log line each. Guards: store loaded (`storeReady`), the container's `orchestra.run` is a run THIS bus knows (a dev build's containers on the same daemon are not ours — same rule as `classifyContainers`; a container with no run stamp is never swept), ≤ 20 per pass, single-flight. `ORCHESTRA_DOCKER_SWEEP=0` turns it off. |
+| API | `src/main/docker-api.ts` `removeContainer`, `removeVolume`, inspect `mounts` | `DELETE` verb added to the transport. |
+
+Gates: `src/main/docker-cleanup.test.ts` (real client over HTTP on the fake dockerd `src/keeper/fake-docker-daemon.ts`, which honours `?v=` / `force` / 409 / volume-in-use), `docker-cleanup-wiring.test.ts` (order in `teardownWorkspace`, flag threading, sweep start), `docker-api.test.ts`. 14 hand mutants (rm without `-v`, no force, named always removed, sweep ignoring live workspace / foreign run / store-ready / cap, delete or sweep not wired …) all fail them.
+
 ## Plafond mémoire — a fleet member's keeper in its own kernel scope (#320, wave H ledger #329; ADR 0005; contract FI-1)
 
 Behind the per-run **`memory_cap`** bus switch (frozen at run creation, live default ON for NEW runs since #324 — runs already open keep their frozen value, `bus.md`), a **fleet member's** keeper (a workspace with a coordinator, `isFleetMember`; a human-created top-level session

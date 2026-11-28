@@ -353,7 +353,7 @@ export async function startHooksServer(): Promise<void> {
             }
           } else if (route === '/deleteWorkspace') {
             if (typeof msg.id === 'string') {
-              send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id }));
+              send(200, await dispatchDeleteWorkspaceRequest({ id: msg.id, removeVolumes: msg.removeVolumes === true }));
             } else {
               send(200, { ok: false, error: 'missing id' });
             }
