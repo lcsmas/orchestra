@@ -369,6 +369,8 @@ export interface MemKillRecord {
   net?: MemNetDetail;
   /** #343 (review M2): a TOOL killed by the SCOPE's backstop episode — the kernel line says the cgroup that hit its limit was the scope, not the tool leaf (keeper + CLI outgrew the room above the tool cap). The keeper owns every tool-leaf victim; this only changes its words. */
   scopeLevel?: true;
+  /** #695: the victim is a DOCKER CONTAINER that hit its own `HostConfig.Memory` (the daemon's `oom` event), not a process of the member's scope. `command` = `container <name>`, `hardBytes` = its limit. */
+  container?: { name: string; limitBytes: number | null };
   command: string | null;
   pid: number | null;
   rssBytes: number | null;
@@ -539,8 +541,14 @@ export function netLimitPhrase(net: MemNetDetail, hardBytes: number | null): str
 /** #343 (M2): why a tool died when the SCOPE (not the tool leaf) hit its limit. */
 export const SCOPE_LEVEL_REASON = 'the scope backstop reached — keeper + CLI outgrew the room above the tool cap';
 
+/** #695: « container pl-node KILLED at its Docker limit 1.5 GB » — one phrase for the row, the coordinator's message and the app log. */
+export function dockerKillSentence(c: { name: string; limitBytes: number | null }): string {
+  return `container ${cutChars(stripBidi(c.name), 80)} KILLED at its Docker limit${c.limitBytes ? ` ${fmtGb(c.limitBytes)}` : ''}`;
+}
+
 /** The row the member sees. One text for the live row and the reopened one (the builder is the single source). */
 export function memNoticeText(rec: MemNoticeRecord): string {
+  if (!isSoftRecord(rec) && rec.container) return `${dockerKillSentence(rec.container)} — the container was out of memory (exit 137); raise it with a bigger --memory (up to the member budget) or the docker-limits.json setting`;
   if (!isSoftRecord(rec) && rec.level === 'net' && rec.net) {
     return `Scope backstop ${netLimitPhrase(rec.net, rec.hardBytes)} reached — ${rec.net.sessionEnded ? 'the session ended' : 'a process was killed'}: keeper + CLI outgrew the room above the tool cap (not a tool kill) · killed ${netVictimsPhrase(rec.net)}`;
   }
@@ -562,6 +570,7 @@ export function memNoticeText(rec: MemNoticeRecord): string {
 
 /** The ONE message the coordinator gets: workspace, command, level. */
 export function memBusBody(wsLabel: string, rec: MemNoticeRecord): string {
+  if (!isSoftRecord(rec) && rec.container) return `Plafond mémoire — workspace ${wsLabel}: ${dockerKillSentence(rec.container)}. The member's session survived; the container was out of memory (exit 137). Tell the member to raise it (--memory, up to its budget) or raise the budget in docker-limits.json.`;
   if (isSoftRecord(rec)) {
     return `Plafond mémoire — workspace ${wsLabel}: working set ${fmtGb(rec.bytes)} crossed the warning level (${fmtGb(rec.softBytes)})${rec.hardBytes !== null ? `, hard cap ${fmtGb(rec.hardBytes)}` : ''}${rec.suppressed ? ` (${rec.suppressed} further crossing(s) since the last warning were not repeated)` : ''}. Nothing was killed or slowed. Scope ${rec.unit}.`;
   }
@@ -652,6 +661,7 @@ export function inferKillRecords(a: InferKillsInput): MemKillRecord[] {
 
 /** The app-log line for one kill (workspace, killed command, level). */
 export function formatMemKillLine(wsLabel: string, rec: MemKillRecord): string {
+  if (rec.container) return `docker-limit[${wsLabel}] ${dockerKillSentence(rec.container)} — at ${new Date(rec.at).toISOString()}`;
   if (rec.level === 'net' && rec.net) return `memory-cap[${wsLabel}] SCOPE BACKSTOP kill: ${netVictimsPhrase(rec.net)} in the keeper leaf — scope ${rec.unit} reached ${netLimitPhrase(rec.net, rec.hardBytes)} — session ${rec.net.sessionEnded ? 'ENDED' : 'survived'} — at ${new Date(rec.at).toISOString()} — victims named by the kernel log`;
   const cmd = rec.command === null ? 'an unnamed process (it lived less than one snapshot)' : `"${rec.command}" (pid ${rec.pid}, ~${Math.round((rec.rssBytes ?? 0) / (1024 * 1024))} MB)`;
   const lvl = rec.scopeLevel ? 'SCOPE BACKSTOP (keeper + CLI outgrew the room above the tool cap)' : rec.level === 'hard' ? `hard level${rec.hardBytes !== null ? ` (${(rec.hardBytes / GIB).toFixed(2)} GB)` : ''}` : 'an OOM kill from outside the scope limit';

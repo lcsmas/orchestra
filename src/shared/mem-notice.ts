@@ -52,6 +52,7 @@ export function memCapRowOf(rec: MemNoticeRecord): MemCapRow {
   if (isSoftRecord(rec)) {
     return { tone: 'soft', segments: [{ kind: 'text', text: `Working set ${fmtGb(rec.bytes)} — warning level ${fmtGb(rec.softBytes)} crossed${rec.hardBytes !== null ? ` (hard cap ${fmtGb(rec.hardBytes)})` : ''}` }] };
   }
+  if (rec.container) return { tone: 'hard', segments: [{ kind: 'text', text: 'Container' }, chipOf(rec.container.name), { kind: 'text', text: `KILLED at its Docker limit${rec.container.limitBytes ? ` ${fmtGb(rec.container.limitBytes)}` : ''} — out of memory (exit 137)` }] };
   const reason = rec.scopeLevel ? SCOPE_LEVEL_REASON : rec.level === 'hard' ? `${rec.hardBytes !== null ? `${fmtGb(rec.hardBytes)} reached` : 'Plafond mémoire reached'}` : 'by the system under memory pressure (not by the Plafond mémoire)';
   const ended = rec.role ? ` — the member's own ${rec.role === 'cli' ? 'agent process' : 'keeper'}: the session ended` : '';
   const dash = rec.level === 'hard' || rec.scopeLevel ? '— ' : '';

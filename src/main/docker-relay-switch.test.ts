@@ -43,6 +43,18 @@ test('frozen ON → spec; frozen OFF / unknown run / sandbox / no run id → non
   assert.equal(dockerRelaySpecFor('', false), undefined);
 });
 
+test('#695: docker-limits.json (host-wide, a workspace entry wins) is read at spawn and frozen into the spec; none / malformed = no `limits`', () => {
+  const file = path.join(home, 'docker-limits.json');
+  fs.writeFileSync(file, JSON.stringify({ memBudgetGb: 12, hostMemBudgetGb: 20, workspaces: { 'ws-big': { memBudgetGb: 16 } } }));
+  const GIB = 1024 ** 3;
+  assert.deepEqual(dockerRelaySpecFor('run-on', false, { id: 'ws-big' })?.limits, { memBudgetBytes: 16 * GIB, hostMemBudgetBytes: 20 * GIB });
+  assert.deepEqual(dockerRelaySpecFor('run-on', false, { id: 'ws-other' })?.limits, { memBudgetBytes: 12 * GIB, hostMemBudgetBytes: 20 * GIB });
+  fs.writeFileSync(file, '{ not json');
+  assert.equal(dockerRelaySpecFor('run-on', false, { id: 'ws-big' })?.limits, undefined);
+  fs.rmSync(file);
+  assert.equal(dockerRelaySpecFor('run-on', false, { id: 'ws-big' })?.limits, undefined);
+});
+
 test('the freeze: a later live flip never changes a started run (ON stays ON, OFF stays OFF)', () => {
   const db = getBus()!;
   startRun(db, { id: 'run-on', kind: 'vague', coordinator: 'c' }, { ...DEFAULT_BUS_SWITCHES, dockerRelay: false }); // re-start: ignored

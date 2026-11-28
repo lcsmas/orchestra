@@ -13,7 +13,8 @@
 import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
-import { isContainerCreate, stampCreateBodyBytes, MAX_CREATE_BODY_BYTES, maxSocketPathBytes } from '../shared/docker-relay.ts';
+import { isContainerCreate, rewriteCreateBodyBytes, createUrlPrefix, MAX_CREATE_BODY_BYTES, maxSocketPathBytes } from '../shared/docker-relay.ts';
+import { BUDGET_STATES, budgetRefusal, gib, type BudgetContainer, type DockerLimits } from '../shared/docker-limits.ts';
 import { DOCKER_LABEL_RUN, DOCKER_LABEL_WS } from '../shared/docker-labels.ts';
 import { heldOpOf, heldWarning, startIsHoldable, type HeldOp } from '../shared/docker-hold.ts';
 import type { HoldGate } from './docker-hold.ts';
@@ -30,6 +31,10 @@ export interface DockerRelayOptions {
   hold?: HoldGate;
   /** #321: how long a START's pre-hold inspect may take on the real daemon (default 15 s; a slow answer = unknown container = not held, fail open). */
   inspectTimeoutMs?: number;
+  /** #695: the ceiling stamped on every create's HostConfig + the member's container memory budget. Absent = labels only (today's behaviour, byte for byte). */
+  limits?: DockerLimits;
+  /** #695: a directory the keepers of this host take (mkdir) around a budget check + create, so two members' parallel creates both see each other's container (the host-wide budget). Absent = in-process serialisation only. */
+  budgetLockDir?: string;
 }
 
 /** A call that WAITED under the hold: how long, why, and whether it was released because the state stopped being authoritative. */
@@ -178,24 +183,160 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
     });
   }
 
-  function sendCreate(req: http.IncomingMessage, res: http.ServerResponse, original: Buffer, held?: HeldInfo): void {
+  /** Creates are budget-checked ONE AT A TIME (check → daemon answers → next): two parallel creates (compose) must each see the other's container. Released when the answer is out; a stuck daemon frees it after 60 s. */
+  let budgetTail: Promise<void> = Promise.resolve();
+  function budgetTurn(): Promise<() => void> {
+    let release!: () => void;
+    const mine = new Promise<void>((r) => (release = r));
+    const prev = budgetTail;
+    budgetTail = prev.then(() => mine);
+    return prev.then(() => {
+      const t = setTimeout(release, 60_000);
+      t.unref();
+      return () => {
+        clearTimeout(t);
+        release();
+      };
+    });
+  }
+
+  /** A JSON GET against the REAL daemon (null on any failure — the budget then fails OPEN, logged: a broken relay never breaks a rig). */
+  function upstreamJson(path: string): Promise<unknown> {
+    return new Promise((resolve) => {
+      const req = http.request({ socketPath: upstream, method: 'GET', path, agent: false, timeout: opts.inspectTimeoutMs ?? 15_000 }, (r) => {
+        if (r.statusCode !== 200) {
+          r.resume();
+          resolve(null);
+          return;
+        }
+        const parts: Buffer[] = [];
+        let size = 0;
+        r.on('data', (c: Buffer) => {
+          size += c.length;
+          if (size <= 16 << 20) parts.push(c);
+        });
+        r.on('error', () => resolve(null));
+        r.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(parts).toString('utf8')));
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      req.on('timeout', () => req.destroy());
+      req.on('error', () => resolve(null));
+      req.end();
+    });
+  }
+
+  /** EVERY orchestra-labelled container that holds (or is about to hold) resources — the host-wide view; the member's share is the ones carrying its `orchestra.ws`. Null = could not be read. */
+  async function labelledContainers(prefix: string): Promise<BudgetContainer[] | null> {
+    const filters = encodeURIComponent(JSON.stringify({ label: [DOCKER_LABEL_WS], status: [...BUDGET_STATES] }));
+    const list = await upstreamJson(`${prefix}/containers/json?all=1&filters=${filters}`);
+    if (!Array.isArray(list)) return null;
+    const ids = (list as Array<{ Id?: string }>).map((c) => c.Id).filter((x): x is string => typeof x === 'string');
+    const out: BudgetContainer[] = [];
+    for (const id of ids.slice(0, 500)) {
+      const j = (await upstreamJson(`${prefix}/containers/${encodeURIComponent(id)}/json`)) as { Name?: string; Config?: { Labels?: Record<string, string> | null }; HostConfig?: { Memory?: number; NanoCpus?: number } } | null;
+      if (!j) return null; // a half-read budget is no budget: fail open for this create
+      out.push({ name: (j.Name ?? id).replace(/^\//, '') || id.slice(0, 12), ws: j.Config?.Labels?.[DOCKER_LABEL_WS] ?? '?', memoryBytes: Number(j.HostConfig?.Memory ?? 0), nanoCpus: Number(j.HostConfig?.NanoCpus ?? 0) });
+    }
+    return out;
+  }
+
+  /** The cross-keeper turn: `mkdir` is atomic, a lock older than 60 s is a dead keeper's. Gives up after 30 s (the create then goes ahead unlocked, logged). Returns the release. */
+  async function hostTurn(): Promise<() => void> {
+    const dir = opts.budgetLockDir;
+    if (!dir) return () => {};
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      try {
+        fs.mkdirSync(dir);
+        return () => {
+          try {
+            fs.rmdirSync(dir);
+          } catch {
+            /* already gone */
+          }
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') return () => {};
+        try {
+          if (Date.now() - fs.statSync(dir).mtimeMs > 60_000) fs.rmdirSync(dir);
+        } catch {
+          /* raced with the owner's release */
+        }
+        if (Date.now() > deadline) {
+          log('docker relay: host budget lock busy for 30 s — checking without it');
+          return () => {};
+        }
+        await new Promise((r) => setTimeout(r, 25 + Math.random() * 50));
+      }
+    }
+  }
+
+  function refuse(res: http.ServerResponse, status: number, message: string): void {
+    const body = JSON.stringify({ message });
+    res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
+  }
+
+  async function sendCreate(req: http.IncomingMessage, res: http.ServerResponse, original: Buffer, held?: HeldInfo): Promise<void> {
     const headers = requestHeaders(req);
     let body: Buffer = original;
+    let memoryBytes: bigint | null = null;
+    let nanoCpus: bigint | null = null;
     try {
-      const stamped = stampCreateBodyBytes(original, labels);
-      if (stamped) body = stamped;
-      else log(`docker relay: create body not stampable (${original.length} bytes) — forwarded unlabelled`);
+      const r = rewriteCreateBodyBytes(original, labels, opts.limits ?? null);
+      if (r) {
+        body = r.body;
+        memoryBytes = r.memoryBytes;
+        nanoCpus = r.nanoCpus;
+        if (r.changes.length) log(`docker relay: ${opts.ws} create limits — ${r.changes.map((c) => `${c.field} ${c.from ?? 'unset'} → ${c.to} (${c.kind === 'clamped' ? 'clamped to the ceiling' : 'default'})`).join('; ')}`);
+      } else log(`docker relay: create body not stampable (${original.length} bytes) — forwarded unlabelled${opts.limits ? ' and UNLIMITED' : ''}`);
     } catch (e) {
       log(`docker relay: stamping failed (${(e as Error).message}) — forwarded unlabelled`);
     }
     delete headers['transfer-encoding'];
     headers['content-length'] = String(body.length);
-    forward(req, res, headers, body, held);
+    const limits = opts.limits;
+    if (!limits || memoryBytes === null) {
+      forward(req, res, headers, body, held);
+      return;
+    }
+    const release = await budgetTurn();
+    const releaseHost = await hostTurn();
+    let released = false;
+    const done = (): void => {
+      if (!released) {
+        released = true;
+        releaseHost();
+        release();
+      }
+    };
+    res.once('close', done);
+    try {
+      const inUse = await labelledContainers(createUrlPrefix(req.url));
+      if (res.destroyed) return done(); // the client left while we counted: nothing is sent
+      if (inUse === null) log(`docker relay: ${opts.ws} budget not checked — could not read the labelled containers from the daemon`);
+      const refusal = inUse === null ? null : budgetRefusal(limits, opts.ws, { memoryBytes, nanoCpus: nanoCpus ?? 0n }, inUse);
+      if (refusal) {
+        log(`docker relay: ${opts.ws} create REFUSED — ${refusal.scope} ${refusal.resource} budget, in use ${refusal.resource === 'memory' ? gib(refusal.inUse) : `${+(refusal.inUse / 1e9).toFixed(2)} CPU`} (${inUse!.length} labelled container(s)); ${refusal.message}`);
+        refuse(res, 403, refusal.message);
+        return done();
+      }
+      forward(req, res, headers, body, held);
+    } catch (e) {
+      log(`docker relay: budget check threw: ${(e as Error).message} — forwarding`);
+      if (!res.destroyed && !res.headersSent) forward(req, res, headers, body, held);
+      else done();
+    }
   }
 
   function handleCreate(req: http.IncomingMessage, res: http.ServerResponse): void {
     void readCreateBody(req, res).then((original) => {
-      if (original) sendCreate(req, res, original);
+      if (original) void sendCreate(req, res, original);
     });
   }
 
@@ -255,14 +396,14 @@ export function createDockerRelay(opts: DockerRelayOptions): DockerRelay {
       res.off('close', onGone);
       if (!r || ac.signal.aborted || res.destroyed) return; // the client left (or the keeper is stopping): its call is never sent
       const held = r.waitedMs > 0 && r.reason ? { waitedMs: r.waitedMs, reason: r.reason, ...(r.flushed ? { flushed: true } : {}) } : undefined;
-      if (created) sendCreate(req, res, created, held);
+      if (created) await sendCreate(req, res, created, held);
       else forward(req, res, requestHeaders(req), undefined, held);
     } catch (e) {
       res.off('close', onGone);
       log(`docker relay: hold gate threw: ${(e as Error).message} — forwarding`);
       if (!res.destroyed && !res.headersSent) {
         if (op.kind === 'create') {
-          if (created) sendCreate(req, res, created);
+          if (created) void sendCreate(req, res, created);
           else handleCreate(req, res);
         } else forward(req, res, requestHeaders(req));
       }

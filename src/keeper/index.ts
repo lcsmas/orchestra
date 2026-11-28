@@ -33,6 +33,7 @@
 
 import net from 'node:net';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
@@ -47,6 +48,9 @@ import {
 import { maxSocketPathBytes, relayHoldFile, relaySocketPath, relayUpstreamFile, resolveRelayUpstream } from '../shared/docker-relay.ts';
 import { parseMemAvailableBytes } from '../shared/memory-guard.ts';
 import { realUpstreamDeps } from '../shared/docker-endpoint.ts';
+import { watchDockerOoms, type DockerOomWatch } from './docker-oom.ts';
+import { dockerOomRecord } from '../shared/docker-oom.ts';
+import { dockerLimitsFor, gib, type DockerLimitOverrides } from '../shared/docker-limits.ts';
 import { createDockerRelay, superviseDockerRelay, type DockerRelay, type RelaySupervisor } from './docker-relay.ts';
 import { createHoldGate, type HoldGate } from './docker-hold.ts';
 import { createFleetLine, createReleaseLease, type LeaseIo } from './release-lease.ts';
@@ -147,6 +151,7 @@ function unlinkOwnedFiles(): void {
 
 function cleanupAndExit(code: number): void {
   memWatch?.stop();
+  oomWatch?.stop();
   relaySupervisor?.stop();
   if (relay) {
     holdGate?.stop();
@@ -414,6 +419,7 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
     }
   }
   // #322 m1: persist FIRST (the host reads this file when the keeper is gone), then remember, log and tell whoever is attached.
+  capNoticeFile = cap.noticeFile;
   const persist = (rec: MemKillRecord | MemSoftRecord): void => {
     if (!cap.noticeFile) return;
     const kind = rec.kind === 'soft' ? 'soft' : 'kill';
@@ -457,6 +463,10 @@ function setupMemoryCap(cap: NonNullable<Extract<KeeperClientFrame, { t: 'spawn'
 
 let relay: DockerRelay | null = null;
 let relaySupervisor: RelaySupervisor | null = null;
+let oomWatch: DockerOomWatch | null = null;
+/** #695: where the host's notice file is (set by setupMemoryCap; a member with no memory cap has none, and a container OOM then reaches the host only through the live frame). */
+let capNoticeFile: string | undefined;
+let lastOomSeq = 0;
 let holdGate: HoldGate | null = null;
 /** True from a relay-carrying `spawn` frame until the CLI is started: frames that arrive meanwhile (the client
  *  buffers stdin right behind `spawn`) are held and replayed in order, never dropped. */
@@ -563,7 +573,7 @@ function createKeeperHoldGate(holdState: string): HoldGate {
 
 /** Start the relay and return the CLI env to use: the client's env + `DOCKER_HOST` at the relay — or the client's env
  *  UNTOUCHED when the relay cannot start (the member then uses the real socket; its containers count as unattributed). */
-async function withDockerRelay(runId: string, env: Record<string, string | undefined>, holdState?: string): Promise<Record<string, string | undefined>> {
+async function withDockerRelay(runId: string, env: Record<string, string | undefined>, holdState?: string, capHardBytes?: number, limitOverrides?: DockerLimitOverrides): Promise<Record<string, string | undefined>> {
   try {
     const up = await resolveRelayUpstream(env, realUpstreamDeps);
     if (!up.ok) {
@@ -576,7 +586,9 @@ async function withDockerRelay(runId: string, env: Record<string, string | undef
       return env;
     }
     const gate = holdState ? createKeeperHoldGate(holdState) : null;
-    const r = createDockerRelay({ sockPath: relaySock, upstream: up.socketPath, ws: wsId, run: runId, log: klog, ...(gate ? { hold: gate } : {}) });
+    const limits = dockerLimitsFor({ capHardBytes, hostTotalBytes: os.totalmem(), cpus: os.availableParallelism(), env: process.env, overrides: limitOverrides });
+    klog(`docker relay: container limits — memory ceiling ${gib(limits.memoryCeilingBytes)} (default ${gib(limits.memoryDefaultBytes)}), member budget ${gib(limits.budgetBytes)}, host budget ${gib(limits.hostMemBudgetBytes)}, pids ${limits.pidsLimit}, cpus ${limits.nanoCpus / 1e9} (default ${limits.nanoCpusDefault / 1e9}), host cpus ${limits.hostCpuBudget / 1e9}, cpu shares ${limits.cpuShares}`);
+    const r = createDockerRelay({ sockPath: relaySock, upstream: up.socketPath, ws: wsId, run: runId, log: klog, ...(gate ? { hold: gate } : {}), limits, budgetLockDir: path.join(path.dirname(relaySock), 'docker-budget.lock') });
     if (!(await r.start())) {
       r.stop();
       gate?.stop();
@@ -589,6 +601,22 @@ async function withDockerRelay(runId: string, env: Record<string, string | undef
     // SIGUSR2 = "the relay crashed" (operator/rig kill switch); registered only now, so a keeper with no relay keeps
     // SIGUSR2's default action exactly as before.
     process.on('SIGUSR2', () => relay?.kill());
+    // #695: a container killed at its Docker limit is told to the member and its coordinator, like a Plafond mémoire kill (seq = the event's time, strictly increasing: a restarted keeper never reuses one)
+    oomWatch?.stop();
+    oomWatch = watchDockerOoms({
+      upstream: up.socketPath,
+      ws: wsId,
+      log: klog,
+      onOom: (ev, limitBytes) => {
+        lastOomSeq = Math.max(lastOomSeq + 1, ev.at);
+        const rec = dockerOomRecord(wsId, lastOomSeq, ev, limitBytes);
+        if (capNoticeFile && !appendMemNotice(capNoticeFile, rec)) klog(`docker oom: could not append to ${capNoticeFile} - this record reaches the host only through a live attach`);
+        memKills.push(rec);
+        if (memKills.length > 20) memKills.shift();
+        klog(formatMemKillLine(wsId, rec));
+        send({ t: 'memKill', rec });
+      },
+    });
     klog(`docker relay listening ${relaySock} -> ${up.socketPath} (via ${up.via}) ws=${wsId} run=${runId}${gate ? ` hold=${holdState}` : ''}`);
     if (!up.daemonUp) klog(`docker relay: no daemon at ${up.socketPath} yet — calls answer 502 until it appears`);
     publishUpstream(up.socketPath);
@@ -612,7 +640,7 @@ function handleClientFrame(f: KeeperClientFrame): void {
       } else if (f.dockerRelay) {
         spawnInFlight = true;
         const capEnv = f.memoryCap ? setupMemoryCap(f.memoryCap, f.env) : f.env;
-        void withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState).then((env) => {
+        void withDockerRelay(f.dockerRelay.runId, capEnv, f.dockerRelay.holdState, f.memoryCap?.hardBytes, f.dockerRelay.limits).then((env) => {
           try {
             startChild(f.command, f.args, f.cwd, env);
           } finally {

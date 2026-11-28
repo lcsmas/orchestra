@@ -39,5 +39,5 @@ test('#321 K01/K02: the gate is built ONLY for a spawn frame that carries `holdS
   const w = body('async function withDockerRelay(');
   assert.match(w, /const gate = holdState \? createKeeperHoldGate\(holdState\) : null;/);
   assert.match(w, /createDockerRelay\(\{[^}]*\.\.\.\(gate \? \{ hold: gate \} : \{\}\)[^}]*\}\)/, 'the relay gets the gate');
-  assert.match(SRC, /withDockerRelay\(f\.dockerRelay\.runId, capEnv, f\.dockerRelay\.holdState\)/, 'the frame\'s holdState reaches it');
+  assert.match(SRC, /withDockerRelay\(f\.dockerRelay\.runId, capEnv, f\.dockerRelay\.holdState, f\.memoryCap\?\.hardBytes, f\.dockerRelay\.limits\)/, 'the frame\'s holdState reaches it');
 });

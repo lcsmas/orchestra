@@ -3,6 +3,8 @@
 // socket it forwards to. No I/O here, so `node --test` drives it without a daemon. The label KEYS live in
 // docker-labels.ts (the frozen contract #292/#293 import).
 
+import type { DockerLimitOverrides, DockerLimits } from './docker-limits.ts';
+
 
 /** `POST /containers/create`, with or without the `/v1.NN` version prefix (docker CLI, compose and client libs all
  *  create containers through this one call). */
@@ -56,22 +58,21 @@ function skipValue(s: string, i: number): number {
   return j > i ? j : -1;
 }
 
-/**
- * Add `labels` to a container-create body, byte-identical everywhere else. Our keys are appended LAST inside
- * `Labels`, so a client-supplied `orchestra.ws` loses (the host's stamp is the truth of ownership). Null when the
- * body is not a JSON object we can edit with certainty — the caller then forwards it UNTOUCHED.
- */
-export function stampContainerCreateBody(text: string, labels: Record<string, string>): string | null {
-  let i = skipWs(text, 0);
-  if (text[i] !== '{') return null;
-  const open = i;
-  i++;
-  let labelsAt: { start: number; end: number } | null = null;
-  let nonEmpty = false;
+interface Member {
+  key: string;
+  start: number;
+  end: number;
+}
+
+/** The members of the JSON object whose `{` is at `open`: where each value sits (a duplicate key appears twice — Go's decoder, dockerd's, keeps the LAST) and the index of the closing `}`. Null = not an object we can edit with certainty. */
+function scanObject(text: string, open: number): { members: Member[]; close: number } | null {
+  if (text[open] !== '{') return null;
+  let i = open + 1;
+  const members: Member[] = [];
   for (;;) {
     i = skipWs(text, i);
-    if (text[i] === '}') break;
-    if (nonEmpty) {
+    if (text[i] === '}') return { members, close: i };
+    if (members.length) {
       if (text[i] !== ',') return null;
       i = skipWs(text, i + 1);
     }
@@ -89,42 +90,172 @@ export function stampContainerCreateBody(text: string, labels: Record<string, st
     i = skipWs(text, i + 1);
     const vEnd = skipValue(text, i);
     if (vEnd < 0) return null;
-    if (key === 'Labels') labelsAt = { start: i, end: vEnd };
-    nonEmpty = true;
+    members.push({ key, start: i, end: vEnd });
     i = vEnd;
   }
-  if (skipWs(text, i + 1) !== text.length) return null; // trailing garbage after the object
+}
+
+const lastOf = (members: Member[], key: string): Member | undefined => {
+  for (let k = members.length - 1; k >= 0; k--) if (members[k].key === key) return members[k];
+  return undefined;
+};
+
+/** One textual edit: replace `[start, end)` with `text` (an insertion has start === end). */
+interface Edit {
+  start: number;
+  end: number;
+  text: string;
+}
+
+function applyEdits(text: string, edits: Edit[]): string {
+  let out = text;
+  for (const e of [...edits].sort((x, y) => y.start - x.start || y.end - x.end)) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return out;
+}
+
+/** A JSON integer token as a BigInt (so 9223372036854775807 survives); null for `null`, a missing key, or anything that is not a plain integer. */
+function intToken(text: string, m: Member | undefined): bigint | null {
+  if (!m) return null;
+  const t = text.slice(m.start, m.end);
+  return /^-?\d+$/.test(t) ? BigInt(t) : null;
+}
+
+/** What the relay changed in a create's HostConfig: `set` = the client left the field unset (absent / null / 0 / -1 = no limit), `clamped` = the client asked for more than the ceiling. */
+export interface LimitChange {
+  field: 'Memory' | 'MemorySwap' | 'PidsLimit' | 'NanoCpus' | 'CpuShares';
+  kind: 'set' | 'clamped';
+  from: string | null;
+  to: string;
+}
+
+export interface CreateRewrite {
+  text: string;
+  /** The `HostConfig.Memory` the daemon will get (null when no limits were asked for). The budget counts this one. */
+  memoryBytes: bigint | null;
+  /** The `HostConfig.NanoCpus` the daemon will get; 0n = none (the client set CpuQuota/CpuPeriod/CpuCount, which the relay leaves alone). */
+  nanoCpus: bigint | null;
+  changes: LimitChange[];
+}
+
+/**
+ * Rewrite a container-create body, byte-identical everywhere the relay has nothing to say:
+ *  • `labels` are appended LAST inside `Labels` (a client-supplied `orchestra.ws` loses — the host's stamp is the truth of ownership);
+ *  • with `limits` (#695), `HostConfig.Memory` / `MemorySwap` / `PidsLimit` / `NanoCpus` are SET when the client left them unset
+ *    (absent, null, 0, -1 — compose sends `"Memory":0,"PidsLimit":null`) and CLAMPED down to the ceiling when it asked for more.
+ *    A smaller client value is kept (`CpuShares` — container CPU weight — is capped, never raised); unset `Memory`/`NanoCpus` get a quarter of the ceiling (so a stack fits the budget), an explicit ask may reach it; `NanoCpus` is left alone when the client set `CpuQuota`/`CpuPeriod`/`CpuCount` (dockerd refuses the mix).
+ * Null when the body is not a JSON object we can edit with certainty — the caller then forwards it UNTOUCHED.
+ */
+export function rewriteContainerCreate(text: string, labels: Record<string, string>, limits?: DockerLimits | null): CreateRewrite | null {
+  const open = skipWs(text, 0);
+  const top = scanObject(text, open);
+  if (!top) return null;
+  if (skipWs(text, top.close + 1) !== text.length) return null; // trailing garbage after the object
+  const edits: Edit[] = [];
+  const prepend: string[] = []; // top-level members added when the key is absent
+  const changes: LimitChange[] = [];
+  let memoryBytes: bigint | null = null;
+  let nanoCpus: bigint | null = null;
+
+  const labelsAt = lastOf(top.members, 'Labels');
   const entries = Object.entries(labels)
     .map(([k, v]) => `${JSON.stringify(k)}:${JSON.stringify(v)}`)
     .join(',');
   if (!labelsAt) {
-    return `${text.slice(0, open + 1)}"Labels":{${entries}}${nonEmpty ? ',' : ''}${text.slice(open + 1)}`;
-  }
-  const value = text.slice(labelsAt.start, labelsAt.end);
-  let stamped: string;
-  if (value === 'null') {
-    stamped = `{${entries}}`;
-  } else if (value.startsWith('{') && value.endsWith('}')) {
-    const inner = value.slice(1, -1);
-    stamped = `{${inner}${inner.trim() === '' ? '' : ','}${entries}}`;
+    prepend.push(`"Labels":{${entries}}`);
   } else {
-    return null;
+    const value = text.slice(labelsAt.start, labelsAt.end);
+    if (value === 'null') {
+      edits.push({ start: labelsAt.start, end: labelsAt.end, text: `{${entries}}` });
+    } else if (value.startsWith('{') && value.endsWith('}')) {
+      const inner = value.slice(1, -1);
+      edits.push({ start: labelsAt.start, end: labelsAt.end, text: `{${inner}${inner.trim() === '' ? '' : ','}${entries}}` });
+    } else {
+      return null;
+    }
   }
-  return text.slice(0, labelsAt.start) + stamped + text.slice(labelsAt.end);
+
+  if (limits) {
+    const hc = lastOf(top.members, 'HostConfig');
+    let hcMembers: Member[] = [];
+    let hcOpen = -1;
+    if (hc) {
+      const v = text.slice(hc.start, hc.end);
+      if (v !== 'null') {
+        const scanned = scanObject(text, hc.start);
+        if (!scanned) return null;
+        hcMembers = scanned.members;
+        hcOpen = hc.start;
+      }
+    }
+    const ceilMem = BigInt(limits.memoryCeilingBytes);
+    const fields: string[] = []; // the members to ADD to HostConfig (absent keys)
+    const put = (field: LimitChange['field'], m: Member | undefined, cur: bigint | null, to: bigint, kind: 'set' | 'clamped'): void => {
+      changes.push({ field, kind, from: cur === null ? null : String(cur), to: String(to) });
+      if (m) edits.push({ start: m.start, end: m.end, text: String(to) });
+      else fields.push(`"${field}":${to}`);
+    };
+    /** unset (null / ≤ 0) → the default; above the ceiling → the ceiling; else untouched. Returns the effective value. */
+    const bound = (field: LimitChange['field'], cur: bigint | null, ceiling: bigint, dflt: bigint = ceiling): bigint => {
+      const m = lastOf(hcMembers, field);
+      if (cur === null || cur <= 0n) {
+        put(field, m, cur, dflt, 'set');
+        return dflt;
+      }
+      if (cur > ceiling) {
+        put(field, m, cur, ceiling, 'clamped');
+        return ceiling;
+      }
+      return cur;
+    };
+
+    const memory = bound('Memory', intToken(text, lastOf(hcMembers, 'Memory')), ceilMem, BigInt(limits.memoryDefaultBytes));
+    memoryBytes = memory;
+    // no swap: the swap figure is memory + swap, so it must equal Memory. A client value above Memory (some swap) is kept while it stays under the ceiling.
+    const swapAt = lastOf(hcMembers, 'MemorySwap');
+    const swap = intToken(text, swapAt);
+    if (swap === null || swap < memory || swap > ceilMem) put('MemorySwap', swapAt, swap, memory, swap !== null && swap > ceilMem ? 'clamped' : 'set');
+    bound('PidsLimit', intToken(text, lastOf(hcMembers, 'PidsLimit')), BigInt(limits.pidsLimit));
+    const cpuMix = ['CpuQuota', 'CpuPeriod', 'CpuCount'].some((k) => (intToken(text, lastOf(hcMembers, k)) ?? 0n) > 0n);
+    nanoCpus = cpuMix ? 0n : bound('NanoCpus', intToken(text, lastOf(hcMembers, 'NanoCpus')), BigInt(limits.nanoCpus), BigInt(limits.nanoCpusDefault));
+    // low CPU priority under contention: unset (0) or above the cap → the cap
+    bound('CpuShares', intToken(text, lastOf(hcMembers, 'CpuShares')), BigInt(limits.cpuShares));
+
+    if (fields.length) {
+      if (hcOpen >= 0) edits.push({ start: hcOpen + 1, end: hcOpen + 1, text: fields.join(',') + (hcMembers.length ? ',' : '') });
+      else if (hc) edits.push({ start: hc.start, end: hc.end, text: `{${fields.join(',')}}` });
+      else prepend.push(`"HostConfig":{${fields.join(',')}}`);
+    }
+  }
+  if (prepend.length) edits.push({ start: open + 1, end: open + 1, text: prepend.join(',') + (top.members.length ? ',' : '') });
+  return { text: applyEdits(text, edits), memoryBytes, nanoCpus, changes };
+}
+
+/** Add `labels` to a container-create body, byte-identical everywhere else (the #291 half of `rewriteContainerCreate`). */
+export function stampContainerCreateBody(text: string, labels: Record<string, string>): string | null {
+  return rewriteContainerCreate(text, labels)?.text ?? null;
 }
 
 /** Largest create body the relay buffers to stamp (a real one is a few KB); past it the call is refused with a 413. */
 export const MAX_CREATE_BODY_BYTES = 64 * 1024 * 1024;
 
 /**
- * The stamped create body as bytes, or null = "forward the original". Round-trips the UTF-8 first: a body that is not
+ * The rewritten create body as bytes, or null = "forward the original". Round-trips the UTF-8 first: a body that is not
  * valid UTF-8 would be rewritten by the decode, so it is left alone rather than risk corrupting it.
  */
-export function stampCreateBodyBytes(body: Buffer, labels: Record<string, string>): Buffer | null {
+export function rewriteCreateBodyBytes(body: Buffer, labels: Record<string, string>, limits?: DockerLimits | null): (Omit<CreateRewrite, 'text'> & { body: Buffer }) | null {
   const text = body.toString('utf8');
   if (!Buffer.from(text, 'utf8').equals(body)) return null;
-  const stamped = stampContainerCreateBody(text, labels);
-  return stamped === null ? null : Buffer.from(stamped, 'utf8');
+  const r = rewriteContainerCreate(text, labels, limits);
+  return r === null ? null : { body: Buffer.from(r.text, 'utf8'), memoryBytes: r.memoryBytes, nanoCpus: r.nanoCpus, changes: r.changes };
+}
+
+export function stampCreateBodyBytes(body: Buffer, labels: Record<string, string>): Buffer | null {
+  return rewriteCreateBodyBytes(body, labels)?.body ?? null;
+}
+
+/** The API version prefix of a create URL (`/v1.43` or ''), for the relay's own calls to the daemon. */
+export function createUrlPrefix(url: string | undefined): string {
+  return /^((?:\/v\d+(?:\.\d+)*)?)\/containers\/create/.exec(url ?? '')?.[1] ?? '';
 }
 
 // ── socket path + upstream resolution ───────────────────────────────────────────────────────────────────────────
@@ -229,6 +360,8 @@ export interface DockerRelaySpec {
   runId: string;
   /** #321 — the file the APP publishes the Admission hold state in (`<ORCHESTRA_HOME>/admission.state`); absent ⇒ the relay never holds (today's behaviour). */
   holdState?: string;
+  /** #695 — the raise-the-limits setting (`<ORCHESTRA_HOME>/docker-limits.json`), read by the app at spawn and frozen here. */
+  limits?: DockerLimitOverrides;
 }
 
 /**
@@ -241,8 +374,9 @@ export function dockerRelayOffer(args: {
   runId: string | null | undefined;
   switchOn: boolean;
   holdState?: string;
+  limits?: DockerLimitOverrides;
 }): DockerRelaySpec | undefined {
   if (args.remote || args.platform === 'win32' || !args.switchOn) return undefined;
   const runId = args.runId?.trim();
-  return runId ? { runId, ...(args.holdState ? { holdState: args.holdState } : {}) } : undefined;
+  return runId ? { runId, ...(args.holdState ? { holdState: args.holdState } : {}), ...(args.limits && Object.keys(args.limits).length ? { limits: args.limits } : {}) } : undefined;
 }
