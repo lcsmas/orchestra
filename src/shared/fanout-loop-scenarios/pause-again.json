@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "run": "pause-again",
+  "repo": {
+    "tickets": [
+      {
+        "id": "T1",
+        "dependsOn": [],
+        "spec": "spec/T1.md"
+      },
+      {
+        "id": "T2",
+        "dependsOn": [],
+        "spec": "spec/T2.md"
+      }
+    ]
+  },
+  "agents": {
+    "T1": {
+      "reviewer": [
+        {
+          "do": "approve",
+          "afterMs": 2400000
+        }
+      ]
+    },
+    "T2": {
+      "reviewer": [
+        {
+          "do": "approve",
+          "afterMs": 2400000
+        }
+      ]
+    }
+  },
+  "faults": {
+    "pause": [
+      {
+        "afterMs": 360000,
+        "forMs": 1200000
+      },
+      {
+        "afterMs": 1800000,
+        "forMs": 900000
+      }
+    ]
+  }
+}

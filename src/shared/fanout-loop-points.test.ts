@@ -12,7 +12,7 @@ const iso = (ms: number): string => new Date(T0 + ms).toISOString();
 const MIN = 60_000;
 const HA = 'a'.repeat(40), HA2 = 'c'.repeat(40), HB = 'b'.repeat(40);
 
-interface W { ctx: LoopCtx; st(): LoopState; woken: Array<{ ws: string; text: string }>; did: string[]; clock: { ms: number }; live: Set<string>; busy(): boolean; waited: string[] }
+interface W { idle: Map<string, number>; ctx: LoopCtx; st(): LoopState; woken: Array<{ ws: string; text: string }>; did: string[]; clock: { ms: number }; live: Set<string>; busy(): boolean; waited: string[] }
 function world(): W {
   let s: FanoutState = newState('r1', { now: iso(0), switches: { seatRecords: 'on', minorPolicy: 'demonstrated' } as never });
   s = setPlan(s, ['A1', 'B1'], 'declare', iso(0));
@@ -21,18 +21,18 @@ function world(): W {
   s = applyTicketPatch(s, 'B1', { status: 'nominated', branch: 'b1', head: HB, implementer: 'impl-b', pr: 2 }, iso(0));
   s = recordOpenPoint(s, 'B1', { about: 'A1', text: 'A1 must dispatch the event on a manual mark', callerId: 'impl-b', callerVouched: true, now: iso(0) }).state;
   let state: LoopState = withLoop(s);
-  const w = { woken: [] as W['woken'], did: [] as string[], clock: { ms: 0 }, live: new Set(['impl-a', 'impl-b']), waited: [] as string[], busyFlag: false };
+  const w = { woken: [] as W['woken'], did: [] as string[], clock: { ms: 0 }, live: new Set(['impl-a', 'impl-b']), waited: [] as string[], busyFlag: false, idle: new Map<string, number>() };
   const ctx = {
     deps: {
       home: '/nowhere', run: 'r1', caller: 'r1', now: () => iso(w.clock.ms), sleep: async () => {}, log: () => {}, options: { ...DEFAULT_OPTIONS, stallMs: 4 * 60 * MIN },
-      fleet: { live: (ws: string) => w.live.has(ws), wake: async (ws: string, text: string) => { w.woken.push({ ws, text }); } },
+      fleet: { live: (ws: string) => w.live.has(ws), idleFor: (ws: string) => w.idle.get(ws) ?? null, wake: async (ws: string, text: string) => { w.woken.push({ ws, text }); } },
     },
     run: 'r1', pass: 1, signals: new Set(), approved: new Map(), progress: [], finished: false,
     get busy() { return w.busyFlag; }, set busy(v: boolean) { w.busyFlag = v; },
     note: () => {}, waitOn: (key: string) => { w.waited.push(key); w.busyFlag = true; return true; }, guard: async (_l: string, fn: () => Promise<void>) => { await fn(); return true; },
     st: () => state, update: (fn: (x: LoopState) => LoopState) => (state = fn(state)), did: (m: string) => { w.did.push(m); },
   } as unknown as LoopCtx;
-  return { ctx, st: () => state, woken: w.woken, did: w.did, clock: w.clock, live: w.live, busy: () => w.busyFlag, waited: w.waited };
+  return { idle: w.idle, ctx, st: () => state, woken: w.woken, did: w.did, clock: w.clock, live: w.live, busy: () => w.busyFlag, waited: w.waited };
 }
 const review = (w: W, id: string, head: string, verdict: 'approve' | 'changes-requested', n = 1): void => {
   const upd = w.ctx.update as unknown as (f: (x: LoopState) => LoopState) => void;
@@ -51,6 +51,18 @@ test('the point goes to the about ticket\'s implementer as an ORDER; the next pa
   w.clock.ms = 5 * MIN; await stepOpenPoints(w.ctx);
   assert.equal(w.woken.length, 1, 'the implementer is on it: no second order inside orderWaitMs');
   assert.equal(w.busy(), true);
+});
+
+test('idle-rule: an implementer whose session is idle (nothing queued) gets order 2 at the next pass, not after orderWaitMs (15 min); a running one keeps the 15 min wait', async () => {
+  const w = world();
+  await stepOpenPoints(w.ctx);
+  w.clock.ms = 1 * MIN; await stepOpenPoints(w.ctx); // running or a message queued for it (idleFor null): on it
+  assert.equal(w.woken.length, 1, 'running: no second order');
+  w.idle.set('impl-a', 11 * MIN); // idle, nothing queued
+  w.clock.ms = 2 * MIN; await stepOpenPoints(w.ctx);
+  assert.equal(w.woken.length, 2, 'idle with the order unanswered: woken again at once');
+  assert.match(w.woken[1].text, /order 2: your head has not moved since/);
+  assert.ok(w.did.some((d) => /A1: impl-a idle 11 min owing the answer to open point 1 — woken again/.test(d)), w.did.join('|'));
 });
 
 test('the same head after the wait: order 2; after the next wait the loop\'s FIXED RULE decides — recorded as a decision (by loop), the point settles and unblocks both tickets', async () => {

@@ -25,13 +25,17 @@ export interface LoopSide {
   /** #649 — dependent → how many times a CONNECT was sent again because its upstream moved (the report counts them). */
   reconnects: Record<string, number>;
   orders: Record<string, { head: string; n: number; at: string; reason: string; replacing?: true }>;
+  /** idle-rule — idle rule state per owed thing (`rev:<ws>:<head>` / `connect:<ticket>:<up>:<head>:<ws>`): when the agent was last woken for it / when it was released. The agent id is in the key: a replacement starts clean. */
+  idle: Record<string, { wokenAt?: string; replacedAt?: string }>;
+  /** The host's pause of the run, when the loop last saw one (ISO of the first pass that saw it; absent = not paused): what makes the resume reset run exactly once, even over a loop restart. */
+  hostPause?: { since: string; by: string | null };
   /** #676 — open point id → the orders sent for it: `head` the `about` ticket had, `n` orders for that head, `at` the last, `total` over every head (the fixed rule decides at the cap). */
   pointOrders: Record<string, { head: string; n: number; at: string; total: number }>;
 }
 /** `FanoutState` + the sidecar.  */
 export type LoopState = FanoutState & { loop: LoopSide };
 
-const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {}, pointOrders: {}, reconnects: {} });
+const sideEmpty = (): LoopSide => ({ asked: {}, askedTo: {}, signalled: {}, handled: {}, checksSeen: {}, held: {}, busySince: {}, replaced: {}, orders: {}, pointOrders: {}, reconnects: {}, idle: {} });
 const sideFilePath = (home: string, run: string): string => path.join(path.dirname(stateFile(home, run)), 'loop.json');
 
 function sideRead(file: string): LoopSide {

@@ -56,6 +56,9 @@ const ARMS = [
   ['PASS  #629: a ticket whose author never records --follows is nominated and merged — the loop records the follows itself and says so (T1 T2 T3 merged, nothing parked, exit 0)', () => cli('follows-missing', D), (r) => r.code === 0 && same(r.json.report.merged, ['T1', 'T2', 'T3']) && !r.json.report.parked.length && !r.events.some((e) => e.ev === 'send' && /could not nominate/.test(String(e.text))) && !rules(r).length ? null : `exit ${r.code} ${JSON.stringify(r.json?.report?.parked)}`],
   ['PASS  #628: a merge-conflict at delivery → ONE SYNC order to the implementer, its merge commit, the reviewer reads the new head, delivery retries: T1 T2 merged, nothing parked, nobody replaced', () => cli('merge-conflict-sync', D), (r) => r.code === 0 && same(order(r), ['T1', 'T2']) && r.events.filter((e) => e.ev === 'sync-order').length === 1 && r.events.filter((e) => e.ev === 'spawn' && e.ticket === 'T2').length === 1 && !rules(r).length ? null : `exit ${r.code} orders ${r.events.filter((e) => e.ev === 'sync-order').length}`],
   ['PASS  #628: 2 orders and no new head → the implementer is replaced on the same branch and the order sent again; merged, nothing parked', () => cli('merge-conflict-replace', D), (r) => r.code === 0 && same(order(r), ['T1', 'T2']) && r.events.filter((e) => e.ev === 'sync-order').length === 3 && r.events.filter((e) => e.ev === 'impl-replaced').length === 1 && !r.json.report.parked.length ? null : `exit ${r.code} orders ${r.events.filter((e) => e.ev === 'sync-order').length}`],
+  ['PASS  idle-rule: a reviewer that is alive, idle and never records is woken again, released and replaced by the loop — T1 T2 merged, nothing parked, exit 0 (without the idle rule it is waited on for 4 h, then T1 is parked)', () => cli('reviewer-idle', D), (r) => r.code === 0 && same([...r.json.report.merged].sort(), ['T1', 'T2']) && !r.json.report.parked.length && r.events.filter((e) => e.ev === 'review-reminder').length === 1 && r.events.filter((e) => e.ev === 'review-released').length === 1 && !rules(r).length ? null : `exit ${r.code} merged ${r.json?.report?.merged} parked ${JSON.stringify(r.json?.report?.parked)}`],
+  ['PASS  idle-rule: a dependent that is alive, idle and never connects when asked is asked again, then replaced; the fresh author connects — merged, exit 0', () => cli('connect-idle', D), (r) => r.code === 0 && same(order(r), ['T1', 'T2']) && r.events.filter((e) => e.ev === 'impl-replaced' && e.ticket === 'T2').length === 1 && !r.json.report.parked.length ? null : `exit ${r.code} parked ${JSON.stringify(r.json?.report?.parked)}`],
+  ['PASS  host pause: a 429 pause in the middle of a review — the loop acts on nothing while it lasts (no reminder, no replacement, no spawn), the run ends merged after the auto-resume', () => cli('pause-review', D), (r) => r.code === 0 && same([...r.json.report.merged].sort(), ['T1', 'T2']) && r.events.filter((e) => e.ev === 'act-while-paused').length === 0 && r.events.filter((e) => e.ev === 'review-released' || e.ev === 'review-reminder').length === 0 && r.events.some((e) => e.ev === 'host-pause') && r.events.some((e) => e.ev === 'host-resume') ? null : `exit ${r.code} merged ${r.json?.report?.merged} acts ${r.events.filter((e) => e.ev === 'act-while-paused').length}`],
   ['PASS  #625: --tickets and no plan → the plan agent is asked, its plan accepted, then released; both tickets merged', () => cli('plan-agent', D), (r) => r.code === 0 && same(order(r), ['T1', 'T2']) && ['plan-agent-spawn', 'plan-accepted', 'plan-agent-released'].every((x, k, a) => r.events.findIndex((e) => e.ev === x) >= 0 && (k === 0 || r.events.findIndex((e) => e.ev === x) > r.events.findIndex((e) => e.ev === a[k - 1]))) ? null : `exit ${r.code}`],
   ['PASS  #637: the implementer re-connects onto a SAME-TREE head after the approval — no second review, delivered at the real PR head (merged, exit 0)', () => cli('same-tree-head', D), (r) => r.code === 0 && same(order(r), ['T1']) && r.events.filter((e) => e.ev === 'review-record').length === 1 && r.events.some((e) => e.ev === 'retree') && !rules(r).length ? null : `exit ${r.code} ${r.json?.reason ?? ''}`],
   ['PASS  decision 10: a check set not identical on two polls is not green (late-registering workflow): merged only on a green CI', () => cli('late-check', D), (r) => r.code === 0 && r.events.filter((e) => e.ev === 'merge').every((e) => e.ci === 'green') && !rules(r).length ? null : `exit ${r.code} rules ${rules(r)}`],
@@ -87,7 +90,7 @@ const scratch = fs.mkdtempSync(path.join(tmpBase, 'fanout-run-mut-'));
 fs.cpSync(path.join(ROOT, 'src'), path.join(scratch, 'src'), { recursive: true });
 fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }));
 fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(scratch, 'node_modules'), 'dir');
-const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts'].map((f) => path.join(scratch, f));
+const TESTS = ['src/shared/fanout-loop.test.ts', 'src/cli/fanout-run.test.ts', 'src/shared/fanout-loop-ci.test.ts', 'src/shared/fanout-loop-corrections.test.ts', 'src/shared/fanout-loop-idle.test.ts', 'src/shared/fanout-loop-points.test.ts', 'src/shared/fanout-loop-pause.test.ts', 'src/shared/fanout-loop-contract.test.ts', 'src/shared/agent-events.test.ts'].map((f) => path.join(scratch, f));
 function run(timeout = 180_000) { // a mutant that runs away (an infinite loop) is KILLED by the timeout (printed as such); mutants run 4 at a time (#623), so it is longer than the 90 s of the serial rig; the control gets the long one
   const r = spawnSync(process.execPath, ['--test', '--experimental-strip-types', ...TESTS], { cwd: scratch, encoding: 'utf8', timeout, env: { ...process.env, TMPDIR: tmpBase } });
   const out = `${r.stdout}\n${r.stderr}`;
@@ -96,6 +99,8 @@ function run(timeout = 180_000) { // a mutant that runs away (an infinite loop) 
 }
 const BR = 'src/shared/fanout-implementer-brief.ts', ST = 'src/shared/fanout-start.ts';
 const OP = 'src/shared/fanout-open-point.ts';
+const PA = 'src/shared/fanout-loop-pause.ts', AE = 'src/shared/agent-events.ts', LF = 'src/shared/fanout-loop-live-fleet.ts';
+const I = 'src/shared/fanout-loop-idle.ts', P = 'src/shared/fanout-loop-points.ts';
 const L = 'src/shared/fanout-loop.ts', J = 'src/shared/fanout-loop-judge.ts', S = 'src/shared/fanout-state.ts', DM = 'src/shared/fanout-loop-dummy.ts';
 // [name, [[file, from, to], …]] — every `from` must occur exactly once in its file
 const mutants = [
@@ -106,7 +111,7 @@ const mutants = [
   ['#628: an implementer that ignores 2 orders is never replaced', [[L, "if (o.n < 2) return send(o.n + 1);", "return send(o.n + 1);"]]],
   ['#637: the verdict of a same-tree head is not read as covering it (verdictSameTree never passed)', [[L, "stable, requiredChecks: deps.options.requiredChecks ?? [], verdictSameTree, headSameTree,", "stable, requiredChecks: deps.options.requiredChecks ?? [], headSameTree,"]]],
   ['decision 4: connect AFTER the merge (the step runs after deliver)', [[L, "'approvals', 'connect', 'ci', 'corrections', 'deliver', 'end'] as const", "'approvals', 'ci', 'corrections', 'deliver', 'connect', 'end'] as const"]]],
-  ['decision 4: the ask is repeated every pass', [[L, "if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue;", "/* ask every pass */"], [L, "      if (t.builtOn[up] && loopSameSha(t.builtOn[up], a.head)) continue;\n", ""]]],
+  ['decision 4: the ask is repeated every pass', [[L, "if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) {", "if (false as boolean) {"], [L, "      if (connected) continue;\n", ""]]],
   ['decision 4: the ask carries no exact head', [[L, "`CONNECT ${i.upstream} ${i.head}`,", "`CONNECT ${i.upstream} ${i.head.slice(0, 7)}`,"]]],
   ['decision 5: a question gets no answer', [[L, "        await deps.fleet.send(m.sender, FIXED_ANSWER, 'answer');\n", ""]]],
   ['decision 5: a question is not listed (no choice recorded)', [[L, "        if (!h) ctx.update((x) => { const y = listChoice(x,", "        if (false as boolean) ctx.update((x) => { const y = recordChoice(x,"]]],
@@ -125,14 +130,14 @@ const mutants = [
   ['MAJOR-2: the merge is a squash', [[L, "deps.forge.merge(r.pr, r.head, 'merge')", "deps.forge.merge(r.pr, r.head, 'squash')"]]],
   ['MINOR-2: a held start is a stall', [[L, "for (const x of r.waiting) { ctx.waitOn(`held:${x.ticket}`, holdMs); ctx.note(", "for (const x of r.waiting) { ctx.note("], [L, "for (const id of heldNow) ctx.waitOn(`held:${id}`, holdMs);", ""]]],
   ['MINOR-2: a CI still running is a stall', [[L, "if (dec.action === 'wait') { ctx.waitOn(`ci:${id}:${t.head}`, deps.options.stallMs); return; }", "if (dec.action === 'wait') return;"]]],
-  ['MINOR-2: a reviewer reading is a stall', [[L, "{ ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs); return; } // briefed", "return; // briefed"]]],
+  ['MINOR-2: a reviewer reading is a stall', [[L, "      ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs);\n      return;", "      return;"]]],
   ['r2 MAJOR-1: a wait is unbounded (it counts as progress for ever)', [[L, "if (loopMs(deps.now()) - loopMs(since) <= boundMs) {", "if (true as boolean) {"]]],
   ['r2 MAJOR-1: a dead reviewer is not replaced (waited on like a live one)', [[L, "&& (!rv || deps.fleet.live(rv))) {", ") {"]]],
   ['MINOR-3: the loop section is never added to the implementer brief', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...[]"]]],
   ['MINOR-3: the loop section is always added (a non-loop brief changes)', [[BR, "...((input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan) ? ['', LOOP_BRIEF] : [])", "...['', LOOP_BRIEF]"]]],
   ['MINOR-3: the #604 marker (state.loopPlan) does not turn the loop section on', [[BR, "input.loop ?? !!(state as { loopPlan?: unknown }).loopPlan", "input.loop ?? false"]]],
   ['round 2: an ask is listed uncut (recordChoice refuses it, the run ends)', [[L, "loopClean(m.body.split('\\n')[0]).slice(0, ASK_MAX);", "loopClean(m.body.split('\\n')[0]);"]]],
-  ['round 2: a respawned author is not asked again (the ask is keyed by head alone)', [[L, " && s.loop.askedTo[id]?.[up] === t.implementer) continue;", ") continue;"]]],
+  ['round 2: a respawned author is not asked again (the ask is keyed by head alone)', [[L, " && s.loop.askedTo[id]?.[up] === t.implementer) {", ") {"]]],
   ['round 2: the dummy forge close() closes nothing', [[DM, "async close(n) { w.closePr(n); },", "async close(_n) { /* nothing */ },"]]],
   ['round 2: the dummy forge merges a closed PR', [[DM, "if (p.state !== 'open') return { ok: false,", "if (p.state === 'merged') return { ok: false,"]]],
   ['r3: a dead reviewer is replaced for ever (no cap)', [[L, "      if (died >= cap) {", "      if (false as boolean) {"]]],
@@ -192,6 +197,25 @@ const mutants = [
   ['connect fix (#607 c1): the pause break is only checked after reconcile (a ready ticket merges in the pausing pass)', [[L, "if (step === 'reconcile' || step === 'ci') { const cur", "if (step === 'reconcile') { const cur"]]],
   ['connect fix 2 (#606 MAJOR-3): an author respawned by the start step never gets the batch', [['src/shared/fanout-loop-corrections.ts', "if (!author || !deps.fleet.live(author) || startedAfter) {", "if (!author || !deps.fleet.live(author)) {"]]],
   ['connect fix 2 (#606 minor): the stall reason says "no fix yet" although the fix is pushed', [[L, "(loopSameSha(lastRev.head, t.head) || (!!lastRev.tree && lastRev.tree === t.tree))) return", "true) return"]]],
+  ['idle-rule: the idle rule never fires (an alive idle agent is waited on for the whole stall bound)', [[I, "  if (i.idle === null) return 'none';\n  return i.woken", "  return 'none';\n  return i.woken"]]],
+  ['idle-rule: a RUNNING / queued agent (no idle reading) is woken like an idle one', [[I, "  if (i.idle === null) return 'none';\n", ""]]],
+  ['idle-rule: an agent is replaced at once, never woken first', [[I, "woken: !!e?.wokenAt })", "woken: true })"]]],
+  ['idle-rule: an agent is woken again for ever, never replaced', [[I, "return i.woken ? 'replace' : 'wake';", "return 'wake';"]]],
+  ['idle-rule: a session with a message queued / in dispatch for it still reads idle (the host wakes it twice)', [[I, "  if ((i.queuedCount ?? 0) + (i.pendingPromptCount ?? 0) + (i.queuedPrompts ?? 0) + (i.parkedInboxCount ?? 0) > 0) return null;\n", ""]]],
+  ['idle-rule: the release of a silent reviewer is never made (the port op is not called)', [[L, "await deps.fleet.replaceReviewer?.(id); }", "}"]]],
+  ['idle-rule: a reviewer released and still there idle keeps feeding the stall clock', [[L, "if (v === 'stalled' || v === 'replaced') return;", "if (v === 'replaced') return;"]]],
+  ['idle-rule: the reviewer is woken with no brief (the reminder drops it)', [[L, "'Your brief for this head, unchanged:', '', briefText].join(", "'', ''].join("]]],
+  ['idle-rule: the order ladder ignores the idle rule (an idle implementer waits the whole orderWaitMs)', [[L, "&& act === 'none') { ctx.busy = true; return; } // the implementer is on it", ") { ctx.busy = true; return; } // the implementer is on it"]]],
+  ['idle-rule: the open-point ladder ignores the idle rule', [[P, "&& act === 'none') { ctx.busy = true; return; } // the implementer is on it", ") { ctx.busy = true; return; } // the implementer is on it"]]],
+  ['idle-rule: the CONNECT of an idle dependent is never repeated nor its author replaced', [[L, "if (!connected) {", "if (false as boolean) {"]]],
+  ['idle-rule: a replaced dependent author is not asked again (the ask stays keyed to the old author)', [[L, "const { [id]: _a, ...asked } = x.loop.asked; const { [id]: _t, ...askedTo } = x.loop.askedTo;", "const asked = x.loop.asked; const askedTo = x.loop.askedTo;"]]],
+  ['host pause: the loop never reads the run\'s pause (it acts on frozen members: replaces, orders, decides)', [[L, "const gate = await hostPauseGate(ctx);", "const gate = 'clear' as 'paused' | 'resumed' | 'clear';"]]],
+  ['host pause: the stall clock keeps running through a pause', [[L, "      if (gate === 'paused') {\n        lastProgress = loopMs(deps.now());\n", "      if (gate === 'paused') {\n"], [L, "      if (gate === 'resumed') lastProgress = loopMs(deps.now());\n", ""]]],
+  ['host pause: the lift resets nothing (orders sent before the pause still count, idle marks and waits stay)', [[PA, "updateLoopState(deps.home, deps.run, (cur) => resetAfterPause(cur!, now));", "updateLoopState(deps.home, deps.run, (cur) => withLoop(cur!, { ...cur!.loop, hostPause: undefined }));"]]],
+  ['host pause: an order sent before the pause keeps its count after it', [[PA, "[id, { ...o, n: Math.min(o.n, 1), at: now }]))", "[id, { ...o, at: now }]))"]]],
+  ['host pause: a pause that cannot be read is read as "not paused"', [[PA, "    return 'paused';\n  }\n  const s = readLoopState", "    return 'clear';\n  }\n  const s = readLoopState"]]],
+  ['host pause: the live port never reports the pause', [[LF, "return p ? { by: p.pausedBy ?? null,", "return null && p ? { by: p.pausedBy ?? null,"]]],
+  ['host pause: the pool\'s 429 reset hint is dropped (the auto-Reprise has no timer)', [[AE, "const poolResetS = poolResetSeconds(msg.result);", "const poolResetS: number | null = null;"]]],
   ['connect fix 2: a silent reviewer feeds the stall clock for ever (the wake outcome counts as progress)', [[L, "else if (o.action === 'reviewer-woken') ctx.note(", "else if (o.action === 'reviewer-woken') ctx.did("]]],
 ];
 if (CHILD === undefined) {

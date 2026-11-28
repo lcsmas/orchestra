@@ -10,8 +10,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ensureTicketBranch } from '../shared/fanout-ticket-branch.ts';
 import { sessionKeys } from './session-identity-host.ts';
+import { idleClockOf } from './idle-clock.ts';
 import { archiveWorkspace, dispatchAgentSpawnRequest, installOrchestraHooks, resolveWaveRunId } from './workspaces';
-import { transcriptDirOfWorkspace } from './agent-sdk';
+import { sdkGateProbe, transcriptDirOfWorkspace } from './agent-sdk';
+import { idleReading } from '../shared/fanout-loop-idle.ts';
 
 const productionDeps: AcceptanceHostDeps = {
   get home() { return orchestraHome(); },
@@ -28,6 +30,12 @@ const productionDeps: AcceptanceHostDeps = {
   },
   verifyCaller: (id, key) => sessionKeys().verify(id, key), // #588: `op: review` is re-proved here, not only by the CLI
   isLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; }, // #588: a deleted or archived reviewer is replaced, a live one woken
+  idleMs: (id) => { // idle-rule: the Boucle's idle rule — idle time only for a session that is idle with NOTHING queued or in dispatch for it (`idleReading`); running / waiting / a queued turn = null
+    const w = store.getWorkspace(id);
+    if (!w) return null;
+    const probe = sdkGateProbe(id);
+    return idleReading({ status: w.status, archived: w.archived, gateHeld: probe?.gateHeld, queuedCount: probe?.queuedCount, pendingPromptCount: probe?.pendingPromptCount, queuedPrompts: w.queuedPrompts?.length, parkedInboxCount: w.parkedInboxCount, idleSince: idleClockOf(w), now: Date.now() });
+  },
   // #587 PR B: `fanout start` — the implementer spawn (the one `impl-` door of a seatRecords run), and liveness = the workspace exists and is not archived
   implementerLive: (id) => { const w = store.getWorkspace(id); return !!w && !w.archived; },
   spawnImplementer: async (i) => {

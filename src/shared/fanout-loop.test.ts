@@ -336,7 +336,7 @@ test('the loop writes the REAL #603 records: choices and the pause live in state
   assert.deepEqual(st.choices.map((c: { ticket: string; rule: string }) => [c.ticket, c.rule]), [['T3', 'reversible-default']]);
   const side = JSON.parse(fs.readFileSync(path.join(home, 'fanout', 'nosafe', 'loop.json'), 'utf8'));
   for (const k of ['parked', 'choices', 'pause', 'rounds']) assert.equal(k in side, false, `${k} is not in the sidecar any more`);
-  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'orders', 'pointOrders', 'reconnects', 'replaced', 'signalled']);
+  assert.deepEqual(Object.keys(side).sort(), ['asked', 'askedTo', 'busySince', 'checksSeen', 'handled', 'held', 'idle', 'orders', 'pointOrders', 'reconnects', 'replaced', 'signalled']);
   assert.deepEqual(r.result.report.parked, []);
 });
 test('exit 4: a paused run stops, and resumes where it was when run again', async () => {
@@ -616,7 +616,7 @@ test('a respawned author is asked to connect AGAIN (the ask is keyed by implemen
 // ── review 605 r2: a wait is bounded ───────────────────────────────────────────────────────────────────────────────
 const bounded = { stallMs: 30 * 60_000, holdMs: 60 * 60_000, maxPasses: 1500 };
 test('r2 MAJOR-1 MUST-FAIL: a reviewer that is ALIVE and never records is bounded — the ticket is parked (situation) with the true reason, long before the pass limit', async () => {
-  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: [{ do: 'silent' }] } } }), options: bounded });
+  const r = await runDummyLoop({ home: tmp(), scenario: sc('changes-requested', { agents: { T1: { reviewer: [{ do: 'silent' }] } } }), options: { ...bounded, idleRule: false } }); // the idle rule (idle-rule) off: this pins the stall bound itself
   assert.equal(r.result.exit, 3);
   assert.ok(r.result.passes < 200, `ended at pass ${r.result.passes}`);
   assert.match(r.result.reason ?? '', /^stalled 30 min: T1 has no recorded review on its head/);
@@ -888,7 +888,7 @@ test('606 MAJOR-3 (composed): the author dies TWICE — every spawn after the re
 });
 
 test('606 m3 (stall reason): once the author PUSHED its fix the reason no longer says "no fix yet" (the reviewer is the one that is silent)', async () => {
-  const r = await go('corrections-fix-silent');
+  const r = await go('corrections-fix-silent', { idleRule: false }); // the idle rule (idle-rule) off: this pins the stall reason
   const p = r.result.report.parked.find((x) => x.ticket === 'T1')!;
   assert.ok(p, 'T1 is parked by the stall');
   assert.doesNotMatch(p.reason, /no fix yet/);
@@ -918,7 +918,7 @@ test('#628: the order text says merge commit, push, report — never rebase, nev
   assert.match(t, /send a status with the new head sha/);
 });
 test('#628: 2 orders and the head never moved → the implementer is replaced by a fresh one on the same branch (not counted as a death, nothing parked), the order is sent again, the run merges', async () => {
-  const r = await go('merge-conflict-replace', { ...syncOpts, maxReplacements: 0 }); // a replacement on purpose is no death: the cap of deaths (0 here) never parks it
+  const r = await go('merge-conflict-replace', { ...syncOpts, maxReplacements: 0, idleRule: false }); // a replacement on purpose is no death: the cap of deaths (0 here) never parks it
   assert.equal(r.result.exit, 0, JSON.stringify(r.result.report.parked));
   assert.deepEqual(mergeOrder(r.world.events), ['T1', 'T2']);
   const orders = r.world.events.filter((e) => e.ev === 'sync-order');

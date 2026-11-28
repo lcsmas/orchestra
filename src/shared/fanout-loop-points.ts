@@ -5,6 +5,7 @@ import type { LoopCtx } from './fanout-loop.ts';
 import { withLoop } from './fanout-loop-side.ts';
 import { OPEN_POINT_FIXED_RULE, decideOpenPoint, openFollowUp, openPointsOf, openPointsOpen, renderPointOrder, unconnectedTowards } from './fanout-open-point.ts';
 import { reviewOn } from './fanout-record.ts';
+import { idleDecision, idleNote, idleNow } from './fanout-loop-idle.ts';
 
 /** Orders for ONE point over every head (a new head that approves without addressing it earns a new order): past this the fixed rule decides. */
 export const MAX_POINT_ORDERS = 4;
@@ -50,8 +51,10 @@ export async function stepOpenPoints(ctx: LoopCtx): Promise<void> {
       if (o.total >= MAX_POINT_ORDERS) return decide(`${o.total} orders and the approved head ${head.slice(0, 12)} still does not address it`);
       return send(1, o.total + 1); // approved without addressing it: a new order on this head
     }
-    if (pointMs(now) - pointMs(o.at) < (deps.options.orderWaitMs ?? 15 * 60_000)) { ctx.busy = true; return; } // the implementer is on it
-    if (o.n < 2) return send(o.n + 1, o.total + 1);
+    const idle = idleNow(ctx, impl);
+    const act = idleDecision({ idle, woken: o.n >= 2 }); // idle-rule: session idle, nothing queued for it, the order unanswered: the next rung comes at the next pass, without waiting `orderWaitMs` (a running implementer keeps that wait; the last rung is the fixed rule, not a replacement)
+    if (pointMs(now) - pointMs(o.at) < (deps.options.orderWaitMs ?? 15 * 60_000) && act === 'none') { ctx.busy = true; return; } // the implementer is on it
+    if (o.n < 2) { if (act === 'wake') ctx.did(idleNote(p.about, impl, idle!, `the answer to open point ${p.id}`, 'woken again')); return send(o.n + 1, o.total + 1); }
     decide(`${o.n} orders to ${impl} and ${p.about} has no new head`);
   });
 }

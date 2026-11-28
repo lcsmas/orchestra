@@ -10,6 +10,8 @@ import { flakyAtMerge, stepCi as runCi, stepPauseWatch as runPauseWatch, stepSta
 import { runCorrections } from './fanout-loop-corrections.ts';
 import { renderRunChoices } from './fanout-brief-common.ts';
 import { stepOpenPoints as runOpenPoints } from './fanout-loop-points.ts';
+import { idleDecision, idleNote, idleNow, owedAgent } from './fanout-loop-idle.ts';
+import { hostPauseGate } from './fanout-loop-pause.ts';
 import { openPointBlocked, openPointHoldLines, pointReleases } from './fanout-open-point.ts';
 import { fileStatePort, stepEnd as runEnd, stepReconcile as runReconcile } from './fanout-relaunch.ts';
 import { decideDelivery, decideUpstreams, type DeliverCheck, type UpstreamFacts } from './fanout-deliver.ts';
@@ -50,6 +52,8 @@ export interface LoopOptions {
   rerunExpireMs?: number;
   /** #628 — a delivery refusal order (SYNC …) to an implementer: how long its head may stay unchanged before the next order (default 15 min); 2 orders with no new head replace the implementer */
   orderWaitMs?: number;
+  /** idle-rule — the idle rule (default on; `false` = off, for the tests that pin the stall bound): an agent whose session is idle, that owes an action and has nothing queued for it is woken again with the same brief at the next pass, then replaced at the one after */
+  idleRule?: boolean;
 }
 export const DEFAULT_OPTIONS: LoopOptions = { plan: null, tickets: null, target: 'main', repo: null, startCheck: false, minorPolicy: 'demonstrated', pollMs: 60_000, stallMs: 4 * 3_600_000, maxPasses: 100_000 };
 
@@ -366,6 +370,12 @@ export async function stepOpen(ctx: LoopCtx): Promise<void> {
   });
 }
 
+/** idle-rule — the wake of a silent reviewer: the SAME brief of the current head, headed by what is owed (and by the move, when its last record is on an older head). */
+export function renderReviewReminder(t: { reviews?: Array<{ head: string }> }, briefText: string, head: string): string {
+  const prev = (t.reviews ?? []).at(-1);
+  const moved = !!prev && !loopSameSha(prev.head, head);
+  return [`REMINDER — the loop is still waiting for your RECORDED verdict on ${head}.${moved ? ` The head moved: your last record is on ${prev!.head.slice(0, 12)}; read the new head and record again.` : ' A verdict you wrote but did not record with `orchestra fanout record` does not count: record it now.'}`, 'Your brief for this head, unchanged:', '', briefText].join('\n');
+}
 /** The ticket's reviewer reads its current head: spawned once, woken on a new head, never twice on the same one. */
 export async function stepReview(ctx: LoopCtx): Promise<void> {
   const { deps } = ctx;
@@ -375,7 +385,15 @@ export async function stepReview(ctx: LoopCtx): Promise<void> {
     if (reviewOn(t, t.head, t.tree)) return; // a verdict on this content is recorded
     const last = t.review?.briefs[t.review.briefs.length - 1];
     const rv = t.review?.reviewer?.id;
-    if (last && loopSameSha(last.head, t.head) && (!rv || deps.fleet.live(rv))) { ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs); return; } // briefed on this head and the reviewer is alive: it owes its record (bounded); a DEAD reviewer is replaced below
+    if (last && loopSameSha(last.head, t.head) && (!rv || deps.fleet.live(rv))) { // briefed on this head and the reviewer is alive: it owes its record (bounded); a DEAD reviewer is replaced below
+      const head = t.head;
+      if (rv) { // idle-rule: alive but idle with no record: woken again, then released (the next pass replaces it like a dead one); once released and still there it is no progress
+        const v = await owedAgent(ctx, { key: `rev:${rv}:${t.head}`, ws: rv, ticket: id, what: `a review record on ${t.head.slice(0, 12)}`, wake: () => deps.fleet.wake(rv, renderReviewReminder(t, last.text, head)), replace: async () => { await deps.fleet.replaceReviewer?.(id); } });
+        if (v === 'stalled' || v === 'replaced') return;
+      }
+      ctx.waitOn(`review:${id}:${t.head}`, deps.options.stallMs);
+      return;
+    }
     const key = `rev:${id}:${t.head}`;
     const died = last && loopSameSha(last.head, t.head) ? ctx.st().loop.replaced[key] ?? 0 : 0; // the briefed reviewer is gone: a replacement, up to the cap
     if (last && loopSameSha(last.head, t.head)) {
@@ -424,8 +442,15 @@ export async function stepConnect(ctx: LoopCtx): Promise<void> {
       const a = ctx.approved.get(up);
       if (!u || ticketMerged(s, up) || !a) continue;
       const asked = s.loop.asked[id]?.[up];
-      if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) continue; // once per (dependent, upstream, head, AUTHOR): a respawned author is asked again
-      if (t.builtOn[up] && loopSameSha(t.builtOn[up], a.head)) continue;
+      const connected = !!t.builtOn[up] && loopSameSha(t.builtOn[up], a.head);
+      if (asked && loopSameSha(asked, a.head) && s.loop.askedTo[id]?.[up] === t.implementer) { // once per (dependent, upstream, head, AUTHOR): a respawned author is asked again
+        if (!connected) { // idle-rule: asked, alive, idle, still not connected: the same CONNECT again, then a fresh author (asked again on its own)
+          const ws = t.implementer;
+          await owedAgent(ctx, { key: `connect:${id}:${up}:${a.head}:${ws}`, ws, ticket: id, what: `the connection to ${up} at ${a.head.slice(0, 12)}`, wake: () => deps.fleet.wake(ws, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head, choices: renderRunChoices(ctx.st()) })), replace: async () => { await releaseImplementer(ctx, id, 'idle'); ctx.update((x) => { const { [id]: _a, ...asked } = x.loop.asked; const { [id]: _t, ...askedTo } = x.loop.askedTo; return { ...x, loop: { ...x.loop, asked, askedTo, idle: Object.fromEntries(Object.entries(x.loop.idle).filter(([k]) => !k.startsWith(`connect:${id}:`))) } }; }); } }); // the fresh author starts clean: asked again, whatever its workspace id
+        }
+        continue;
+      }
+      if (connected) continue;
       await deps.fleet.wake(t.implementer, renderConnectAsk({ ticket: id, upstream: up, branch: u.branch, head: a.head, choices: renderRunChoices(ctx.st()) }));
       const moved = !!asked && !loopSameSha(asked, a.head); // #649: a CONNECT sent again because the upstream moved (a respawned author re-asked on the SAME head is not one)
       ctx.update((x) => ({ ...x, loop: { ...x.loop, ...(moved ? { reconnects: { ...x.loop.reconnects, [id]: (x.loop.reconnects[id] ?? 0) + 1 } } : {}), asked: { ...x.loop.asked, [id]: { ...(x.loop.asked[id] ?? {}), [up]: a.head } }, askedTo: { ...x.loop.askedTo, [id]: { ...(x.loop.askedTo[id] ?? {}), [up]: t.implementer! } } } }));
@@ -471,12 +496,24 @@ async function orderImplementer(ctx: LoopCtx, id: string, reason: string, detail
     return;
   }
   if (o.n === 0) return send(1); // a fresh implementer: it gets the order at once
-  if (loopMs(now) - loopMs(o.at) < (deps.options.orderWaitMs ?? 15 * 60_000)) { ctx.busy = true; return; } // the implementer is on it
+  const waited = loopMs(now) - loopMs(o.at);
+  const idle = idleNow(ctx, t.implementer);
+  const act = idleDecision({ idle, woken: o.n >= 2 }); // idle-rule: session idle, nothing queued for it, the order unanswered: the next rung of the ladder comes at the next pass, without waiting `orderWaitMs` (a running implementer keeps that wait)
+  if (waited < (deps.options.orderWaitMs ?? 15 * 60_000) && act === 'none') { ctx.busy = true; return; } // the implementer is on it
+  if (act !== 'none') ctx.did(idleNote(id, t.implementer, idle!, `the ${reason === 'merge-conflict' ? 'SYNC' : 'FIX'} order's new head`, act === 'wake' ? 'woken again' : 'replaced'));
   if (o.n < 2) return send(o.n + 1);
   // 2 orders, the head never moved: a fresh implementer on the same branch (state first: `started` is what `fanout start` respawns; the release after — a failed release is retried)
-  ctx.update((x) => ({ ...withLoop(applyTicketPatch(x, id, { status: 'started' }, now), x.loop), loop: { ...x.loop, orders: { ...x.loop.orders, [id]: { ...o, n: 0, at: now, replacing: true as const } } } }));
-  await deps.fleet.replace(id);
+  await releaseImplementer(ctx, id, reason, o);
   ctx.did(`${id}: ${o.n} orders without a new head — implementer ${t.implementer} replaced by a fresh one on the same branch`);
+}
+
+/** #628 / idle-rule — end the ticket's implementer ON PURPOSE (state first: `started` is what `fanout start` respawns; the release after — a failed release is retried). `replacing` keeps it from being charged as a death. */
+async function releaseImplementer(ctx: LoopCtx, id: string, reason: string, o?: { head: string; n: number; at: string; reason: string }): Promise<void> {
+  const now = ctx.deps.now();
+  const t = ctx.st().tickets[id];
+  const was = o ?? ctx.st().loop.orders[id] ?? { head: t.head ?? '', n: 0, at: now, reason };
+  ctx.update((x) => ({ ...withLoop(applyTicketPatch(x, id, { status: 'started' }, now), x.loop), loop: { ...x.loop, orders: { ...x.loop.orders, [id]: { ...was, n: 0, at: now, replacing: true as const } } } }));
+  await ctx.deps.fleet.replace(id);
 }
 
 interface Ready { id: string; readyAt: number; order: number; head: string; pr: number; dependents: number }
@@ -626,6 +663,14 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     passes++;
     const ctx = newCtx(deps, passes, seen);
     try {
+      const gate = await hostPauseGate(ctx); // the HOST's pause of the run: every member is frozen, so the loop does nothing this pass and its stall clock does not run
+      if (gate === 'paused') {
+        lastProgress = loopMs(deps.now());
+        if (passes >= deps.options.maxPasses) return await finish(4, 'paused by the host: pass limit');
+        await deps.sleep(deps.options.pollMs);
+        continue;
+      }
+      if (gate === 'resumed') lastProgress = loopMs(deps.now());
       for (const step of LOOP_STEPS) {
         await LOOP_STEP_FNS[step](ctx);
         // a paused run (decision 8: the same check red on several PRs, or a pause set by hand) starts, merges and answers nothing more until it is resumed

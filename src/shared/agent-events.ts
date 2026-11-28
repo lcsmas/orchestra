@@ -268,6 +268,13 @@ export type AgentEventBody = { [E in AgentEvent as E['type']]: Omit<E, 'seq' | '
 /** Assign the next seq/at envelope to a bare event body. Mutates `ctx.seq`. The
  *  generic keeps the specific variant type through the call, so a caller passing
  *  a `text-delta` body gets an `AgentTextDeltaEvent` back. */
+/** Seconds until the earliest seat of the account pool resets, read from a 429 result's text (`… the earliest resets in 266s`), or null. Prose, but the only place the pool says it: used for a TIMER only, never to classify. */
+export function poolResetSeconds(text: unknown): number | null {
+  if (typeof text !== 'string') return null;
+  const m = /earliest resets in (\d{1,6})\s*s\b/i.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
 export function stamp<B extends AgentEventBody>(ctx: NormalizeContext, body: B): B & { seq: number; at: number } {
   const at = clockNow(ctx);
   const seq = ctx.seq++;
@@ -729,13 +736,15 @@ export function normalizeSdkMessage(msg: SdkMessage, ctx: NormalizeContext): Age
         // so it stays an error and merely says so accurately.
         const kind = classifyTurnError(msg.api_error_status);
         if (kind === 'rate-limit') {
+          const poolResetS = poolResetSeconds(msg.result); // the pool's own 429 says when its earliest seat resets: without it the auto-Reprise of the paused run never lifts blind
           out.push(
             stamp(ctx, {
               type: 'notice',
               kind: 'rate-limit',
-              // No resetsAt: the result carries no reset time. The account
+              // No resetsAt unless the pool's 429 text names one: the result carries no reset time. The account
               // poller owns that, and the notice renders without it.
               text: 'Usage limit reached — the turn was stopped',
+              ...(poolResetS !== null ? { resetsAt: Math.ceil(clockNow(ctx) / 1000) + poolResetS } : {}),
               // A 429 result IS a rejection — the turn died on it (#74). It
               // reports no reset time, so the resume driver will gate this
               // workspace on a fresh usage reading instead of a clock.
